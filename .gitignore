@@ -8,10 +8,12 @@ build/
 out/
 *.tsbuildinfo
 
-# Build resources — source SVG-логотип нужно держать в репо, генерируемые
-# иконки (.ico / .icns / .png) — нет, их собирает CI.
+# Build resources — source-картинку логотипа (PNG 1024+ или SVG fallback)
+# держим в репо. Генерируемые иконки (.ico / .icns / итоговый icon.png) —
+# нет, их собирает scripts/build-icons.mjs в CI.
 !apps/desktop/build/
 !apps/desktop/build/icon.svg
+!apps/desktop/build/icon-source.png
 !apps/desktop/build/README.md
 apps/desktop/build/icon.ico
 apps/desktop/build/icon.icns

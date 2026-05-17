@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useUsersStore } from '@/lib/stores';
-import { getUsers, type Role, type UserSummary } from '@pyn/core';
+import { getUsers, isDeveloper, type Role, type UserSummary } from '@pyn/core';
 import { CreateUserDialog } from './UserDialogs';
 import { UserListRow } from './UserListRow';
 
@@ -111,7 +111,11 @@ export function useUsersPanelState({ myRole, myLogin, active }: UseUsersPanelArg
 
   const title = users.length > 0 ? `Пользователи · ${users.length}` : 'Пользователи';
 
-  const actions = (
+  // Admin видит только список (avatar + имя + last seen). Поиск / refresh /
+  // create — read-write controls, доступны только developer'у. UserListRow
+  // тоже скрывает три точки управления для не-developer'ов (см. {isDev && ...}).
+  const isDev = isDeveloper(myRole);
+  const actions = isDev ? (
     <>
       <input
         type="search"
@@ -151,7 +155,7 @@ export function useUsersPanelState({ myRole, myLogin, active }: UseUsersPanelArg
         Создать
       </button>
     </>
-  );
+  ) : null;
 
   const body = (
     <>
