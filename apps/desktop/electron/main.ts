@@ -4,8 +4,12 @@ import path from 'node:path';
 import { setupApiBridge } from './ipc/api-bridge';
 import { setupBlobBridge } from './ipc/blob-bridge';
 import { setupCacheBridge } from './ipc/cache-bridge';
+import { setupGoogleBridge } from './ipc/google-bridge';
+import { setupMolBridge } from './ipc/mol-bridge';
 import { setupTokenBridge } from './ipc/token-bridge';
+import { setupUpdateBridge } from './ipc/update-bridge';
 import { setupWsBridge } from './ipc/ws-bridge';
+import { startVpsPing, stopVpsPing } from './network/vps-ping';
 
 // Stage 11: DNS override для Chromium net stack. `api.otlhelper.com` → IP VPS.
 // Должно быть ДО `app.whenReady()` — Chromium init читает switch'и однократно.
@@ -34,6 +38,13 @@ function createWindow(): void {
       nodeIntegration: false,
       // sandbox остаётся включённым (default) — CJS preload работает в любом
       // sandbox state, в отличие от ESM, который требует sandbox:false.
+      // additionalArguments — преcomputed-значения, доступные preload'у через
+      // process.argv. Альтернатива IPC round-trip'у для статических данных
+      // (sandbox blocks process.env / fs).
+      additionalArguments: [`--pyn-app-version=${app.getVersion()}`],
+      // Включаем <webview> tag для embedded Google Sheets (раздел «Таблицы»).
+      // Изолированный partition + masking inject в renderer'е.
+      webviewTag: true,
     },
   });
 
@@ -64,8 +75,21 @@ app.whenReady().then(async () => {
   // Stale-while-revalidate cache в `userData/cache/<name>.bin` (safeStorage).
   // Zustand persist в renderer'е использует pyn:cache:* IPC handlers.
   setupCacheBridge();
+  // МОЛ snapshot download: fetch encrypted R2 blob → AES decrypt → gunzip →
+  // отдать renderer'у plain JSON. Save/load базы — через pyn:cache:* (имя
+  // 'mol-base').
+  setupMolBridge();
+  setupGoogleBridge();
+  // Auto-update IPC: renderer определяет need-update через app_status endpoint,
+  // main качает .exe / .dmg в %LOCALAPPDATA%\Pyn\updates\ и запускает install.
+  setupUpdateBridge();
 
   createWindow();
+
+  // Periodic VPS-ping (RTT для индикатора связи). Идёт в nginx-only endpoint
+  // `/__ping`, не задевает Cloudflare Worker — ноль расхода CF дневного лимита.
+  // После createWindow — чтобы installVisibilityHooks подцепил уже-созданное окно.
+  startVpsPing();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -73,5 +97,6 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  stopVpsPing();
   if (!isMac) app.quit();
 });

@@ -1,9 +1,19 @@
-import { NAV_SECTIONS } from '@/lib/nav-sections';
+import type { Role } from '@pyn/core';
+import {
+  NAV_SECTIONS,
+  NAV_SECTIONS_AFTER_TABLES,
+  NAV_SECTIONS_BEFORE_TABLES,
+} from '@/lib/nav-sections';
 import { cn } from '@/lib/cn';
+import { formatDbDate } from '@/lib/mol-format';
+import { refreshMolFromServer } from '@/lib/mol-repo';
+import { useMolStore, useUiStateStore } from '@/lib/stores';
 import type { NavSection, NavSectionId } from '@/types/nav';
+import { ConnectivityIndicator } from './ConnectivityIndicator';
 import { SidebarHeader } from './SidebarHeader';
 import { NavItem } from './NavItem';
 import { BottomUserRow } from './BottomUserRow';
+import { TableNavItems } from './TableNavItems';
 import { UserPopupMenu } from './UserPopupMenu';
 
 interface SidebarProps {
@@ -13,6 +23,14 @@ interface SidebarProps {
   username: string;
   /** 1-2 буквенные initials текущего пользователя. */
   initials: string;
+  /** Login юзера — для цвета avatar fallback'a. */
+  userLogin?: string;
+  /** Роль — нужна попап-меню чтобы показать «Настройки» только developer'у. */
+  userRole: Role;
+  /** Зашифрованный URL аватарки + ключ + nonce (из `me()` response). */
+  userAvatarUrl?: string;
+  userAvatarBlobKey?: string;
+  userAvatarBlobNonce?: string;
   /**
    * Динамические unread-badge'и по section.id. App.tsx считает из stores
    * (chats unread, news unread). Если для section нет ключа — фиксированный
@@ -22,6 +40,8 @@ interface SidebarProps {
   onToggleCollapsed: () => void;
   onSearchClick: () => void;
   onSectionClick: (id: NavSectionId) => void;
+  /** Клик «Настройки» в попап-меню профиля — открывает Settings overlay. */
+  onOpenSettings: () => void;
   onLogout: () => void;
 }
 
@@ -66,10 +86,16 @@ export function Sidebar({
   activeSection,
   username,
   initials,
+  userLogin,
+  userRole,
+  userAvatarUrl,
+  userAvatarBlobKey,
+  userAvatarBlobNonce,
   badges,
   onToggleCollapsed,
   onSearchClick,
   onSectionClick,
+  onOpenSettings,
   onLogout,
 }: SidebarProps) {
   // Sections с обновлёнными badges (dynamic поверх hardcoded из NAV_SECTIONS).
@@ -77,6 +103,29 @@ export function Sidebar({
     ...s,
     badge: badges?.[s.id] ?? s.badge,
   }));
+
+  // Метадата базы МОЛ — для попап-меню. `Sidebar` всегда rendered поверх
+  // mol-store, поэтому subscribe здесь и пасуем в UserPopupMenu пропсами.
+  const molMeta = useMolStore((s) => s.meta);
+  const molStatus = useMolStore((s) => s.status);
+  const molOutcome = useMolStore((s) => s.lastRefreshOutcome);
+
+  // State выбранной таблицы/вкладки — persist'ится в ui-state-store, чтобы
+  // и Sidebar (table-nav-items), и TablesScreen (webview) читали единый источник.
+  const setActiveTable = useUiStateStore((s) => s.setActiveTable);
+
+  // Сообщение под строкой «База данных» в попапе — отражает прогресс/итог
+  // последней проверки. Loading в приоритете (идёт прямо сейчас).
+  const dbToast: string | null =
+    molStatus === 'loading'
+      ? 'Проверяем версию…'
+      : molOutcome === 'up-to-date'
+        ? 'База актуальна'
+        : molOutcome === 'updated'
+          ? 'База обновлена'
+          : molOutcome === 'error'
+            ? 'Ошибка обновления'
+            : null;
   const collapsedWidth = computeCollapsedWidth(sections);
   const width = collapsed ? collapsedWidth : EXPANDED_WIDTH;
 
@@ -106,47 +155,78 @@ export function Sidebar({
       <div className="h-1 shrink-0" />
 
       <nav className="flex flex-col gap-0.5 px-1.5">
-        {sections.map((section) => (
-          <NavItem
-            key={section.id}
-            icon={section.icon}
-            label={section.label}
-            active={section.id === activeSection}
-            collapsed={collapsed}
-            badge={section.badge}
-            onClick={() => onSectionClick(section.id)}
-          />
-        ))}
+        {NAV_SECTIONS_BEFORE_TABLES.map((section) => {
+          const merged = sections.find((s) => s.id === section.id) ?? section;
+          return (
+            <NavItem
+              key={merged.id}
+              icon={merged.icon}
+              label={merged.label}
+              active={merged.id === activeSection}
+              collapsed={collapsed}
+              badge={merged.badge}
+              onClick={() => onSectionClick(merged.id)}
+            />
+          );
+        })}
+        {/* Google-таблицы — между Хранилище и МОЛы. Каждая таблица — свой
+            nav-item с hover-flyout справа со списком вкладок. */}
+        <TableNavItems
+          collapsed={collapsed}
+          activeSection={activeSection}
+          onPick={(sectionId, fileId, tabName) => {
+            setActiveTable(fileId, tabName);
+            onSectionClick(sectionId);
+          }}
+        />
+        {NAV_SECTIONS_AFTER_TABLES.map((section) => {
+          const merged = sections.find((s) => s.id === section.id) ?? section;
+          return (
+            <NavItem
+              key={merged.id}
+              icon={merged.icon}
+              label={merged.label}
+              active={merged.id === activeSection}
+              collapsed={collapsed}
+              badge={merged.badge}
+              onClick={() => onSectionClick(merged.id)}
+            />
+          );
+        })}
       </nav>
 
       {/* Flex spacer — придавливает user-row к низу */}
       <div className="flex-1" />
 
+      {/* Connectivity status — над user row, отдельной полоской */}
+      <div className="px-1.5">
+        <ConnectivityIndicator collapsed={collapsed} />
+      </div>
+
       {/* Bottom user row — открывает popup-меню профиля */}
       <div className="px-1.5 pb-1.5">
         <UserPopupMenu
           username={username}
-          desktopVersion="v0.0.1"
-          androidVersion="v0.0.1"
-          dbVersion="v1.2"
-          dbDate="17.05.2026"
-          onAccountSettings={() => {
-            /* TODO */
-          }}
-          onLanguage={() => {
-            /* TODO */
-          }}
-          onAppearance={() => {
-            /* TODO */
-          }}
+          desktopVersion={`v${window.pyn?.appVersion ?? '0.0.0'}`}
+          androidVersion="v2.5.13"
+          dbVersion={molMeta ? `v${molMeta.version}` : '—'}
+          dbDate={molMeta ? formatDbDate(molMeta.updatedAt) : 'не загружена'}
+          dbLoading={molStatus === 'loading'}
+          dbToast={dbToast}
+          dbToastKind={molOutcome === 'error' ? 'error' : 'info'}
+          onOpenSettings={onOpenSettings}
           onRefreshDb={() => {
-            /* TODO */
+            void refreshMolFromServer({ force: true });
           }}
           onLogout={onLogout}
         >
           <BottomUserRow
             username={username}
             initials={initials}
+            login={userLogin}
+            avatarUrl={userAvatarUrl}
+            avatarBlobKey={userAvatarBlobKey}
+            avatarBlobNonce={userAvatarBlobNonce}
             presence="online"
             collapsed={collapsed}
           />

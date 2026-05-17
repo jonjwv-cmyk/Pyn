@@ -8,6 +8,8 @@ declare global {
   interface Window {
     pyn: {
       platform: NodeJS.Platform;
+      /** Версия desktop-сборки (apps/desktop/package.json через app.getVersion). */
+      appVersion: string;
       versions: {
         electron: string;
         chrome: string;
@@ -34,11 +36,24 @@ declare global {
       ws: {
         start: (login: string, token: string) => Promise<void>;
         stop: () => Promise<void>;
+        /**
+         * Отправить событие серверу как encrypted binary frame
+         * (presence/typing/read-receipts/…). No-op до завершения handshake.
+         */
+        send: (payload: object) => Promise<void>;
         /** Подписка. Возвращает unsubscribe callback. */
         onEvent: (handler: (event: WsServerEvent) => void) => () => void;
       };
       /** Fetch encrypted blob через main process (обходит CORS). */
       blobFetch: (url: string) => Promise<Uint8Array>;
+      /** МОЛ snapshot download — encrypted → plain JSON string. */
+      mol: {
+        fetchSnapshot: (
+          url: string,
+          blobKeyB64: string,
+          blobNonceB64: string,
+        ) => Promise<string>;
+      };
       /** Encrypted cache (Zustand persist storage). */
       cache: {
         load: (name: string) => Promise<string | null>;
@@ -46,7 +61,40 @@ declare global {
         clear: (name: string) => Promise<void>;
         clearAll: () => Promise<void>;
       };
+      /** Google account flow для embedded Sheets. */
+      google: {
+        openLogin: () => Promise<boolean>;
+        checkStatus: () => Promise<{ loggedIn: boolean; email: string | null }>;
+        logout: () => Promise<{ loggedIn: boolean; email: string | null }>;
+      };
+      /** Auto-update — download + install нового билда. */
+      update: {
+        downloadInstall: (
+          url: string,
+          version: string,
+        ) => Promise<{ ok: boolean; error?: string }>;
+        onProgress: (
+          handler: (progress: { bytes: number; total: number }) => void,
+        ) => () => void;
+      };
     };
+  }
+  /**
+   * Минимальная типизация для Electron `<webview>` tag (используется в
+   * TablesScreen для embedded Google Sheets).
+   */
+  namespace JSX {
+    interface IntrinsicElements {
+      webview: React.DetailedHTMLProps<
+        React.HTMLAttributes<HTMLElement> & {
+          src?: string;
+          partition?: string;
+          allowpopups?: boolean | 'true';
+          useragent?: string;
+        },
+        HTMLElement
+      >;
+    }
   }
 }
 

@@ -32,15 +32,12 @@ export function NewsPollVoting({ poll, onVote }: NewsPollVotingProps) {
 
   return (
     <div className="flex flex-col gap-2.5 rounded-lg border border-border-subtle bg-bg-primary/40 p-3">
-      <div>
-        <h4 className="text-[13px] font-medium leading-snug text-text-strong">
-          {poll.question}
-        </h4>
-        {poll.description && (
-          <p className="mt-0.5 text-[11px] text-text-muted">{poll.description}</p>
-        )}
-      </div>
-
+      {/*
+        Question/description в карточке-новости уже отрисованы в `news.text`
+        выше нашего блока — сервер шлёт их с тем же содержанием (см. Kotlin
+        `PollBuilderSheet.kt::onCreate(question, question, options)`). Здесь
+        повторно их НЕ показываем, чтобы не было дубля.
+      */}
       <div className="flex flex-col gap-1">
         {poll.options.map((o) => {
           const isMyVote = o.id === poll.myVoteOptionId;
@@ -115,8 +112,17 @@ interface ResultBarProps {
 }
 
 function ResultBar({ text, pct, votes, isMyVote }: ResultBarProps) {
+  // Явный border + bg делают опцию видимой даже при pct=0 (иначе бледный
+  // progress-bar просто не отображается, и юзер думает "вариантов нет").
+  // Выбранную опцию подкрашиваем accent-clay border'ом — мгновенно понятно
+  // что именно ты выбрал.
   return (
-    <div className="relative overflow-hidden rounded-md">
+    <div
+      className={cn(
+        'relative overflow-hidden rounded-md border bg-bg-primary/40',
+        isMyVote ? 'border-accent-clay/50' : 'border-border-subtle',
+      )}
+    >
       <div
         className={cn(
           'absolute inset-y-0 left-0 transition-[width]',
@@ -125,9 +131,22 @@ function ResultBar({ text, pct, votes, isMyVote }: ResultBarProps) {
         style={{ width: `${pct}%` }}
         aria-hidden
       />
-      <div className="relative flex items-center justify-between gap-2 px-2.5 py-1.5 text-[12.5px]">
-        <span className={cn('truncate', isMyVote ? 'text-text-strong font-medium' : 'text-text-primary')}>
-          {text}
+      <div className="relative flex items-center justify-between gap-2 px-2.5 py-2 text-[12.5px]">
+        <span
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-1.5',
+            isMyVote ? 'font-medium text-text-strong' : 'text-text-primary',
+          )}
+        >
+          {isMyVote && (
+            <span
+              aria-label="Ваш выбор"
+              className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-accent-clay text-[9px] font-bold text-white"
+            >
+              ✓
+            </span>
+          )}
+          <span className="truncate">{text}</span>
         </span>
         <span className="shrink-0 tabular-nums text-[11px] text-text-muted">
           {votes} ({pct}%)

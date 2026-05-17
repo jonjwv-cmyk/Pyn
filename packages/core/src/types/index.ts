@@ -90,6 +90,12 @@ export interface NewsStats {
 export interface PollVoter extends NewsViewerSummary {
   /** ID выбранных опций (multi-vote опросы — будущий case). */
   votedOptionIds: number[];
+  /**
+   * Готовые тексты выбранных опций. Server (`handleGetPollStats`) их уже
+   * JOIN'ит и шлёт в `selected_option_texts` — нам не нужно поднимать
+   * вторичный lookup в `poll.options`.
+   */
+  votedOptionTexts: string[];
   votedAtLabel: string;
 }
 
@@ -97,4 +103,11 @@ export interface PollVoter extends NewsViewerSummary {
 export interface PollStats {
   voters: PollVoter[];
   notVoters: NewsViewerSummary[];
+  /**
+   * Карта `optionId → text`. Заполняется из `getPollStats` response
+   * (server отдаёт options отдельно от news.poll). Нужна для рендера
+   * "за что проголосовал" в VoterRow — `news.poll.options` иногда приходит
+   * пустым или с другими id'шками, поэтому stats — авторитативный источник.
+   */
+  optionsById: Record<number, string>;
 }

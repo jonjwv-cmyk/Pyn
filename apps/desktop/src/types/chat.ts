@@ -39,6 +39,28 @@ export interface ChatMessageItem {
   text: string;
   /** "12:34" — локальное время отправки. */
   time: string;
+  /**
+   * Сырая server-метка `YYYY-MM-DD HH:MM:SS` (Yek-локаль). Нужна для группировки
+   * сообщений по дням (date-разделители «Сегодня» / «Вчера» / «5 мая»).
+   * `time` уже отформатированная строка — для разделителей не годится.
+   */
+  createdAt?: string;
+  /**
+   * Прочитано ли сообщение получателем. Используется для Telegram-style
+   * read-receipts на own-bubbles: одна галочка = доставлено, две = прочитано.
+   * Заполняется только для own-сообщений (для чужих read-receipt не имеет
+   * смысла — мы и так их прочитали).
+   */
+  isRead?: boolean;
+  /**
+   * Если сообщение — reply на другое, здесь preview (автор + первые 120 chars
+   * текста). Server (`attachReplyPreview`) сам приgrab'ает из БД.
+   */
+  replyPreview?: {
+    id: number;
+    senderName: string;
+    text: string;
+  };
   /** true — сообщение текущего пользователя (справа), false — собеседника (слева). */
   isOwn: boolean;
   /** Файлы/изображения/видео, decrypt'ятся клиентом через blob_key+nonce. */

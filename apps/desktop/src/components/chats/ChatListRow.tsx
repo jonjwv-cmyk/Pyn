@@ -36,6 +36,7 @@ export function ChatListRow({ partner, active, onClick }: ChatListRowProps) {
         <Avatar
           initials={partner.initials}
           size={32}
+          login={partner.id}
           avatarUrl={partner.avatarUrl}
           avatarBlobKey={partner.avatarBlobKey}
           avatarBlobNonce={partner.avatarBlobNonce}

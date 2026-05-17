@@ -12,7 +12,10 @@
  */
 export * from './api';
 export * from './auth';
+export * from './avatar-colors';
 export * from './endpoints';
 export * from './crypto';
+export * from './mol-query';
+export * from './reactions';
 export * from './types';
 export * from './store';

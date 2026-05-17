@@ -14,6 +14,12 @@ interface PinnedPillProps {
   onVote?: (newsId: number, optionId: number) => void;
   onTogglePin?: (newsId: number) => void;
   onDelete?: (newsId: number) => void;
+  /**
+   * Перенести скролл ленты к указанной новости. Click на body pill'а
+   * (label «Новость» / «Опрос») триггерит это; chevron'ом ниже остаётся
+   * inline-раскрытие самого пилла.
+   */
+  onJumpToNews?: (newsId: number) => void;
 }
 
 /**
@@ -32,6 +38,7 @@ export function PinnedPill({
   onVote,
   onTogglePin,
   onDelete,
+  onJumpToNews,
 }: PinnedPillProps) {
   const [expanded, setExpanded] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
@@ -50,8 +57,12 @@ export function PinnedPill({
 
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left outline-none"
+          onClick={() => onJumpToNews?.(news.id)}
+          aria-label={`Перейти к: ${kindLabel}`}
+          className={cn(
+            'flex min-w-0 flex-1 items-baseline gap-1.5 text-left outline-none',
+            'rounded transition-colors hover:text-accent-clay',
+          )}
         >
           <span className="shrink-0 text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
             {kindLabel}
@@ -89,9 +100,17 @@ export function PinnedPill({
       </div>
 
       {expanded && (
-        <div className="flex flex-col gap-3 border-t border-border-subtle px-4 pb-3.5 pt-3">
+        // `group/news` нужен ReactionsRow внутри NewsCardBody — иначе plus-
+        // кнопка (`opacity-0 group-hover/news:opacity-100`) никогда не
+        // показывается в expanded pinned (мы не в NewsCard который сам group).
+        <div className="group/news flex flex-col gap-3 border-t border-border-subtle px-4 pb-3.5 pt-3">
           <SenderRow news={news} />
-          <NewsCardBody news={news} onReact={onReact} onVote={onVote} />
+          <NewsCardBody
+            news={news}
+            currentUserRole={currentUserRole}
+            onReact={onReact}
+            onVote={onVote}
+          />
         </div>
       )}
 
@@ -136,6 +155,7 @@ function SenderRow({ news }: SenderRowProps) {
         <Avatar
           initials={news.senderInitials}
           size={26}
+          login={news.senderLogin}
           avatarUrl={news.senderAvatarUrl}
           avatarBlobKey={news.senderAvatarBlobKey}
           avatarBlobNonce={news.senderAvatarBlobNonce}

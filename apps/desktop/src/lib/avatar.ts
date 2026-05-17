@@ -24,6 +24,27 @@ function cacheKey(url: string, keyB64: string): string {
 }
 
 /**
+ * Полная очистка in-memory кэша расшифрованных blob'ов. Вызывается на
+ * logout — гарантирует, что blob URLs предыдущего юзера не «протекут» в
+ * сессию следующего (даже если URL avatar'а совпадает — например один и
+ * тот же юзер логинится после logout).
+ *
+ * `URL.revokeObjectURL` освобождает память; новые `URL.createObjectURL`
+ * после login создадут fresh URLs.
+ */
+export function clearAvatarCache(): void {
+  for (const blobUrl of cache.values()) {
+    try {
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      /* revoke errors — silent (URL might already be invalid) */
+    }
+  }
+  cache.clear();
+  inflight.clear();
+}
+
+/**
  * Stage 11 active: `api.otlhelper.com` резолвится через DNS override на VPS IP
  * + TLS pin в `electron/network/tls.ts`. Host rewrite не нужен — URL'ы от
  * сервера приходят на api.otlhelper.com и работают через main process'овый

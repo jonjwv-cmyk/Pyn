@@ -6,7 +6,7 @@ import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatFullYek } from '@/lib/format-time';
 import { computeInitials } from '@/lib/initials';
-import { useUsersStore } from '@/lib/stores';
+import { useStatsStore, useUsersStore } from '@/lib/stores';
 import {
   getNewsReaders,
   getPollStats,
@@ -33,8 +33,21 @@ interface NewsStatsDialogProps {
  * Запросы async на open dialog. Permission: admin-only (сервер enforce'ит).
  */
 export function NewsStatsDialog({ news, open, onOpenChange }: NewsStatsDialogProps) {
-  const [newsStats, setNewsStats] = useState<NewsStats | null>(null);
-  const [pollStats, setPollStats] = useState<PollStats | null>(null);
+  // Cache-first: при open берём cached snapshot из store, UI рендерит мгновенно.
+  // Параллельно идёт silent fetch — если данные изменились, swap'ятся без
+  // мигания «Загрузка». WS `news_update` инвалидирует кеш → следующий open
+  // fetch'ит свежий. Loading-индикатор показываем только если кеша вообще нет.
+  const cachedNewsStats = useStatsStore((s) =>
+    news.kind === 'news' ? s.newsReadersByMessageId[news.id] ?? null : null,
+  );
+  const cachedPollStats = useStatsStore((s) =>
+    news.kind === 'poll' && news.poll ? s.pollStatsByPollId[news.poll.id] ?? null : null,
+  );
+  const setStatsReaders = useStatsStore((s) => s.setNewsReaders);
+  const setStatsPoll = useStatsStore((s) => s.setPollStats);
+
+  const [newsStats, setNewsStats] = useState<NewsStats | null>(cachedNewsStats);
+  const [pollStats, setPollStats] = useState<PollStats | null>(cachedPollStats);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,28 +65,43 @@ export function NewsStatsDialog({ news, open, onOpenChange }: NewsStatsDialogPro
     return map;
   }, [users]);
 
+  // При open — синхронно подменяем local state на cached snapshot, чтобы UI
+  // моментально показал известное и не мигал «Загрузка». Loading включаем
+  // только когда кеша вообще нет (первый open).
   useEffect(() => {
     if (!open) return;
-    setNewsStats(null);
-    setPollStats(null);
+    setNewsStats(cachedNewsStats);
+    setPollStats(cachedPollStats);
     setError(null);
-    setLoading(true);
+    const hasCached =
+      (news.kind === 'news' && cachedNewsStats !== null) ||
+      (news.kind === 'poll' && cachedPollStats !== null);
+    setLoading(!hasCached);
 
     let cancelled = false;
     (async () => {
       try {
         if (news.kind === 'poll' && news.poll) {
-          const stats = await getPollStats(api, news.poll.id);
+          const wire = await getPollStats(api, news.poll.id);
           if (cancelled) return;
-          setPollStats(wireToPollStats(stats));
+          const stats = wireToPollStats(wire);
+          setPollStats(stats);
+          setStatsPoll(news.poll.id, stats);
         } else {
-          const stats = await getNewsReaders(api, news.id);
+          const wire = await getNewsReaders(api, news.id);
           if (cancelled) return;
-          setNewsStats(wireToNewsStats(stats));
+          const stats = wireToNewsStats(wire);
+          setNewsStats(stats);
+          setStatsReaders(news.id, stats);
         }
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Не удалось загрузить статистику');
+        // Ошибку показываем только если кеша не было (первый load). Если был
+        // cached snapshot — оставляем его и тихо логируем, чтобы UI не мигал
+        // на flaky-сетях.
+        if (!hasCached) {
+          setError(err instanceof Error ? err.message : 'Не удалось загрузить статистику');
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -82,6 +110,7 @@ export function NewsStatsDialog({ news, open, onOpenChange }: NewsStatsDialogPro
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, news.id, news.kind, news.poll?.id]);
 
   return (
@@ -124,7 +153,7 @@ export function NewsStatsDialog({ news, open, onOpenChange }: NewsStatsDialogPro
           </header>
 
           <div className="flex-1 overflow-y-auto px-5 py-4">
-            {loading && <EmptyHint>Загрузка…</EmptyHint>}
+            {loading && <StatsSkeleton kind={news.kind} />}
             {!loading && error !== null && (
               <p className="py-4 text-center text-[12.5px] text-danger">{error}</p>
             )}
@@ -164,16 +193,52 @@ function wireToNewsStats(wire: Awaited<ReturnType<typeof getNewsReaders>>): News
 }
 
 function wireToPollStats(wire: Awaited<ReturnType<typeof getPollStats>>): PollStats {
+  const optionsById: Record<number, string> = {};
+  for (const o of wire.options) {
+    // Поддерживаем оба именования полей — старое (`option_text` из БД) и новое
+    // (`text`). Берём то, что не пустое.
+    const text = o.option_text ?? o.text ?? '';
+    if (text) optionsById[o.id] = text;
+  }
+  // Диагностический лог — помогает понять что пришло из сервера, если в UI
+  // вариант голоса так и не отображается. Видно только в DevTools, в проде
+  // мусора не плодит (тип debug).
+  window.pyn?.debugLog?.(
+    'poll-stats',
+    `options=${JSON.stringify(optionsById)} voters=${wire.voters.length}` +
+      (wire.voters[0]
+        ? ` first=${JSON.stringify({
+            login: wire.voters[0].user_login,
+            ids: wire.voters[0].selected_option_ids,
+            texts: wire.voters[0].selected_option_texts,
+            legacy: wire.voters[0].option_id,
+          })}`
+        : ''),
+  );
   return {
-    voters: wire.voters.map(
-      (v): PollVoter => ({
+    voters: wire.voters.map((v): PollVoter => {
+      const ids = v.selected_option_ids ?? (v.option_id ? [v.option_id] : []);
+      // Источник text'a в порядке приоритета:
+      //   1. server `selected_option_texts` (готовое из БД)
+      //   2. optionsById lookup по ids
+      // Если оба пусты — оставляем texts: []; VoterRow покажет «Проголосовал»
+      // как graceful fallback, не #id (юзер просил без #id).
+      let texts: string[] = [];
+      if (v.selected_option_texts && v.selected_option_texts.length > 0) {
+        texts = v.selected_option_texts.filter((t) => t && t.length > 0);
+      }
+      if (texts.length === 0) {
+        texts = ids.map((id) => optionsById[id] ?? '').filter((t) => t.length > 0);
+      }
+      return {
         userId: v.user_login,
         name: v.full_name ?? v.user_login,
         initials: computeInitials(v.full_name ?? v.user_login),
-        votedOptionIds: [v.option_id],
+        votedOptionIds: ids,
+        votedOptionTexts: texts,
         votedAtLabel: v.voted_at ? formatShortDate(v.voted_at) : '',
-      }),
-    ),
+      };
+    }),
     notVoters: wire.nonVoters.map(
       (u): NewsViewerSummary => ({
         userId: u.user_login,
@@ -181,6 +246,7 @@ function wireToPollStats(wire: Awaited<ReturnType<typeof getPollStats>>): PollSt
         initials: computeInitials(u.full_name ?? u.user_login),
       }),
     ),
+    optionsById,
   };
 }
 
@@ -243,6 +309,7 @@ function ReaderRow({ reader, usersByLogin }: ReaderRowProps) {
       <Avatar
         initials={reader.initials}
         size={26}
+        login={reader.userId}
         avatarUrl={u?.avatarUrl}
         avatarBlobKey={u?.avatarBlobKey}
         avatarBlobNonce={u?.avatarBlobNonce}
@@ -271,8 +338,15 @@ function PollView({ poll, stats, usersByLogin }: PollViewProps) {
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <h3 className="text-[13.5px] font-medium leading-snug text-text-strong">{poll.question}</h3>
-        {poll.description && <p className="mt-1 text-[12px] text-text-muted">{poll.description}</p>}
+        <h3 className="text-[13.5px] font-medium leading-snug text-text-strong">
+          {poll.question}
+        </h3>
+        {/* Description показываем только если реально отличается от question'a —
+            server обычно шлёт их одинаковыми (см. Kotlin PollBuilderSheet),
+            и дублирование тела вверху диалога визуально шумит. */}
+        {poll.description && poll.description.trim() !== poll.question.trim() && (
+          <p className="mt-1 text-[12px] text-text-muted">{poll.description}</p>
+        )}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -280,10 +354,16 @@ function PollView({ poll, stats, usersByLogin }: PollViewProps) {
           const pct = total > 0 ? Math.round((o.votesCount / total) * 100) : 0;
           const isMyVote = o.id === poll.myVoteOptionId;
           return (
-            <div key={o.id} className="relative overflow-hidden rounded-md">
+            <div
+              key={o.id}
+              className={cn(
+                'relative overflow-hidden rounded-md border bg-bg-primary/40',
+                isMyVote ? 'border-accent-clay/50' : 'border-border-subtle',
+              )}
+            >
               <div
                 className={cn(
-                  'absolute inset-y-0 left-0',
+                  'absolute inset-y-0 left-0 transition-[width]',
                   isMyVote ? 'bg-accent-clay-bg' : 'bg-bg-hover',
                 )}
                 style={{ width: `${pct}%` }}
@@ -292,11 +372,19 @@ function PollView({ poll, stats, usersByLogin }: PollViewProps) {
               <div className="relative flex items-center justify-between gap-2 px-3 py-2 text-[12.5px]">
                 <span
                   className={cn(
-                    'truncate',
+                    'flex min-w-0 flex-1 items-center gap-1.5',
                     isMyVote ? 'font-medium text-text-strong' : 'text-text-primary',
                   )}
                 >
-                  {o.text}
+                  {isMyVote && (
+                    <span
+                      aria-label="Ваш выбор"
+                      className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-accent-clay text-[9px] font-bold text-white"
+                    >
+                      ✓
+                    </span>
+                  )}
+                  <span className="truncate">{o.text}</span>
                 </span>
                 <span className="shrink-0 tabular-nums text-[11px] text-text-muted">
                   {o.votesCount} ({pct}%)
@@ -318,7 +406,13 @@ function PollView({ poll, stats, usersByLogin }: PollViewProps) {
           <SubsectionEmpty>Ещё никто не проголосовал.</SubsectionEmpty>
         ) : (
           stats.voters.map((v) => (
-            <VoterRow key={v.userId} voter={v} poll={poll} usersByLogin={usersByLogin} />
+            <VoterRow
+              key={v.userId}
+              voter={v}
+              poll={poll}
+              optionsById={stats.optionsById}
+              usersByLogin={usersByLogin}
+            />
           ))
         )}
       </SubSection>
@@ -339,14 +433,25 @@ function PollView({ poll, stats, usersByLogin }: PollViewProps) {
 interface VoterRowProps {
   voter: PollVoter;
   poll: Poll;
+  /** `optionId → text` lookup из stats response (авторитативный источник). */
+  optionsById: Record<number, string>;
   usersByLogin: UsersByLogin;
 }
 
-function VoterRow({ voter, poll, usersByLogin }: VoterRowProps) {
-  const optionTexts = voter.votedOptionIds
-    .map((id) => poll.options.find((o) => o.id === id)?.text)
-    .filter((t): t is string => Boolean(t));
+function VoterRow({ voter, poll, optionsById, usersByLogin }: VoterRowProps) {
+  // Каскад: votedOptionTexts → optionsById → news.poll.options
+  const optionTexts =
+    voter.votedOptionTexts.length > 0
+      ? voter.votedOptionTexts
+      : voter.votedOptionIds
+          .map(
+            (id) => optionsById[id] || poll.options.find((o) => o.id === id)?.text || '',
+          )
+          .filter((t) => t.length > 0);
   const u = usersByLogin[voter.userId];
+  // Если каскад не сработал — показываем «Проголосовал» (без #id, который
+  // юзеру не нравится). По крайней мере viewer видит ЧТО юзер участвовал.
+  const choiceLabel = optionTexts.length > 0 ? optionTexts.join(', ') : 'Проголосовал';
 
   return (
     <div className="flex items-center gap-3 py-1">
@@ -354,13 +459,18 @@ function VoterRow({ voter, poll, usersByLogin }: VoterRowProps) {
       <Avatar
         initials={voter.initials}
         size={26}
+        login={voter.userId}
         avatarUrl={u?.avatarUrl}
         avatarBlobKey={u?.avatarBlobKey}
         avatarBlobNonce={u?.avatarBlobNonce}
       />
       <span className="flex min-w-0 flex-1 flex-col leading-tight">
         <span className="truncate text-[13px] text-text-primary">{voter.name}</span>
-        <span className="truncate text-[11px] text-text-muted">{optionTexts.join(', ')}</span>
+        {choiceLabel && (
+          <span className="truncate text-[11px] font-medium text-accent-clay">
+            {choiceLabel}
+          </span>
+        )}
       </span>
       <span className="shrink-0 text-[11px] tabular-nums text-text-muted">{voter.votedAtLabel}</span>
     </div>
@@ -389,6 +499,7 @@ function PersonRow({ person, muted, usersByLogin }: PersonRowProps) {
       <Avatar
         initials={person.initials}
         size={26}
+        login={person.userId}
         avatarUrl={u?.avatarUrl}
         avatarBlobKey={u?.avatarBlobKey}
         avatarBlobNonce={u?.avatarBlobNonce}
@@ -429,4 +540,36 @@ function SubsectionEmpty({ children }: { children: React.ReactNode }) {
 
 function EmptyHint({ children }: { children: React.ReactNode }) {
   return <p className="py-4 text-center text-[12.5px] text-text-muted">{children}</p>;
+}
+
+/**
+ * Skeleton placeholder вместо «Загрузка…» — пульсирующие серые блоки,
+ * имитирующие реальную structure (заголовок + список avatar+name+time).
+ * Для poll'а — дополнительно imitate bar-graph рядов опций.
+ */
+function StatsSkeleton({ kind }: { kind: 'news' | 'poll' }) {
+  return (
+    <div className="flex animate-pulse flex-col gap-5">
+      {kind === 'poll' && (
+        <div className="flex flex-col gap-2">
+          <div className="h-3 w-3/4 rounded bg-bg-hover" />
+          <div className="flex flex-col gap-1.5">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-7 rounded-md bg-bg-hover/70" />
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="flex flex-col gap-3">
+        <div className="h-2.5 w-1/3 rounded bg-bg-hover" />
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="flex items-center gap-3">
+            <div className="h-[26px] w-[26px] rounded-full bg-bg-hover" />
+            <div className="h-2.5 flex-1 rounded bg-bg-hover/70" />
+            <div className="h-2 w-10 rounded bg-bg-hover/60" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }

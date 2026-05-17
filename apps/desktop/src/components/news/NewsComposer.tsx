@@ -1,8 +1,26 @@
-import { forwardRef, useRef, useState } from 'react';
-import { ArrowUp, Clock, FileText, Image as ImageIcon, Paperclip, X } from 'lucide-react';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
+import { ArrowUp, Clock, Paperclip, X } from 'lucide-react';
+import { ComposerAttachmentTile } from '@/components/ui/ComposerAttachmentTile';
+import { EmojiPickerButton } from '@/components/ui/EmojiPickerButton';
 import { cn } from '@/lib/cn';
+import { insertAtCursor } from '@/lib/insert-at-cursor';
 import { ATTACHMENT_MAX_SIZE, type PendingAttachment } from '@/types/chat';
 import { NewsScheduleDialog } from './NewsScheduleDialog';
+
+/**
+ * Imperative handle для composer'a — родитель (NewsFeed) вызывает `addFiles`
+ * при drag-and-drop в зону ленты, и composer обрабатывает их как через
+ * file picker.
+ */
+export interface NewsComposerHandle {
+  addFiles: (files: FileList | File[]) => void;
+}
 
 interface NewsComposerProps {
   /**
@@ -14,7 +32,22 @@ interface NewsComposerProps {
     attachments: PendingAttachment[],
     scheduledAt: Date | null,
   ) => void;
+  /**
+   * Восстановленный с сервера draft текст. Применяется только если юзер ещё
+   * не печатал — чтобы не затирать ввод когда асинхронный load прилетает после
+   * первого keystroke'a. Изменение prop'а после публикации (от родителя ←
+   * server clear) → состояние не возвращается, потому что text уже пустой.
+   */
+  initialText?: string;
+  /**
+   * Debounced (по типу 1.5с) колбэк сохранения черновика на сервер. Также
+   * вызывается с `''` при успешной публикации — чтобы серверная запись
+   * удалилась (server трактует пустой text как DELETE).
+   */
+  onDraftSave?: (text: string) => void;
 }
+
+const DRAFT_SAVE_DEBOUNCE_MS = 1500;
 
 const MAX_TEXTAREA_HEIGHT = 220;
 
@@ -30,7 +63,8 @@ const MAX_TEXTAREA_HEIGHT = 220;
  * Меню скрепки и all-around layout идентичны chat-композеру — DRY через
  * ChatAttachmentMenu. Кнопка clock'a выделена accent-clay когда время выбрано.
  */
-export function NewsComposer({ onPublish }: NewsComposerProps) {
+export const NewsComposer = forwardRef<NewsComposerHandle, NewsComposerProps>(
+function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [scheduledAt, setScheduledAt] = useState<Date | null>(null);
@@ -38,14 +72,67 @@ export function NewsComposer({ onPublish }: NewsComposerProps) {
   const [attachError, setAttachError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const draftDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * `true` после первого keystroke. Защищает от перезаписи свежего ввода
+   * поздно прилетевшим asynchronous `initialText` (server fetch может
+   * завершиться через секунду; если юзер уже начал печатать — сохраняем).
+   */
+  const userTypedRef = useRef(false);
 
   const trimmed = text.trim();
   const canPublish = trimmed.length > 0 || attachments.length > 0;
+  /**
+   * Server-side runScheduledCron при rollout'е "созревшей" записи в
+   * app_messages игнорирует `attachments` (см. handlers-drafts.js — INSERT
+   * только text/priority). Поэтому scheduled+attachments недопустимы — иначе
+   * юзер потеряет файлы тихо. Disable Clock когда есть прикреплённые файлы.
+   */
+  const canSchedule = attachments.length === 0;
 
-  const handleFilesPicked = async (files: FileList | null): Promise<void> => {
-    if (!files || files.length === 0) return;
+  // Hydrate из server draft (приходит после первого render с пустым text'ом).
+  // Если юзер уже печатал — игнорируем; иначе ставим draft в state и пересчитываем
+  // высоту textarea (для multi-line черновика).
+  useEffect(() => {
+    if (!initialText || userTypedRef.current) return;
+    if (text.length > 0) return;
+    setText(initialText);
+    queueMicrotask(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.style.height = 'auto';
+        el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+      }
+    });
+    // text/textareaRef intentionally not in deps — нам важен только initialText
+    // changeг (load с сервера); local text changes обрабатываются в onChange.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialText]);
+
+  // Cleanup pending debounce'a при unmount'е, чтобы не сохранить устаревший
+  // draft после ухода со страницы.
+  useEffect(() => {
+    return () => {
+      if (draftDebounceRef.current) clearTimeout(draftDebounceRef.current);
+    };
+  }, []);
+
+  /**
+   * Сбросить scheduledAt когда юзер прикрепил файл — server scheduled flow
+   * не передаёт attachments в final message, тихая потеря недопустима.
+   */
+  useEffect(() => {
+    if (attachments.length > 0 && scheduledAt !== null) {
+      setScheduledAt(null);
+    }
+  }, [attachments.length, scheduledAt]);
+
+  const handleFilesPicked = async (files: FileList | File[] | null): Promise<void> => {
+    if (!files) return;
+    const arr = files instanceof FileList ? Array.from(files) : files;
+    if (arr.length === 0) return;
     setAttachError(null);
-    for (const file of Array.from(files)) {
+    for (const file of arr) {
       if (file.size > ATTACHMENT_MAX_SIZE) {
         setAttachError(`«${file.name}» больше 20 МБ`);
         continue;
@@ -71,8 +158,47 @@ export function NewsComposer({ onPublish }: NewsComposerProps) {
     }
   };
 
+  // Imperative handle — родитель вызывает `addFiles` на drag-drop'е.
+  useImperativeHandle(ref, () => ({
+    addFiles: (files) => {
+      void handleFilesPicked(files);
+    },
+  }));
+
   const removeAttachment = (id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
+  };
+
+  /**
+   * Открыть file picker. Server сам определит kind (image/video/gif/file) по
+   * MIME — клиенту не нужно фильтровать заранее.
+   */
+  const triggerPick = (): void => {
+    fileInputRef.current?.click();
+  };
+
+  const handleEmojiPick = (emoji: string): void => {
+    const el = textareaRef.current;
+    if (!el) {
+      // Fallback: добавить в конец, как было.
+      setText((prev) => prev + emoji);
+      return;
+    }
+    const next = insertAtCursor(el, emoji);
+    setText(next);
+    userTypedRef.current = true;
+    // Re-height после вставки.
+    queueMicrotask(() => {
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+    });
+    if (onDraftSave) {
+      if (draftDebounceRef.current) clearTimeout(draftDebounceRef.current);
+      draftDebounceRef.current = setTimeout(() => {
+        onDraftSave(textareaRef.current?.value ?? '');
+        draftDebounceRef.current = null;
+      }, DRAFT_SAVE_DEBOUNCE_MS);
+    }
   };
 
   const handlePublish = () => {
@@ -83,27 +209,46 @@ export function NewsComposer({ onPublish }: NewsComposerProps) {
     setScheduledAt(null);
     setAttachError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    // Очистить серверный draft — мы публикуем (или планируем) этот текст,
+    // он больше не должен всплывать при следующем открытии Pyn'a.
+    if (draftDebounceRef.current) {
+      clearTimeout(draftDebounceRef.current);
+      draftDebounceRef.current = null;
+    }
+    userTypedRef.current = false;
+    onDraftSave?.('');
   };
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setText(e.target.value);
+    const next = e.target.value;
+    setText(next);
+    userTypedRef.current = true;
     const el = e.target;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+    if (onDraftSave) {
+      if (draftDebounceRef.current) clearTimeout(draftDebounceRef.current);
+      draftDebounceRef.current = setTimeout(() => {
+        onDraftSave(next);
+        draftDebounceRef.current = null;
+      }, DRAFT_SAVE_DEBOUNCE_MS);
+    }
   };
 
   return (
-    <div className="shrink-0 px-4 pb-4 pt-2">
+    <div className="pointer-events-none px-4 pb-3 pt-1">
       <div
         className={cn(
-          'rounded-xl border border-border-default bg-bg-elevated',
+          // pill БЕЗ backdrop-blur — он на parent layer (NewsFeed).
+          'pointer-events-auto rounded-xl border border-border-default/60 bg-bg-elevated/45',
+          'shadow-lg shadow-bg-deep/30',
           'transition-colors focus-within:border-border-strong',
         )}
       >
         {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 border-b border-border-subtle px-2 pb-2 pt-2">
+          <div className="flex flex-wrap gap-2 border-b border-border-subtle px-2.5 pb-2.5 pt-2.5">
             {attachments.map((att) => (
-              <AttachmentChip
+              <ComposerAttachmentTile
                 key={att.id}
                 attachment={att}
                 onRemove={() => removeAttachment(att.id)}
@@ -169,12 +314,18 @@ export function NewsComposer({ onPublish }: NewsComposerProps) {
           <ToolbarButton
             icon={Paperclip}
             label="Прикрепить файл"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={triggerPick}
           />
+          <EmojiPickerButton onPick={handleEmojiPick} />
           <ToolbarButton
             icon={Clock}
-            label="Отложить публикацию"
+            label={
+              canSchedule
+                ? 'Отложить публикацию'
+                : 'Отложенная отправка с файлами не поддерживается'
+            }
             active={scheduledAt !== null}
+            disabled={!canSchedule}
             onClick={() => setScheduleOpen(true)}
           />
 
@@ -209,7 +360,7 @@ export function NewsComposer({ onPublish }: NewsComposerProps) {
       />
     </div>
   );
-}
+});
 
 interface ToolbarButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   icon: typeof Paperclip;
@@ -234,9 +385,10 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(
         {...rest}
         className={cn(
           'flex h-7 w-7 shrink-0 items-center justify-center rounded-md outline-none transition-colors',
+          'disabled:cursor-not-allowed disabled:opacity-40',
           active
             ? 'bg-accent-clay-bg text-accent-clay'
-            : 'text-text-muted hover:bg-bg-hover hover:text-text-strong',
+            : 'text-text-muted enabled:hover:bg-bg-hover enabled:hover:text-text-strong',
           'data-[state=open]:bg-bg-hover data-[state=open]:text-text-strong',
           className,
         )}
@@ -271,36 +423,6 @@ function SendButton({ enabled, onClick }: SendButtonProps) {
   );
 }
 
-interface AttachmentChipProps {
-  attachment: PendingAttachment;
-  onRemove: () => void;
-}
-
-function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
-  const Icon = attachment.category === 'image' ? ImageIcon : FileText;
-  return (
-    <span
-      className={cn(
-        'inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-lg',
-        'border border-border-default bg-bg-primary pl-1.5 pr-0.5',
-      )}
-    >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-accent-clay" strokeWidth={1.75} />
-      <span className="truncate text-[12px] text-text-primary">{attachment.name}</span>
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label="Удалить вложение"
-        className={cn(
-          'flex h-5 w-5 shrink-0 items-center justify-center rounded',
-          'text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong',
-        )}
-      >
-        <X className="h-3.5 w-3.5" strokeWidth={1.75} />
-      </button>
-    </span>
-  );
-}
 
 // ── helpers ───────────────────────────────────────────────────────────────
 

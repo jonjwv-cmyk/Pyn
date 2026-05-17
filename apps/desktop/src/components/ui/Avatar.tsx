@@ -1,3 +1,4 @@
+import { avatarColorForLogin } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import { useDecryptedBlob } from '@/lib/avatar';
 
@@ -13,14 +14,20 @@ interface AvatarProps {
   avatarBlobKey?: string;
   /** Base64 12-byte nonce (sanity check vs envelope). */
   avatarBlobNonce?: string;
+  /**
+   * Login юзера — используется как seed для детерминированного цвета фона
+   * (когда аватарка не загружена). Один и тот же login всегда даёт один и
+   * тот же цвет, 1:1 c Kotlin `AvatarColors` палитрой. Если не передан —
+   * fallback на accent-clay.
+   */
+  login?: string;
 }
 
 /**
  * Круглый аватар. Если есть `avatarUrl` + `avatarBlobKey` — пытается
  * расшифровать зашифрованный blob и показать `<img>`. Пока грузится или
- * при ошибке — fallback на инициалы.
- *
- * Используется в sidebar, conversation header, chat list rows, news cards и т.п.
+ * при ошибке — fallback на инициалы на фоне детерминированного цвета
+ * (по `login`) — как в Kotlin-клиенте OTLHelper2.
  */
 export function Avatar({
   initials,
@@ -29,6 +36,7 @@ export function Avatar({
   avatarUrl,
   avatarBlobKey,
   avatarBlobNonce,
+  login,
 }: AvatarProps) {
   const blobUrl = useDecryptedBlob(avatarUrl, avatarBlobKey, avatarBlobNonce);
 
@@ -43,14 +51,24 @@ export function Avatar({
     );
   }
 
+  // Цвет фона — детерминированный по login (Kotlin parity). Без login'a
+  // используем `accent-clay` как нейтральный fallback.
+  const bgColor = login ? avatarColorForLogin(login) : undefined;
+
   return (
     <span
       className={cn(
         'inline-flex shrink-0 items-center justify-center rounded-full',
-        'bg-accent-clay text-white font-medium select-none',
+        'text-white font-medium select-none',
+        bgColor ? '' : 'bg-accent-clay',
         className,
       )}
-      style={{ width: size, height: size, fontSize: Math.round(size * 0.38) }}
+      style={{
+        width: size,
+        height: size,
+        fontSize: Math.round(size * 0.38),
+        ...(bgColor ? { backgroundColor: bgColor } : {}),
+      }}
     >
       {initials.slice(0, 2).toUpperCase()}
     </span>

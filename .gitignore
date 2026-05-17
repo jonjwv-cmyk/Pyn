@@ -8,6 +8,15 @@ build/
 out/
 *.tsbuildinfo
 
+# Build resources — source SVG-логотип нужно держать в репо, генерируемые
+# иконки (.ico / .icns / .png) — нет, их собирает CI.
+!apps/desktop/build/
+!apps/desktop/build/icon.svg
+!apps/desktop/build/README.md
+apps/desktop/build/icon.ico
+apps/desktop/build/icon.icns
+apps/desktop/build/icon.png
+
 # Electron
 apps/desktop/dist-electron/
 apps/desktop/release/

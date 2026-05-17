@@ -89,10 +89,98 @@ export function formatFullYek(raw: string | undefined | null): string {
   return `${day} ${monthName} ${year}, ${time}`;
 }
 
+/**
+ * То же что `formatFullYek`, но принимает уже распарсенный `Date` (а не
+ * сырую серверную строку). Используется когда у нас на руках уже `Date`
+ * (например, scheduled publication picker отдаёт `Date`, не строку).
+ */
+export function formatDateFullYek(d: Date): string {
+  if (!d || Number.isNaN(d.getTime())) return '';
+  const { day, month, year } = yekParts(d);
+  const monthName = MONTHS_GEN[month] ?? '';
+  const time = TIME_FORMATTER.format(d);
+  const nowYear = yekParts(new Date()).year;
+  if (year === nowYear) {
+    return `${day} ${monthName}, ${time}`;
+  }
+  return `${day} ${monthName} ${year}, ${time}`;
+}
+
 /** Backward-compat алиасы — все указывают на единый формат. */
 export const formatRelativeYek = formatFullYek;
 export const formatChatListTimeYek = formatFullYek;
 export const formatDateTimeYek = formatFullYek;
+
+// ── Day grouping helpers (для date-разделителей в чате и ленте) ───────────
+
+const WEEKDAYS_RU = [
+  'Воскресенье',
+  'Понедельник',
+  'Вторник',
+  'Среда',
+  'Четверг',
+  'Пятница',
+  'Суббота',
+];
+
+/**
+ * Уникальный integer-ключ дня в Yek-календаре для сообщения. Сообщения с
+ * одинаковым ключом — в одной "пачке" под одним date-разделителем.
+ * Возвращает `null` если raw не парсится.
+ */
+export function yekDayKeyFor(raw: string | undefined | null): number | null {
+  const d = parseServerDate(raw);
+  if (!d) return null;
+  return yekDayKey(d);
+}
+
+/**
+ * Метка для date-разделителя в чате/ленте:
+ *   • Сегодня
+ *   • Вчера
+ *   • Прошедшие 6 дней → название дня недели ("Понедельник")
+ *   • В этом году → "5 мая"
+ *   • Раньше → "5 мая 2025"
+ *
+ * Используется и как inline-divider, и как floating sticky pill при scroll'е.
+ */
+export function formatDayDividerLabel(raw: string | undefined | null): string {
+  const d = parseServerDate(raw);
+  if (!d) return '';
+  const dayKey = yekDayKey(d);
+  const todayKey = yekDayKey(new Date());
+  const diff = todayKey - dayKey;
+  if (diff === 0) return 'Сегодня';
+  if (diff === 1) return 'Вчера';
+  if (diff >= 2 && diff < 7) {
+    const shifted = new Date(d.getTime() + YEK_OFFSET_MS);
+    return WEEKDAYS_RU[shifted.getUTCDay()] ?? '';
+  }
+  const { day, month, year } = yekParts(d);
+  const monthName = MONTHS_GEN[month] ?? '';
+  const nowYear = yekParts(new Date()).year;
+  if (year === nowYear) return `${day} ${monthName}`;
+  return `${day} ${monthName} ${year}`;
+}
+
+/**
+ * Длительность в формате "1ч 23м 45с" / "23м 45с" / "45с" — для счётчиков
+ * сессии/таймеров. Часы/минуты опускаются если равны нулю. Tabular-nums на
+ * UI стороне держит ширину неизменной при тике.
+ */
+export function formatDuration(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}ч ${pad2(m)}м ${pad2(s)}с`;
+  if (m > 0) return `${m}м ${pad2(s)}с`;
+  return `${s}с`;
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
 
 /**
  * `true` если с момента `raw` прошло больше `hours` часов (по Yek-calendar

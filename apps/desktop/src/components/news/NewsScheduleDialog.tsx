@@ -187,12 +187,24 @@ function CalendarBlock({
   onSelectDate,
 }: CalendarBlockProps) {
   const today = useMemo(() => stripTime(new Date()), []);
+  // Сегодняшний день в Yek-календаре (UTC+5). UI работает с local Date'ами
+  // но сравнение «прошлое/будущее» делаем по Yek-зоне, чтобы юзер в любой
+  // timezone видел одинаковое поведение (рабочее окно сервера тоже в Yek).
+  const todayYek = useMemo(() => yekTodayKey(), []);
   const days = useMemo(
     () => buildCalendarDays(viewYear, viewMonth),
     [viewYear, viewMonth],
   );
 
+  // Запрещаем переход на прошлые месяцы — server отвергнет любые scheduled
+  // в прошлом. UX-cue: prev-стрелка disabled когда мы уже в текущем месяце.
+  const atCurrentMonth =
+    viewYear === todayYek.y && viewMonth === todayYek.m;
+  const inPastMonth =
+    viewYear < todayYek.y || (viewYear === todayYek.y && viewMonth < todayYek.m);
+
   const goPrev = () => {
+    if (atCurrentMonth || inPastMonth) return;
     if (viewMonth === 0) onChangeView(viewYear - 1, 11);
     else onChangeView(viewYear, viewMonth - 1);
   };
@@ -204,7 +216,11 @@ function CalendarBlock({
   return (
     <div className="rounded-lg border border-border-subtle bg-bg-primary/40 p-3">
       <div className="mb-2 flex items-center justify-between">
-        <NavButton onClick={goPrev} ariaLabel="Предыдущий месяц">
+        <NavButton
+          onClick={goPrev}
+          disabled={atCurrentMonth}
+          ariaLabel="Предыдущий месяц"
+        >
           <ChevronLeft className="h-4 w-4" strokeWidth={1.75} />
         </NavButton>
         <span className="text-[13px] font-medium text-text-strong">
@@ -227,19 +243,30 @@ function CalendarBlock({
         {days.map(({ date, otherMonth }) => {
           const isToday = date.getTime() === today.getTime();
           const isSelected = isSameDay(date, selectedDate);
+          // Прошедшие дни (по Yek) недоступны для выбора — server всё равно
+          // отвергнет `send_at_not_in_future`. Навигацию на старые месяцы
+          // оставляем (как ask юзера) — там просто все ячейки disabled.
+          const isPast = compareYmd(dateToYmd(date), todayYek) < 0;
           return (
             <button
               key={date.toISOString()}
               type="button"
-              onClick={() => onSelectDate(stripTime(date))}
+              onClick={() => {
+                if (isPast) return;
+                onSelectDate(stripTime(date));
+              }}
+              disabled={isPast}
+              aria-disabled={isPast}
               className={cn(
                 'h-8 rounded-md text-[12.5px] tabular-nums outline-none transition-colors',
-                isSelected
-                  ? 'bg-accent-clay font-medium text-white'
-                  : otherMonth
-                    ? 'text-text-muted/40 hover:bg-bg-hover/40 hover:text-text-muted'
-                    : 'text-text-primary hover:bg-bg-hover hover:text-text-strong',
-                !isSelected && isToday && 'ring-1 ring-accent-clay/70',
+                isPast
+                  ? 'cursor-not-allowed text-text-muted/30'
+                  : isSelected
+                    ? 'bg-accent-clay font-medium text-white'
+                    : otherMonth
+                      ? 'text-text-muted/40 hover:bg-bg-hover/40 hover:text-text-muted'
+                      : 'text-text-primary hover:bg-bg-hover hover:text-text-strong',
+                !isPast && !isSelected && isToday && 'ring-1 ring-accent-clay/70',
               )}
             >
               {date.getDate()}
@@ -251,22 +278,54 @@ function CalendarBlock({
   );
 }
 
+// ── Yek-date helpers (для disable past) ────────────────────────────────────
+
+interface Ymd {
+  y: number;
+  m: number;
+  d: number;
+}
+
+/** (y, m, d) сегодняшнего дня по Екатеринбургу (UTC+5). */
+function yekTodayKey(): Ymd {
+  const yekNow = new Date(Date.now() + 5 * 3600 * 1000);
+  return {
+    y: yekNow.getUTCFullYear(),
+    m: yekNow.getUTCMonth(),
+    d: yekNow.getUTCDate(),
+  };
+}
+
+function dateToYmd(d: Date): Ymd {
+  return { y: d.getFullYear(), m: d.getMonth(), d: d.getDate() };
+}
+
+function compareYmd(a: Ymd, b: Ymd): number {
+  if (a.y !== b.y) return a.y - b.y;
+  if (a.m !== b.m) return a.m - b.m;
+  return a.d - b.d;
+}
+
 interface NavButtonProps {
   onClick: () => void;
   ariaLabel: string;
+  disabled?: boolean;
   children: React.ReactNode;
 }
 
-function NavButton({ onClick, ariaLabel, children }: NavButtonProps) {
+function NavButton({ onClick, ariaLabel, disabled, children }: NavButtonProps) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       aria-label={ariaLabel}
       className={cn(
         'flex h-7 w-7 items-center justify-center rounded-md',
-        'text-text-muted outline-none transition-colors',
-        'hover:bg-bg-hover hover:text-text-strong',
+        'outline-none transition-colors',
+        disabled
+          ? 'cursor-not-allowed text-text-muted/30'
+          : 'text-text-muted hover:bg-bg-hover hover:text-text-strong',
       )}
     >
       {children}

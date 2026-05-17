@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Clock, X } from 'lucide-react';
+import { EmojiPickerButton } from '@/components/ui/EmojiPickerButton';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { isOlderThanHours } from '@/lib/format-time';
+import { insertAtCursor } from '@/lib/insert-at-cursor';
 import { editMessage } from '@pyn/core';
 
 interface NewsEditDialogProps {
@@ -39,6 +41,16 @@ export function NewsEditDialog({
   const [text, setText] = useState(initialText);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const handleEmojiPick = (emoji: string): void => {
+    const el = textareaRef.current;
+    if (!el) {
+      setText((prev) => prev + emoji);
+      return;
+    }
+    setText(insertAtCursor(el, emoji));
+  };
 
   // Сбрасываем state при открытии.
   useEffect(() => {
@@ -142,19 +154,25 @@ export function NewsEditDialog({
           ) : (
             <>
               <div className="flex flex-col gap-3 px-5 py-4">
-                <textarea
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  placeholder="Текст сообщения…"
-                  rows={6}
-                  autoFocus
-                  className={cn(
-                    'w-full resize-y rounded-md border border-border-default bg-bg-primary px-3 py-2',
-                    'text-[13px] leading-relaxed text-text-strong outline-none transition-colors',
-                    'placeholder:text-text-muted',
-                    'focus:border-border-strong',
-                  )}
-                />
+                <div className="relative">
+                  <textarea
+                    ref={textareaRef}
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    placeholder="Текст сообщения…"
+                    rows={6}
+                    autoFocus
+                    className={cn(
+                      'w-full resize-y rounded-md border border-border-default bg-bg-primary px-3 py-2 pr-10',
+                      'text-[13px] leading-relaxed text-text-strong outline-none transition-colors',
+                      'placeholder:text-text-muted',
+                      'focus:border-border-strong',
+                    )}
+                  />
+                  <div className="absolute right-1.5 top-1.5">
+                    <EmojiPickerButton onPick={handleEmojiPick} />
+                  </div>
+                </div>
 
                 {error !== null && error !== 'edit_window_expired' && (
                   <div

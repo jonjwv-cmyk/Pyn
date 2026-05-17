@@ -74,10 +74,13 @@ export async function configureTls(ses: Session, _proxy: ProxyConfig | null): Pr
 /**
  * SHA-256 over SubjectPublicKeyInfo (DER) → base64. Совпадает с OpenSSL
  * `openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | base64`.
+ *
+ * Принимает либо PEM-строку (из Electron `setCertificateVerifyProc`), либо
+ * DER-Buffer (из Node `tls.TLSSocket.getPeerCertificate(true).raw`).
  */
-function computeSpkiSha256Base64(pem: string): string | null {
+export function computeSpkiSha256Base64(certData: string | Buffer): string | null {
   try {
-    const cert = new X509Certificate(pem);
+    const cert = new X509Certificate(certData);
     const spkiDer = cert.publicKey.export({ type: 'spki', format: 'der' });
     return createHash('sha256').update(spkiDer).digest('base64');
   } catch (err) {
@@ -88,7 +91,7 @@ function computeSpkiSha256Base64(pem: string): string | null {
 }
 
 /** Heuristic: cert intercepted Kaspersky / корп AV. Issuer обычно содержит "kaspersky" / "anti-virus" / "endpoint security". */
-function isCorporateAvCert(issuerName: string | undefined, subjectName: string | undefined): boolean {
+export function isCorporateAvCert(issuerName: string | undefined, subjectName: string | undefined): boolean {
   const text = `${issuerName ?? ''} ${subjectName ?? ''}`.toLowerCase();
   return /kaspersky|anti-virus|endpoint security|symantec|eset|bitdefender|trend micro/.test(text);
 }

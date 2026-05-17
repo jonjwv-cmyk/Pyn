@@ -25,8 +25,18 @@ const DECODER = new TextDecoder();
  *   • Token persistence — в `@pyn/core/auth/token` (stage 3).
  *   • Permission checks — в UI до вызова.
  */
+/**
+ * Глобальный hook, вызываемый при любом auth-failure error code'е от сервера
+ * (`unauthorized`, `token_expired`, `token_revoked`, `session_expired_window`,
+ * `desktop_kicked`, ...). App.tsx устанавливает его при mount → wipe session +
+ * setSession(null), чтобы любой component'у не нужно было лично ловить эти
+ * codes в каждом catch'е.
+ */
+export type AuthFailureHandler = (code: string) => void;
+
 export class ApiClient {
   private token: string | null = null;
+  private onAuthFailure: AuthFailureHandler | null = null;
 
   constructor(private readonly transport: ApiTransport) {}
 
@@ -36,6 +46,15 @@ export class ApiClient {
 
   getToken(): string | null {
     return this.token;
+  }
+
+  /**
+   * Устанавливает глобальный handler для auth-failure'ов. Вызывается каждый
+   * раз когда сервер вернул код, относящийся к истечению/отзыву session'а.
+   * Множественные вызовы — последний выигрывает (singleton-like).
+   */
+  setOnAuthFailure(handler: AuthFailureHandler | null): void {
+    this.onAuthFailure = handler;
   }
 
   /**
@@ -123,9 +142,42 @@ export class ApiClient {
     // 8. envelope.ok check.
     if (env.ok === false) {
       const code = env.error ?? 'unknown_error';
+      // Auth-failure'ы пробрасываем в глобальный handler — он wipe'нет
+      // session/cache и переведёт UI на LoginScreen. Делаем ДО throw, чтобы
+      // ловящие catch'и в компонентах могли продолжать стандартное error UX
+      // (тут уже не их забота восстанавливать auth).
+      if (this.onAuthFailure !== null && isAuthFailureCode(code)) {
+        try {
+          this.onAuthFailure(code);
+        } catch {
+          /* handler не должен ломать API call'еру */
+        }
+      }
       throw new ApiError(code, code, env);
     }
 
     return env as unknown as T;
   }
+}
+
+/**
+ * Список error code'ов от сервера, означающих что текущая session больше
+ * не валидна — нужно logout + LoginScreen. Дублирует логику клиентского
+ * `isAuthFailure` в App.tsx, но живёт в `@pyn/core` чтобы ApiClient мог
+ * сам триггерить handler.
+ */
+const AUTH_FAILURE_CODES = new Set([
+  'unauthorized',
+  'token_revoked',
+  'token_expired',
+  'token_invalid',
+  'session_expired_window',
+  'session_not_found',
+  'desktop_kicked',
+  'user_inactive',
+  'app_blocked',
+]);
+
+function isAuthFailureCode(code: string): boolean {
+  return AUTH_FAILURE_CODES.has(code);
 }

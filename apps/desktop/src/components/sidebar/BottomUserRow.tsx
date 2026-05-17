@@ -7,6 +7,12 @@ import type { PresenceState } from '@/types/presence';
 interface BottomUserRowProps {
   username: string;
   initials: string;
+  /** Login юзера — для детерминированного цвета фона (если нет аватарки). */
+  login?: string;
+  /** Зашифрованный URL аватарки (если есть) — server отдаёт в `me()`. */
+  avatarUrl?: string;
+  avatarBlobKey?: string;
+  avatarBlobNonce?: string;
   collapsed: boolean;
   /** Состояние присутствия текущего пользователя — точка на аватаре. */
   presence: PresenceState;
@@ -26,7 +32,21 @@ interface BottomUserRowProps {
  * на button (нужно для popover-anchoring).
  */
 export const BottomUserRow = forwardRef<HTMLButtonElement, BottomUserRowProps>(
-  function BottomUserRow({ username, initials, collapsed, presence, onClick, ...props }, ref) {
+  function BottomUserRow(
+    {
+      username,
+      initials,
+      login,
+      avatarUrl,
+      avatarBlobKey,
+      avatarBlobNonce,
+      collapsed,
+      presence,
+      onClick,
+      ...props
+    },
+    ref,
+  ) {
     return (
       <button
         ref={ref}
@@ -41,7 +61,14 @@ export const BottomUserRow = forwardRef<HTMLButtonElement, BottomUserRowProps>(
         {...props}
       >
         <span className="relative flex h-7 w-7 shrink-0 items-center justify-center">
-          <Avatar initials={initials} size={26} />
+          <Avatar
+            initials={initials}
+            size={26}
+            login={login}
+            avatarUrl={avatarUrl}
+            avatarBlobKey={avatarBlobKey}
+            avatarBlobNonce={avatarBlobNonce}
+          />
           <PresenceDot
             state={presence}
             size={9}

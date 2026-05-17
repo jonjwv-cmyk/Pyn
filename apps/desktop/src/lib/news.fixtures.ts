@@ -197,23 +197,25 @@ export const NEWS_STATS: Record<number, NewsStats> = {
 export const POLL_STATS: Record<number, PollStats> = {
   2: {
     voters: [
-      { userId: 'jon',     name: 'Jon',           initials: 'J',  votedOptionIds: [2], votedAtLabel: '15.05 14:00' },
-      { userId: 'mikhail', name: 'Михаил Петров', initials: 'МП', votedOptionIds: [1], votedAtLabel: '15.05 14:12' },
-      { userId: 'anna',    name: 'Анна Соколова', initials: 'АС', votedOptionIds: [2], votedAtLabel: '15.05 15:01' },
+      { userId: 'jon',     name: 'Jon',           initials: 'J',  votedOptionIds: [2], votedOptionTexts: [], votedAtLabel: '15.05 14:00' },
+      { userId: 'mikhail', name: 'Михаил Петров', initials: 'МП', votedOptionIds: [1], votedOptionTexts: [], votedAtLabel: '15.05 14:12' },
+      { userId: 'anna',    name: 'Анна Соколова', initials: 'АС', votedOptionIds: [2], votedOptionTexts: [], votedAtLabel: '15.05 15:01' },
     ],
     notVoters: [
       { userId: 'sergey', name: 'Сергей Кузнецов', initials: 'СК' },
     ],
+    optionsById: { 1: 'Да', 2: 'Нет' },
   },
   4: {
     voters: [
-      { userId: 'mikhail', name: 'Михаил Петров',    initials: 'МП', votedOptionIds: [3], votedAtLabel: '16.05 11:05' },
-      { userId: 'anna',    name: 'Анна Соколова',    initials: 'АС', votedOptionIds: [1], votedAtLabel: '16.05 11:15' },
-      { userId: 'dmitry',  name: 'Дмитрий Соловьёв', initials: 'ДС', votedOptionIds: [3], votedAtLabel: '16.05 11:32' },
+      { userId: 'mikhail', name: 'Михаил Петров',    initials: 'МП', votedOptionIds: [3], votedOptionTexts: [], votedAtLabel: '16.05 11:05' },
+      { userId: 'anna',    name: 'Анна Соколова',    initials: 'АС', votedOptionIds: [1], votedOptionTexts: [], votedAtLabel: '16.05 11:15' },
+      { userId: 'dmitry',  name: 'Дмитрий Соловьёв', initials: 'ДС', votedOptionIds: [3], votedOptionTexts: [], votedAtLabel: '16.05 11:32' },
     ],
     notVoters: [
       { userId: 'jon',       name: 'Jon',               initials: 'J' },
       { userId: 'ekaterina', name: 'Екатерина Волкова', initials: 'ЕВ' },
     ],
+    optionsById: { 1: 'Pyn', 2: 'OTLHelper', 3: 'Третий вариант' },
   },
 };

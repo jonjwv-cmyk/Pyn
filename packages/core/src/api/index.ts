@@ -16,5 +16,8 @@ export {
   type NewsUpdateEvent,
   type UnreadUpdateEvent,
   type PresenceChangeEvent,
+  type BaseChangedEvent,
   type DesktopKickedEvent,
+  type SheetLockAcquiredEvent,
+  type SheetLockReleasedEvent,
 } from './ws-events';

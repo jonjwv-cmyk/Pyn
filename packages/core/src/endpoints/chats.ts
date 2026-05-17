@@ -31,6 +31,17 @@ export interface ChatMessageWire {
   status?: string;
   is_read?: number;
   reply_to_id?: number | null;
+  /**
+   * Telegram-style quoted reply: server (db.js::attachReplyPreview) подмешивает
+   * `reply_preview: {id, sender_name, text}` к каждому сообщению с
+   * `reply_to_id`. Используется для рендера встроенного блока «ответа»
+   * в bubble.
+   */
+  reply_preview?: {
+    id: number;
+    sender_name?: string;
+    text: string;
+  } | null;
   created_at?: string;
   unread_count?: number;
   reactions?: Record<string, number>;

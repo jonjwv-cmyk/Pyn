@@ -52,18 +52,41 @@ function wireToAttachment(wire: AttachmentWire): Attachment {
 }
 
 function wireToPoll(wire: PollWire): Poll {
+  // 🔴 Поля разные между server-версиями (см. PollWire JSDoc):
+  //   • title (новое) или question (legacy)
+  //   • option_text (новое) или text (legacy) на опциях
+  //   • is_selected (boolean per option) или my_vote_option_id (legacy)
+  //   • selected_option_ids (массив) — авторитативный источник для multi-choice
+  //   • total_votes (новое, count unique voters) или total_voters (legacy)
+  //   • is_active может быть int 0/1 или boolean
+  // Нормализуем всё к одной camelCase domain-модели.
+  const options = wire.options.map((o) => ({
+    id: o.id,
+    text: o.option_text ?? o.text ?? '',
+    votesCount: o.votes_count,
+  }));
+  // Single-choice: первый is_selected option или первый selected_option_id.
+  const selectedFromIds =
+    Array.isArray(wire.selected_option_ids) && wire.selected_option_ids.length > 0
+      ? wire.selected_option_ids[0] ?? null
+      : null;
+  const selectedFromOpt = wire.options.find((o) => o.is_selected === true)?.id ?? null;
+  const myVoteOptionId =
+    selectedFromIds ?? selectedFromOpt ?? wire.my_vote_option_id ?? null;
+  // Total voters: уникальные юзеры. Берём приоритетнее всего total_votes,
+  // потом total_voters (legacy). Sum votesCount как fallback.
+  const totalVoters =
+    wire.total_votes ??
+    wire.total_voters ??
+    options.reduce((s, o) => s + o.votesCount, 0);
   return {
     id: wire.id,
-    question: wire.question,
+    question: wire.title ?? wire.question ?? '',
     description: wire.description ?? '',
-    options: wire.options.map((o) => ({
-      id: o.id,
-      text: o.text,
-      votesCount: o.votes_count,
-    })),
-    myVoteOptionId: wire.my_vote_option_id ?? null,
-    totalVoters: wire.total_voters,
-    isActive: wire.is_active,
+    options,
+    myVoteOptionId,
+    totalVoters,
+    isActive: wire.is_active === 1 || wire.is_active === true,
   };
 }
 

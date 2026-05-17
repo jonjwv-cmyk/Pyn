@@ -13,6 +13,39 @@
     /* Чтобы native traffic-lights on macOS не выезжали за окно */
     -webkit-user-select: none;
   }
+
+  /*
+   * Кастомная dark-scrollbar для всех scroll-областей. Default native
+   * scrollbar светлеет на hover — это сильно бросается в глаза на тёмном
+   * UI Pyn. Делаем тонкую полоску с почти invisible thumb, и **тот же
+   * тёмный оттенок при hover** (только лёгкий +contrast), чтобы не было
+   * "побеления".
+   */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.06);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    /* Лёгкий контраст без перехода в светлое — поддерживаем dark-эстетику. */
+    background: rgba(255, 255, 255, 0.1);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:active {
+    background: rgba(255, 255, 255, 0.12);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }
 
 /* Region который позволяет drag-перемещение окна (macOS title bar и т.п.) */
@@ -21,4 +54,116 @@
 }
 .no-drag-region {
   -webkit-app-region: no-drag;
+}
+
+/**
+ * Скрываем нативный «крестик» очистки для <input type="search">.
+ * Browser/macOS показывает синий X в правой части поля — у нас собственная
+ * кнопка X (см. MolComposer). Native + custom = два креста рядом, безобразно.
+ */
+input[type='search']::-webkit-search-cancel-button,
+input[type='search']::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
+/**
+ * Стабильная ширина для scroll-контейнера таблицы МОЛ — резервирует место
+ * под vertical scrollbar даже когда его нет. Без этого последняя колонка
+ * Таб. оказывалась перекрыта 10-px scrollbar'ом когда rows переполняли
+ * viewport, а без scrollbar — растягивалась лишний раз.
+ */
+.mol-scroll {
+  scrollbar-gutter: stable;
+}
+
+/**
+ * Subtle pattern для chat-фона — Pyn-логотип ("P") по диагонали в очень
+ * слабой clay-tint'е. Под текстом сообщения почти невидим, но даёт «живой»
+ * характер фона как в Telegram.
+ */
+.chat-pattern-bg {
+  background-color: #262624;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><g fill='rgba(217,119,87,0.04)' transform='rotate(-22 80 80)'><text x='10' y='40' font-family='Inter,sans-serif' font-weight='700' font-size='38'>P</text><text x='90' y='110' font-family='Inter,sans-serif' font-weight='700' font-size='38'>P</text></g></svg>");
+  background-repeat: repeat;
+  background-size: 160px 160px;
+}
+
+/**
+ * Pattern для news-ленты — «зеркальный» вариант chat-паттерна. Те же буквы
+ * «P», но повёрнутые в обратную сторону (+22° вместо -22°). Визуально это
+ * читается как «другая комната» — лента и чат не сливаются, но единый
+ * язык «лёгкого фона» сохранён. Слабее контраст (3% vs 4% в chat), чтобы
+ * пилл-карточки новостей чётко считывались поверх него.
+ */
+.news-pattern-bg {
+  background-color: #262624;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'><g fill='rgba(217,119,87,0.03)' transform='rotate(22 90 90)'><text x='14' y='46' font-family='Inter,sans-serif' font-weight='700' font-size='40'>P</text><text x='102' y='124' font-family='Inter,sans-serif' font-weight='700' font-size='40'>P</text></g></svg>");
+  background-repeat: repeat;
+  background-size: 180px 180px;
+}
+
+/**
+ * Pattern для раздела МОЛы — vertical «P» без rotation, плотнее и subtle.
+ * Отличается от chat (-22°) и news (+22°) — визуально это «третья комната»,
+ * не сливается ни с одной из них. Контраст 2.5% — почти исчезает под
+ * Linear-таблицей с подложкой rows, но даёт «живой» фон в empty-state.
+ */
+.mol-pattern-bg {
+  background-color: #1F1E1B;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'><g fill='rgba(217,119,87,0.025)'><text x='8' y='38' font-family='Inter,sans-serif' font-weight='700' font-size='34'>P</text><text x='82' y='106' font-family='Inter,sans-serif' font-weight='700' font-size='34'>P</text></g></svg>");
+  background-repeat: repeat;
+  background-size: 140px 140px;
+}
+
+/**
+ * Pattern для блокировки листа Google Sheets — «P» в шахматном порядке,
+ * плотнее (120px). Контраст 5% — заметнее остальных, потому что это
+ * full-screen overlay поверх таблицы. Визуально читается как «комната
+ * другой формы»: ни chat, ни news, ни мол.
+ */
+.sheets-pattern-bg {
+  background-color: #161611;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'><g fill='rgba(217,119,87,0.05)'><text x='4' y='34' font-family='Inter,sans-serif' font-weight='700' font-size='32'>P</text><text x='64' y='94' font-family='Inter,sans-serif' font-weight='700' font-size='32'>P</text></g></svg>");
+  background-repeat: repeat;
+  background-size: 120px 120px;
+}
+
+/**
+ * Подсветка news-row после прыжка с pinned-пилла (Telegram-style flash).
+ * Применяется через data-attribute, удаляется через 1.6с.
+ */
+.news-row[data-news-flash] {
+  animation: news-row-flash 1.4s ease-out;
+}
+
+@keyframes news-row-flash {
+  0% {
+    box-shadow: 0 0 0 0 rgba(217, 119, 87, 0);
+  }
+  20% {
+    box-shadow: 0 0 0 6px rgba(217, 119, 87, 0.22);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(217, 119, 87, 0);
+  }
+}
+
+/**
+ * Indeterminate progress-полоска (для MolTopBar во время refresh базы) —
+ * 30% по ширине бежит слева направо в бесконечном цикле. Чистый CSS, не
+ * требует JS-таймера.
+ */
+.mol-progress-bar {
+  animation: mol-progress-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes mol-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
 }

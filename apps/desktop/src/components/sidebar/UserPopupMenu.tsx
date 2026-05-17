@@ -1,11 +1,9 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
-  ChevronRight,
+  Clock,
   Database,
-  Globe,
   LogOut,
   Monitor,
-  Palette,
   RefreshCw,
   Settings,
   Smartphone,
@@ -13,6 +11,8 @@ import {
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/cn';
+import { formatDuration } from '@/lib/format-time';
+import { useSessionRemaining } from '@/lib/use-session-remaining';
 
 interface UserPopupMenuProps {
   /** Заголовок: имя/логин (greyed). */
@@ -22,10 +22,16 @@ interface UserPopupMenuProps {
   /** Версия БД и её дата (для combined row). */
   dbVersion: string;
   dbDate: string;
+  /** true пока refresh базы идёт — RefreshCw spin + кнопка disabled. */
+  dbLoading?: boolean;
+  /** Status-сообщение под строкой базы («Проверяем…» / «База актуальна» / …). */
+  dbToast?: string | null;
+  /** Цвет toast'а — `'info'` muted-clay, `'error'` — danger. */
+  dbToastKind?: 'info' | 'error';
   onRefreshDb: () => void;
-  onAccountSettings: () => void;
-  onLanguage: () => void;
-  onAppearance: () => void;
+  /** Открыть экран Settings (full-screen overlay). Виден всем — внутри
+   *  Settings уже свой role-фильтр для подсекций. */
+  onOpenSettings: () => void;
   onLogout: () => void;
   /** Trigger element (обычно BottomUserRow). */
   children: ReactNode;
@@ -53,13 +59,15 @@ export function UserPopupMenu({
   androidVersion,
   dbVersion,
   dbDate,
+  dbLoading = false,
+  dbToast = null,
+  dbToastKind = 'info',
   onRefreshDb,
-  onAccountSettings,
-  onLanguage,
-  onAppearance,
+  onOpenSettings,
   onLogout,
   children,
 }: UserPopupMenuProps) {
+  const { remainingMs, hasInfo, extensionsUsed, extensionsMax } = useSessionRemaining();
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>{children}</DropdownMenu.Trigger>
@@ -76,22 +84,53 @@ export function UserPopupMenu({
             'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
           )}
         >
-          <div className="px-2.5 py-1.5 text-[12px] text-text-muted truncate">{username}</div>
+          <div className="px-2.5 pt-1.5 pb-0.5 text-[12px] text-text-muted truncate">
+            {username}
+          </div>
+          {hasInfo && (
+            <div
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 pb-1.5 text-[11px] text-text-muted',
+                'tabular-nums',
+              )}
+            >
+              <Clock className="h-3 w-3" strokeWidth={1.75} />
+              <span className="text-text-secondary">{formatDuration(remainingMs)}</span>
+              <span className="text-text-muted">·</span>
+              {/* «0» — нулевая (свежая, без продлений); «1/2/3» — после
+                   соответствующего продления. После 3-й server тайм-аутнёт
+                   сессию → global auth-handler уведёт на QR-login. */}
+              <span title="Номер сессии в этом окне (0 = без продлений)">
+                сессия {extensionsUsed} / {extensionsMax}
+              </span>
+            </div>
+          )}
 
           <Divider />
 
-          <ActionRow icon={Settings} label="Аккаунт настройки" onClick={onAccountSettings} />
-
-          <Divider />
-
-          <ActionRow icon={Globe} label="Язык" trailingChevron onClick={onLanguage} />
-          <ActionRow icon={Palette} label="Оформление" trailingChevron onClick={onAppearance} />
+          <ActionRow icon={Settings} label="Настройки" onClick={onOpenSettings} />
 
           <Divider />
 
           <VersionRow icon={Monitor} label="Pyn Desktop" value={desktopVersion} />
           <VersionRow icon={Smartphone} label="Pyn Android" value={androidVersion} />
-          <DbVersionRow version={dbVersion} date={dbDate} onRefresh={onRefreshDb} />
+          <DbVersionRow
+            version={dbVersion}
+            date={dbDate}
+            loading={dbLoading}
+            onRefresh={onRefreshDb}
+          />
+          {dbToast && (
+            <div
+              className={cn(
+                'px-2 pb-1.5 text-[11px] tabular-nums',
+                'animate-in fade-in-0 slide-in-from-top-0.5 duration-200',
+                dbToastKind === 'error' ? 'text-danger' : 'text-accent-clay',
+              )}
+            >
+              {dbToast}
+            </div>
+          )}
 
           <Divider />
 
@@ -105,12 +144,11 @@ export function UserPopupMenu({
 interface ActionRowProps {
   icon: LucideIcon;
   label: string;
-  trailingChevron?: boolean;
   variant?: 'default' | 'danger';
   onClick: () => void;
 }
 
-function ActionRow({ icon: Icon, label, trailingChevron, variant = 'default', onClick }: ActionRowProps) {
+function ActionRow({ icon: Icon, label, variant = 'default', onClick }: ActionRowProps) {
   const danger = variant === 'danger';
   return (
     <DropdownMenu.Item
@@ -128,7 +166,6 @@ function ActionRow({ icon: Icon, label, trailingChevron, variant = 'default', on
         strokeWidth={1.75}
       />
       <span className="flex-1 truncate">{label}</span>
-      {trailingChevron && <ChevronRight className="h-3.5 w-3.5 text-text-muted" />}
     </DropdownMenu.Item>
   );
 }
@@ -152,18 +189,20 @@ function VersionRow({ icon: Icon, label, value }: VersionRowProps) {
 interface DbVersionRowProps {
   version: string;
   date: string;
+  loading: boolean;
   onRefresh: () => void;
 }
 
 /**
- * База данных — версия + дата + кнопка обновления в одной строке.
- * Refresh кнопка не закрывает popup при клике (e.preventDefault).
+ * База данных — версия + дата + кнопка проверки/обновления в одной строке.
+ * Refresh не закрывает popup при клике (preventDefault). Во время loading
+ * иконка крутится, нижняя полоса в строке показывает прогресс indeterminate.
  */
-function DbVersionRow({ version, date, onRefresh }: DbVersionRowProps) {
+function DbVersionRow({ version, date, loading, onRefresh }: DbVersionRowProps) {
   return (
     <div
       className={cn(
-        'flex h-8 items-center gap-2 rounded-md px-2 text-[12px]',
+        'relative flex h-8 items-center gap-2 rounded-md px-2 text-[12px]',
         'group/db hover:bg-bg-hover transition-colors',
       )}
     >
@@ -176,17 +215,28 @@ function DbVersionRow({ version, date, onRefresh }: DbVersionRowProps) {
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          onRefresh();
+          if (!loading) onRefresh();
         }}
-        aria-label="Обновить базу данных"
+        disabled={loading}
+        aria-label="Проверить и обновить базу"
+        title={loading ? 'Проверяем…' : 'Проверить новую версию'}
         className={cn(
           'flex h-5 w-5 shrink-0 items-center justify-center rounded',
           'text-text-muted transition-colors',
           'hover:bg-bg-pressed hover:text-text-strong',
+          'disabled:cursor-default disabled:opacity-100',
         )}
       >
-        <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.75} />
+        <RefreshCw
+          className={cn('h-3.5 w-3.5', loading && 'animate-spin text-accent-clay')}
+          strokeWidth={1.75}
+        />
       </button>
+      {loading && (
+        <div className="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 overflow-hidden rounded-full">
+          <div className="mol-progress-bar h-full w-1/3 rounded-full bg-accent-clay" />
+        </div>
+      )}
     </div>
   );
 }

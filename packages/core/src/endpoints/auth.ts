@@ -122,25 +122,39 @@ export interface MeResponse {
   fullName: string;
   role: Role;
   avatarUrl?: string;
+  avatarBlobKey?: string;
+  avatarBlobNonce?: string;
   presenceStatus?: 'online' | 'away' | 'offline';
 }
 
+/**
+ * Server FLAT envelope для `me` имеет форму `{ok, user:{...}, features}` —
+ * поля юзера лежат в `user`, не на верхнем уровне. Точное зеркало
+ * `server-modular/handlers-session.js::handleMe`.
+ */
 interface MeWire {
-  login?: string;
-  full_name?: string;
-  role?: string;
-  avatar_url?: string;
-  presence_status?: string;
+  user?: {
+    login?: string;
+    full_name?: string;
+    role?: string;
+    avatar_url?: string;
+    avatar_blob_key_b64?: string;
+    avatar_blob_nonce_b64?: string;
+    presence_status?: string;
+  };
 }
 
 export async function me(client: ApiClient): Promise<MeResponse> {
   const wire = await client.call<MeWire>('me', {});
+  const u = wire.user;
   return {
-    login: wire.login ?? '',
-    fullName: wire.full_name ?? '',
-    role: parseRole(wire.role),
-    avatarUrl: wire.avatar_url,
-    presenceStatus: parsePresence(wire.presence_status),
+    login: u?.login ?? '',
+    fullName: u?.full_name ?? '',
+    role: parseRole(u?.role),
+    avatarUrl: u?.avatar_url || undefined,
+    avatarBlobKey: u?.avatar_blob_key_b64 || undefined,
+    avatarBlobNonce: u?.avatar_blob_nonce_b64 || undefined,
+    presenceStatus: parsePresence(u?.presence_status),
   };
 }
 
@@ -270,34 +284,78 @@ export async function extendSession(client: ApiClient): Promise<{ expiresAt: str
   return { expiresAt: wire.expires_at ?? '' };
 }
 
+/** Тип сессии. PC-сессии (`pc_qr`, `pc_password`) подлежат time-window enforcement. */
+export type SessionKind = 'pc_qr' | 'pc_password' | 'mobile' | 'standard' | string;
+
 export interface MeSessionInfo {
-  id: string;
-  deviceId?: string;
-  platform?: string;
-  expiresAt?: string;
-  lastSeenAt?: string;
+  sessionId: string;
+  sessionKind: SessionKind;
+  /** true если сессия — PC (QR или password); только тогда есть extensions. */
+  isPc: boolean;
+  /** ISO server-local time `YYYY-MM-DD HH:MM:SS` (Yek). */
+  expiresAt: string;
+  /** Server-computed remaining milliseconds; клиент может использовать как baseline. */
+  remainingMs: number;
+  /** Кол-во уже использованных extension'ов (макс 3). */
+  extensionsUsed: number;
+  /** Сколько extensions осталось (0 для не-PC сессий). */
+  extensionsRemaining: number;
+  deviceLabel: string;
+  createdAt?: string;
+  /** Yek HH:MM время истечения для краткого UI-label'a. */
+  yekHm?: string;
 }
 
-/** Текущая сессия — id, device, expiry. Для countdown UI в Settings. */
+/**
+ * Текущая сессия — id, тип, expiry, оставшиеся extensions. Используется для
+ * SessionExpiryWatch (предложение продлить за 5 мин до истечения PC-сессии).
+ */
 export async function meSessionInfo(client: ApiClient): Promise<MeSessionInfo> {
   const wire = await client.call<{
     session?: {
-      id?: string;
-      device_id?: string;
-      platform?: string;
+      session_id?: string;
+      session_kind?: string;
+      is_pc?: boolean;
       expires_at?: string;
-      last_seen_at?: string;
+      remaining_ms?: number;
+      extensions_used?: number;
+      extensions_remaining?: number;
+      device_label?: string;
+      created_at?: string;
+      yek_hm?: string;
     };
   }>('me_session_info', {});
   const s = wire.session;
   if (!s) throw new Error('me_session_info: empty session');
   return {
-    id: s.id ?? '',
-    deviceId: s.device_id,
-    platform: s.platform,
-    expiresAt: s.expires_at,
-    lastSeenAt: s.last_seen_at,
+    sessionId: s.session_id ?? '',
+    sessionKind: (s.session_kind ?? 'standard') as SessionKind,
+    isPc: Boolean(s.is_pc),
+    expiresAt: s.expires_at ?? '',
+    remainingMs: Number(s.remaining_ms ?? 0),
+    extensionsUsed: Number(s.extensions_used ?? 0),
+    extensionsRemaining: Number(s.extensions_remaining ?? 0),
+    deviceLabel: s.device_label ?? '',
+    createdAt: s.created_at,
+    yekHm: s.yek_hm,
   };
+}
+
+// ── CHANGE_PASSWORD (self) ────────────────────────────────────────────────
+
+/**
+ * Сменить свой пароль. Server валидирует `oldPassword`, отвергнет
+ * `new_password_too_short`. После успеха все остальные сессии этого юзера
+ * остаются — server не revoke'ит их (отличие от admin `reset_password`).
+ */
+export async function changePassword(
+  client: ApiClient,
+  args: { oldPassword: string; newPassword: string },
+): Promise<void> {
+  await client.call<{ success?: boolean }>('change_password', {
+    old_password: args.oldPassword,
+    new_password: args.newPassword,
+  });
 }
 
 // ── APP_STATUS (публичный — без token) ─────────────────────────────────────

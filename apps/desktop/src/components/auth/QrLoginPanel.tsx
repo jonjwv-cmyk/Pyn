@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import { RefreshCw } from 'lucide-react';
 import { api } from '@/lib/api';
 import { getDeviceLabel } from '@/lib/device';
 import { cn } from '@/lib/cn';
@@ -17,10 +16,17 @@ interface QrLoginPanelProps {
 type Phase =
   | { kind: 'loading' }
   | { kind: 'ready'; challenge: string; qrDataUrl: string; expiresAt: number }
-  | { kind: 'expired' }
   | { kind: 'error'; message: string };
 
 const POLL_INTERVAL_MS = 2_000;
+/**
+ * За сколько до expiration запросить новый QR в фоне. 5 секунд — обычно
+ * хватает для сетевого round-trip + render canvas; новый код встанет на
+ * место старого до того, как countdown упадёт в 0.
+ */
+const REFRESH_LEAD_MS = 5_000;
+/** Auto-retry transient error через секунды. */
+const ERROR_RETRY_MS = 3_000;
 
 /**
  * QR-вход. Primary способ login'а на desktop'е в OTLHelper2 (password ограничен
@@ -36,16 +42,24 @@ const POLL_INTERVAL_MS = 2_000;
  * После подтверждения на телефоне server создаёт PC-сессию и revoke'ит все
  * прошлые PC-сессии этого юзера (single-PC policy).
  *
- * QR валиден 60 секунд. По истечению — кнопка "Обновить" перезапрашивает.
+ * Auto-refresh: за 5 секунд до expiration в фоне запрашиваем новый QR —
+ * старый остаётся виден до самого свопа. Свап анимируется fade-in (см.
+ * `key={phase.challenge}` на img). Кнопки «Обновить» нет — всё прозрачно.
  */
 export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [secondsLeft, setSecondsLeft] = useState(0);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const errorRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const requestNewQr = async (): Promise<void> => {
-    setPhase({ kind: 'loading' });
+  /**
+   * @param background — если true, не сбрасываем UI в `loading` — старый QR
+   *   остаётся видимым пока новый не приедет (плавный фоновый рефреш).
+   */
+  const requestNewQr = useCallback(async (background = false): Promise<void> => {
+    if (!background) setPhase({ kind: 'loading' });
     try {
       const result = await requestPcSessionQr(api, {
         deviceLabel: getDeviceLabel(),
@@ -71,7 +85,7 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
         message: err instanceof Error ? err.message : 'Не удалось запросить QR',
       });
     }
-  };
+  }, []);
 
   // На mount запрашиваем первый QR.
   useEffect(() => {
@@ -79,43 +93,57 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
       if (tickTimerRef.current) clearInterval(tickTimerRef.current);
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      if (errorRetryRef.current) clearTimeout(errorRetryRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [requestNewQr]);
 
-  // Polling статуса + countdown — запускаются только в phase.ready.
+  // Polling статуса + countdown + auto-refresh — только в phase.ready.
   useEffect(() => {
     if (phase.kind !== 'ready') return;
 
     const { challenge, expiresAt } = phase;
 
-    // Countdown
+    // Countdown: каждую секунду пересчитываем `secondsLeft`. На 0 — если
+    // refresh ещё не отстрелял (медленная сеть), сразу триггерим фоновой
+    // запрос. Старый QR остаётся видимым до прихода нового.
     const updateCountdown = () => {
       const left = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
       setSecondsLeft(left);
       if (left <= 0) {
         if (pollTimerRef.current) clearInterval(pollTimerRef.current);
         if (tickTimerRef.current) clearInterval(tickTimerRef.current);
-        setPhase({ kind: 'expired' });
+        void requestNewQr(true);
       }
     };
     updateCountdown();
     tickTimerRef.current = setInterval(updateCountdown, 1000);
 
-    // Polling
+    // Auto-refresh за 5с до expiration. Если уже меньше — refresh сразу.
+    const leadMs = expiresAt - Date.now() - REFRESH_LEAD_MS;
+    refreshTimerRef.current = setTimeout(
+      () => {
+        void requestNewQr(true);
+      },
+      Math.max(0, leadMs),
+    );
+
+    // Polling status check.
     pollTimerRef.current = setInterval(async () => {
       try {
         const result = await checkPcSessionStatus(api, challenge);
         if (result.status === 'redeemed' && result.session) {
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
           if (tickTimerRef.current) clearInterval(tickTimerRef.current);
+          if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
           // Token сразу setToken'им в ApiClient — все последующие calls используют.
           api.setToken(result.session.token);
           onSuccess(result.session);
         } else if (result.status === 'expired') {
+          // Server отверг — попробуем фоном получить новый.
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
           if (tickTimerRef.current) clearInterval(tickTimerRef.current);
-          setPhase({ kind: 'expired' });
+          void requestNewQr(true);
         }
       } catch (err) {
         // Transient ошибки игнорим — следующий poll попробует снова.
@@ -127,8 +155,21 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
       if (tickTimerRef.current) clearInterval(tickTimerRef.current);
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     };
-  }, [phase, onSuccess]);
+  }, [phase, onSuccess, requestNewQr]);
+
+  // Error → авто-retry через 3с. Сетевые сбои бывают временные; кнопки
+  // «Обновить» больше нет, потому делаем сами.
+  useEffect(() => {
+    if (phase.kind !== 'error') return;
+    errorRetryRef.current = setTimeout(() => {
+      void requestNewQr();
+    }, ERROR_RETRY_MS);
+    return () => {
+      if (errorRetryRef.current) clearTimeout(errorRetryRef.current);
+    };
+  }, [phase, requestNewQr]);
 
   return (
     <div className="flex flex-col items-center gap-3">
@@ -142,32 +183,26 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
           <span className="text-[12px] text-text-muted">Подготовка QR…</span>
         )}
         {phase.kind === 'ready' && (
+          // `key={challenge}` гарантирует remount img при свапе → Tailwind
+          // animate-in fade-in проигрывается на новом коде, старый исчезает
+          // одновременно с появлением. Subtle 250ms — не мельтешит.
           <img
+            key={phase.challenge}
             src={phase.qrDataUrl}
             alt="QR-код входа"
             width={224}
             height={224}
-            className="select-none"
+            className={cn(
+              'select-none',
+              'animate-in fade-in-0 zoom-in-[0.97] duration-[260ms] ease-out',
+            )}
           />
         )}
-        {phase.kind === 'expired' && (
-          <div className="flex flex-col items-center gap-3 px-4 text-center">
-            <p className="text-[12.5px] text-text-muted">QR-код истёк</p>
-            <button
-              type="button"
-              onClick={() => void requestNewQr()}
-              className={cn(
-                'flex h-8 items-center gap-1.5 rounded-md px-3 text-[12.5px]',
-                'bg-accent-clay text-white hover:bg-accent-clay-dim transition-colors',
-              )}
-            >
-              <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.75} />
-              Обновить
-            </button>
-          </div>
-        )}
         {phase.kind === 'error' && (
-          <p className="px-4 text-center text-[12px] text-danger">{phase.message}</p>
+          <div className="flex flex-col items-center gap-1.5 px-4 text-center">
+            <p className="text-[12px] text-danger">{phase.message}</p>
+            <p className="text-[11px] text-text-muted">Пробуем снова…</p>
+          </div>
         )}
       </div>
 

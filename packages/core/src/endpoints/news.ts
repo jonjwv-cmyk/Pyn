@@ -25,18 +25,47 @@ export interface AttachmentWire {
 
 export interface PollOptionWire {
   id: number;
-  text: string;
+  /**
+   * Текст варианта. Сервер шлёт `option_text` (см. `server-modular/db.js`
+   * `attachPolls`); более новые версии могут слать `text`. Kotlin-клиент
+   * читает оба варианта (`option_text || text`), мы делаем то же.
+   */
+  text?: string;
+  option_text?: string;
   votes_count: number;
+  /** `true` если viewer проголосовал за эту опцию. Авторитативный источник для my-vote highlight. */
+  is_selected?: boolean;
 }
 
+/**
+ * Server (`db.js::attachPolls`) шлёт:
+ *   • `title` (не `question`)
+ *   • `is_active`: int 0/1
+ *   • `total_votes` + `total_selections` (не `total_voters`)
+ *   • `has_voted` + `selected_option_ids[]` (новый формат)
+ *   • На опциях — `is_selected: boolean`
+ *
+ * Старые wire-поля (`question`, `my_vote_option_id`, `total_voters`,
+ * `is_active: boolean`) держим в типе как optional — на случай если где-то
+ * остался legacy-формат. `wireToPoll` нормализует к одной camelCase-модели.
+ */
 export interface PollWire {
   id: number;
-  question: string;
+  poll_id?: number;
+  title?: string;
+  question?: string;
   description?: string;
   options: PollOptionWire[];
+  /** Single-choice: первый из массива. Multi-choice: пока не используется. */
+  selected_option_ids?: number[];
   my_vote_option_id?: number | null;
-  total_voters: number;
-  is_active: boolean;
+  has_voted?: boolean;
+  total_votes?: number;
+  total_voters?: number;
+  total_selections?: number;
+  is_active?: boolean | number;
+  selection_mode?: string;
+  can_vote?: boolean;
 }
 
 /**
@@ -112,6 +141,54 @@ export async function sendNews(
   return {
     id: wire.id,
     createdAt: wire.created_at ?? new Date().toISOString(),
+  };
+}
+
+// ── CREATE_NEWS_POLL ───────────────────────────────────────────────────────
+
+export interface CreateNewsPollRequest {
+  /** Текст вопроса. В Kotlin отдаётся одновременно как title и description. */
+  question: string;
+  /** Варианты ответа. Будут trim'нуты и отфильтрованы (≥2 непустых). */
+  options: string[];
+}
+
+export interface CreateNewsPollResponse {
+  messageId: number;
+  pollId: number;
+}
+
+/**
+ * Создать опрос (новость с poll). Минимум 2 непустых варианта — иначе сервер
+ * вернёт `poll_payload_invalid`. Permission: admin/developer (как `send_news`).
+ *
+ * После создания сервер broadcastит `news_update` — feed автоматически
+ * подтянется через WS-listener.
+ */
+export async function createNewsPoll(
+  client: ApiClient,
+  req: CreateNewsPollRequest,
+): Promise<CreateNewsPollResponse> {
+  const cleanOptions = req.options.map((o) => o.trim()).filter((o) => o.length > 0);
+  if (cleanOptions.length < 2) {
+    throw new Error('poll_options_min_2');
+  }
+  if (!req.question.trim()) {
+    throw new Error('poll_question_empty');
+  }
+  const wire = await client.call<{
+    data?: { message_id?: number; poll_id?: number };
+  }>('create_news_poll', {
+    title: req.question.trim(),
+    description: req.question.trim(),
+    options: cleanOptions,
+  });
+  if (!wire.data || typeof wire.data.message_id !== 'number') {
+    throw new Error('create_news_poll: empty data');
+  }
+  return {
+    messageId: wire.data.message_id,
+    pollId: Number(wire.data.poll_id ?? 0),
   };
 }
 
@@ -227,7 +304,16 @@ export async function getNewsReaders(
 export interface PollVoterWire {
   user_login: string;
   full_name?: string;
-  option_id: number;
+  role?: string;
+  /**
+   * IDs выбранных опций. Server `handleGetPollStats` сейчас отдаёт массив
+   * (для multi-choice опросов в будущем); single-choice — длина 1.
+   * Legacy `option_id` поддерживается на случай старой версии сервера.
+   */
+  selected_option_ids?: number[];
+  /** Готовые тексты выбранных опций — JOIN на server'е, lookup не нужен. */
+  selected_option_texts?: string[];
+  option_id?: number;
   voted_at?: string;
 }
 

@@ -15,6 +15,7 @@
  *   • presence_change — login/last_seen изменился у юзера
  *   • typing_start    — пользователь начал печатать в чате
  *   • typing_stop     — закончил
+ *   • base_changed    — admin обновил справочник МОЛ
  *   • desktop_kicked  — другая сессия с того же login'a выгнала нас
  */
 
@@ -38,7 +39,12 @@ export const WS_EVENT_TYPES = {
   PRESENCE_CHANGE: 'presence_change',
   TYPING_START: 'typing_start',
   TYPING_STOP: 'typing_stop',
+  BASE_CHANGED: 'base_changed',
   DESKTOP_KICKED: 'desktop_kicked',
+  /** Запущен скрипт/макрос на листе — блокируем UI для всех клиентов. */
+  SHEET_LOCK_ACQUIRED: 'sheet_lock_acquired',
+  /** Скрипт/макрос завершился — снимаем блокировку. */
+  SHEET_LOCK_RELEASED: 'sheet_lock_released',
 } as const;
 
 export type WsEventType = (typeof WS_EVENT_TYPES)[keyof typeof WS_EVENT_TYPES];
@@ -85,7 +91,36 @@ export interface PresenceChangeEvent extends WsServerEvent {
   last_seen_at?: string;
 }
 
+export interface BaseChangedEvent extends WsServerEvent {
+  type: 'base_changed';
+  base_version: string;
+  base_updated_at?: string;
+}
+
 export interface DesktopKickedEvent extends WsServerEvent {
   type: 'desktop_kicked';
   reason?: string;
+}
+
+/**
+ * Сервер запустил скрипт/макрос — другие клиенты должны заблокировать
+ * соответствующие листы. Initiator уже сделал optimistic acquire локально.
+ */
+export interface SheetLockAcquiredEvent extends WsServerEvent {
+  type: 'sheet_lock_acquired';
+  action_id: string;
+  action_label: string;
+  user_name: string;
+  tab_name: string;
+  locked_tabs: string[];
+}
+
+/**
+ * Скрипт/макрос завершился — release lock на всех клиентах. `error`
+ * присутствует если завершилось с ошибкой.
+ */
+export interface SheetLockReleasedEvent extends WsServerEvent {
+  type: 'sheet_lock_released';
+  action_id: string;
+  error?: string;
 }

@@ -1,0 +1,111 @@
+name: Release Win
+
+# Триггер: push тэга `v*` (например `v1.2.0`). Версия из tag должна
+# совпадать с `apps/desktop/package.json` — workflow это проверяет.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # ручной запуск из GitHub UI
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install ImageMagick
+        run: choco install imagemagick.app -y --no-progress
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate icons (.ico / .icns / .png)
+        run: pnpm --filter @pyn/desktop build:icons
+
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $pkg = node -e "console.log(require('./apps/desktop/package.json').version)"
+          if ($tag -ne $pkg) {
+            Write-Error "Tag '$tag' != package version '$pkg'"
+            exit 1
+          }
+          echo "Building Pyn $pkg"
+
+      - name: Build Win portable
+        run: pnpm --filter @pyn/desktop build:win
+        env:
+          # electron-builder не должен лезть в auto-publish (мы шлём вручную).
+          ELECTRON_BUILDER_DISABLE_PUBLISH: 'true'
+
+      - name: Locate artifact
+        id: artifact
+        shell: pwsh
+        run: |
+          $version = node -e "console.log(require('./apps/desktop/package.json').version)"
+          $path = "apps/desktop/release/pyn-$version-portable.exe"
+          if (-not (Test-Path $path)) {
+            Write-Error "Artifact not found: $path"
+            exit 1
+          }
+          echo "path=$path"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          echo "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $hash = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLower()
+          echo "sha256=$hash"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          echo "Built: $path  ($hash)"
+
+      - name: Upload artifact to GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyn-${{ steps.artifact.outputs.version }}-portable
+          path: ${{ steps.artifact.outputs.path }}
+          retention-days: 30
+
+      - name: SCP to VPS (publish /win.exe)
+        if: ${{ env.VPS_SSH_KEY != '' }}
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          echo "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H 45.12.239.5 >> ~/.ssh/known_hosts 2>/dev/null
+          scp -i ~/.ssh/vps_key \
+            "${{ steps.artifact.outputs.path }}" \
+            root@45.12.239.5:/var/www/otl-releases/pyn-latest.exe.new
+          ssh -i ~/.ssh/vps_key root@45.12.239.5 \
+            "mv /var/www/otl-releases/pyn-latest.exe.new /var/www/otl-releases/pyn-latest.exe"
+          rm -f ~/.ssh/vps_key
+          echo "Published: https://45-12-239-5.sslip.io/pyn.exe (sha256=${{ steps.artifact.outputs.sha256 }})"
+
+      - name: Broadcast new version to server (D1 update)
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          # Обновляем app_version[desktop-pyn-win] чтобы клиенты увидели
+          # новую версию через `app_status` endpoint.
+          # TODO: добавить broadcast_app_version action в CF Worker когда
+          # понадобится отдельный scope (или переиспользовать существующий
+          # admin endpoint OTLHelper2).
+          echo "D1 broadcast step — заглушка. Версия ${{ steps.artifact.outputs.version }} опубликована на VPS."

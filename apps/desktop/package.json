@@ -1,6 +1,6 @@
 {
   "name": "@pyn/desktop",
-  "version": "0.0.1",
+  "version": "1.2.0",
   "private": true,
   "description": "Pyn Desktop — Electron app (Mac, Windows)",
   "main": "dist-electron/main.js",
@@ -10,6 +10,7 @@
     "build": "tsc --noEmit && vite build && electron-builder",
     "build:mac": "tsc --noEmit && vite build && electron-builder --mac",
     "build:win": "tsc --noEmit && vite build && electron-builder --win",
+    "build:icons": "node ../../scripts/build-icons.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },
@@ -17,8 +18,11 @@
     "@pyn/core": "workspace:*",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "@radix-ui/react-hover-card": "^1.1.15",
+    "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-tooltip": "^1.2.8",
     "clsx": "^2.1.1",
+    "emoji-picker-react": "^4.19.1",
     "lucide-react": "^0.460.0",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
@@ -51,7 +55,8 @@
       "dist-electron/**/*"
     ],
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "mac": {
       "category": "public.app-category.productivity",
@@ -59,8 +64,20 @@
       "icon": "build/icon.icns"
     },
     "win": {
-      "target": "nsis",
-      "icon": "build/icon.ico"
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "pyn-${version}-portable.exe"
+    },
+    "portable": {
+      "artifactName": "pyn-${version}-portable.exe",
+      "requestExecutionLevel": "user"
     }
   }
 }

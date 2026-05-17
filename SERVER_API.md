@@ -260,9 +260,12 @@ Compact reference of ALL actions the server handles. Permission levels: `any` (p
 
 **Summary:**
 - **Total server actions:** 82
-- **Wrapped in @pyn/core/endpoints:** 14
-  - auth.ts: 6 (login, me, appStatus, getPasswordCounter, requestPcSessionQr, checkPcSessionStatus)
-  - news.ts: 5 (getNews, sendNews, voteNewsPoll, pinMessage, unpinMessage, softDeleteMessage) — softDeleteMessage is wrapped in 4 unique endpoints
-  - chats.ts: 3 (getAdminMessages, getAdminChat, sendMessage, markMessageRead)
-  - reactions.ts: 2 (addReaction, removeReaction)
-- **Missing:** 68 actions (desktop features, admin/dev tools, telemetry, sheets integration, scheduled messages, drafts, DND, mute, audit log, presence, app stats)
+- **Wrapped in @pyn/core/endpoints:** 22
+  - auth.ts: 7 (login, me, appStatus, getPasswordCounter, requestPcSessionQr, checkPcSessionStatus, **extendSession**, **meSessionInfo**)
+  - news.ts: 11 (getNews, sendNews, **createNewsPoll**, voteNewsPoll, pinMessage, unpinMessage, softDeleteMessage, undeleteMessage, editMessage, getNewsReaders, getPollStats)
+  - chats.ts: 4 (getAdminMessages, getAdminChat, sendMessage, markMessageRead)
+  - reactions.ts: 3 (addReaction, removeReaction, getReactions)
+  - drafts.ts: 3 (saveDraft, loadDraft, listDrafts)
+  - scheduled.ts: 3 (scheduleMessage, listScheduled, cancelScheduled)
+  - admin.ts: 1 (getUsers)
+- **Missing:** ~60 actions (telemetry, sheets integration, macros, audit log, presence snapshot, user management, mute/DND, base reference, heartbeat, push tokens)

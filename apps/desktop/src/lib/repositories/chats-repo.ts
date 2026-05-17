@@ -62,6 +62,20 @@ export function wireToChatMessage(wire: ChatMessageWire, myLogin: string): ChatM
     authorId: isOwn ? 'me' : wire.sender_login,
     text: wire.text,
     time: wire.created_at ? formatFullYek(wire.created_at) : '',
+    createdAt: wire.created_at,
+    // ⚠️ Сервер шлёт `is_read` как viewer-flag (своё всегда = 1; чужое = 1
+    // если viewer уже прочитал). Это НЕ read-receipt получателя.
+    // Реальный сигнал "получатель открыл моё сообщение" — `status === 'read'`
+    // (см. `handlers-chat.js`: статус меняется через `mark_message_read`).
+    // Только это поле даёт Telegram-style ✓✓ корректно.
+    isRead: wire.status === 'read',
+    replyPreview: wire.reply_preview
+      ? {
+          id: wire.reply_preview.id,
+          senderName: wire.reply_preview.sender_name ?? '',
+          text: wire.reply_preview.text,
+        }
+      : undefined,
     isOwn,
     attachments: (wire.attachments ?? []).map((a) => ({
       id: a.file_url,

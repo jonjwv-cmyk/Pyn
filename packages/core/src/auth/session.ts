@@ -21,6 +21,13 @@ export interface SessionUser {
   login: string;
   fullName: string;
   avatarUrl?: string;
+  /**
+   * Base64 AES-256 ключ для расшифровки своего avatar blob'a. Login response
+   * (`password_login_pc` / `redeem_qr_token`) этих полей не возвращает —
+   * подтягиваем через `me()` после login/restore и обогащаем Session.
+   */
+  avatarBlobKey?: string;
+  avatarBlobNonce?: string;
 }
 
 /**

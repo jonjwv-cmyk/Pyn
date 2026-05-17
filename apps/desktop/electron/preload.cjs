@@ -4,8 +4,18 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// app.getVersion() недоступен в sandboxed preload'е (main экспонирует через
+// additionalArguments, см. main.ts::createWindow). Парсим из process.argv —
+// чисто синхронно, без IPC round-trip.
+const APP_VERSION_ARG = '--pyn-app-version=';
+const appVersion =
+  process.argv.find((a) => a.startsWith(APP_VERSION_ARG))?.slice(APP_VERSION_ARG.length) ||
+  '0.0.0';
+
 contextBridge.exposeInMainWorld('pyn', {
   platform: process.platform,
+  /** Версия desktop-сборки из apps/desktop/package.json (через app.getVersion). */
+  appVersion,
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,
@@ -51,6 +61,9 @@ contextBridge.exposeInMainWorld('pyn', {
     stop: function pynWsStop() {
       return ipcRenderer.invoke('pyn:ws:stop');
     },
+    send: function pynWsSend(payload) {
+      return ipcRenderer.invoke('pyn:ws:send', payload);
+    },
     onEvent: function pynWsOnEvent(handler) {
       const wrapped = (_evt, event) => handler(event);
       ipcRenderer.on('pyn:ws:event', wrapped);
@@ -65,6 +78,16 @@ contextBridge.exposeInMainWorld('pyn', {
    */
   blobFetch: function pynBlobFetch(url) {
     return ipcRenderer.invoke('pyn:blob:fetch', url);
+  },
+  /**
+   * Скачать snapshot МОЛ (encrypted gzipped JSON в R2) → main расшифровывает
+   * AES-256-GCM, gunzip'ает, возвращает plain JSON string. Renderer парсит
+   * через @pyn/core::parseSnapshotJson и сохраняет в pyn:cache.
+   */
+  mol: {
+    fetchSnapshot: function pynMolFetchSnapshot(url, blobKeyB64, blobNonceB64) {
+      return ipcRenderer.invoke('pyn:mol:fetch-snapshot', url, blobKeyB64, blobNonceB64);
+    },
   },
   /**
    * Encrypted cache (Zustand persist storage). Renderer пишет JSON-стрингу
@@ -82,6 +105,39 @@ contextBridge.exposeInMainWorld('pyn', {
     },
     clearAll: function pynCacheClearAll() {
       return ipcRenderer.invoke('pyn:cache:clearAll');
+    },
+  },
+  /**
+   * Google account flow для embedded Google Sheets (раздел «Таблицы»).
+   * Cookies хранятся в persist:google-sheets partition, общий с webview.
+   */
+  google: {
+    openLogin: function pynGoogleOpenLogin() {
+      return ipcRenderer.invoke('pyn:google:open-login');
+    },
+    checkStatus: function pynGoogleCheckStatus() {
+      return ipcRenderer.invoke('pyn:google:check-status');
+    },
+    logout: function pynGoogleLogout() {
+      return ipcRenderer.invoke('pyn:google:logout');
+    },
+  },
+  /**
+   * Auto-update: скачать новый билд по URL и запустить установку.
+   * Renderer уже определил что нужен update (через app_status endpoint в
+   * @pyn/core) — main скачивает exe, прячет в %LOCALAPPDATA% и spawn'ит
+   * установщик, после чего наш process exit'ит.
+   */
+  update: {
+    downloadInstall: function pynUpdateDownloadInstall(url, version) {
+      return ipcRenderer.invoke('pyn:update:download-install', url, version);
+    },
+    onProgress: function pynUpdateOnProgress(handler) {
+      const wrapped = (_evt, progress) => handler(progress);
+      ipcRenderer.on('pyn:update:progress', wrapped);
+      return function unsubscribe() {
+        ipcRenderer.removeListener('pyn:update:progress', wrapped);
+      };
     },
   },
 });

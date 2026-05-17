@@ -15,6 +15,7 @@ export {
   checkPcSessionStatus,
   extendSession,
   meSessionInfo,
+  changePassword,
   type LoginRequest,
   type LoginResponse,
   type MeResponse,
@@ -26,12 +27,14 @@ export {
   type CheckPcSessionStatusResponse,
   type PcSessionStatus,
   type MeSessionInfo,
+  type SessionKind,
 } from './auth';
 
 // News
 export {
   getNews,
   sendNews,
+  createNewsPoll,
   voteNewsPoll,
   pinMessage,
   unpinMessage,
@@ -46,6 +49,8 @@ export {
   type PollWire,
   type SendNewsRequest,
   type SendNewsResponse,
+  type CreateNewsPollRequest,
+  type CreateNewsPollResponse,
   type NewsReaderWire,
   type NewsReadersResponse,
   type PollVoterWire,
@@ -62,8 +67,34 @@ export {
   type ReactionVoter,
 } from './reactions';
 
-// Admin (users list etc)
-export { getUsers, type UserSummary } from './admin';
+// Admin (users management)
+export {
+  getUsers,
+  createUser,
+  resetPassword,
+  toggleUser,
+  renameUser,
+  changeLogin,
+  changeRole,
+  deleteUser,
+  resetPasswordLoginCounter,
+  type UserSummary,
+  type CreateUserRequest,
+  type CreateUserResponse,
+} from './admin';
+
+// Base — справочник МОЛ (загрузка, парсинг, server-side search)
+export {
+  baseVersion,
+  baseDownloadUrl,
+  baseFind,
+  rebroadcastBase,
+  parseSnapshotJson,
+  hasRealWarehouse,
+  type BaseMeta,
+  type BaseDownloadInfo,
+  type MolRecord,
+} from './base';
 
 // Chats
 export {
@@ -78,3 +109,43 @@ export {
   type SendMessageRequest,
   type SendMessageResponse,
 } from './chats';
+
+// Drafts
+export {
+  saveDraft,
+  loadDraft,
+  listDrafts,
+  type DraftSnapshot,
+  type DraftListItem,
+} from './drafts';
+
+// Scheduled messages
+export {
+  scheduleMessage,
+  listScheduled,
+  cancelScheduled,
+  type ScheduledKind,
+  type ScheduleNewsPayload,
+  type ScheduleMessageRequest,
+  type ScheduleMessageResponse,
+  type ScheduledStatus,
+  type ScheduledMessage,
+  type ScheduledMessageWire,
+} from './scheduled';
+
+// Sheets bridge (Google Sheets API + macros)
+export {
+  listSheets,
+  getSheet,
+  updateCell,
+  runScript,
+  checkSheetActionStatus,
+  searchSapDoc,
+  getSheetsClientConfig,
+  type SheetSummary,
+  type SheetTab,
+  type SheetSnapshot,
+  type UpdateCellResult,
+  type SapDocHit,
+  type SheetsClientConfig,
+} from './sheets';

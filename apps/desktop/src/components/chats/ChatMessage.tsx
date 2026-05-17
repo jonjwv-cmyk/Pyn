@@ -1,33 +1,34 @@
-import { useState } from 'react';
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { Plus } from 'lucide-react';
-import { AttachmentTile } from '@/components/ui/AttachmentTile';
+import { Check, CheckCheck, CornerUpLeft, Plus } from 'lucide-react';
+import { AttachmentGroup } from '@/components/ui/AttachmentGroup';
+import { MessageActionsPopup } from '@/components/ui/MessageActionsPopup';
 import { cn } from '@/lib/cn';
 import type { ChatMessageItem } from '@/types/chat';
 
 interface ChatMessageProps {
   message: ChatMessageItem;
   onReact?: (messageId: number, emoji: string) => void;
+  /** Если задан — popup показывает кнопку «Ответить»; caller подымает state в композер. */
+  onReply?: (message: ChatMessageItem) => void;
 }
 
-const REACTION_PALETTE = ['👍', '🔥', '🎉', '❤️', '👀', '🙏'];
-
 /**
- * Один пузырь сообщения. Свои — справа с clay-tint, чужие — слева с bg-elevated.
- * Время — мелкий subtle text внизу пузыря.
- *
- * Attachments (если есть) показываются над текстом — image preview, video,
- * file chip. Расшифровка через общий `useDecryptedBlob`.
- *
- * Реакции — chip-row под текстом + hover button "+" для выбора нового emoji.
+ * Один пузырь сообщения. Telegram-style:
+ *   • Bubble fit-content по ширине (max-w-68% как safety-cap).
+ *   • Время + checkmarks плавают справа в последней строке текста (float).
+ *     Если последняя строка длинная и не помещает их — `pad`-spacer в конце
+ *     текста переносит footer на новую строку.
+ *   • Plus-кнопка реакций — СНАРУЖИ bubble (рядом, hover-only). Это
+ *     убирает «раздутость» bubble под пустой реакционный chip.
+ *   • Reply preview и attachment'ы — внутри bubble, над текстом.
  */
-export function ChatMessage({ message, onReact }: ChatMessageProps) {
+export function ChatMessage({ message, onReact, onReply }: ChatMessageProps) {
   const own = message.isOwn;
   const hasAttachments = (message.attachments?.length ?? 0) > 0;
   const reactions = message.reactions ?? {};
   const myReactions = message.myReactions ?? [];
   const reactionEntries = Object.entries(reactions).filter(([, c]) => c > 0);
   const hasReactions = reactionEntries.length > 0;
+  const canAct = typeof message.numericId === 'number';
 
   const handleEmojiSelect = (emoji: string) => {
     if (typeof message.numericId === 'number') {
@@ -35,29 +36,117 @@ export function ChatMessage({ message, onReact }: ChatMessageProps) {
     }
   };
 
+  const handleCopy = (): void => {
+    if (!message.text) return;
+    void navigator.clipboard.writeText(message.text).catch(() => {
+      /* clipboard reject — silent; popup всё равно покажет «Скопировано» */
+    });
+  };
+
+  const handleReply = (): void => {
+    if (onReply) onReply(message);
+  };
+
+  const plusButton =
+    onReact && canAct ? (
+      <MessageActionsPopup
+        onReact={handleEmojiSelect}
+        onReply={onReply ? handleReply : undefined}
+        onCopy={message.text ? handleCopy : undefined}
+        myReactions={myReactions}
+        side="top"
+        align={own ? 'end' : 'start'}
+      >
+        <button
+          type="button"
+          aria-label="Реакции и действия"
+          className={cn(
+            'flex h-6 w-6 shrink-0 items-center justify-center rounded-full',
+            'border border-border-subtle bg-bg-elevated text-text-muted shadow-sm',
+            'opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100',
+            'hover:bg-bg-hover hover:text-text-strong',
+          )}
+        >
+          <Plus className="h-3 w-3" strokeWidth={2} />
+        </button>
+      </MessageActionsPopup>
+    ) : null;
+
   return (
-    <div className={cn('group flex w-full', own ? 'justify-end' : 'justify-start')}>
+    <div
+      className={cn(
+        'group flex w-full items-end gap-1.5',
+        own ? 'justify-end' : 'justify-start',
+      )}
+    >
+      {own && plusButton}
       <div
         className={cn(
-          'flex max-w-[68%] flex-col gap-1.5 rounded-2xl px-3 py-2',
+          // `inline-flex` + `w-fit` + `max-w-[360px]` — Telegram bubble:
+          // shrink-wrap под самый широкий child (media или text-line) с
+          // жёстким cap. Это убирает «пустоту справа от video» когда text
+          // короткий, и тянет текст к фактической ширине media. flex-col
+          // только меняет axis при stacking'е inside.
+          'relative flex min-w-0 w-fit flex-col gap-1.5 rounded-2xl px-3 py-1.5',
+          'max-w-[360px]',
           own ? 'bg-accent-clay-bg text-text-strong' : 'bg-bg-elevated text-text-primary',
         )}
       >
-        {hasAttachments && (
-          <div className="flex flex-wrap gap-1.5">
-            {message.attachments?.map((att) => (
-              <AttachmentTile key={att.id} attachment={att} />
-            ))}
+        {message.replyPreview && (
+          <ReplyQuote
+            senderName={message.replyPreview.senderName}
+            text={message.replyPreview.text}
+            ownBubble={own}
+          />
+        )}
+        {/*
+          Layout footer'a (время + checkmark):
+            • Есть media → footer overlay-pill'ом в правом-нижнем углу
+              САМОГО attachment (relative wrapper над AttachmentGroup,
+              а не bubble — иначе если ниже attachment'a есть текст, overlay
+              оказывался под текстом, что юзер видел как «дата ниже»).
+            • Только text → footer inline в конце текста. Чистый flow.
+            • Media + text → дата ТОЛЬКО на attachment overlay; текстовый
+              блок без footer (вмещает только text, аккуратнее).
+        */}
+        {hasAttachments && message.attachments && (
+          <div className="relative">
+            <AttachmentGroup attachments={message.attachments} context="chat" />
+            <MetaFooter
+              own={own}
+              time={message.time}
+              isRead={message.isRead === true}
+              pending={!canAct}
+              variant="overlay"
+            />
           </div>
         )}
+
         {message.text && (
-          <p className="whitespace-pre-wrap break-words text-[13px] leading-snug">
+          <p
+            className={cn(
+              'min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug',
+              // `break-all` гарантирует перенос даже у длинных слов/URL без
+              // пробелов; иначе bubble мог растягиваться шире своего max-w
+              // и текст обрезался горизонтально.
+              '[overflow-wrap:anywhere]',
+            )}
+          >
             {message.text}
+            {!hasAttachments && (
+              <MetaFooter
+                own={own}
+                time={message.time}
+                isRead={message.isRead === true}
+                pending={!canAct}
+                variant="inline"
+              />
+            )}
           </p>
         )}
 
-        {(hasReactions || onReact) && (
-          <div className="flex flex-wrap items-center gap-1">
+        {hasReactions && (
+          <div className="flex flex-wrap items-center gap-1 pt-0.5">
             {reactionEntries.map(([emoji, count]) => {
               const mine = myReactions.includes(emoji);
               return (
@@ -81,74 +170,132 @@ export function ChatMessage({ message, onReact }: ChatMessageProps) {
                 </button>
               );
             })}
-            {onReact && typeof message.numericId === 'number' && (
-              <ReactionPicker onPick={handleEmojiSelect} own={own} />
-            )}
           </div>
         )}
-
-        <span
-          className={cn(
-            'block text-[10px] tabular-nums',
-            own ? 'text-text-strong/55' : 'text-text-muted',
-          )}
-        >
-          {message.time}
-        </span>
       </div>
+      {!own && plusButton}
     </div>
   );
 }
 
-interface ReactionPickerProps {
-  onPick: (emoji: string) => void;
-  own: boolean;
+interface ReplyQuoteProps {
+  senderName: string;
+  text: string;
+  ownBubble: boolean;
 }
 
-function ReactionPicker({ onPick, own }: ReactionPickerProps) {
-  const [open, setOpen] = useState(false);
+function ReplyQuote({ senderName, text, ownBubble }: ReplyQuoteProps) {
   return (
-    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
-      <DropdownMenu.Trigger asChild>
-        <button
-          type="button"
-          aria-label="Добавить реакцию"
-          className={cn(
-            'flex h-5 w-5 items-center justify-center rounded-full',
-            'opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100',
-            own
-              ? 'text-text-strong/55 hover:bg-text-strong/10'
-              : 'text-text-muted hover:bg-bg-hover hover:text-text-strong',
-          )}
-        >
-          <Plus className="h-3 w-3" strokeWidth={2} />
-        </button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          side="top"
-          align="start"
-          sideOffset={4}
-          className={cn(
-            'z-50 flex gap-0.5 rounded-xl',
-            'border border-border-default bg-bg-elevated px-1.5 py-1 shadow-xl',
-          )}
-        >
-          {REACTION_PALETTE.map((emoji) => (
-            <DropdownMenu.Item
-              key={emoji}
-              onSelect={() => onPick(emoji)}
-              className={cn(
-                'flex h-7 w-7 cursor-pointer items-center justify-center rounded-md',
-                'text-[15px] outline-none transition-colors',
-                'data-[highlighted]:bg-bg-hover',
-              )}
-            >
-              {emoji}
-            </DropdownMenu.Item>
-          ))}
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+    <div
+      className={cn(
+        'flex max-w-full items-start gap-2 rounded-md border-l-2 border-accent-clay px-2 py-1',
+        ownBubble ? 'bg-text-strong/5' : 'bg-bg-primary/40',
+      )}
+    >
+      <CornerUpLeft
+        className="mt-0.5 h-3 w-3 shrink-0 text-accent-clay"
+        strokeWidth={2}
+      />
+      <span className="flex min-w-0 flex-col leading-tight">
+        <span className="truncate text-[11px] font-medium text-accent-clay">
+          {senderName || 'Сообщение'}
+        </span>
+        <span className="line-clamp-1 text-[11.5px] text-text-secondary">
+          {text || '(вложение)'}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+interface MetaFooterProps {
+  own: boolean;
+  time: string;
+  isRead: boolean;
+  pending: boolean;
+  /**
+   * `inline` — внутри `<p>`, плавает в right end последней строки text-bubble.
+   * `overlay` — absolute поверх media (правый нижний угол) с тёмной подложкой.
+   */
+  variant: 'inline' | 'overlay';
+}
+
+/**
+ * Время + read-checkmark в нижнем правом углу bubble. Telegram-style:
+ *   • Inline: float right, vertical-align baseline с текстом. Если строка
+ *     длинная — footer переезжает вниз благодаря ` `-spacer перед ним.
+ *   • Overlay: тёмная pill поверх media в правом нижнем углу.
+ */
+function MetaFooter({ own, time, isRead, pending, variant }: MetaFooterProps) {
+  if (variant === 'overlay') {
+    return (
+      <span
+        className={cn(
+          'pointer-events-none absolute bottom-1.5 right-1.5 inline-flex items-center gap-1',
+          'rounded-full bg-bg-deep/65 px-1.5 py-0.5 text-[10px] tabular-nums text-white',
+          'backdrop-blur-[2px]',
+        )}
+      >
+        <span>{time}</span>
+        {own && <ReadReceipt isRead={isRead} pending={pending} tinted />}
+      </span>
+    );
+  }
+  // Inline-flow: время + ✓ идут сразу за last char текста, без float-right.
+  // Bubble shrink'ается естественно по содержимому, без правой «пустоты».
+  return (
+    <>
+      <span aria-hidden>{'  '}</span>
+      <span
+        className={cn(
+          'float-right ml-2 inline-flex translate-y-[3px] items-center gap-1 text-[10px] tabular-nums',
+          own ? 'text-text-strong/55' : 'text-text-muted',
+        )}
+      >
+        <span>{time}</span>
+        {own && <ReadReceipt isRead={isRead} pending={pending} />}
+      </span>
+    </>
+  );
+}
+
+interface ReadReceiptProps {
+  isRead: boolean;
+  pending: boolean;
+  /** `true` для overlay-варианта поверх media — белая галочка вместо tint'a. */
+  tinted?: boolean;
+}
+
+function ReadReceipt({ isRead, pending, tinted }: ReadReceiptProps) {
+  if (pending) {
+    return (
+      <Check
+        className={cn(
+          'h-3 w-3 shrink-0 animate-pulse opacity-60',
+          tinted && 'text-white',
+        )}
+        strokeWidth={2.25}
+        aria-label="Отправляется"
+      />
+    );
+  }
+  if (isRead) {
+    return (
+      <CheckCheck
+        className={cn(
+          'h-3 w-3 shrink-0',
+          tinted ? 'text-presence-online' : 'text-presence-online',
+        )}
+        strokeWidth={2.25}
+        aria-label="Прочитано"
+      />
+    );
+  }
+  return (
+    <Check
+      className={cn('h-3 w-3 shrink-0', tinted && 'text-white')}
+      strokeWidth={2.25}
+      aria-label="Отправлено"
+    />
   );
 }
