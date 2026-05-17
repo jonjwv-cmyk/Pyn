@@ -1,0 +1,20 @@
+/**
+ * @pyn/core/api — HTTP client + transport + errors.
+ *
+ * Crypto interceptor (E2E X25519 + AES-GCM) добавится в stage 2 как обёртка
+ * над transport — ApiClient.call останется тем же.
+ */
+export { ApiClient } from './client';
+export { ApiError, ERROR_CODES, type ApiErrorCode } from './errors';
+export type { ApiTransport, ApiCallOptions, ApiEnvelope } from './transport';
+export {
+  WS_EVENT_TYPES,
+  type WsServerEvent,
+  type WsEventType,
+  type NewMessageEvent,
+  type NewNewsEvent,
+  type NewsUpdateEvent,
+  type UnreadUpdateEvent,
+  type PresenceChangeEvent,
+  type DesktopKickedEvent,
+} from './ws-events';

@@ -1,0 +1,82 @@
+import type { ChatMessageWire } from '@pyn/core';
+import type { ChatMessageItem, ChatPartner, ChatPartnerType } from '@/types/chat';
+import { computeInitials } from '@/lib/initials';
+import { formatFullYek } from '@/lib/format-time';
+
+/**
+ * `get_admin_messages` возвращает последнее сообщение для каждого peer'a (а
+ * не aggregated conversation). Этот helper берёт одно сообщение и формирует
+ * ChatPartner-row для левого списка.
+ *
+ * Peer определяется по перспективе текущего пользователя:
+ *   • Если мы прислали (sender == myLogin) → peer = receiver
+ *   • Иначе peer = sender (тот кто нам написал)
+ *
+ * Категория (user vs client) выводится из `sender_role` (или `receiver_role`,
+ * если у нас он есть). `client` = внешний клиент → блок «Клиенты»,
+ * остальные → «Экспедиторы».
+ */
+export function wireToChatPartnerFromMessage(wire: ChatMessageWire, myLogin: string): ChatPartner {
+  const isOwn = wire.sender_login === myLogin;
+  const peerLogin = isOwn ? (wire.receiver_login ?? '') : wire.sender_login;
+  const peerName = isOwn
+    ? peerLogin
+    : (wire.sender_name ?? wire.sender_login);
+  const peerRole = isOwn ? undefined : wire.sender_role;
+  const peerPresence = isOwn
+    ? wire.receiver_presence_status
+    : wire.sender_presence_status;
+  // Аватар берём с той же стороны, что и presence: если peer — receiver,
+  // то receiver_avatar_*; иначе sender_avatar_*.
+  const peerAvatarUrl = isOwn ? wire.receiver_avatar_url : wire.sender_avatar_url;
+  const peerAvatarBlobKey = isOwn
+    ? wire.receiver_avatar_blob_key_b64
+    : wire.sender_avatar_blob_key_b64;
+  const peerAvatarBlobNonce = isOwn
+    ? wire.receiver_avatar_blob_nonce_b64
+    : wire.sender_avatar_blob_nonce_b64;
+  const peerLastSeenAt = isOwn ? wire.receiver_last_seen_at : wire.sender_last_seen_at;
+
+  return {
+    id: peerLogin,
+    type: roleToPartnerType(peerRole),
+    name: peerName,
+    initials: computeInitials(peerName),
+    avatarUrl: peerAvatarUrl || undefined,
+    avatarBlobKey: peerAvatarBlobKey || undefined,
+    avatarBlobNonce: peerAvatarBlobNonce || undefined,
+    lastMessage: wire.text,
+    lastMessageTime: wire.created_at ? formatFullYek(wire.created_at) : '',
+    lastSeenAtLabel: peerLastSeenAt ? formatFullYek(peerLastSeenAt) : '',
+    unreadCount: wire.unread_count ?? 0,
+    presence: peerPresence ?? 'offline',
+  };
+}
+
+/** Один message из `get_admin_chat` → ChatMessageItem для bubble-ленты. */
+export function wireToChatMessage(wire: ChatMessageWire, myLogin: string): ChatMessageItem {
+  const isOwn = wire.sender_login === myLogin;
+  return {
+    id: String(wire.id),
+    numericId: wire.id,
+    authorId: isOwn ? 'me' : wire.sender_login,
+    text: wire.text,
+    time: wire.created_at ? formatFullYek(wire.created_at) : '',
+    isOwn,
+    attachments: (wire.attachments ?? []).map((a) => ({
+      id: a.file_url,
+      filename: a.file_name,
+      size: a.file_size,
+      mimeType: a.file_type,
+      url: a.file_url,
+      blobKey: a.blob_key_b64,
+      blobNonce: a.blob_nonce_b64,
+    })),
+    reactions: wire.reactions && typeof wire.reactions === 'object' ? wire.reactions : {},
+    myReactions: wire.my_reactions ?? [],
+  };
+}
+
+function roleToPartnerType(role: string | undefined): ChatPartnerType {
+  return role === 'client' ? 'client' : 'user';
+}

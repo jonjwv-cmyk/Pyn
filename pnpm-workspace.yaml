@@ -1,0 +1,10 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Разрешаем build scripts для нативных зависимостей.
+# electron — скачивает native binary при post-install.
+# esbuild — скачивает native binary для bundling.
+allowBuilds:
+  electron: true
+  esbuild: true

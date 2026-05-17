@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Pyn",
+    "slug": "pyn",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "scheme": "pyn",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.pyn.mobile"
+    },
+    "android": {
+      "package": "app.pyn.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#1F1E1B"
+      }
+    },
+    "plugins": ["expo-router"]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "@pyn/tsconfig/react-native.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./app/*", "./components/*"]
+    }
+  },
+  "include": ["app/**/*", "components/**/*", "*.ts", "*.tsx"]
+}
