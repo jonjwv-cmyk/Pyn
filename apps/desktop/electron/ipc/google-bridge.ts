@@ -116,16 +116,39 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
 
 async function logout(): Promise<void> {
   const ses = session.fromPartition(GOOGLE_PARTITION);
-  // Чистим cookies всех Google-доменов чтобы webview потерял session.
-  const all = await ses.cookies.get({});
-  await Promise.all(
-    all
-      .filter((c) => c.domain && c.domain.includes('google.'))
-      .map((c) => {
-        const url = `https://${(c.domain || '').replace(/^\./, '')}${c.path || '/'}`;
-        return ses.cookies.remove(url, c.name).catch(() => undefined);
-      }),
-  );
+
+  // §v1.2.9 — ПОЛНАЯ очистка partition. Если оставить localStorage /
+  // IndexedDB / Service Workers (т.е. чистить только cookies, как делали
+  // до v1.2.9), то Google после logout видит остаточные session-данные
+  // и переключается в strict embedded-webview detection. Симптом: на
+  // следующем login попадаешь на `/v3/signin/rejected?checkConnection`
+  // → "Поддержка JavaScript отключена". В pristine state (первый запуск
+  // app или после полной очистки) Google пускает.
+  //
+  // Очистка всех storages приводит partition в "как при первом запуске"
+  // state → login снова проходит. Юзер уже подтвердил этот pattern в
+  // v1.2.8: первый login после установки работает, после logout — нет.
+  console.log('[google-logout] clearing all partition storage');
+  try {
+    await ses.clearStorageData({
+      storages: [
+        'cookies',
+        'filesystem',
+        'indexdb',
+        'localstorage',
+        'shadercache',
+        'websql',
+        'serviceworkers',
+        'cachestorage',
+      ],
+    });
+    await ses.clearCache();
+    await ses.clearHostResolverCache().catch(() => undefined);
+    await ses.clearAuthCache().catch(() => undefined);
+    console.log('[google-logout] cleared OK');
+  } catch (e) {
+    console.log('[google-logout] clear failed:', e);
+  }
 }
 
 export function setupGoogleBridge(): void {
