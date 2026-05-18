@@ -229,6 +229,92 @@ export async function checkSheetActionStatus(
   };
 }
 
+// ── SAP-macro flow (Windows-only) ─────────────────────────────────────────
+
+export interface MacroBundle {
+  macroId: string;
+  actionId: string;
+  /** Полный исходник VBS-скрипта. Клиент пишет на диск без BOM и spawn'ит cscript. */
+  vbsSource: string;
+  /** HMAC-stateless token со сроком ~15 мин. Подписывает submit_macro_data. */
+  macroToken: string;
+  expiresInSec: number;
+}
+
+interface MacroBundleWire {
+  ok: boolean;
+  macro_id?: string;
+  action_id?: string;
+  vbs_source?: string;
+  macro_token?: string;
+  expires_in_sec?: number;
+  error?: string;
+}
+
+/**
+ * `get_macro_bundle` — получить VBS-исходник + macro_token для запуска
+ * SAP-макроса. Server проверяет action.requiresPassword.
+ *
+ * Возвращает `{ ok, bundle, error }`:
+ *   • bundle → можно запускать VBS.
+ *   • error === 'wrong_password' → перепросить пароль.
+ *   • error === 'not_a_macro_action' → у action.macroId === null.
+ */
+export async function getMacroBundle(
+  client: ApiClient,
+  args: { actionId: string; password?: string },
+): Promise<
+  | { ok: true; bundle: MacroBundle }
+  | { ok: false; error: string }
+> {
+  const wire = await client.call<MacroBundleWire>('get_macro_bundle', {
+    action_id: args.actionId,
+    password: args.password,
+  });
+  if (!wire.ok || !wire.vbs_source || !wire.macro_token) {
+    return { ok: false, error: wire.error ?? 'unknown' };
+  }
+  return {
+    ok: true,
+    bundle: {
+      macroId: wire.macro_id ?? '',
+      actionId: wire.action_id ?? args.actionId,
+      vbsSource: wire.vbs_source,
+      macroToken: wire.macro_token,
+      expiresInSec: wire.expires_in_sec ?? 900,
+    },
+  };
+}
+
+interface SubmitMacroWire {
+  ok: boolean;
+  macro_id?: string;
+  rows_inserted?: number;
+  range_written?: string;
+  mode?: string;
+  error?: string;
+}
+
+/**
+ * `submit_macro_data` — отправить TSV-результат VBS-макроса серверу.
+ * Сервер пишет данные в Sheets API и (опц.) дёргает Apps Script processor.
+ */
+export async function submitMacroData(
+  client: ApiClient,
+  args: { macroToken: string; data: string; actionId: string },
+): Promise<{ ok: boolean; rowsInserted?: number; error?: string }> {
+  const wire = await client.call<SubmitMacroWire>('submit_macro_data', {
+    macro_token: args.macroToken,
+    data: args.data,
+    action_id: args.actionId,
+  });
+  return {
+    ok: !!wire.ok,
+    rowsInserted: wire.rows_inserted,
+    error: wire.error,
+  };
+}
+
 // ── search_sap_doc ────────────────────────────────────────────────────────
 
 export interface SapDocHit {

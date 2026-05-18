@@ -67,6 +67,15 @@ declare global {
         checkStatus: () => Promise<{ loggedIn: boolean; email: string | null }>;
         logout: () => Promise<{ loggedIn: boolean; email: string | null }>;
       };
+      /**
+       * SAP-macro VBS runner (Windows only). Возвращает TSV-строку которую
+       * нужно отправить серверу через `submitMacroData`.
+       */
+      macro: {
+        runVbs: (
+          vbsSource: string,
+        ) => Promise<{ ok: boolean; tsv?: string; error?: string }>;
+      };
       /** Auto-update — download + install нового билда. */
       update: {
         downloadInstall: (

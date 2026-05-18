@@ -68,7 +68,11 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
         nodeIntegration: false,
       },
     });
-    win.loadURL(LOGIN_URL).catch(() => {});
+    // Дублируем UA-override явно на webContents — partition-level
+    // `setUserAgent` иногда применяется после первого navigation. Это
+    // двойная страховка.
+    win.webContents.setUserAgent(CHROME_UA);
+    win.loadURL(LOGIN_URL, { userAgent: CHROME_UA }).catch(() => {});
 
     // Авто-закрытие когда Google редиректнул на docs.google.com (успешный login).
     const onNavigation = (_evt: Electron.Event, url: string) => {

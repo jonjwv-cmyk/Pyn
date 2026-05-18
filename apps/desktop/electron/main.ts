@@ -5,6 +5,7 @@ import { setupApiBridge } from './ipc/api-bridge';
 import { setupBlobBridge } from './ipc/blob-bridge';
 import { setupCacheBridge } from './ipc/cache-bridge';
 import { setupGoogleBridge } from './ipc/google-bridge';
+import { setupMacroBridge } from './ipc/macro-bridge';
 import { setupMolBridge } from './ipc/mol-bridge';
 import { setupTokenBridge } from './ipc/token-bridge';
 import { setupUpdateBridge } from './ipc/update-bridge';
@@ -14,6 +15,16 @@ import { startVpsPing, stopVpsPing } from './network/vps-ping';
 // Stage 11: DNS override для Chromium net stack. `api.otlhelper.com` → IP VPS.
 // Должно быть ДО `app.whenReady()` — Chromium init читает switch'и однократно.
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP api.otlhelper.com 45.12.239.5');
+
+// Google detects Electron в нескольких слоях: `Electron/` в UA — это раз,
+// `Sec-CH-UA` client hints (Brand: Chromium + Brand: Electron) — это два.
+// UA мы подменяем на чистый Chrome через setUserAgent; client hints
+// глушим celom отключив фичу — иначе Google всё равно видит «Electron»
+// в Sec-CH-UA и блокирует login с "JavaScript отключён".
+app.commandLine.appendSwitch(
+  'disable-features',
+  'UserAgentClientHint,UserAgentClientHintFullVersionList',
+);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,6 +72,16 @@ function createWindow(): void {
 
   win.once('ready-to-show', () => win.show());
 
+  // Гарантированно ставим platform-attr на documentElement до того как
+  // React начнёт рендерить — это позволяет CSS-правилам c селектором
+  // `html[data-pyn-platform="win32"]` зарезервировать место под Win-controls.
+  // preload-вариант ненадёжен: на некоторых билдах document уже не пустой.
+  win.webContents.on('dom-ready', () => {
+    void win.webContents.executeJavaScript(
+      `document.documentElement.dataset.pynPlatform = ${JSON.stringify(process.platform)};`,
+    );
+  });
+
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL);
     // Auto-open devtools только в dev режиме.
@@ -97,6 +118,9 @@ app.whenReady().then(async () => {
   // 'mol-base').
   setupMolBridge();
   setupGoogleBridge();
+  // SAP-макросы: renderer получает VBS source через get_macro_bundle,
+  // main process пишет на диск + spawn'ит cscript /B (Windows-only).
+  setupMacroBridge();
   // Auto-update IPC: renderer определяет need-update через app_status endpoint,
   // main качает .exe / .dmg в %LOCALAPPDATA%\Pyn\updates\ и запускает install.
   setupUpdateBridge();

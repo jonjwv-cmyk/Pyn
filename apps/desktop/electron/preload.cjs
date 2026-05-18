@@ -132,6 +132,16 @@ contextBridge.exposeInMainWorld('pyn', {
     },
   },
   /**
+   * SAP-макрос: пишем VBS на диск (без BOM), spawn'им cscript /B,
+   * читаем TSV-output, удаляем VBS и TSV. Windows-only — на Mac возвращает
+   * `{ ok: false, error: 'platform_not_supported' }`.
+   */
+  macro: {
+    runVbs: function pynMacroRunVbs(vbsSource) {
+      return ipcRenderer.invoke('pyn:macro:run-vbs', String(vbsSource || ''));
+    },
+  },
+  /**
    * Auto-update: скачать новый билд по URL и запустить установку.
    * Renderer уже определил что нужен update (через app_status endpoint в
    * @pyn/core) — main скачивает exe, прячет в %LOCALAPPDATA% и spawn'ит

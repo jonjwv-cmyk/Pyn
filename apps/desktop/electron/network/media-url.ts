@@ -16,9 +16,18 @@ import type { ProxyConfig } from './proxy';
  * Также подменяем `cdn.otlhelper.com` (хост R2-cache fronted via Worker) —
  * у него аналогичная проблема под корп-прокси.
  */
+/**
+ * Переписываем только `api.otlhelper.com` — у sslip.io vhost есть нужные
+ * location'ы (`/api`, `/ws`, `/desktop/...`).
+ *
+ * `cdn.otlhelper.com` (R2 blob fronted via CF Worker) — НЕ переписываем.
+ * Это публичный CF endpoint, корп-прокси резолвит его своим DNS на CF IP
+ * и proxy-tunnel'ит TLS до CF. sslip.io ему не нужен и сломает path:
+ * snapshot/avatar URL'ы вида `cdn.otlhelper.com/<r2_key>` после rewrite
+ * стали бы `45-12-239-5.sslip.io/<r2_key>` → 404.
+ */
 const REWRITE_HOSTS = new Set([
   'api.otlhelper.com',
-  'cdn.otlhelper.com',
 ]);
 const SSLIP_HOST = '45-12-239-5.sslip.io';
 

@@ -3,7 +3,9 @@ import * as Popover from '@radix-ui/react-popover';
 import { Chrome, RefreshCcw } from 'lucide-react';
 import {
   checkSheetActionStatus,
+  getMacroBundle,
   runScript,
+  submitMacroData,
   useSheetsLockStore,
 } from '@pyn/core';
 import { api } from '@/lib/api';
@@ -379,27 +381,103 @@ export function TablesScreen({
     [activeFile, activeTab, currentUserName, showToast],
   );
 
+  /**
+   * SAP-макрос (action.macroId !== null). Pipeline:
+   *  1. Optimistic acquire lock.
+   *  2. get_macro_bundle → server отдаёт VBS-source + macro_token.
+   *  3. main process пишет VBS, spawn'ит cscript, читает TSV-output.
+   *  4. submit_macro_data → server пишет TSV в Sheets API и (опц.) запускает
+   *     Apps Script processor.
+   *  5. Если есть statusUrl — polling до alive=false.
+   *  6. Reload webview, release lock.
+   *
+   * Windows-only — cscript отсутствует на Mac/iOS/Android.
+   */
+  const runMacroAction = useCallback(
+    async (action: TableAction, password?: string): Promise<void> => {
+      if (!activeFile || !activeTab) return;
+      const platform = window.pyn?.platform;
+      if (platform !== 'win32') {
+        showToast('SAP-макросы доступны только в Windows-версии');
+        return;
+      }
+      const tabName = activeTab.rawName;
+      const lockedTabs = action.locksTabs && action.locksTabs.length > 0
+        ? action.locksTabs
+        : [tabName];
+
+      useSheetsLockStore.getState().acquire({
+        actionId: action.id,
+        actionLabel: action.label,
+        userName: currentUserName,
+        tabName,
+        lockedTabRawNames: lockedTabs,
+      });
+
+      try {
+        const bundle = await getMacroBundle(api, {
+          actionId: action.id,
+          password,
+        });
+        if (!bundle.ok) {
+          if (bundle.error === 'wrong_password') showToast('Неверный пароль');
+          else showToast(`Не получили VBS: ${bundle.error}`);
+          return;
+        }
+
+        const vbsRun = await window.pyn?.macro?.runVbs(bundle.bundle.vbsSource);
+        if (!vbsRun || !vbsRun.ok || !vbsRun.tsv) {
+          showToast(`VBS не отработал: ${vbsRun?.error ?? 'unknown'}`);
+          return;
+        }
+
+        const submit = await submitMacroData(api, {
+          macroToken: bundle.bundle.macroToken,
+          data: vbsRun.tsv,
+          actionId: action.id,
+        });
+        if (!submit.ok) {
+          showToast(`Сервер отверг данные: ${submit.error ?? 'unknown'}`);
+          return;
+        }
+
+        if (action.hasStatusUrl) {
+          const POLL_INTERVAL = 2000;
+          const MAX_ATTEMPTS = 180;
+          for (let i = 0; i < MAX_ATTEMPTS; i++) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+            const status = await checkSheetActionStatus(api, action.id).catch(
+              () => ({ alive: false } as const),
+            );
+            if (!status.alive) break;
+          }
+        }
+
+        webviewRefs.current.get(activeFile.id)?.reload?.();
+        showToast(
+          `«${action.label}» — готово (строк: ${submit.rowsInserted ?? '?'})`,
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        showToast(`Ошибка: ${msg.slice(0, 80)}`);
+      } finally {
+        useSheetsLockStore.getState().release(action.id);
+      }
+    },
+    [activeFile, activeTab, currentUserName, showToast],
+  );
+
   const handleAction = (action: TableAction): void => {
     if (!loggedIn) {
       showToast('Войдите в Google чтобы запускать скрипты');
-      return;
-    }
-    if (action.macroId) {
-      // SAP-макрос требует VBS-исполнение, доступное только на Windows.
-      // На Mac/iOS/Android — пока заглушка.
-      const isWin = navigator.userAgent.toLowerCase().includes('win');
-      if (!isWin) {
-        showToast('SAP-макросы запускаются только из Windows-версии');
-        return;
-      }
-      showToast(`Макрос «${action.label}» — пока в разработке`);
       return;
     }
     if (action.requiresPassword) {
       setPendingPwAction(action);
       return;
     }
-    void runScriptAction(action);
+    if (action.macroId) void runMacroAction(action);
+    else void runScriptAction(action);
   };
 
   return (
@@ -476,6 +554,7 @@ export function TablesScreen({
               ref={refCallback(fileId)}
               src={initialUrl}
               partition={SHEETS_PARTITION}
+              useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
               allowpopups
               style={{
                 position: 'absolute',
@@ -502,7 +581,9 @@ export function TablesScreen({
           onSubmit={(pw) => {
             const a = pendingPwAction;
             setPendingPwAction(null);
-            if (a) void runScriptAction(a, pw);
+            if (!a) return;
+            if (a.macroId) void runMacroAction(a, pw);
+            else void runScriptAction(a, pw);
           }}
           onCancel={() => setPendingPwAction(null)}
         />
