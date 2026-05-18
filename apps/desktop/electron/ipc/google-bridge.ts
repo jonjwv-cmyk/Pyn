@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, ipcMain, session } from 'electron';
 
 /**
  * Google account flow для embedded Sheets (раздел «Таблицы»).
@@ -68,10 +68,12 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
     });
     win.loadURL(LOGIN_URL).catch(() => {});
 
-    // §diag v1.2.8 — DevTools в login-окне для диагностики «Поддержка
-    // JavaScript отключена» на Win-corp. Detach mode = отдельное окно
-    // рядом, не съедает площадь login-формы.
-    win.webContents.openDevTools({ mode: 'detach' });
+    // §diag v1.2.8 — DevTools в login-окне для диагностики. v1.2.10:
+    // только в dev mode или при явном PYN_DEBUG=1 env. В production
+    // production exe DevTools юзеру не нужен и засоряет UX.
+    if (!app.isPackaged || process.env.PYN_DEBUG === '1') {
+      win.webContents.openDevTools({ mode: 'detach' });
+    }
 
     // §diag v1.2.8 — пишем console-сообщения и failed-loads из login
     // webview в main process console (→ main.log файл через setupMainLog).
@@ -114,21 +116,9 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
   });
 }
 
-async function logout(): Promise<void> {
+async function clearPartitionFully(): Promise<void> {
   const ses = session.fromPartition(GOOGLE_PARTITION);
-
-  // §v1.2.9 — ПОЛНАЯ очистка partition. Если оставить localStorage /
-  // IndexedDB / Service Workers (т.е. чистить только cookies, как делали
-  // до v1.2.9), то Google после logout видит остаточные session-данные
-  // и переключается в strict embedded-webview detection. Симптом: на
-  // следующем login попадаешь на `/v3/signin/rejected?checkConnection`
-  // → "Поддержка JavaScript отключена". В pristine state (первый запуск
-  // app или после полной очистки) Google пускает.
-  //
-  // Очистка всех storages приводит partition в "как при первом запуске"
-  // state → login снова проходит. Юзер уже подтвердил этот pattern в
-  // v1.2.8: первый login после установки работает, после logout — нет.
-  console.log('[google-logout] clearing all partition storage');
+  console.log('[google] clearing all partition storage');
   try {
     await ses.clearStorageData({
       storages: [
@@ -145,13 +135,68 @@ async function logout(): Promise<void> {
     await ses.clearCache();
     await ses.clearHostResolverCache().catch(() => undefined);
     await ses.clearAuthCache().catch(() => undefined);
-    console.log('[google-logout] cleared OK');
+    console.log('[google] cleared OK');
   } catch (e) {
-    console.log('[google-logout] clear failed:', e);
+    console.log('[google] clear failed:', e);
+  }
+}
+
+async function logout(): Promise<void> {
+  // §v1.2.10 — clearStorageData + app.relaunch.
+  //
+  // v1.2.9 ввёл полную очистку всех storages при logout (раньше чистили
+  // только cookies). Но clearStorageData в Electron часто **fail silently**
+  // если partition держится живой через активный webview (TablesScreen
+  // имеет `<webview partition="persist:google-sheets">` смонтированный
+  // в renderer'е). Service Workers, IndexedDB могут не очиститься из-за
+  // file locks.
+  //
+  // Симптом v1.2.9: юзер скачал новый exe → запустил → login fail
+  // (partition contaminated с прошлых запусков) → logout → login снова
+  // fail (clearStorageData не отработал полностью).
+  //
+  // Решение: clear + relaunch app. Перезапуск гарантированно освобождает
+  // все file locks. Новый процесс открывает уже пустую partition.
+  await clearPartitionFully();
+  console.log('[google-logout] relaunching app for clean state');
+  app.relaunch();
+  app.exit(0);
+}
+
+/**
+ * §v1.2.10 — На startup: если в partition нет активной session
+ * (нет SID/__Secure-1PSID cookies), но что-то в storage есть —
+ * очистить. Это handle юзеров кто обновился с v1.2.7/v1.2.8 где partition
+ * contaminated.
+ *
+ * Безопасно: если юзер залогинен (есть SID) — не трогаем. Если не залогинен —
+ * терять нечего, очищаем чтобы partition был pristine для следующего login.
+ */
+async function purgeIfNoSession(): Promise<void> {
+  try {
+    const ses = session.fromPartition(GOOGLE_PARTITION);
+    const cookies = await ses.cookies.get({ domain: '.google.com' });
+    const hasSession = cookies.some(
+      (c) => c.name === 'SID' || c.name === '__Secure-1PSID' || c.name === '__Secure-3PSID',
+    );
+    if (hasSession) {
+      console.log('[google-startup] session cookies present, keep partition as is');
+      return;
+    }
+    console.log('[google-startup] no session cookies — purging partition for pristine login');
+    await clearPartitionFully();
+  } catch (e) {
+    console.log('[google-startup] purge check failed:', e);
   }
 }
 
 export function setupGoogleBridge(): void {
+  // §v1.2.10 — на старте app проверяем что partition pristine если нет
+  // активной session. Закрывает gap для юзеров обновляющихся с v1.2.7-v1.2.9
+  // где partition мог быть contaminated с прошлых запусков. Не await —
+  // partition free в background, не блокируем app startup.
+  void purgeIfNoSession();
+
   ipcMain.handle('pyn:google:open-login', async () => {
     const parent = BrowserWindow.getFocusedWindow();
     return openLoginWindow(parent);
