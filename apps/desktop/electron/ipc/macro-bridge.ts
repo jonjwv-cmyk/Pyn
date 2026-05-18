@@ -142,10 +142,15 @@ export function setupMacroBridge(): void {
           };
         }
 
-        // TSV из VBS — UTF-8 (наш VBS использует Scripting.FileSystemObject
-        // в Unicode-режиме). Если макрос написал в ANSI — TSV прочитается
-        // с искажениями, но это будет видно по результатам.
-        const tsv = readFileSync(tsvPath, 'utf-8');
+        // TSV из VBS — UTF-16 LE с BOM. Sub WriteUnicode в VBS источниках
+        // делает `CreateTextFile(path, True, True)` — третий True = Unicode
+        // mode = UTF-16 LE + BOM (0xFF 0xFE). Читаем 1:1 c Kotlin
+        // MacroOrchestrator.kt:265 — `readText(Charsets.UTF_16LE).removePrefix("﻿")`.
+        // ⚠️ Был bug: читали как 'utf-8' → submit улетал с NUL-байтами,
+        // Sheets API писал мусор или отвечал 400 → юзер видел «не сработало»
+        // несмотря на EXIT_OK от VBS.
+        let tsv = readFileSync(tsvPath).toString('utf16le');
+        if (tsv.charCodeAt(0) === 0xFEFF) tsv = tsv.slice(1);
         cleanup();
         if (!tsv.trim()) {
           return { ok: false, error: 'empty_output' };

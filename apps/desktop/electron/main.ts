@@ -16,15 +16,14 @@ import { startVpsPing, stopVpsPing } from './network/vps-ping';
 // Должно быть ДО `app.whenReady()` — Chromium init читает switch'и однократно.
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP api.otlhelper.com 45.12.239.5');
 
-// Google detects Electron в нескольких слоях: `Electron/` в UA — это раз,
-// `Sec-CH-UA` client hints (Brand: Chromium + Brand: Electron) — это два.
-// UA мы подменяем на чистый Chrome через setUserAgent; client hints
-// глушим celom отключив фичу — иначе Google всё равно видит «Electron»
-// в Sec-CH-UA и блокирует login с "JavaScript отключён".
-app.commandLine.appendSwitch(
-  'disable-features',
-  'UserAgentClientHint,UserAgentClientHintFullVersionList',
-);
+// §revert v1.2.4 → v1.2.3 — `disable-features: UserAgentClientHint` оказался
+// анти-pattern'ом. Реальный Chrome ВСЕГДА отправляет `Sec-CH-UA-*` headers;
+// их полное отсутствие — для Google security ML маркер «UA подменён, hints
+// глушены = не настоящий Chrome» → блок. До v1.2.4 (когда client hints
+// доходили до Google как есть, с "Chromium" / "Not.A/Brand" brand'ами)
+// embedded login и Sheets webview на Mac работали. Возвращаем дефолтное
+// поведение Electron: hints отправляются, partition-level UA spoof остаётся
+// в google-bridge.ts.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

@@ -20,15 +20,13 @@ import { BrowserWindow, ipcMain, session } from 'electron';
 const GOOGLE_PARTITION = 'persist:google-sheets';
 const LOGIN_URL = 'https://accounts.google.com/ServiceLogin?continue=https://docs.google.com/spreadsheets';
 
-/**
- * Google блокирует embedded webview-логины с UA содержащим `Electron`
- * (показывает «Поддержка JavaScript отключена»). Подменяем UA на чистый
- * Chrome 120 для всего `persist:google-sheets` partition — это покрывает
- * и login-окно, и `<webview>` в TablesScreen.
- */
-const CHROME_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+// §revert v1.2.4/v1.2.3 — UA spoof CHROME_UA удалён. В v1.2.0 (где у юзера
+// embedded Sheets + login работали) UA не подменялся вообще — Electron
+// отдавал дефолтный UA с `Chrome/130.x` и `Electron/33.x` хвостом, и
+// Google этого пропускал. Попытки «починить» через подмену UA Chrome 120
+// и `disable-features: UserAgentClientHint` (f2ad76e) дали обратный эффект:
+// Google теперь видит «UA Chrome 120 без client hints» и блокирует.
+// Возвращаем к дефолту — Electron сам себя представляет, Sec-CH-UA шлёт.
 
 interface GoogleStatus {
   loggedIn: boolean;
@@ -68,11 +66,7 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
         nodeIntegration: false,
       },
     });
-    // Дублируем UA-override явно на webContents — partition-level
-    // `setUserAgent` иногда применяется после первого navigation. Это
-    // двойная страховка.
-    win.webContents.setUserAgent(CHROME_UA);
-    win.loadURL(LOGIN_URL, { userAgent: CHROME_UA }).catch(() => {});
+    win.loadURL(LOGIN_URL).catch(() => {});
 
     // Авто-закрытие когда Google редиректнул на docs.google.com (успешный login).
     const onNavigation = (_evt: Electron.Event, url: string) => {
@@ -106,10 +100,6 @@ async function logout(): Promise<void> {
 }
 
 export function setupGoogleBridge(): void {
-  // Подменяем UA на старте — до первого открытия login-окна или webview'a.
-  // Google отдаёт login-форму только UA-whitelisted клиентам.
-  session.fromPartition(GOOGLE_PARTITION).setUserAgent(CHROME_UA);
-
   ipcMain.handle('pyn:google:open-login', async () => {
     const parent = BrowserWindow.getFocusedWindow();
     return openLoginWindow(parent);
