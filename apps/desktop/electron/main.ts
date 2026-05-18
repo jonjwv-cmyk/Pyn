@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, Menu } from 'electron';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { setupApiBridge } from './ipc/api-bridge';
@@ -27,7 +27,18 @@ function createWindow(): void {
     height: 820,
     minWidth: 880,
     minHeight: 600,
-    titleBarStyle: isMac ? 'hiddenInset' : 'default',
+    // Mac: hidden inset с traffic-lights смещёнными внутрь.
+    // Win: title-bar overlay — нативные кнопки min/max/close в нашей тёмной
+    // палитре, без файлового меню сверху. Электрон рисует только кнопки;
+    // место под "drag region" поверх отдаём React'у.
+    titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
+    titleBarOverlay: isMac
+      ? undefined
+      : {
+          color: '#1F1E1B',      // bg-surface (см. tailwind.config)
+          symbolColor: '#E5E5E2', // text-primary
+          height: 32,
+        },
     trafficLightPosition: isMac ? { x: 16, y: 18 } : undefined,
     backgroundColor: '#1F1E1B',
     show: false,
@@ -60,6 +71,12 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  // Убираем дефолтное Electron-меню (File/Edit/View/Window/Help) — у Pyn
+  // свой UI, native menu только засоряет окно. Стандартные shortcut'ы
+  // (Ctrl+C / V / X / Z / A / W / Q) работают через `Edit`/`Window`-роли
+  // даже без видимого меню — Chromium всегда обрабатывает их.
+  Menu.setApplicationMenu(null);
+
   // Network: detect proxy → configure session → register IPC handler.
   // Делаем до createWindow чтобы первый renderer fetch уже видел готовый bridge.
   await setupApiBridge();
