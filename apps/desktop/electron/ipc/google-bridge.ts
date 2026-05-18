@@ -69,18 +69,28 @@ async function copyLoginCookiesToPersist(fromPartition: string): Promise<number>
       const domain = c.domain || '';
       if (!domain.includes('google.') && !domain.includes('youtube.')) continue;
       const url = `https://${domain.replace(/^\./, '')}${c.path || '/'}`;
+      // §v1.2.12 — `__Host-` cookies REQUIRE absence of `domain` attribute
+      // (это часть Host- contract, Chromium enforces). Если передаём domain
+      // → set() падает с EXCLUDE_INVALID_PREFIX. Для Host-/Secure- префиксов
+      // также нужен Secure=true + Path=/.
+      const isHostPrefix = c.name.startsWith('__Host-');
+      const isSecurePrefix = c.name.startsWith('__Secure-');
+      type CookieDetails = Parameters<typeof toSes.cookies.set>[0];
+      const setArgs: CookieDetails = {
+        url,
+        name: c.name,
+        value: c.value,
+        path: isHostPrefix ? '/' : c.path,
+        secure: isHostPrefix || isSecurePrefix ? true : c.secure,
+        httpOnly: c.httpOnly,
+        expirationDate: c.expirationDate,
+        sameSite: c.sameSite,
+      };
+      if (!isHostPrefix) {
+        setArgs.domain = c.domain;
+      }
       try {
-        await toSes.cookies.set({
-          url,
-          name: c.name,
-          value: c.value,
-          domain: c.domain,
-          path: c.path,
-          secure: c.secure,
-          httpOnly: c.httpOnly,
-          expirationDate: c.expirationDate,
-          sameSite: c.sameSite,
-        });
+        await toSes.cookies.set(setArgs);
         copied++;
       } catch (e) {
         console.log(`[google-login] cookie copy fail ${c.name}:`, e);
@@ -92,6 +102,42 @@ async function copyLoginCookiesToPersist(fromPartition: string): Promise<number>
     console.log('[google-login] copyLoginCookiesToPersist failed:', e);
     return 0;
   }
+}
+
+/**
+ * §v1.2.12 — Перехват youtube.com checkConnection-запросов на ephemeral
+ * login partition. Google внутри login flow открывает hidden pixel/iframe
+ * к youtube.com чтобы проверить «реальный ли это браузер». Если
+ * youtube reachable → check pass → продолжает login. Если timeout/error →
+ * rejected page (`/v3/signin/rejected?checkConnection&checkedDomains=youtube`).
+ *
+ * Юзер на корп-сети EVRAZ: youtube заблокирован прокси/firewall → check
+ * стабильно fail → embedded login невозможен. На Mac (home network) youtube
+ * доступен → check passes → login работает.
+ *
+ * Fix: возвращаем синтетический 204 No Content на запросы к youtube.com.
+ * Google checkConnection видит HTTP success → pass → отдаёт password screen.
+ * Реально к youtube ничего не идёт, обманываем только проверку.
+ */
+function installYoutubeCheckBypass(partition: string): void {
+  const ses = session.fromPartition(partition);
+  ses.webRequest.onBeforeRequest(
+    {
+      urls: [
+        'https://www.youtube.com/*',
+        'https://youtube.com/*',
+        'https://*.youtube.com/*',
+        'http://www.youtube.com/*',
+        'http://youtube.com/*',
+        'http://*.youtube.com/*',
+      ],
+    },
+    (details, callback) => {
+      console.log(`[google-login:yt-bypass] intercepted ${details.url}`);
+      // data: URL = синтетический пустой ответ, Google check pass.
+      callback({ redirectURL: 'data:text/plain;base64,' });
+    },
+  );
 }
 
 async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
@@ -107,6 +153,10 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
   // когда window закрыт, без locks вообще.
   const ephPartition = `login-eph-${Date.now()}`;
   let cookiesCopied = false;
+
+  // §v1.2.12 — обход checkConnection через youtube. Должно быть установлено
+  // ДО loadURL, иначе первый request к youtube успеет уйти.
+  installYoutubeCheckBypass(ephPartition);
 
   return new Promise((resolve) => {
     const win = new BrowserWindow({
