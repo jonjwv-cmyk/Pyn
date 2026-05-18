@@ -56,6 +56,17 @@
   -webkit-app-region: no-drag;
 }
 
+/*
+ * Windows: native min/max/close в правом верхнем углу (titleBarOverlay)
+ * занимают полосу ~138px × 32px на y=0. Резервируем под них место в
+ * любом Pyn-топбаре, чтобы наши контролы не пересекались с системными.
+ *   Платформа выставляется в preload.cjs:
+ *     html[data-pyn-platform="win32"] ...
+ */
+html[data-pyn-platform="win32"] .drag-region {
+  padding-right: 140px;
+}
+
 /**
  * Скрываем нативный «крестик» очистки для <input type="search">.
  * Browser/macOS показывает синий X в правой части поля — у нас собственная

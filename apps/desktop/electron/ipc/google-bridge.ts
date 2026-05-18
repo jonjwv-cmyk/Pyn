@@ -20,6 +20,16 @@ import { BrowserWindow, ipcMain, session } from 'electron';
 const GOOGLE_PARTITION = 'persist:google-sheets';
 const LOGIN_URL = 'https://accounts.google.com/ServiceLogin?continue=https://docs.google.com/spreadsheets';
 
+/**
+ * Google блокирует embedded webview-логины с UA содержащим `Electron`
+ * (показывает «Поддержка JavaScript отключена»). Подменяем UA на чистый
+ * Chrome 120 для всего `persist:google-sheets` partition — это покрывает
+ * и login-окно, и `<webview>` в TablesScreen.
+ */
+const CHROME_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
 interface GoogleStatus {
   loggedIn: boolean;
   email: string | null;
@@ -92,6 +102,10 @@ async function logout(): Promise<void> {
 }
 
 export function setupGoogleBridge(): void {
+  // Подменяем UA на старте — до первого открытия login-окна или webview'a.
+  // Google отдаёт login-форму только UA-whitelisted клиентам.
+  session.fromPartition(GOOGLE_PARTITION).setUserAgent(CHROME_UA);
+
   ipcMain.handle('pyn:google:open-login', async () => {
     const parent = BrowserWindow.getFocusedWindow();
     return openLoginWindow(parent);

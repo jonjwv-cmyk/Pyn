@@ -12,6 +12,15 @@ const appVersion =
   process.argv.find((a) => a.startsWith(APP_VERSION_ARG))?.slice(APP_VERSION_ARG.length) ||
   '0.0.0';
 
+// Ставим platform-attr на documentElement **до** того как React начнёт
+// рендерить — это позволяет CSS использовать `html[data-platform="win32"]`
+// для зарезервированного места под нативные Win-controls (titleBarOverlay).
+try {
+  document.documentElement.dataset.pynPlatform = process.platform;
+} catch (_) {
+  /* document может быть не готов в редких case'ах — игнорируем */
+}
+
 contextBridge.exposeInMainWorld('pyn', {
   platform: process.platform,
   /** Версия desktop-сборки из apps/desktop/package.json (через app.getVersion). */

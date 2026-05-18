@@ -1,6 +1,8 @@
 import { ipcMain, session as electronSession } from 'electron';
 import { gunzipSync } from 'node:zlib';
 import { decryptBlob } from '@pyn/core';
+import { resolveMediaUrl } from '../network/media-url';
+import { getProxyState } from './api-bridge';
 
 /**
  * Скачивание snapshot'a справочника МОЛ.
@@ -41,7 +43,8 @@ export function setupMolBridge(): void {
         throw new Error('snapshot_missing_blob_key');
       }
 
-      const resp = await electronSession.defaultSession.fetch(url);
+      const finalUrl = resolveMediaUrl(url, getProxyState());
+      const resp = await electronSession.defaultSession.fetch(finalUrl);
       if (!resp.ok) {
         throw new Error(`snapshot_fetch_${resp.status}`);
       }
