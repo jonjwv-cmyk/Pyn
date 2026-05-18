@@ -17,18 +17,22 @@ import type { ProxyConfig } from './proxy';
  * у него аналогичная проблема под корп-прокси.
  */
 /**
- * Переписываем только `api.otlhelper.com` — у sslip.io vhost есть нужные
- * location'ы (`/api`, `/ws`, `/desktop/...`).
+ * **Архитектурный инвариант**: корп-прокси **не должен** видеть Cloudflare.
+ * Все запросы идут через VPS `45-12-239-5.sslip.io` (proxy_pass на CF).
+ * Никаких прямых обращений из клиента к `cdn.otlhelper.com` /
+ * `api.otlhelper.com` — иначе корп-AV/политика может заблокировать.
  *
- * `cdn.otlhelper.com` (R2 blob fronted via CF Worker) — НЕ переписываем.
- * Это публичный CF endpoint, корп-прокси резолвит его своим DNS на CF IP
- * и proxy-tunnel'ит TLS до CF. sslip.io ему не нужен и сломает path:
- * snapshot/avatar URL'ы вида `cdn.otlhelper.com/<r2_key>` после rewrite
- * стали бы `45-12-239-5.sslip.io/<r2_key>` → 404.
+ * Маппинг:
+ *   • `api.otlhelper.com/<path>` → `45-12-239-5.sslip.io/<path>`
+ *     (sslip.io имеет `/api`, `/ws`, `/desktop/*`)
+ *   • `cdn.otlhelper.com/<key>` → `45-12-239-5.sslip.io/r2/<key>`
+ *     (nginx location `~ ^/r2/(.+)$` proxy_pass'ит на CF с
+ *     `Host: cdn.otlhelper.com`)
+ *
+ * Применяется ВСЕГДА когда proxy detected. В direct mode (домашняя сеть)
+ * — оставляем оригинальный URL: там и DNS-override на `api.otlhelper.com`
+ * и доверие к cdn работают.
  */
-const REWRITE_HOSTS = new Set([
-  'api.otlhelper.com',
-]);
 const SSLIP_HOST = '45-12-239-5.sslip.io';
 
 export function resolveMediaUrl(rawUrl: string, proxy: ProxyConfig | null): string {
@@ -36,11 +40,19 @@ export function resolveMediaUrl(rawUrl: string, proxy: ProxyConfig | null): stri
   if (typeof rawUrl !== 'string' || !rawUrl.startsWith('https://')) return rawUrl;
   try {
     const u = new URL(rawUrl);
-    if (!REWRITE_HOSTS.has(u.hostname)) return rawUrl;
-    u.hostname = SSLIP_HOST;
-    // Port явно убираем — sslip.io vhost слушает 443.
-    u.port = '';
-    return u.toString();
+    if (u.hostname === 'api.otlhelper.com') {
+      u.hostname = SSLIP_HOST;
+      u.port = '';
+      return u.toString();
+    }
+    if (u.hostname === 'cdn.otlhelper.com') {
+      // CDN-blob → префикс /r2/. Path начинается со слеша: '/<key>' → '/r2/<key>'.
+      u.hostname = SSLIP_HOST;
+      u.port = '';
+      u.pathname = '/r2' + u.pathname;
+      return u.toString();
+    }
+    return rawUrl;
   } catch {
     return rawUrl;
   }
