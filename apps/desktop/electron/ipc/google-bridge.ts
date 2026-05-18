@@ -263,25 +263,20 @@ async function clearPartitionFully(): Promise<void> {
 }
 
 async function logout(): Promise<void> {
-  // §v1.2.10 — clearStorageData + app.relaunch.
+  // §v1.2.13 — просто clearStorageData без relaunch.
   //
-  // v1.2.9 ввёл полную очистку всех storages при logout (раньше чистили
-  // только cookies). Но clearStorageData в Electron часто **fail silently**
-  // если partition держится живой через активный webview (TablesScreen
-  // имеет `<webview partition="persist:google-sheets">` смонтированный
-  // в renderer'е). Service Workers, IndexedDB могут не очиститься из-за
-  // file locks.
+  // В v1.2.10 был добавлен app.relaunch() + app.exit() чтобы освободить
+  // partition file locks. Это было нужно потому что login использовал
+  // тот же persist:google-sheets partition что и webview в TablesScreen
+  // — partition держался живой через активный webview, clearStorageData
+  // не мог полностью очистить.
   //
-  // Симптом v1.2.9: юзер скачал новый exe → запустил → login fail
-  // (partition contaminated с прошлых запусков) → logout → login снова
-  // fail (clearStorageData не отработал полностью).
-  //
-  // Решение: clear + relaunch app. Перезапуск гарантированно освобождает
-  // все file locks. Новый процесс открывает уже пустую partition.
+  // С v1.2.11 (ephemeral login partition) — login flow больше не
+  // зависит от состояния persist:google-sheets. clearStorageData на
+  // персисте отрабатывает (cookies удаляются, webview видит "no session"
+  // и предлагает login form). Перезапуск приложения не нужен — он
+  // выглядит как краш приложения для юзера.
   await clearPartitionFully();
-  console.log('[google-logout] relaunching app for clean state');
-  app.relaunch();
-  app.exit(0);
 }
 
 /**
