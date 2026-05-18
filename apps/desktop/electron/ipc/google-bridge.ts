@@ -50,7 +50,64 @@ async function readStatus(): Promise<GoogleStatus> {
   }
 }
 
+/**
+ * §v1.2.11 — Переносим cookies из ephemeral login-partition в
+ * persist:google-sheets. После успешного login (Google поставил SID,
+ * __Secure-1PSID и пр. в ephemeral) нам нужно их перенести в
+ * persistent partition, которую использует <webview> в TablesScreen.
+ */
+async function copyLoginCookiesToPersist(fromPartition: string): Promise<number> {
+  try {
+    const fromSes = session.fromPartition(fromPartition);
+    const toSes = session.fromPartition(GOOGLE_PARTITION);
+    const cookies = await fromSes.cookies.get({});
+    let copied = 0;
+    for (const c of cookies) {
+      // Только Google-домены (на login flow Google ставит cookies на
+      // accounts.google.com, .google.com, .youtube.com — на youtube
+      // делается checkConnection).
+      const domain = c.domain || '';
+      if (!domain.includes('google.') && !domain.includes('youtube.')) continue;
+      const url = `https://${domain.replace(/^\./, '')}${c.path || '/'}`;
+      try {
+        await toSes.cookies.set({
+          url,
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path,
+          secure: c.secure,
+          httpOnly: c.httpOnly,
+          expirationDate: c.expirationDate,
+          sameSite: c.sameSite,
+        });
+        copied++;
+      } catch (e) {
+        console.log(`[google-login] cookie copy fail ${c.name}:`, e);
+      }
+    }
+    console.log(`[google-login] copied ${copied}/${cookies.length} cookies to persist`);
+    return copied;
+  } catch (e) {
+    console.log('[google-login] copyLoginCookiesToPersist failed:', e);
+    return 0;
+  }
+}
+
 async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
+  // §v1.2.11 — login использует EPHEMERAL partition (не persist:).
+  // Каждый login attempt — свежая in-memory сессия. Google никогда не
+  // видит остаточные tracking-cookies / localStorage от прошлых попыток
+  // → не переходит в strict embedded-webview rejected mode. После login
+  // мы переносим cookies в persist:google-sheets для webview в Tables.
+  //
+  // Почему это работает: persist:google-sheets держится живой через
+  // <webview> в TablesScreen → clearStorageData на нём fail silently
+  // из-за file locks. Ephemeral partition освобождается автоматически
+  // когда window закрыт, без locks вообще.
+  const ephPartition = `login-eph-${Date.now()}`;
+  let cookiesCopied = false;
+
   return new Promise((resolve) => {
     const win = new BrowserWindow({
       width: 480,
@@ -61,7 +118,7 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
       backgroundColor: '#1F1E1B',
       autoHideMenuBar: true,
       webPreferences: {
-        partition: GOOGLE_PARTITION,
+        partition: ephPartition,
         contextIsolation: true,
         nodeIntegration: false,
       },
@@ -100,17 +157,31 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
     });
 
     // Авто-закрытие когда Google редиректнул на docs.google.com (успешный login).
-    const onNavigation = (_evt: Electron.Event, url: string) => {
+    // Перед close — копируем cookies из ephemeral в persist (иначе они умрут
+    // вместе с in-memory partition).
+    const onNavigation = async (_evt: Electron.Event, url: string) => {
       if (url.startsWith('https://docs.google.com/spreadsheets')) {
+        if (!cookiesCopied) {
+          await copyLoginCookiesToPersist(ephPartition);
+          cookiesCopied = true;
+        }
         win.close();
       }
     };
     win.webContents.on('will-redirect', onNavigation);
     win.webContents.on('did-navigate', onNavigation);
 
+    // Если юзер вручную закрыл окно — тоже попробуем скопировать cookies
+    // (мог залогиниться, не дойти до docs.google.com и закрыть).
+    win.on('close', async (evt) => {
+      if (cookiesCopied) return;
+      evt.preventDefault();
+      await copyLoginCookiesToPersist(ephPartition);
+      cookiesCopied = true;
+      win.destroy();
+    });
+
     win.on('closed', () => {
-      // Проверим cookies после закрытия — могут быть установлены даже если
-      // юзер сам закрыл окно после логина.
       void readStatus().then((s) => resolve(s.loggedIn));
     });
   });
