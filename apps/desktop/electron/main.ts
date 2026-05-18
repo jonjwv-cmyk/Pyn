@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Menu } from 'electron';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { setupMainLog } from './log';
 import { setupApiBridge } from './ipc/api-bridge';
 import { setupBlobBridge } from './ipc/blob-bridge';
 import { setupCacheBridge } from './ipc/cache-bridge';
@@ -11,6 +12,13 @@ import { setupTokenBridge } from './ipc/token-bridge';
 import { setupUpdateBridge } from './ipc/update-bridge';
 import { setupWsBridge } from './ipc/ws-bridge';
 import { startVpsPing, stopVpsPing } from './network/vps-ping';
+
+// §v1.2.8 — main-process logs в файл (%APPDATA%\Pyn\logs\main-*.log на Win,
+// ~/Library/Application Support/Pyn/logs/main-*.log на Mac). Раньше main
+// stdout/stderr в production exe закрыты — диагностика любых проблем main
+// процесса (network, IPC, webview events) невозможна без этого. Должно
+// быть ДО любого `console.log` ниже, чтобы захватить.
+setupMainLog();
 
 // Stage 11: DNS override для Chromium net stack. `api.otlhelper.com` → IP VPS.
 // Должно быть ДО `app.whenReady()` — Chromium init читает switch'и однократно.

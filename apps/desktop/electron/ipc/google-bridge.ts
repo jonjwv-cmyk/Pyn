@@ -68,6 +68,35 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
     });
     win.loadURL(LOGIN_URL).catch(() => {});
 
+    // §diag v1.2.8 — DevTools в login-окне для диагностики «Поддержка
+    // JavaScript отключена» на Win-corp. Detach mode = отдельное окно
+    // рядом, не съедает площадь login-формы.
+    win.webContents.openDevTools({ mode: 'detach' });
+
+    // §diag v1.2.8 — пишем console-сообщения и failed-loads из login
+    // webview в main process console (→ main.log файл через setupMainLog).
+    // Юзер пришлёт файл — мы увидим что Google ругает.
+    win.webContents.on('console-message', (_e, level, msg, line, src) => {
+      const lvl = ['v', 'i', 'w', 'e'][level] ?? '?';
+      console.log(`[google-login:console:${lvl}] ${src}:${line} ${msg}`);
+    });
+    win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+      console.log(`[google-login:fail-load] code=${code} desc=${desc} url=${url}`);
+    });
+    win.webContents.on('did-navigate', (_e, url) => {
+      console.log(`[google-login:navigate] ${url}`);
+    });
+    win.webContents.on('did-finish-load', async () => {
+      try {
+        const ctx = await win.webContents.executeJavaScript(
+          'JSON.stringify({ua:navigator.userAgent,uaData:navigator.userAgentData?(navigator.userAgentData.brands||null):null,webdriver:navigator.webdriver,chromeRuntime:typeof chrome!=="undefined"&&typeof chrome.runtime!=="undefined",title:document.title,url:location.href})',
+        );
+        console.log(`[google-login:context] ${ctx}`);
+      } catch (e) {
+        console.log(`[google-login:context:err] ${e}`);
+      }
+    });
+
     // Авто-закрытие когда Google редиректнул на docs.google.com (успешный login).
     const onNavigation = (_evt: Electron.Event, url: string) => {
       if (url.startsWith('https://docs.google.com/spreadsheets')) {
