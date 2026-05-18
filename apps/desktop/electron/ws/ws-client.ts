@@ -4,6 +4,7 @@ import type { LookupFunction } from 'node:net';
 import type { ConnectionOptions, TLSSocket } from 'node:tls';
 
 import { WebSocket as NodeWebSocket, type ClientOptions, type RawData } from 'ws';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import {
   bytesToBase64,
   decryptWsFrame,
@@ -51,7 +52,13 @@ import {
  * 🔴 Singleton — один WS connection per Pyn process. Caller (ws-bridge) гарантирует.
  */
 
-const WS_URL = `wss://${PINNED_HOST}/ws`;
+const WS_URL_DIRECT = `wss://${PINNED_HOST}/ws`;
+/**
+ * sslip.io-fronted URL — используется когда обнаружен корп-прокси. Сразу
+ * указывает на VPS-IP через схему `<ip>.sslip.io` без зависимости от
+ * наших DNS-хитростей; LE-сертификат проходит системный truststore без pin.
+ */
+const WS_URL_PROXY = 'wss://45-12-239-5.sslip.io/ws';
 const PINNED_IP = '45.12.239.5';
 /**
  * Rekey каждые 60 минут (1:1 с Kotlin `WsClient.kt::WS_MAX_SESSION_MS`).
@@ -63,6 +70,11 @@ const WS_REKEY_INTERVAL_MS = 60 * 60 * 1000;
 
 type Listener = (event: WsServerEvent) => void;
 
+interface ProxyHint {
+  host: string;
+  port: number;
+}
+
 interface ClientState {
   ws: NodeWebSocket | null;
   session: WsSession | null;
@@ -73,6 +85,8 @@ interface ClientState {
   readyForSend: boolean;
   login: string | null;
   token: string | null;
+  /** Если задано — WS уходит через HTTP CONNECT-тоннель прокси на sslip.io URL. */
+  proxy: ProxyHint | null;
   stopping: boolean;
   reconnectTimer: NodeJS.Timeout | null;
   reconnectAttempt: number;
@@ -89,6 +103,7 @@ const state: ClientState = {
   readyForSend: false,
   login: null,
   token: null,
+  proxy: null,
   stopping: false,
   reconnectTimer: null,
   reconnectAttempt: 0,
@@ -99,9 +114,19 @@ const state: ClientState = {
 const listeners = new Set<Listener>();
 
 /** Запустить (или перезапустить с новыми credentials) WS-подключение. */
-export function startWs(login: string, token: string): void {
-  // Если уже запущен с теми же кредами — no-op (избежать лишнего reconnect при HMR).
-  if (state.ws && state.login === login && state.token === token && !state.stopping) {
+export function startWs(login: string, token: string, proxy: ProxyHint | null = null): void {
+  // Если уже запущен с теми же кредами и тем же proxy state — no-op
+  // (избежать лишнего reconnect при HMR).
+  const sameProxy =
+    (state.proxy?.host ?? null) === (proxy?.host ?? null) &&
+    (state.proxy?.port ?? null) === (proxy?.port ?? null);
+  if (
+    state.ws &&
+    state.login === login &&
+    state.token === token &&
+    sameProxy &&
+    !state.stopping
+  ) {
     return;
   }
   // Иначе остановить старое подключение и подключиться заново.
@@ -109,6 +134,7 @@ export function startWs(login: string, token: string): void {
   state.stopping = false;
   state.login = login;
   state.token = token;
+  state.proxy = proxy;
   state.reconnectAttempt = 0;
   connect();
 }
@@ -203,25 +229,54 @@ function connect(): void {
     state.rekeyTimer = null;
   }
 
+  const proxy = state.proxy;
+  const url = proxy ? WS_URL_PROXY : WS_URL_DIRECT;
   // eslint-disable-next-line no-console
-  console.log(`[pyn:ws] connecting to ${WS_URL} (pinned → ${PINNED_IP})`);
-  // 🔴 TLS pin: cert self-signed, поэтому rejectUnauthorized:false и проверка
-  //   SPKI вручную в upgrade event ниже. До успешного pin'а ничего секретного
-  //   на проводе нет — только HTTP upgrade headers (Sec-WebSocket-Key и т.п.),
-  //   которые не содержат токенов или эфемерных ключей.
-  // `@types/ws` ClientOptions не expose TLS-passthrough поля (servername /
-  //   rejectUnauthorized / lookup), хотя `ws` package передаёт их в нижележащий
-  //   `tls.connect`. Intersection-cast — единственный безопасный способ
-  //   передать SNI + skip-system-verify без `any`.
-  const wsOptions = {
-    servername: PINNED_HOST,
-    rejectUnauthorized: false,
-    lookup: pinnedLookup,
-  } satisfies ConnectionOptions & { lookup: LookupFunction };
-  const ws = new NodeWebSocket(WS_URL, wsOptions as ClientOptions);
+  console.log(
+    `[pyn:ws] connecting to ${url}` +
+      (proxy
+        ? ` via proxy ${proxy.host}:${proxy.port} (sslip.io / LE cert, no pin)`
+        : ` (direct, pinned → ${PINNED_IP})`),
+  );
+
+  let wsOptions: ClientOptions;
+  if (proxy) {
+    // Proxy mode: HTTP CONNECT tunnel через https-proxy-agent. URL — sslip.io
+    // (LE-сертификат, проходит системный truststore). SPKI-pin не делаем —
+    // payload защищён вторым слоем E2E. Proxy auth (NTLM/Negotiate) Node-ws
+    // не поддерживает напрямую, но если корп-прокси работает с domain SSO
+    // через 407+Negotiate — `https-proxy-agent` пробросит challenge.
+    // sslip.io имеет валидный LE cert — стандартная верификация, поэтому
+    // никаких rejectUnauthorized overrides не передаём; HttpsProxyAgent
+    // делегирует TLS handshake нижележащему `tls.connect` с дефолтным
+    // системным truststore.
+    const agent = new HttpsProxyAgent(`http://${proxy.host}:${proxy.port}`);
+    wsOptions = { agent } as ClientOptions;
+  } else {
+    // Direct mode: DNS-override + SPKI pin (см. upgrade handler ниже).
+    // 🔴 cert self-signed, поэтому rejectUnauthorized:false и проверка SPKI
+    //   вручную. До успешного pin'а ничего секретного на проводе нет.
+    // `@types/ws` ClientOptions не expose TLS-passthrough поля (servername /
+    //   rejectUnauthorized / lookup), хотя `ws` package передаёт их в
+    //   нижележащий `tls.connect`. Intersection-cast — единственный безопасный
+    //   способ передать SNI + skip-system-verify без `any`.
+    wsOptions = {
+      servername: PINNED_HOST,
+      rejectUnauthorized: false,
+      lookup: pinnedLookup,
+    } satisfies ConnectionOptions & { lookup: LookupFunction } as ClientOptions;
+  }
+  const ws = new NodeWebSocket(url, wsOptions);
   state.ws = ws;
 
   ws.on('upgrade', (response: IncomingMessage) => {
+    // Proxy mode: cert уже проверен `rejectUnauthorized: true` против системного
+    // truststore (LE-цепочка). Доп. SPKI-pin не нужен — корп-прокси MITM-сценарии
+    // покрываются E2E-payload encryption.
+    if (proxy) {
+      state.pinVerified = true;
+      return;
+    }
     const socket = response.socket as TLSSocket;
     if (typeof socket?.getPeerCertificate !== 'function') {
       // eslint-disable-next-line no-console

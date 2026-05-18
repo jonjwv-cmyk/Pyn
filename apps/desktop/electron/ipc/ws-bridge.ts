@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import type { WsServerEvent } from '@pyn/core';
 import { onWsEvent, sendEvent, startWs, stopWs } from '../ws/ws-client';
+import { getProxyState } from './api-bridge';
 
 /**
  * IPC мост для WS клиента:
@@ -19,7 +20,11 @@ export function setupWsBridge(): void {
     if (typeof login !== 'string' || typeof token !== 'string' || !login || !token) {
       throw new Error('invalid_ws_creds');
     }
-    startWs(login, token);
+    // Proxy state определён в api-bridge на старте app. Передаём в WS-клиент:
+    // в proxy-mode он подключается через HTTP CONNECT к sslip.io URL,
+    // в direct mode — на api.otlhelper.com с SPKI pin.
+    const proxy = getProxyState();
+    startWs(login, token, proxy);
   });
 
   ipcMain.handle('pyn:ws:stop', async (): Promise<void> => {

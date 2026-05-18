@@ -1,6 +1,6 @@
 {
   "name": "@pyn/desktop",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "Pyn Desktop — Electron app (Mac, Windows)",
   "main": "dist-electron/main.js",
@@ -23,6 +23,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "clsx": "^2.1.1",
     "emoji-picker-react": "^4.19.1",
+    "https-proxy-agent": "^9.0.0",
     "lucide-react": "^0.460.0",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",

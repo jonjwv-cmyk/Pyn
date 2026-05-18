@@ -24,13 +24,18 @@ export const DIRECT_API_URL = 'https://api.otlhelper.com/api';
 export const PROXY_API_URL = 'https://45-12-239-5.sslip.io/api';
 
 /**
- * Stage 11: `api.otlhelper.com` через DNS override (host-resolver-rules в
- * main.ts) + TLS pin (setCertificateVerifyProc в tls.ts). Default route.
- * Если pin сломается / nginx vhost корэшит — fallback на sslip.io можно
- * сделать через флаг.
+ * Stage 11 + corp-proxy: маршрут API зависит от того, обнаружен ли корп-прокси.
+ *
+ *   • direct (proxy=null) → `api.otlhelper.com` с DNS-override на VPS-IP
+ *     (host-resolver-rules в main.ts) + TLS pin на VPS self-signed cert.
+ *   • proxy (proxy=ProxyConfig) → `45-12-239-5.sslip.io` (LE cert через
+ *     системный truststore, без pinning). Корп-прокси резолвит имя через
+ *     свой DNS — для `api.otlhelper.com` это попадает на Cloudflare и
+ *     ломает pin. Для sslip.io — берёт sslip.io DNS-схему `<ip>.sslip.io`
+ *     и идёт прямо на VPS. 1:1 c Kotlin `MediaUrlResolver.resolve()`.
  */
-export function pickApiUrl(_proxy: ProxyConfig | null): string {
-  return DIRECT_API_URL;
+export function pickApiUrl(proxy: ProxyConfig | null): string {
+  return proxy ? PROXY_API_URL : DIRECT_API_URL;
 }
 
 const TIMEOUT_DIRECT_MS = 45_000;
