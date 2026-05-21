@@ -1,4 +1,5 @@
 import { IdCard, AlertCircle, Filter, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
 interface MolTopBarProps {
@@ -38,6 +39,7 @@ export function MolTopBar({
   setInlineFilter,
   canFilter,
 }: MolTopBarProps) {
+  const { t } = useTranslation();
   const loading = status === 'loading';
   const hasError = status === 'error';
   // Diff показываем как абсолютную разницу когда previous есть. Если previous
@@ -55,7 +57,7 @@ export function MolTopBar({
     >
       <IdCard className="h-4 w-4 shrink-0 text-text-muted" strokeWidth={1.75} />
       <span className="no-drag-region text-[14px] font-semibold tracking-[-0.005em] text-text-strong">
-        МОЛы
+        {t('tables_registry.tab_mol')}
       </span>
       {recordCount > 0 && (
         <span className="no-drag-region tabular-nums text-[12px] text-text-muted">
@@ -65,7 +67,9 @@ export function MolTopBar({
       {recordCount > 0 && (
         <span className="no-drag-region flex items-center gap-1 text-[11.5px] tabular-nums text-text-muted">
           <span>
-            ранее {previousCount !== null ? previousCount.toLocaleString('ru-RU') : '—'}
+            {t('mol.previous', {
+              count: previousCount !== null ? previousCount.toLocaleString('ru-RU') : '—',
+            })}
           </span>
           <span
             className={cn(
@@ -105,7 +109,7 @@ export function MolTopBar({
             onKeyDown={(e) => {
               if (e.key === 'Escape') setInlineFilter('');
             }}
-            placeholder="Уточнить по найденному"
+            placeholder={t('mol.filter_placeholder')}
             className="w-44 bg-transparent text-[12px] text-text-strong placeholder:text-text-muted/70 outline-none"
             spellCheck={false}
             autoCorrect="off"
@@ -116,7 +120,7 @@ export function MolTopBar({
               type="button"
               onClick={() => setInlineFilter('')}
               className="text-text-muted hover:text-text-strong"
-              aria-label="Очистить фильтр"
+              aria-label={t('mol.clear_filter_aria')}
             >
               <X className="h-3 w-3" strokeWidth={1.75} />
             </button>

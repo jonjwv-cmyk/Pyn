@@ -1,4 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
+import type { TFunction } from 'i18next';
+import i18next from 'i18next';
 import { getSheetsClientConfig } from '@pyn/core';
 import { api } from './api';
 
@@ -70,13 +72,16 @@ const MOL_KEYS = new Set(['MOL', 'MOLY', 'МОЛ', 'МОЛЫ']);
  */
 const TABLE_NAME_OVERRIDES: Record<string, string> = {
   WORKFLOW: 'Workflow',
-  OTIF5: 'OTIF',
+  // §2026-05-19 — OTIF5 → OTIF override убран (юзер: показывать 'OTIF5' как
+  // на сервере, без переименования).
 };
 
 /** Короткое имя для collapsed-режима sidebar (3-4 символа). */
 const TABLE_SHORT_OVERRIDES: Record<string, string> = {
   WORKFLOW: 'WF',
-  OTIF5: 'OTIF',
+  // §2026-05-19 — явный 'OTIF5' для collapsed sidebar, иначе fallback
+  // slice(0,4) от 'OTIF5' дал бы 'OTIF' (что обрезает цифру).
+  OTIF5: 'OTIF5',
 };
 
 export function customTableName(rawTitle: string): string {
@@ -95,21 +100,50 @@ export function customTableShortName(rawTitle: string): string {
 /**
  * Override для имён конкретных листов (tabs). Server отдаёт `rawName` =
  * исходное имя в Google Sheets; если оно неудобное (например «wf_custodians»),
- * показываем кастомное в UI.
+ * показываем кастомное в UI. Значения — translation keys в `tables_registry.*`.
  */
-const TAB_NAME_OVERRIDES: Record<string, string> = {
-  OTIF5: 'OTIF',
-  WF_CUSTODIANS: 'МОЛы',
-  WF_PLAN: 'План',
-  RECIPIENTS: 'Рассылка',
-  WF_WAREHOUSES: 'Склады',
-  WF_IMPORT: 'Импорт',
-  '📊SCHEDULE': 'График ТМЦ',
+/**
+ * Mapping rawName/displayName (uppercase) → translation key. Когда сервер
+ * присылает уже-русские displayName ("План", "Рассылка"), также матчим их —
+ * иначе они оставались бы RU при смене языка. Ключи всегда в верхнем регистре,
+ * сравнение через `trimmed.toUpperCase()` ниже.
+ */
+const TAB_NAME_KEYS: Record<string, string> = {
+  // §2026-05-19 — OTIF5 override убран. Tab name внутри showed как 'OTIF5'.
+  // Server raw names:
+  WF_CUSTODIANS: 'tables_registry.tab_mol',
+  WF_PLAN: 'tables_registry.tab_plan',
+  RECIPIENTS: 'tables_registry.tab_recipients',
+  WF_WAREHOUSES: 'tables_registry.tab_warehouses',
+  WF_IMPORT: 'tables_registry.tab_import',
+  '📊SCHEDULE': 'tables_registry.tab_schedule',
+  '🚚': 'tables_registry.tab_dispatch',
+  '💩': 'tables_registry.tab_undersupplied',
+  // Server displayName (русские) — для случаев когда server уже отдаёт
+  // переведённое имя; локализация всё равно должна работать через i18n:
+  МОЛЫ: 'tables_registry.tab_mol',
+  ПЛАН: 'tables_registry.tab_plan',
+  РАССЫЛКА: 'tables_registry.tab_recipients',
+  СКЛАДЫ: 'tables_registry.tab_warehouses',
+  ИМПОРТ: 'tables_registry.tab_import',
+  'ГРАФИК ТМЦ': 'tables_registry.tab_schedule',
+  РАЗНАРЯДКА: 'tables_registry.tab_dispatch',
+  НЕДОВОЗЫ: 'tables_registry.tab_undersupplied',
+  СЭД: 'tables_registry.tab_sed',
+  ОТЧЕТ: 'tables_registry.tab_report',
+  'ОТЧЁТ': 'tables_registry.tab_report',
 };
 
-export function customTabName(rawOrDisplay: string): string {
+/**
+ * Локализованное имя tab'а. Принимает t — должен передаваться caller'ом
+ * (компоненты передают через useTranslation()). Без t fallback на raw string —
+ * используется в редких контекстах вне React (например, debug logs).
+ */
+export function customTabName(rawOrDisplay: string, t?: TFunction): string {
   const trimmed = (rawOrDisplay || '').trim();
-  return TAB_NAME_OVERRIDES[trimmed.toUpperCase()] ?? trimmed;
+  const key = TAB_NAME_KEYS[trimmed.toUpperCase()];
+  if (!key) return trimmed;
+  return t ? t(key) : i18next.t(key);
 }
 
 /**
@@ -120,14 +154,15 @@ export function customTabName(rawOrDisplay: string): string {
  * Сначала пробуем точное совпадение, затем нормализуем (убираем emoji-prefix,
  * парные скобки «(пароль)») и пробуем снова, затем substring-match.
  */
-const ACTION_LABEL_OVERRIDES: Record<string, string> = {
-  Сортировка: 'Сортировка',
-  'МОЛы/ВГХ': 'Обновить МОЛы и ВГХ',
-  'TECH NAME': 'Обновить тех. имена',
-  План: 'Выгрузить план',
-  Заказы: 'Обновить план',
-  Подтянуть: 'Скомплектовать МОЛов',
-  'БД МОЛов': 'Обновить БД МОЛов',
+/** Значения — translation keys в `tables_registry.*`. */
+const ACTION_LABEL_KEYS: Record<string, string> = {
+  Сортировка: 'tables_registry.action_sort',
+  'МОЛы/ВГХ': 'tables_registry.action_mol_vgh',
+  'TECH NAME': 'tables_registry.action_tech_name',
+  Подтянуть: 'tables_registry.action_collect_mol',
+  'БД МОЛов': 'tables_registry.action_db_mol',
+  'Сформировать план': 'tables_registry.action_make_plan',
+  'Обновить заказы': 'tables_registry.action_update_orders',
 };
 
 function stripActionLabelDecor(s: string): string {
@@ -139,17 +174,18 @@ function stripActionLabelDecor(s: string): string {
     .trim();
 }
 
-export function customActionLabel(rawLabel: string): string {
+export function customActionLabel(rawLabel: string, t?: TFunction): string {
   const raw = (rawLabel || '').trim();
   if (!raw) return raw;
-  if (ACTION_LABEL_OVERRIDES[raw]) return ACTION_LABEL_OVERRIDES[raw]!;
+  const translator = t ?? i18next.t;
+  if (ACTION_LABEL_KEYS[raw]) return translator(ACTION_LABEL_KEYS[raw]!);
   const stripped = stripActionLabelDecor(raw);
-  if (ACTION_LABEL_OVERRIDES[stripped]) return ACTION_LABEL_OVERRIDES[stripped]!;
+  if (ACTION_LABEL_KEYS[stripped]) return translator(ACTION_LABEL_KEYS[stripped]!);
   // Substring — например server label "↻ Заказы [SAP]" → "Обновить план".
   const lower = stripped.toLowerCase();
-  for (const key of Object.keys(ACTION_LABEL_OVERRIDES)) {
+  for (const key of Object.keys(ACTION_LABEL_KEYS)) {
     if (lower.indexOf(key.toLowerCase()) !== -1) {
-      return ACTION_LABEL_OVERRIDES[key]!;
+      return translator(ACTION_LABEL_KEYS[key]!);
     }
   }
   return stripped || raw;
@@ -183,7 +219,7 @@ async function fetchOnce(): Promise<void> {
       state = {
         ...state,
         loading: false,
-        error: err instanceof Error ? err.message : 'Не удалось загрузить таблицы',
+        error: err instanceof Error ? err.message : i18next.t('tables_registry.load_failed'),
       };
       // Auto-retry с экспоненциальным backoff'ом (1, 2, 4, 8, 16, 30c capped).
       retryAttempt += 1;

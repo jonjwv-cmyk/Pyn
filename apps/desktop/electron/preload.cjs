@@ -148,8 +148,24 @@ contextBridge.exposeInMainWorld('pyn', {
    * установщик, после чего наш process exit'ит.
    */
   update: {
+    /** Legacy: download + install в одной операции. */
     downloadInstall: function pynUpdateDownloadInstall(url, version) {
       return ipcRenderer.invoke('pyn:update:download-install', url, version);
+    },
+    /** Проверка кэша: вернёт {exists, localPath} если файл уже скачан. */
+    checkCached: function pynUpdateCheckCached(url, version) {
+      return ipcRenderer.invoke('pyn:update:check-cached', url, version);
+    },
+    /**
+     * Скачать билд с прогрессом + SHA-256 verify (если expectedSha передан).
+     * Возвращает {ok, localPath, sha, error}.
+     */
+    download: function pynUpdateDownload(url, version, expectedSha) {
+      return ipcRenderer.invoke('pyn:update:download', url, version, expectedSha);
+    },
+    /** Запустить ранее скачанный installer. */
+    install: function pynUpdateInstall(localPath) {
+      return ipcRenderer.invoke('pyn:update:install', localPath);
     },
     onProgress: function pynUpdateOnProgress(handler) {
       const wrapped = (_evt, progress) => handler(progress);
@@ -157,6 +173,16 @@ contextBridge.exposeInMainWorld('pyn', {
       return function unsubscribe() {
         ipcRenderer.removeListener('pyn:update:progress', wrapped);
       };
+    },
+  },
+  /**
+   * Kill switch / app lock — wipe команда. Стирает userData (включая
+   * cache/device_id.bin, session.bin) и relaunch'ит app как fresh install.
+   * Триггерится сервером через WS event `app_control_state_changed` со state='wiping'.
+   */
+  appLock: {
+    wipe: function pynAppLockWipe() {
+      return ipcRenderer.invoke('pyn:app-lock:wipe');
     },
   },
 });

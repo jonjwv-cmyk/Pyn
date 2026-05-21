@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { ArrowLeft } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
 interface SettingsTopBarProps {
@@ -32,6 +33,7 @@ interface SettingsTopBarProps {
  * pl-[84px] чтобы back-кнопка стартовала после них.
  */
 export function SettingsTopBar({ title, onBack, children }: SettingsTopBarProps) {
+  const { t } = useTranslation();
   const isMac = typeof window !== 'undefined' && window.pyn?.platform === 'darwin';
   return (
     <header
@@ -50,7 +52,7 @@ export function SettingsTopBar({ title, onBack, children }: SettingsTopBarProps)
         <button
           type="button"
           onClick={onBack}
-          aria-label="Назад"
+          aria-label={t('settings_top_bar.back')}
           className={cn(
             'no-drag-region flex h-8 items-center gap-1.5 rounded-md px-2',
             'text-[13px] font-medium text-text-secondary outline-none transition-colors',
@@ -58,7 +60,7 @@ export function SettingsTopBar({ title, onBack, children }: SettingsTopBarProps)
           )}
         >
           <ArrowLeft className="h-4 w-4" strokeWidth={2} />
-          <span>Назад</span>
+          <span>{t('settings_top_bar.back')}</span>
         </button>
       </div>
 

@@ -5,6 +5,8 @@ import {
   useRef,
   useState,
 } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { ArrowUp, Clock, Paperclip, X } from 'lucide-react';
 import { ComposerAttachmentTile } from '@/components/ui/ComposerAttachmentTile';
 import { EmojiPickerButton } from '@/components/ui/EmojiPickerButton';
@@ -65,6 +67,7 @@ const MAX_TEXTAREA_HEIGHT = 220;
  */
 export const NewsComposer = forwardRef<NewsComposerHandle, NewsComposerProps>(
 function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
+  const { t } = useTranslation();
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [scheduledAt, setScheduledAt] = useState<Date | null>(null);
@@ -276,19 +279,24 @@ function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
           >
             <Clock className="h-3.5 w-3.5 shrink-0 text-accent-clay" strokeWidth={1.75} />
             <span>
-              Опубликуется:{' '}
-              <button
-                type="button"
-                onClick={() => setScheduleOpen(true)}
-                className="font-medium text-text-strong underline-offset-2 hover:underline"
-              >
-                {formatScheduledRu(scheduledAt)}
-              </button>
+              <Trans
+                i18nKey="news_schedule_dialog.publish_at"
+                values={{ format: formatScheduled(scheduledAt, t) }}
+                components={{
+                  b: (
+                    <button
+                      type="button"
+                      onClick={() => setScheduleOpen(true)}
+                      className="font-medium text-text-strong underline-offset-2 hover:underline"
+                    />
+                  ),
+                }}
+              />
             </span>
             <button
               type="button"
               onClick={() => setScheduledAt(null)}
-              aria-label="Отменить отложку"
+              aria-label={t('news.composer_cancel_schedule_aria')}
               className={cn(
                 'ml-auto flex h-5 w-5 items-center justify-center rounded',
                 'text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong',
@@ -313,7 +321,7 @@ function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
           />
           <ToolbarButton
             icon={Paperclip}
-            label="Прикрепить файл"
+            label={t('news.composer_attach_aria')}
             onClick={triggerPick}
           />
           <EmojiPickerButton onPick={handleEmojiPick} />
@@ -321,8 +329,8 @@ function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
             icon={Clock}
             label={
               canSchedule
-                ? 'Отложить публикацию'
-                : 'Отложенная отправка с файлами не поддерживается'
+                ? t('news.composer_schedule_aria')
+                : t('news.composer_schedule_disabled_aria')
             }
             active={scheduledAt !== null}
             disabled={!canSchedule}
@@ -339,7 +347,7 @@ function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
                 handlePublish();
               }
             }}
-            placeholder="Поделитесь новостью…"
+            placeholder={t('news.composer_placeholder')}
             rows={1}
             className={cn(
               'flex-1 resize-none bg-transparent py-1 text-[13px] leading-snug',
@@ -348,7 +356,7 @@ function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
             )}
           />
 
-          <SendButton enabled={canPublish} onClick={handlePublish} />
+          <SendButton enabled={canPublish} onClick={handlePublish} ariaLabel={t('news.composer_publish_aria')} />
         </div>
       </div>
 
@@ -402,15 +410,16 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(
 interface SendButtonProps {
   enabled: boolean;
   onClick: () => void;
+  ariaLabel: string;
 }
 
-function SendButton({ enabled, onClick }: SendButtonProps) {
+function SendButton({ enabled, onClick, ariaLabel }: SendButtonProps) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={!enabled}
-      aria-label="Опубликовать"
+      aria-label={ariaLabel}
       className={cn(
         'flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors',
         enabled
@@ -440,10 +449,10 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-const MONTHS_GEN = [
-  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
-];
+const MONTH_GEN_KEYS = [
+  'month_gen_jan', 'month_gen_feb', 'month_gen_mar', 'month_gen_apr', 'month_gen_may', 'month_gen_jun',
+  'month_gen_jul', 'month_gen_aug', 'month_gen_sep', 'month_gen_oct', 'month_gen_nov', 'month_gen_dec',
+] as const;
 
 const SCHEDULED_TIME_FMT = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
@@ -452,10 +461,12 @@ const SCHEDULED_TIME_FMT = new Intl.DateTimeFormat('en-US', {
   timeZone: 'Asia/Yekaterinburg',
 });
 
-function formatScheduledRu(d: Date): string {
-  // Везде в Pyn — единый формат: "5 мая, 2:34 PM" (с годом если не текущий).
-  // Yek timezone через Intl. У scheduledAt — это уже Date выбранный юзером,
-  // парсить не надо, просто форматируем в Yek calendar.
+/**
+ * Единый формат "5 мая, 2:34 PM" (с годом если не текущий). Месяц берётся
+ * локализованным из news_schedule_dialog.month_gen_* через t(). RU/UK дают
+ * корректный genitive case; EN/DE/ES — номинатив (для них одно и то же).
+ */
+function formatScheduled(d: Date, t: TFunction): string {
   const yekFormatter = new Intl.DateTimeFormat('en-CA', {
     year: 'numeric',
     month: '2-digit',
@@ -466,7 +477,7 @@ function formatScheduledRu(d: Date): string {
   const year = Number(parts[0]);
   const month = Number(parts[1]) - 1;
   const day = Number(parts[2]);
-  const monthName = MONTHS_GEN[month] ?? '';
+  const monthName = t(`news_schedule_dialog.${MONTH_GEN_KEYS[month] ?? 'month_gen_jan'}`);
   const time = SCHEDULED_TIME_FMT.format(d);
   const nowYear = new Date().getFullYear();
   if (year === nowYear) {

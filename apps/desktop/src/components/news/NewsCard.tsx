@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   BarChart3,
@@ -56,6 +57,7 @@ export function NewsCard({
   onDelete,
   onEdited,
 }: NewsCardProps) {
+  const { t } = useTranslation();
   const [statsOpen, setStatsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
@@ -95,7 +97,7 @@ export function NewsCard({
           </span>
           {!news.isRead && !news.isOwn && (
             <span
-              aria-label="Не прочитано"
+              aria-label={t('news_card.unread_aria')}
               className="ml-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent-clay"
             />
           )}
@@ -203,6 +205,7 @@ export function NewsCardActionsMenu({
   onTogglePin,
   onDelete,
 }: NewsCardActionsMenuProps) {
+  const { t } = useTranslation();
   // Permission gating: server тоже enforce'ит, но мы скрываем кнопки, которые
   // юзеру всё равно не дадут нажать → меньше попыток с ошибками + чище UI.
   //   Stats   — admin/developer (server gate в get_news_readers/get_poll_stats)
@@ -221,7 +224,7 @@ export function NewsCardActionsMenu({
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          aria-label="Действия с новостью"
+          aria-label={t('news_card.actions_aria')}
           className={cn(
             'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
             'text-text-muted outline-none transition-colors',
@@ -243,12 +246,12 @@ export function NewsCardActionsMenu({
             'p-1.5 shadow-xl',
           )}
         >
-          {canStats && <MenuRow icon={BarChart3} label="Статистика" onSelect={onOpenStats} />}
-          {canEdit && <MenuRow icon={Pencil} label="Редактировать" onSelect={onEdit} />}
+          {canStats && <MenuRow icon={BarChart3} label={t('news_card.action_stats')} onSelect={onOpenStats} />}
+          {canEdit && <MenuRow icon={Pencil} label={t('news_card.action_edit')} onSelect={onEdit} />}
           {canPin && (
             <MenuRow
               icon={news.isPinned ? PinOff : Pin}
-              label={news.isPinned ? 'Открепить' : 'Закрепить'}
+              label={news.isPinned ? t('news_card.action_unpin') : t('news_card.action_pin')}
               onSelect={onTogglePin}
             />
           )}
@@ -256,7 +259,7 @@ export function NewsCardActionsMenu({
             <DropdownMenu.Separator className="my-1 h-px bg-border-subtle" />
           )}
           {canDelete && (
-            <MenuRow icon={Trash2} label="Удалить" onSelect={onDelete} variant="danger" />
+            <MenuRow icon={Trash2} label={t('news_card.action_delete')} onSelect={onDelete} variant="danger" />
           )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
@@ -309,6 +312,7 @@ function ReactionsRow({
   developerView,
   onToggle,
 }: ReactionsRowProps) {
+  const { t } = useTranslation();
   const entries = Object.entries(reactions).filter(([, c]) => c > 0);
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -342,7 +346,7 @@ function ReactionsRow({
       <MessageActionsPopup onReact={onToggle} myReactions={myReactions}>
         <button
           type="button"
-          aria-label="Поставить реакцию"
+          aria-label={t('news_card.add_reaction_aria')}
           className={cn(
             'inline-flex h-[22px] items-center gap-1 rounded-pill border border-dashed border-border-subtle px-2',
             'text-[11px] text-text-muted outline-none transition-all',

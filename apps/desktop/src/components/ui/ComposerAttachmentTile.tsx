@@ -1,4 +1,5 @@
 import { File, FileText, Film, Image as ImageIcon, Music, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import type { PendingAttachment } from '@/types/chat';
 
@@ -20,6 +21,7 @@ export function ComposerAttachmentTile({
   attachment,
   onRemove,
 }: ComposerAttachmentTileProps) {
+  const { t } = useTranslation();
   const mime = attachment.mimeType ?? '';
   const isImage = mime.startsWith('image/') && !mime.includes('gif');
   const isGif = mime === 'image/gif';
@@ -65,7 +67,7 @@ export function ComposerAttachmentTile({
       <button
         type="button"
         onClick={onRemove}
-        aria-label="Удалить вложение"
+        aria-label={t('attachments.remove_aria')}
         className={cn(
           'absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full',
           'bg-bg-deep/70 text-white outline-none backdrop-blur-[1px] transition-opacity',

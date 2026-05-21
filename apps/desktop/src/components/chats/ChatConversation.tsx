@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Upload } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Avatar } from '@/components/ui/Avatar';
 import { DateDivider } from '@/components/ui/DateDivider';
 import { DayLabelPill } from '@/components/ui/DayLabelPill';
@@ -110,7 +111,7 @@ export function ChatConversation({ partner, messages, onSend, onReact }: ChatCon
         >
           <Upload className="h-7 w-7 text-accent-clay" strokeWidth={1.5} />
           <p className="text-[13px] font-medium text-text-strong">
-            Отпустите файл, чтобы прикрепить
+            <DropAttachLabel />
           </p>
         </div>
       )}
@@ -158,6 +159,7 @@ interface ChatHeaderProps {
  * ChatList и NewsFeed. Унифицированная «линия заголовка» на y=48–49.
  */
 function ChatHeader({ partner }: ChatHeaderProps) {
+  const { t } = useTranslation();
   // last_seen_at иногда отсутствует в `get_admin_messages` (когда LAST
   // message отправили мы — server возвращает receiver_last_seen_at="").
   // Fallback: `usersStore` (admin-only get_users) — там реальный last_seen
@@ -196,7 +198,7 @@ function ChatHeader({ partner }: ChatHeaderProps) {
             {partner.name}
           </span>
           <span className="truncate text-[11px] text-text-muted">
-            {presenceText(partner.presence, lastSeenLabel)}
+            {presenceText(partner.presence, lastSeenLabel, t)}
           </span>
         </span>
       </div>
@@ -205,11 +207,21 @@ function ChatHeader({ partner }: ChatHeaderProps) {
   );
 }
 
-function presenceText(state: PresenceState, lastSeenLabel: string): string {
-  if (state === 'online') return 'в сети';
-  if (state === 'away') return 'Пауза';
-  // offline — server-side last_seen_at либо из admin_messages, либо из get_users.
-  return lastSeenLabel ? `был в сети ${lastSeenLabel}` : 'не в сети';
+function presenceText(
+  state: PresenceState,
+  lastSeenLabel: string,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  if (state === 'online') return t('chat_conversation.presence_online');
+  if (state === 'away') return t('chat_conversation.presence_paused');
+  return lastSeenLabel
+    ? t('chat_conversation.presence_offline_with_label', { label: lastSeenLabel })
+    : t('chat_conversation.presence_offline');
+}
+
+function DropAttachLabel(): JSX.Element {
+  const { t } = useTranslation();
+  return <>{t('chat_conversation.drop_attach')}</>;
 }
 
 interface MessageListProps {
@@ -370,27 +382,36 @@ function MessageList({ messages, partnerId, onReact, onReply }: MessageListProps
         className="absolute inset-0 flex flex-col gap-1.5 overflow-y-auto px-4 pt-4 pb-[72px]"
       >
         {groups.map((g) => (
-          <Fragment key={g.dayKey}>
+          // §2026-05-19 — per-group wrapper для sticky DateDivider.
+          // Sticky scope = эта группа: divider прилипает к верху пока
+          // его группа в viewport, при подходе следующей группы её
+          // divider "встаёт сверху", а текущий уезжает с группой вниз.
+          // Telegram-style smooth swap (видео-референс юзера).
+          <div key={g.dayKey} className="flex flex-col gap-1.5">
             {g.label && <DateDivider label={g.label} />}
             {g.items.map((m) => (
               <ChatMessage key={m.id} message={m} onReact={onReact} onReply={onReply} />
             ))}
-          </Fragment>
+          </div>
         ))}
       </div>
       {/* Fade-в-фон сверху для плавного «затемнения» при scroll'е вверх. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-5 bg-gradient-to-b from-bg-primary to-transparent" />
-      <DayLabelPill label={dayPill.activeLabel} visible={dayPill.isScrolling} />
+      {/* §2026-05-19 — DayLabelPill убран: `DateDivider` теперь sticky
+          (CSS position: sticky), сам прилипает к верху при скролле и
+          выталкивается следующим divider'ом. Дубликат floating-pill'a
+          больше не нужен. */}
       <ScrollToBottomButton visible={showScrollDown} onClick={scrollToBottom} />
     </div>
   );
 }
 
 function EmptyState() {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-1 items-center justify-center">
       <p className="rounded-full bg-bg-elevated/60 px-4 py-1.5 text-[13px] text-text-secondary backdrop-blur-[2px]">
-        Выбери чат
+        {t('chat_conversation.empty_pick_chat')}
       </p>
     </div>
   );

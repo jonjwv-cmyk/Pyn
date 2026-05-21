@@ -76,15 +76,38 @@ declare global {
           vbsSource: string,
         ) => Promise<{ ok: boolean; tsv?: string; error?: string }>;
       };
-      /** Auto-update — download + install нового билда. */
+      /** Auto-update — download + install с поддержкой SHA verify и кэша. */
       update: {
+        /** Legacy combined endpoint (старый UpdatePromptDialog flow). */
         downloadInstall: (
           url: string,
           version: string,
         ) => Promise<{ ok: boolean; error?: string }>;
+        /** Файл уже скачан? */
+        checkCached: (
+          url: string,
+          version: string,
+        ) => Promise<{ exists: boolean; localPath: string }>;
+        /** Streaming download с прогрессом + SHA-256 verify. */
+        download: (
+          url: string,
+          version: string,
+          expectedSha?: string,
+        ) => Promise<{ ok: boolean; localPath?: string; sha?: string; error?: string }>;
+        /** Запустить ранее скачанный installer + quit. */
+        install: (
+          localPath: string,
+        ) => Promise<{ ok: boolean; error?: string }>;
         onProgress: (
           handler: (progress: { bytes: number; total: number }) => void,
         ) => () => void;
+      };
+      /**
+       * Kill switch / app lock — full userData wipe + relaunch (как fresh install).
+       * device_id живёт в encrypted cache, при wipe удаляется естественно.
+       */
+      appLock: {
+        wipe: () => Promise<void>;
       };
     };
   }

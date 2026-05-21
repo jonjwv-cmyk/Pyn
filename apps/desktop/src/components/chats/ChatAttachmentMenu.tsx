@@ -11,6 +11,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import type { AttachmentKind } from '@/types/chat';
 
@@ -36,6 +37,7 @@ interface ChatAttachmentMenuProps {
  * (real OS capture подключится при интеграции с Electron preload bridge).
  */
 export function ChatAttachmentMenu({ onSelect, children }: ChatAttachmentMenuProps) {
+  const { t } = useTranslation();
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>{children}</DropdownMenu.Trigger>
@@ -52,9 +54,9 @@ export function ChatAttachmentMenu({ onSelect, children }: ChatAttachmentMenuPro
             'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
           )}
         >
-          <Item icon={FileText} label="Прикрепить файл" onSelect={() => onSelect('file')} />
-          <Item icon={ImagePlus} label="Фото или видео" onSelect={() => onSelect('media')} />
-          <Item icon={Camera} label="Сделать снимок" onSelect={() => onSelect('photo')} />
+          <Item icon={FileText} label={t('chat_attachments.attach_file')} onSelect={() => onSelect('file')} />
+          <Item icon={ImagePlus} label={t('chat_attachments.photo_or_video')} onSelect={() => onSelect('media')} />
+          <Item icon={Camera} label={t('chat_attachments.screenshot_capture')} onSelect={() => onSelect('photo')} />
 
           <DropdownMenu.Separator className="my-1 h-px bg-border-subtle" />
 
@@ -68,7 +70,7 @@ export function ChatAttachmentMenu({ onSelect, children }: ChatAttachmentMenuPro
               )}
             >
               <ScanLine className="h-4 w-4 shrink-0 text-text-muted" strokeWidth={1.75} />
-              <span className="flex-1 truncate">Скриншот</span>
+              <span className="flex-1 truncate">{t('chat_attachments.screenshot')}</span>
               <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
             </DropdownMenu.SubTrigger>
             <DropdownMenu.Portal>
@@ -82,9 +84,9 @@ export function ChatAttachmentMenu({ onSelect, children }: ChatAttachmentMenuPro
                   'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
                 )}
               >
-                <Item icon={Monitor} label="Экран" onSelect={() => onSelect('screenshot-screen')} />
-                <Item icon={AppWindow} label="Окно приложения" onSelect={() => onSelect('screenshot-window')} />
-                <Item icon={Crop} label="Область" onSelect={() => onSelect('screenshot-area')} />
+                <Item icon={Monitor} label={t('chat_attachments.screenshot_screen')} onSelect={() => onSelect('screenshot-screen')} />
+                <Item icon={AppWindow} label={t('chat_attachments.screenshot_window')} onSelect={() => onSelect('screenshot-window')} />
+                <Item icon={Crop} label={t('chat_attachments.screenshot_area')} onSelect={() => onSelect('screenshot-area')} />
               </DropdownMenu.SubContent>
             </DropdownMenu.Portal>
           </DropdownMenu.Sub>

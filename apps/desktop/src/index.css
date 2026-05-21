@@ -2,6 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * §2026-05-19 — глобально перебиваем Tailwind utility `cursor-not-allowed`.
+ * Юзер: на Windows (особенно) круг-перечёркнутый при hover на disabled
+ * выглядит «страшно», на Mac тоже терпимо но не нужно. Disabled-состояние
+ * визуально передаётся через opacity / цвет — этого достаточно.
+ * Override через .cursor-not-allowed { cursor: default } и .disabled:cursor-not-allowed
+ * (Tailwind generates `:disabled` variant) тоже.
+ *
+ * Высокая специфичность не нужна — Tailwind ставит cursor utility класса
+ * без !important, наш override после @tailwind utilities его перебивает.
+ */
+.cursor-not-allowed,
+.cursor-not-allowed:hover,
+.disabled\:cursor-not-allowed:disabled {
+  cursor: default !important;
+}
+
 @layer base {
   html,
   body,
@@ -139,6 +156,25 @@ input[type='search']::-webkit-search-decoration {
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'><g fill='rgba(217,119,87,0.05)'><text x='4' y='34' font-family='Inter,sans-serif' font-weight='700' font-size='32'>P</text><text x='64' y='94' font-family='Inter,sans-serif' font-weight='700' font-size='32'>P</text></g></svg>");
   background-repeat: repeat;
   background-size: 120px 120px;
+}
+
+/**
+ * Login-экран — background БЕЗ background-color, только subtle «P» pattern
+ * поверх полупрозрачного слоя. Native vibrancy/acrylic с main process'а
+ * просвечивает между «P»-буквами — за окном размыты обои и другие окна.
+ * Pattern крупнее (200px) и контрастнее остальных (7%), чтобы хорошо
+ * считывался на любом фоне (включая светлые/тёмные обои).
+ */
+/**
+ * Login-pattern: «P» буквы как мягкая подложка на solid bg-surface.
+ * Контраст 7% — едва намекает на брендинг, не отвлекает от стеклянной
+ * login-карточки в центре.
+ */
+.login-pattern-bg {
+  background-color: #1F1E1B;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'><g fill='rgba(217,119,87,0.07)'><text x='10' y='60' font-family='Inter,sans-serif' font-weight='700' font-size='60'>P</text><text x='110' y='150' font-family='Inter,sans-serif' font-weight='700' font-size='60'>P</text></g></svg>");
+  background-repeat: repeat;
+  background-size: 200px 200px;
 }
 
 /**

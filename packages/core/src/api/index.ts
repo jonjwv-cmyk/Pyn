@@ -20,4 +20,6 @@ export {
   type DesktopKickedEvent,
   type SheetLockAcquiredEvent,
   type SheetLockReleasedEvent,
+  type AppControlStateChangedEvent,
+  type AppVersionChangedEvent,
 } from './ws-events';

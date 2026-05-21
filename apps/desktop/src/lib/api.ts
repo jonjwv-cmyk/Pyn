@@ -1,3 +1,4 @@
+import i18next from 'i18next';
 import { ApiClient, type ApiTransport } from '@pyn/core';
 
 /**
@@ -9,10 +10,7 @@ import { ApiClient, type ApiTransport } from '@pyn/core';
  */
 const transport: ApiTransport = async (body, headers, opts) => {
   if (!window.pyn || typeof window.pyn.api !== 'function') {
-    throw new Error(
-      'window.pyn.api недоступен — preload bridge не загружен. ' +
-        'Перезапустите Electron (Cmd+Q затем pnpm dev:desktop).',
-    );
+    throw new Error(i18next.t('app_errors.ipc_unavailable'));
   }
   // eslint-disable-next-line no-console
   console.log(`[pyn:api] → body=${body.length}B`, headers);

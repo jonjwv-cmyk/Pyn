@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ArrowUp, CornerUpLeft, Paperclip, X } from 'lucide-react';
 import { ComposerAttachmentTile } from '@/components/ui/ComposerAttachmentTile';
 import { EmojiPickerButton } from '@/components/ui/EmojiPickerButton';
@@ -64,6 +65,7 @@ function ChatComposer(
   { onSend, initialText, onDraftSave, replyTo, onCancelReply },
   ref,
 ) {
+  const { t } = useTranslation();
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -254,7 +256,7 @@ function ChatComposer(
           />
           <button
             type="button"
-            aria-label="Прикрепить файл"
+            aria-label={t('chat_composer.attach_aria')}
             onClick={triggerPick}
             className={cn(
               'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
@@ -276,7 +278,7 @@ function ChatComposer(
                 handleSend();
               }
             }}
-            placeholder="Сообщение…"
+            placeholder={t('chat_composer.placeholder')}
             rows={1}
             className={cn(
               'flex-1 resize-none bg-transparent py-1 text-[13px] leading-snug',
@@ -299,7 +301,8 @@ interface ReplyPreviewProps {
 }
 
 function ReplyPreview({ replyTo, onCancel }: ReplyPreviewProps) {
-  const previewText = replyTo.text?.trim() || '(вложение)';
+  const { t } = useTranslation();
+  const previewText = replyTo.text?.trim() || t('chat_message.attachment_quote');
   return (
     <div
       className={cn(
@@ -310,7 +313,7 @@ function ReplyPreview({ replyTo, onCancel }: ReplyPreviewProps) {
       <CornerUpLeft className="h-3.5 w-3.5 shrink-0 text-accent-clay" strokeWidth={1.75} />
       <span className="flex min-w-0 flex-1 flex-col leading-tight">
         <span className="text-[10.5px] uppercase tracking-wider text-text-muted">
-          Ответ
+          {t('chat_composer.reply_label')}
         </span>
         <span className="truncate text-text-primary">{previewText}</span>
       </span>
@@ -318,7 +321,7 @@ function ReplyPreview({ replyTo, onCancel }: ReplyPreviewProps) {
         <button
           type="button"
           onClick={onCancel}
-          aria-label="Отменить ответ"
+          aria-label={t('chat_composer.cancel_reply_aria')}
           className={cn(
             'flex h-5 w-5 shrink-0 items-center justify-center rounded',
             'text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong',
@@ -338,12 +341,13 @@ interface SendButtonProps {
 }
 
 function SendButton({ enabled, onClick }: SendButtonProps) {
+  const { t } = useTranslation();
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={!enabled}
-      aria-label="Отправить"
+      aria-label={t('chat_composer.send_aria')}
       className={cn(
         'flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors',
         enabled

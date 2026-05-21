@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import * as Dialog from '@radix-ui/react-dialog';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 interface NewsScheduleDialogProps {
@@ -11,15 +13,15 @@ interface NewsScheduleDialogProps {
   onSchedule: (date: Date) => void;
 }
 
-const MONTHS = [
-  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
-  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
-];
-const MONTHS_GEN = [
-  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
-];
-const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+const MONTH_KEYS = [
+  'month_jan', 'month_feb', 'month_mar', 'month_apr', 'month_may', 'month_jun',
+  'month_jul', 'month_aug', 'month_sep', 'month_oct', 'month_nov', 'month_dec',
+] as const;
+const MONTH_GEN_KEYS = [
+  'month_gen_jan', 'month_gen_feb', 'month_gen_mar', 'month_gen_apr', 'month_gen_may', 'month_gen_jun',
+  'month_gen_jul', 'month_gen_aug', 'month_gen_sep', 'month_gen_oct', 'month_gen_nov', 'month_gen_dec',
+] as const;
+const WEEKDAY_KEYS = ['day_mon', 'day_tue', 'day_wed', 'day_thu', 'day_fri', 'day_sat', 'day_sun'] as const;
 
 type Period = 'AM' | 'PM';
 
@@ -40,6 +42,7 @@ export function NewsScheduleDialog({
   initial,
   onSchedule,
 }: NewsScheduleDialogProps) {
+  const { t } = useTranslation();
   const [viewYear, setViewYear] = useState(0);
   const [viewMonth, setViewMonth] = useState(0);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -89,10 +92,10 @@ export function NewsScheduleDialog({
           )}
         >
           <Dialog.Title className="text-[15px] font-semibold tracking-[-0.005em] text-text-strong">
-            Запланировать публикацию
+            {t('news_schedule_dialog.title')}
           </Dialog.Title>
           <Dialog.Description className="mt-1 text-[12px] text-text-muted">
-            Выберите дату и время — новость отправится автоматически.
+            {t('news_schedule_dialog.subtitle')}
           </Dialog.Description>
 
           <div className="mt-4 flex flex-col gap-3">
@@ -119,8 +122,11 @@ export function NewsScheduleDialog({
           </div>
 
           <div className="mt-4 rounded-md bg-bg-primary px-3 py-2 text-[12px] text-text-secondary">
-            Опубликуется:{' '}
-            <span className="font-medium text-text-strong">{formatScheduleRu(composed)}</span>
+            <Trans
+              i18nKey="news_schedule_dialog.publish_at"
+              values={{ format: formatScheduleLocalized(composed, t) }}
+              components={{ b: <span className="font-medium text-text-strong" /> }}
+            />
           </div>
 
           <div className="mt-5 flex items-center justify-end gap-2">
@@ -132,7 +138,7 @@ export function NewsScheduleDialog({
                   'hover:bg-bg-hover hover:text-text-strong',
                 )}
               >
-                Отмена
+                {t('news_schedule_dialog.cancel')}
               </button>
             </Dialog.Close>
             <button
@@ -146,23 +152,10 @@ export function NewsScheduleDialog({
                 'bg-accent-clay text-white hover:bg-accent-clay-dim',
               )}
             >
-              Запланировать
+              {t('news_schedule_dialog.submit')}
             </button>
           </div>
 
-          <Dialog.Close asChild>
-            <button
-              type="button"
-              aria-label="Закрыть"
-              className={cn(
-                'absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-md',
-                'text-text-muted outline-none transition-colors',
-                'hover:bg-bg-hover hover:text-text-strong',
-              )}
-            >
-              <X className="h-4 w-4" strokeWidth={1.75} />
-            </button>
-          </Dialog.Close>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -186,6 +179,7 @@ function CalendarBlock({
   onChangeView,
   onSelectDate,
 }: CalendarBlockProps) {
+  const { t } = useTranslation();
   const today = useMemo(() => stripTime(new Date()), []);
   // Сегодняшний день в Yek-календаре (UTC+5). UI работает с local Date'ами
   // но сравнение «прошлое/будущее» делаем по Yek-зоне, чтобы юзер в любой
@@ -219,22 +213,22 @@ function CalendarBlock({
         <NavButton
           onClick={goPrev}
           disabled={atCurrentMonth}
-          ariaLabel="Предыдущий месяц"
+          ariaLabel={t('news_schedule_dialog.prev_month')}
         >
           <ChevronLeft className="h-4 w-4" strokeWidth={1.75} />
         </NavButton>
         <span className="text-[13px] font-medium text-text-strong">
-          {MONTHS[viewMonth]} {viewYear}
+          {t(`news_schedule_dialog.${MONTH_KEYS[viewMonth]}`)} {viewYear}
         </span>
-        <NavButton onClick={goNext} ariaLabel="Следующий месяц">
+        <NavButton onClick={goNext} ariaLabel={t('news_schedule_dialog.next_month')}>
           <ChevronRight className="h-4 w-4" strokeWidth={1.75} />
         </NavButton>
       </div>
 
       <div className="mb-1 grid grid-cols-7 gap-0.5 text-center text-[10px] font-medium uppercase tracking-wider text-text-muted">
-        {WEEKDAYS.map((d) => (
-          <div key={d} className="py-1">
-            {d}
+        {WEEKDAY_KEYS.map((key) => (
+          <div key={key} className="py-1">
+            {t(`news_schedule_dialog.${key}`)}
           </div>
         ))}
       </div>
@@ -499,7 +493,7 @@ function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }
 
-function formatScheduleRu(d: Date): string {
+function formatScheduleLocalized(d: Date, t: TFunction): string {
   const today = stripTime(new Date());
   const target = stripTime(d);
   const dayDiff = Math.round((target.getTime() - today.getTime()) / 86400000);
@@ -508,8 +502,9 @@ function formatScheduleRu(d: Date): string {
   const period = d.getHours() >= 12 ? 'PM' : 'AM';
   const time = `${h12}:${pad2(d.getMinutes())} ${period}`;
 
-  if (dayDiff === 0) return `сегодня в ${time}`;
-  if (dayDiff === 1) return `завтра в ${time}`;
-  if (dayDiff === -1) return `вчера в ${time}`;
-  return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}, ${time}`;
+  if (dayDiff === 0) return t('news_schedule_dialog.schedule_today', { time });
+  if (dayDiff === 1) return t('news_schedule_dialog.schedule_tomorrow', { time });
+  if (dayDiff === -1) return t('news_schedule_dialog.schedule_yesterday', { time });
+  const month = t(`news_schedule_dialog.${MONTH_GEN_KEYS[d.getMonth()]}`);
+  return t('news_schedule_dialog.schedule_other', { day: d.getDate(), month, time });
 }

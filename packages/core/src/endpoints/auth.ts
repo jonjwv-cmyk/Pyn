@@ -20,6 +20,13 @@ export interface LoginRequest {
    */
   deviceLabel: string;
   desktopOs: 'mac' | 'win';
+  /**
+   * Полный device_id (UUID v4) для kill switch trust-store (device_marks).
+   * Persistится в encrypted cache локально. При wipe удаляется → новый
+   * install получит свежий UUID, сервер начнёт track'ить как новое
+   * устройство.
+   */
+  deviceId: string;
   /** Optional custom expiry для token'a (ISO 8601). */
   customExpiryIso?: string;
 }
@@ -55,6 +62,7 @@ export async function login(client: ApiClient, req: LoginRequest): Promise<Login
     password: req.password,
     device_label: req.deviceLabel.slice(0, 40),
     desktop_os: req.desktopOs,
+    device_id: req.deviceId,
     custom_expiry_iso: req.customExpiryIso,
   });
   const counter = wire.password_counter;
@@ -71,6 +79,45 @@ export async function login(client: ApiClient, req: LoginRequest): Promise<Login
       counter && typeof counter.used === 'number' && typeof counter.limit === 'number'
         ? { used: counter.used, limit: counter.limit }
         : undefined,
+  };
+}
+
+// ── Android / mobile login (action='login', не PC-only) ───────────────────
+
+export interface AndroidLoginRequest {
+  login: string;
+  password: string;
+  /** Полный device_id (UUID v4) для kill switch trust-store. */
+  deviceId: string;
+  /** Версия mobile-app для min_version check. */
+  appVersion: string;
+}
+
+/**
+ * Mobile/Android login через action='login'. Возвращает тот же тип
+ * LoginResponse как desktop'овский `login()`, но проходит через другой
+ * server handler (handlers-session.js::handleLogin, не PC sessions).
+ */
+export async function androidLogin(
+  client: ApiClient,
+  req: AndroidLoginRequest,
+): Promise<LoginResponse> {
+  const wire = await client.call<LoginWire>('login', {
+    login: req.login,
+    password: req.password,
+    device_id: req.deviceId,
+    app_version: req.appVersion,
+    platform: 'android',
+  });
+  return {
+    token: wire.token ?? '',
+    role: parseRole(wire.user?.role),
+    user: {
+      login: wire.user?.login ?? req.login,
+      fullName: wire.user?.full_name ?? '',
+      avatarUrl: wire.user?.avatar_url,
+    },
+    expiresAt: wire.expires_at,
   };
 }
 
@@ -361,7 +408,8 @@ export async function changePassword(
 // ── APP_STATUS (публичный — без token) ─────────────────────────────────────
 
 export interface AppStatusRequest {
-  appScope: 'desktop-mac' | 'desktop-win';
+  /** 'desktop-mac' | 'desktop-win' — desktop scope. 'main' / 'android' — Android. */
+  appScope: 'desktop-mac' | 'desktop-win' | 'main' | 'android';
   appVersion: string;
   binarySha?: string;
 }
@@ -370,12 +418,35 @@ export interface AppStatusResponse {
   currentVersion: string;
   updateUrl?: string;
   forceUpdate: boolean;
+  /**
+   * SHA-256 hash бинаря current_version на сервере (hex, lowercase).
+   * Client после download проверяет хэш — защита от подмены exe в пути
+   * CF→VPS→client. Если пусто — verify пропускается.
+   */
+  binarySha?: string;
+  /**
+   * Kill switch / app lock state (2026-05-20). 'normal' если не активна.
+   * При 'paused' / 'wiping' клиент показывает overlay и (для wiping)
+   * вызывает IPC wipe.
+   */
+  appLockState?: 'normal' | 'paused' | 'wiping' | 'wiped';
+  appLockTitle?: string;
+  appLockMessage?: string;
+  appLockWipeAt?: string | null;
+  appLockInitiatedBy?: string;
 }
 
 interface AppStatusWire {
   current_version?: string;
   update_url?: string;
   force_update?: boolean;
+  binary_sha?: string;
+  app_state?: string;
+  app_title?: string;
+  app_message?: string;
+  app_lock_scope?: string | null;
+  app_lock_wipe_at?: string | null;
+  app_lock_initiated_by?: string;
 }
 
 export async function appStatus(
@@ -391,5 +462,17 @@ export async function appStatus(
     currentVersion: wire.current_version ?? req.appVersion,
     updateUrl: wire.update_url,
     forceUpdate: wire.force_update ?? false,
+    binarySha: wire.binary_sha || '',
+    appLockState: normalizeAppLockState(wire.app_state),
+    appLockTitle: wire.app_title || '',
+    appLockMessage: wire.app_message || '',
+    appLockWipeAt: wire.app_lock_wipe_at ?? null,
+    appLockInitiatedBy: wire.app_lock_initiated_by || '',
   };
+}
+
+function normalizeAppLockState(v: string | undefined):
+  'normal' | 'paused' | 'wiping' | 'wiped' | undefined {
+  if (v === 'normal' || v === 'paused' || v === 'wiping' || v === 'wiped') return v;
+  return undefined;
 }

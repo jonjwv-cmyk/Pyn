@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { AlertCircle, Phone } from 'lucide-react';
 import type { MolRecord } from '@pyn/core';
 import { cn } from '@/lib/cn';
@@ -91,6 +92,7 @@ export function WarehouseSidebar({ groups, notFound, onContactAction }: Warehous
 }
 
 function NotFoundCard({ notFound }: { notFound: NotFoundList }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div
       className={cn(
@@ -100,12 +102,12 @@ function NotFoundCard({ notFound }: { notFound: NotFoundList }): JSX.Element {
     >
       <div className="flex items-center gap-2">
         <AlertCircle className="h-4 w-4 shrink-0 text-danger" strokeWidth={1.75} />
-        <h3 className="text-[13.5px] font-semibold text-danger">Не удалось найти</h3>
+        <h3 className="text-[13.5px] font-semibold text-danger">{t('mol.not_found_title')}</h3>
       </div>
       <ul className="mt-2 space-y-1">
         {notFound.warehouses.map((w) => (
           <li key={`w-${w}`} className="flex items-baseline gap-2 text-text-secondary">
-            <span className="text-[10.5px] uppercase tracking-wider text-text-muted">склад</span>
+            <span className="text-[10.5px] uppercase tracking-wider text-text-muted">{t('mol.warehouse').toLowerCase()}</span>
             <span className="tabular-nums">{w}</span>
           </li>
         ))}
@@ -117,7 +119,7 @@ function NotFoundCard({ notFound }: { notFound: NotFoundList }): JSX.Element {
         ))}
         {notFound.names.map((n) => (
           <li key={`n-${n}`} className="flex items-baseline gap-2 text-text-secondary">
-            <span className="text-[10.5px] uppercase tracking-wider text-text-muted">ФИО</span>
+            <span className="text-[10.5px] uppercase tracking-wider text-text-muted">{t('mol.fio')}</span>
             <span className="break-words" title={n}>{n}</span>
           </li>
         ))}
@@ -135,6 +137,7 @@ function WarehouseCard({
   records: MolRecord[];
   onContactAction: (req: ContactActionRequest) => void;
 }) {
+  const { t } = useTranslation();
   const first = records[0];
   if (!first) return null;
 
@@ -157,7 +160,7 @@ function WarehouseCard({
       )}
     >
       <h3 className="text-[15px] font-bold tabular-nums text-text-strong">
-        Склад {warehouseId}
+        {t('mol.warehouse')} {warehouseId}
       </h3>
 
       {workshop && (
@@ -170,17 +173,17 @@ function WarehouseCard({
         <div className="mt-2 space-y-0.5 text-text-secondary">
           {desc && desc !== workshop && (
             <p className="whitespace-normal break-words">
-              <span className="text-text-muted">Описание:</span> {desc}
+              <span className="text-text-muted">{t('mol.description')}:</span> {desc}
             </p>
           )}
           {mark && (
             <p className="whitespace-normal break-words">
-              <span className="text-text-muted">Обозначение:</span> {mark}
+              <span className="text-text-muted">{t('mol.designation')}:</span> {mark}
             </p>
           )}
           {keeper && (
             <p className="whitespace-normal break-words">
-              <span className="text-text-muted">Кладовщик:</span> {keeper}
+              <span className="text-text-muted">{t('mol.keeper')}:</span> {keeper}
             </p>
           )}
         </div>
@@ -197,7 +200,7 @@ function WarehouseCard({
                   kind: 'callWarehouse',
                   target: phone,
                   display: phone,
-                  contactName: `Склад ${warehouseId}`,
+                  contactName: `${t('mol.warehouse')} ${warehouseId}`,
                 })
               }
               className={cn(

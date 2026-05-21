@@ -1,5 +1,6 @@
 import { Search, X } from 'lucide-react';
 import { useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
 interface MolComposerProps {
@@ -8,8 +9,6 @@ interface MolComposerProps {
   /** Placeholder подсказка — описывает доступные форматы. */
   placeholder?: string;
 }
-
-const DEFAULT_PLACEHOLDER = 'Склад · ФИО · телефон · email';
 
 /**
  * Нижняя «чатовая» панель поиска — визуально интегрирована с контентом
@@ -20,8 +19,10 @@ const DEFAULT_PLACEHOLDER = 'Склад · ФИО · телефон · email';
  * Один input — `parseMolQuery` в @pyn/core сам определит mode (warehouse /
  * phone / email / name) и для warehouse раздробит на отдельные склады.
  */
-export function MolComposer({ value, onChange, placeholder = DEFAULT_PLACEHOLDER }: MolComposerProps) {
+export function MolComposer({ value, onChange, placeholder }: MolComposerProps) {
+  const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
+  const resolvedPlaceholder = placeholder ?? t('mol.composer_placeholder');
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
       {/* Blur-layer высотой ~ composer area, mask «50% black → 100% transparent»
@@ -61,7 +62,7 @@ export function MolComposer({ value, onChange, placeholder = DEFAULT_PLACEHOLDER
           type="search"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
           className={cn(
             'h-9 min-w-0 flex-1 bg-transparent text-[13.5px]',
             'text-text-primary outline-none',
@@ -75,7 +76,7 @@ export function MolComposer({ value, onChange, placeholder = DEFAULT_PLACEHOLDER
               onChange('');
               inputRef.current?.focus();
             }}
-            aria-label="Очистить"
+            aria-label={t('mol.clear_aria')}
             className={cn(
               'flex h-6 w-6 items-center justify-center rounded-md',
               'text-text-muted outline-none transition-colors',

@@ -1,8 +1,9 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { X } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/api';
+import { PasswordInput } from '@/components/ui/PasswordInput';
 import {
   changeLogin,
   changeRole,
@@ -13,7 +14,7 @@ import {
   type Role,
   type UserSummary,
 } from '@pyn/core';
-import { roleDisplayName } from './RoleBadge';
+import { roleDisplayKey } from './RoleBadge';
 
 /**
  * Все модалы Users management в одном файле — каждый сам по себе мелкий,
@@ -59,19 +60,6 @@ function UserDialogShell({ open, title, onClose, children }: UserDialogShellProp
             {title}
           </Dialog.Title>
           {children}
-          <Dialog.Close asChild>
-            <button
-              type="button"
-              aria-label="Закрыть"
-              className={cn(
-                'absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-md',
-                'text-text-muted outline-none transition-colors',
-                'hover:bg-bg-hover hover:text-text-strong',
-              )}
-            >
-              <X className="h-4 w-4" strokeWidth={1.75} />
-            </button>
-          </Dialog.Close>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -90,21 +78,32 @@ interface FieldProps {
 }
 
 function Field({ label, value, onChange, type = 'text', autoFocus, placeholder }: FieldProps) {
+  const inputClass = cn(
+    'w-full rounded-md border border-border-default bg-bg-primary px-2.5 py-1.5',
+    'text-[13px] text-text-primary outline-none transition-colors',
+    'focus:border-accent-clay',
+  );
   return (
     <label className="flex flex-col gap-1">
       <span className="text-[11.5px] text-text-secondary">{label}</span>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        autoFocus={autoFocus}
-        placeholder={placeholder}
-        className={cn(
-          'w-full rounded-md border border-border-default bg-bg-primary px-2.5 py-1.5',
-          'text-[13px] text-text-primary outline-none transition-colors',
-          'focus:border-accent-clay',
-        )}
-      />
+      {type === 'password' ? (
+        <PasswordInput
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoFocus={autoFocus}
+          placeholder={placeholder}
+          className={inputClass}
+        />
+      ) : (
+        <input
+          type={type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoFocus={autoFocus}
+          placeholder={placeholder}
+          className={inputClass}
+        />
+      )}
     </label>
   );
 }
@@ -121,6 +120,7 @@ interface ActionsRowProps {
 }
 
 function ActionsRow({ onCancel, onConfirm, confirmLabel, confirmDisabled, busy, danger }: ActionsRowProps) {
+  const { t } = useTranslation();
   return (
     <div className="mt-5 flex items-center justify-end gap-2">
       <button
@@ -131,7 +131,7 @@ function ActionsRow({ onCancel, onConfirm, confirmLabel, confirmDisabled, busy, 
           'hover:bg-bg-hover hover:text-text-strong',
         )}
       >
-        Отмена
+        {t('common.cancel')}
       </button>
       <button
         type="button"
@@ -173,6 +173,7 @@ const CREATE_ROLES_DEV: Role[] = ['user', 'client', 'admin', 'developer'];
 const CREATE_ROLES_ADMIN: Role[] = ['user', 'admin'];
 
 export function CreateUserDialog({ open, myRole, onClose, onSuccess }: CreateUserDialogProps) {
+  const { t } = useTranslation();
   const [login, setLogin] = useState('');
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
@@ -210,37 +211,41 @@ export function CreateUserDialog({ open, myRole, onClose, onSuccess }: CreateUse
       mustChangePassword: mustChange,
     })
       .then(() => {
-        onSuccess('Пользователь создан');
+        onSuccess(t('users_dialog.create_success'));
         handleClose();
       })
       .catch((err: { code?: string; message?: string }) => {
-        setError(err.message || err.code || 'Не удалось создать');
+        setError(err.message || err.code || t('common.error_fallback'));
       })
       .finally(() => setBusy(false));
   };
 
   return (
-    <UserDialogShell open={open} title="Новый пользователь" onClose={handleClose}>
+    <UserDialogShell open={open} title={t('users_dialog.create_title')} onClose={handleClose}>
       <div className="flex flex-col gap-3">
-        <Field label="Логин" value={login} onChange={setLogin} autoFocus />
-        <Field label="ФИО" value={fullName} onChange={setFullName} />
-        <Field label="Пароль" value={password} onChange={setPassword} type="password" />
+        <Field label={t('users_dialog.create_login')} value={login} onChange={setLogin} autoFocus />
+        <Field label={t('users_dialog.create_full_name')} value={fullName} onChange={setFullName} />
+        <Field label={t('users_dialog.create_password')} value={password} onChange={setPassword} type="password" />
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11.5px] text-text-secondary">Роль</span>
-          <div className="flex flex-wrap gap-1.5">
+          <span className="text-[11.5px] text-text-secondary">{t('users_dialog.create_role')}</span>
+          {/* §v1.2.14 — 2×2 grid вместо flex-wrap: одинаковая ширина всех
+              4-х кнопок, аккуратная разметка (Linear-style). Раньше длинные
+              лейблы (Администратор) wrap'или последнюю кнопку на новую
+              строку → 3+1 кривое разбиение. */}
+          <div className="grid grid-cols-2 gap-1.5">
             {availableRoles.map((r) => (
               <button
                 key={r}
                 type="button"
                 onClick={() => setRole(r)}
                 className={cn(
-                  'rounded-md border px-2.5 py-1 text-[12px] transition-colors',
+                  'rounded-md border px-2.5 py-1.5 text-[12px] transition-colors',
                   role === r
                     ? 'border-accent-clay bg-accent-clay-bg text-accent-clay'
                     : 'border-border-default bg-bg-primary text-text-secondary hover:text-text-strong',
                 )}
               >
-                {roleDisplayName(r)}
+                {t(roleDisplayKey(r))}
               </button>
             ))}
           </div>
@@ -252,14 +257,14 @@ export function CreateUserDialog({ open, myRole, onClose, onSuccess }: CreateUse
             onChange={(e) => setMustChange(e.target.checked)}
             className="h-3.5 w-3.5 accent-accent-clay"
           />
-          Сменить пароль при первом входе
+          {t('users_dialog.create_must_change')}
         </label>
         <ErrorLine error={error} />
       </div>
       <ActionsRow
         onCancel={handleClose}
         onConfirm={handleSubmit}
-        confirmLabel="Создать"
+        confirmLabel={t('users_dialog.create_submit')}
         confirmDisabled={!canSubmit}
         busy={busy}
       />
@@ -277,6 +282,7 @@ interface SingleUserDialogProps {
 }
 
 export function RenameUserDialog({ open, user, onClose, onSuccess }: SingleUserDialogProps) {
+  const { t } = useTranslation();
   const [fullName, setFullName] = useState(user.fullName);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -287,23 +293,23 @@ export function RenameUserDialog({ open, user, onClose, onSuccess }: SingleUserD
     setError('');
     renameUser(api, { targetLogin: user.login, fullName: fullName.trim() })
       .then(() => {
-        onSuccess('Имя обновлено');
+        onSuccess(t('users_dialog.rename_success'));
         onClose();
       })
       .catch((err: { code?: string; message?: string }) => {
-        setError(err.message || err.code || 'Ошибка');
+        setError(err.message || err.code || t('common.error_fallback'));
       })
       .finally(() => setBusy(false));
   };
 
   return (
-    <UserDialogShell open={open} title="Переименовать" onClose={onClose}>
-      <Field label="ФИО" value={fullName} onChange={setFullName} autoFocus />
+    <UserDialogShell open={open} title={t('users_dialog.rename_title')} onClose={onClose}>
+      <Field label={t('users_dialog.create_full_name')} value={fullName} onChange={setFullName} autoFocus />
       <ErrorLine error={error} />
       <ActionsRow
         onCancel={onClose}
         onConfirm={handleSubmit}
-        confirmLabel="Сохранить"
+        confirmLabel={t('users_dialog.rename_submit')}
         confirmDisabled={!fullName.trim() || fullName.trim() === user.fullName}
         busy={busy}
       />
@@ -314,6 +320,7 @@ export function RenameUserDialog({ open, user, onClose, onSuccess }: SingleUserD
 // ── Change login ──────────────────────────────────────────────────────────
 
 export function ChangeLoginDialog({ open, user, onClose, onSuccess }: SingleUserDialogProps) {
+  const { t } = useTranslation();
   const [newLogin, setNewLogin] = useState(user.login);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -324,23 +331,23 @@ export function ChangeLoginDialog({ open, user, onClose, onSuccess }: SingleUser
     setError('');
     changeLogin(api, { targetLogin: user.login, newLogin: newLogin.trim() })
       .then(() => {
-        onSuccess('Логин изменён');
+        onSuccess(t('users_dialog.change_login_success'));
         onClose();
       })
       .catch((err: { code?: string; message?: string }) => {
-        setError(err.message || err.code || 'Ошибка');
+        setError(err.message || err.code || t('common.error_fallback'));
       })
       .finally(() => setBusy(false));
   };
 
   return (
-    <UserDialogShell open={open} title="Сменить логин" onClose={onClose}>
-      <Field label="Новый логин" value={newLogin} onChange={setNewLogin} autoFocus />
+    <UserDialogShell open={open} title={t('users_dialog.change_login_title')} onClose={onClose}>
+      <Field label={t('users_dialog.change_login_field')} value={newLogin} onChange={setNewLogin} autoFocus />
       <ErrorLine error={error} />
       <ActionsRow
         onCancel={onClose}
         onConfirm={handleSubmit}
-        confirmLabel="Сохранить"
+        confirmLabel={t('users_dialog.rename_submit')}
         confirmDisabled={!newLogin.trim() || newLogin.trim() === user.login}
         busy={busy}
       />
@@ -353,6 +360,7 @@ export function ChangeLoginDialog({ open, user, onClose, onSuccess }: SingleUser
 const ALL_ROLES: Role[] = ['user', 'client', 'admin', 'developer'];
 
 export function ChangeRoleDialog({ open, user, onClose, onSuccess }: SingleUserDialogProps) {
+  const { t } = useTranslation();
   const [selected, setSelected] = useState<Role>(user.role);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -363,19 +371,23 @@ export function ChangeRoleDialog({ open, user, onClose, onSuccess }: SingleUserD
     setError('');
     changeRole(api, { targetLogin: user.login, newRole: selected })
       .then(() => {
-        onSuccess('Роль изменена');
+        onSuccess(t('users_dialog.change_role_success'));
         onClose();
       })
       .catch((err: { code?: string; message?: string }) => {
-        setError(err.message || err.code || 'Ошибка');
+        setError(err.message || err.code || t('common.error_fallback'));
       })
       .finally(() => setBusy(false));
   };
 
   return (
-    <UserDialogShell open={open} title="Сменить роль" onClose={onClose}>
+    <UserDialogShell open={open} title={t('users_dialog.change_role_title')} onClose={onClose}>
       <p className="mb-2 text-[12px] text-text-muted">
-        Текущая: <span className="text-text-secondary">{roleDisplayName(user.role)}</span>
+        <Trans
+          i18nKey="users_dialog.change_role_current"
+          values={{ role: t(roleDisplayKey(user.role)) }}
+          components={{ b: <span className="text-text-secondary" /> }}
+        />
       </p>
       <div className="flex flex-col gap-1.5">
         {ALL_ROLES.map((r) => (
@@ -390,7 +402,7 @@ export function ChangeRoleDialog({ open, user, onClose, onSuccess }: SingleUserD
                 : 'border-border-default bg-bg-primary text-text-secondary hover:text-text-strong',
             )}
           >
-            {roleDisplayName(r)}
+            {t(roleDisplayKey(r))}
           </button>
         ))}
       </div>
@@ -398,7 +410,7 @@ export function ChangeRoleDialog({ open, user, onClose, onSuccess }: SingleUserD
       <ActionsRow
         onCancel={onClose}
         onConfirm={handleSubmit}
-        confirmLabel="Сохранить"
+        confirmLabel={t('users_dialog.rename_submit')}
         confirmDisabled={selected === user.role}
         busy={busy}
       />
@@ -409,6 +421,7 @@ export function ChangeRoleDialog({ open, user, onClose, onSuccess }: SingleUserD
 // ── Reset password ────────────────────────────────────────────────────────
 
 export function ResetPasswordDialog({ open, user, onClose, onSuccess }: SingleUserDialogProps) {
+  const { t } = useTranslation();
   const [newPassword, setNewPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -421,37 +434,39 @@ export function ResetPasswordDialog({ open, user, onClose, onSuccess }: SingleUs
       newPassword: newPassword.trim() || undefined,
     })
       .then((res) => {
-        const generated = res.generatedPassword
-          ? ` Временный пароль: ${res.generatedPassword}`
-          : '';
-        onSuccess(`Пароль сброшен (revoked ${res.sessionsRevoked} сессий).${generated}`);
+        onSuccess(
+          t('users_dialog.reset_pw_success', {
+            n: res.sessionsRevoked,
+            password: res.generatedPassword ?? '',
+          }),
+        );
         setNewPassword('');
         onClose();
       })
       .catch((err: { code?: string; message?: string }) => {
-        setError(err.message || err.code || 'Ошибка');
+        setError(err.message || err.code || t('common.error_fallback'));
       })
       .finally(() => setBusy(false));
   };
 
   return (
-    <UserDialogShell open={open} title={`Сброс пароля — ${user.fullName}`} onClose={onClose}>
+    <UserDialogShell open={open} title={t('users_dialog.reset_pw_title', { name: user.fullName })} onClose={onClose}>
       <Field
-        label="Новый пароль (опционально)"
+        label={t('users_dialog.reset_pw_field')}
         value={newPassword}
         onChange={setNewPassword}
         type="password"
-        placeholder="оставьте пустым — сервер сгенерит"
+        placeholder={t('users_dialog.reset_pw_placeholder')}
         autoFocus
       />
       <p className="mt-2 text-[11.5px] text-text-muted">
-        Все активные сессии этого юзера будут отозваны.
+        {t('users_dialog.reset_pw_warning')}
       </p>
       <ErrorLine error={error} />
       <ActionsRow
         onCancel={onClose}
         onConfirm={handleSubmit}
-        confirmLabel="Сбросить"
+        confirmLabel={t('users_dialog.reset_pw_submit')}
         busy={busy}
         danger
       />
@@ -462,6 +477,7 @@ export function ResetPasswordDialog({ open, user, onClose, onSuccess }: SingleUs
 // ── Delete confirm ────────────────────────────────────────────────────────
 
 export function DeleteUserConfirm({ open, user, onClose, onSuccess }: SingleUserDialogProps) {
+  const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -470,26 +486,29 @@ export function DeleteUserConfirm({ open, user, onClose, onSuccess }: SingleUser
     setError('');
     deleteUser(api, user.login)
       .then(() => {
-        onSuccess('Пользователь удалён');
+        onSuccess(t('users_dialog.delete_success'));
         onClose();
       })
       .catch((err: { code?: string; message?: string }) => {
-        setError(err.message || err.code || 'Ошибка');
+        setError(err.message || err.code || t('common.error_fallback'));
       })
       .finally(() => setBusy(false));
   };
 
   return (
-    <UserDialogShell open={open} title="Удалить пользователя?" onClose={onClose}>
+    <UserDialogShell open={open} title={t('users_dialog.delete_title')} onClose={onClose}>
       <p className="text-[13px] leading-snug text-text-secondary">
-        Пользователь <span className="text-text-strong">{user.fullName}</span> ({user.login})
-        будет удалён. Сообщения сохранятся на сервере 24 часа, затем будут вычищены.
+        <Trans
+          i18nKey="users_dialog.delete_body"
+          values={{ name: user.fullName, login: user.login }}
+          components={{ b: <span className="text-text-strong" /> }}
+        />
       </p>
       <ErrorLine error={error} />
       <ActionsRow
         onCancel={onClose}
         onConfirm={handleSubmit}
-        confirmLabel="Удалить"
+        confirmLabel={t('users_dialog.delete_submit')}
         busy={busy}
         danger
       />

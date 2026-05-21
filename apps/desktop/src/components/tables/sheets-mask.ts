@@ -128,9 +128,8 @@ export function buildSheetsMaskScript(): string {
           var t = textOf(el);
           var isSheet = hasAny(t, T.sheet);
           var isMenu = hasAny(t, T.menu);
-          // Стрелка «Свернуть/Развернуть меню» — прячем ТОЛЬКО после
-          // успешного auto-click'а. Иначе юзер не сможет вручную свернуть,
-          // если наш click не отработал.
+          // Стрелка «Свернуть/Развернуть меню» — прячем после успешного
+          // auto-collapse, иначе она торчит в правом углу таблицы.
           if (collapsed && isMenu && (hasAny(t, T.collapse) || hasAny(t, T.expand))) {
             return true;
           }
@@ -140,7 +139,13 @@ export function buildSheetsMaskScript(): string {
             return true;
           }
           if (hasAny(t, T.all)) return true;
-          // Add-sheet (+) кнопка
+          // §v1.2.14 — Кнопку «Добавить строки» в инструменте Google
+          // (input "N more rows" внизу grid'a) НЕ прячем — юзер просил
+          // сохранить её. Раньше hide через add+sheet/grid срабатывал
+          // ложно если кнопка попадала в grid-bar.
+          var isRows = t.indexOf('строк') !== -1 || t.indexOf('row') !== -1;
+          if (hasAny(t, T.add) && isRows) return false;
+          // Add-sheet (+) кнопка — её прячем
           if (hasAny(t, T.add) && (isSheet || isInGridBar(el))) return true;
           return false;
         }
@@ -272,6 +277,50 @@ export function buildSheetsMaskScript(): string {
           if (attempts < MAX_ATTEMPTS) setTimeout(tryCollapse, 250);
         }
         tryCollapse();
+
+        /**
+         * §v1.2.14 — Guardian: каждую секунду перепроверяем что menubar
+         * по-прежнему свёрнут. Google периодически «восстанавливает»
+         * menubar при некоторых событиях (history navigation, hash change,
+         * iframe reload, table-load-после-фильтра). Без guardian юзер
+         * видит menubar и должен переключаться между листами чтобы
+         * триггернуть mask injection заново. Guardian делает это
+         * автоматически — silent, без console-spam.
+         *
+         * setInterval живёт всю жизнь webContents'a. Idempotent: если
+         * menubar уже свёрнут — ничего не делает.
+         */
+        if (!window.__pynMaskGuardianStarted) {
+          window.__pynMaskGuardianStarted = true;
+          var guardianRunning = false;
+          setInterval(function () {
+            if (guardianRunning) return;
+            // Не вмешиваемся пока идёт programmatic navigation (открытие
+            // menu для action) — иначе guardian сорвёт _navigatePath.
+            if (document.body.classList.contains('pyn-menu-extracting')) return;
+            // Также не сворачиваем когда у Google открыто меню/подменю —
+            // юзер мог пользоваться нативным menu для чего-то, что мы не
+            // поддерживаем своими кнопками (Печать через нашу кнопку
+            // отрабатывает без visible menu, но если юзер случайно открыл
+            // menu — пусть закроет сам).
+            if (visibleMenus().length > 0) return;
+            if (!isMenubarVisible()) return;
+            guardianRunning = true;
+            try {
+              var btn = findCollapseBtn();
+              if (btn) {
+                clickDeeply(btn);
+              } else {
+                fireKeyboardShortcut();
+              }
+              markHideables();
+            } catch (_) {
+              // ignore
+            } finally {
+              guardianRunning = false;
+            }
+          }, 1000);
+        }
 
         /**
          * Скрытие соседей tabs-контейнера в bottom-bar (prev/next/☰ кнопки).
@@ -463,16 +512,99 @@ export function buildSheetsMaskScript(): string {
         // Counter для concurrent extract'ов — если юзер быстро движет мышь,
         // несколько extract могут идти параллельно. Снимаем класс только
         // когда всё закончилось.
+        //
+        // §v1.2.14 — MutationObserver: пока pyn-menu-extracting активен,
+        // ставим inline visibility:hidden на любой новый popup (.goog-menu
+        // / [role=menu]). Inline-style побеждает Google'е CSS (та же
+        // specificity, но inline last → wins). Без этого Google popup
+        // успевал отрисоваться («шляпа») до того как наш .pyn-menu-
+        // extracting CSS apply'ился.
         var pynExtractDepth = 0;
+        var pynMaskObserver = null;
+        function hideMenuNode(node) {
+          if (!node || node.nodeType !== 1) return;
+          var cls = (node.className || '').toString();
+          var role = node.getAttribute && node.getAttribute('role');
+          var isMenu = role === 'menu' || cls.indexOf('goog-menu') !== -1 ||
+            cls.indexOf('docs-menu') !== -1;
+          if (!isMenu) return;
+          if (!node.hasAttribute('data-pyn-mask-saved')) {
+            node.setAttribute('data-pyn-mask-saved',
+              (node.style.visibility || '') + '||' + (node.style.opacity || ''));
+          }
+          node.style.visibility = 'hidden';
+          node.style.opacity = '0';
+          node.style.pointerEvents = 'none';
+        }
+        function restoreMenuNode(node) {
+          if (!node || !node.hasAttribute) return;
+          if (!node.hasAttribute('data-pyn-mask-saved')) return;
+          var saved = (node.getAttribute('data-pyn-mask-saved') || '').split('||');
+          node.style.visibility = saved[0] || '';
+          node.style.opacity = saved[1] || '';
+          node.style.pointerEvents = '';
+          node.removeAttribute('data-pyn-mask-saved');
+        }
         function startExtracting() {
           pynExtractDepth++;
-          document.body.classList.add('pyn-menu-extracting');
+          if (pynExtractDepth === 1) {
+            document.body.classList.add('pyn-menu-extracting');
+            // Hide уже существующие menu nodes (если что-то открыто).
+            var existing = document.querySelectorAll('.goog-menu, [role="menu"]');
+            for (var i = 0; i < existing.length; i++) hideMenuNode(existing[i]);
+            // Наблюдаем новые menu nodes — Google создаст popup после нашего
+            // click'а — observer hide'нет inline-style ДО paint.
+            if (!pynMaskObserver) {
+              pynMaskObserver = new MutationObserver(function (mutations) {
+                if (!document.body.classList.contains('pyn-menu-extracting')) return;
+                var hidden = 0;
+                for (var m = 0; m < mutations.length; m++) {
+                  var added = mutations[m].addedNodes;
+                  for (var n = 0; n < added.length; n++) {
+                    hideMenuNode(added[n]);
+                    if (added[n].nodeType === 1 && added[n].querySelectorAll) {
+                      var sub = added[n].querySelectorAll('.goog-menu, [role="menu"]');
+                      for (var s = 0; s < sub.length; s++) {
+                        hideMenuNode(sub[s]);
+                        hidden++;
+                      }
+                    }
+                  }
+                  // Также трекаем attribute mutations — Google может toggle
+                  // style/class на existing popup'е и сделать его visible.
+                  if (mutations[m].type === 'attributes') {
+                    var t = mutations[m].target;
+                    if (t.classList && (t.classList.contains('goog-menu') ||
+                        t.getAttribute('role') === 'menu')) {
+                      hideMenuNode(t);
+                    }
+                  }
+                }
+                if (hidden > 0) {
+                  console.log('[pyn:sheets-mask] observer hidden ' + hidden + ' menu(s)');
+                }
+              });
+            }
+            pynMaskObserver.observe(document.body, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: ['style', 'class'],
+            });
+          }
         }
         function endExtracting() {
           pynExtractDepth = Math.max(0, pynExtractDepth - 1);
           setTimeout(function () {
             if (pynExtractDepth <= 0) {
               document.body.classList.remove('pyn-menu-extracting');
+              if (pynMaskObserver) pynMaskObserver.disconnect();
+              // §v1.2.14 — НЕ восстанавливаем inline-style на popup'ах.
+              // Google после escape либо удаляет popup из DOM, либо оставляет
+              // в скрытом состоянии. В обоих случаях наш inline-style
+              // visibility:hidden — корректен. Восстанавливать = делать
+              // popup visible поверх Pyn UI («шляпа»). При следующем open
+              // observer hide'нет popup снова (если Google reuses node).
             }
           }, 250);
         }
@@ -527,8 +659,6 @@ export function buildSheetsMaskScript(): string {
               if (before.indexOf(after[k]) === -1) { newMenu = after[k]; break; }
             }
             if (!newMenu) {
-              // Возможно submenu открылся прямо как extension currentMenu.
-              // Берём последний visible — он, скорее всего, и есть submenu.
               newMenu = after[after.length - 1] || currentMenu;
             }
             currentMenu = newMenu;
@@ -577,7 +707,8 @@ export function buildSheetsMaskScript(): string {
           for (var i = 0; i < items.length; i++) {
             var lab = items[i].label.toLowerCase();
             if (lab === leafLabel || lab.indexOf(leafLabel) === 0) {
-              leaf = items[i].el; break;
+              leaf = items[i].el;
+              break;
             }
           }
           if (!leaf) {
@@ -672,6 +803,116 @@ export function buildSheetsMaskScript(): string {
             }
           }
           return 'fail';
+        };
+
+        /**
+         * §v1.2.14 — Найти toolbar-кнопку «Режимы фильтрации» Google'а.
+         * По aria-label/data-tooltip. Кнопка имеет class
+         * goog-toolbar-menu-button и при click открывает popup
+         * (.goog-menu) со списком filter views.
+         */
+        function findFilterToolbarButton() {
+          var all = document.querySelectorAll('[aria-label],[data-tooltip]');
+          var terms = ['режимы фильтр', 'filter view'];
+          for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            var aria = (el.getAttribute('aria-label') || '').toLowerCase();
+            var tip = (el.getAttribute('data-tooltip') || '').toLowerCase();
+            for (var t = 0; t < terms.length; t++) {
+              if (aria.indexOf(terms[t]) === 0 || tip.indexOf(terms[t]) === 0) {
+                return el;
+              }
+            }
+          }
+          return null;
+        }
+
+        /**
+         * §v1.2.14 — Извлечь список filter views через toolbar.
+         * Click toolbar button → popup open → читаем items → close popup.
+         * Под pyn-menu-extracting CSS — popup не visible. Возвращает массив
+         * имён saved views (без служебных пунктов «Создать», «Закрыть» и т.п.).
+         */
+        window.__pynExtractFilterViews = async function () {
+          var btn = findFilterToolbarButton();
+          if (!btn) {
+            console.log('[pyn:sheets-mask] no filter toolbar button');
+            return [];
+          }
+          startExtracting();
+          var beforeMenus = visibleMenus().length;
+          // 1й клик — toggle open popup.
+          clickDeeply(btn);
+          await new Promise(function (r) { setTimeout(r, 280); });
+          var menus = visibleMenus();
+          if (menus.length <= beforeMenus) {
+            // popup не открылся — toggle close (на случай если open был
+            // restored Google'ом без visibility). Возвращаем пустой.
+            clickDeeply(btn);
+            endExtracting();
+            return [];
+          }
+          var menu = menus[menus.length - 1];
+          var items = collectItems(menu);
+          var actionPrefixes = [
+            'создать', 'создание', 'сохранить', 'удалить', 'закрыть',
+            'параметры', 'новый', 'управление',
+          ];
+          var out = [];
+          for (var i = 0; i < items.length; i++) {
+            var low = items[i].label.trim().toLowerCase();
+            var skip = false;
+            for (var p = 0; p < actionPrefixes.length; p++) {
+              if (low.indexOf(actionPrefixes[p]) === 0) { skip = true; break; }
+            }
+            if (!skip && low) out.push(items[i].label);
+          }
+          // §v1.2.14 — 2й клик toolbar = toggle close. Это симметрично:
+          // open-close. Иначе escape мог не закрыть popup, при след. open
+          // toggle делал close → юзер видел "не найдено" через раз.
+          clickDeeply(btn);
+          endExtracting();
+          console.log('[pyn:sheets-mask] extracted views via toolbar=' + out.length);
+          return out;
+        };
+
+        /**
+         * §v1.2.14 — Применить filter view через toolbar.
+         * Click toolbar button → popup open → click view item → popup closes,
+         * Google активирует view. Под pyn-menu-extracting CSS — popup не visible.
+         * Возвращает строку-диагностику.
+         */
+        window.__pynApplyFilterView = async function (label) {
+          var btn = findFilterToolbarButton();
+          if (!btn) return 'no-toolbar';
+          startExtracting();
+          var beforeMenus = visibleMenus().length;
+          clickDeeply(btn);
+          await new Promise(function (r) { setTimeout(r, 280); });
+          var menus = visibleMenus();
+          if (menus.length <= beforeMenus) {
+            escapeAllMenus();
+            endExtracting();
+            return 'no-popup';
+          }
+          var menu = menus[menus.length - 1];
+          var items = collectItems(menu);
+          var labelLow = String(label).toLowerCase();
+          var target = null;
+          for (var i = 0; i < items.length; i++) {
+            var lab = items[i].label.toLowerCase();
+            if (lab === labelLow || lab.indexOf(labelLow) === 0) {
+              target = items[i].el; break;
+            }
+          }
+          if (!target) {
+            escapeAllMenus();
+            endExtracting();
+            return 'no-item';
+          }
+          clickDeeply(target);
+          endExtracting();
+          return 'click:' + label;
         };
 
         /**

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import i18next from 'i18next';
 import { subscribeWs } from '@/lib/ws';
 
 /**
@@ -145,23 +146,28 @@ export function useConnectivity(): ConnectivityInfo {
 }
 
 /**
- * Форматирует bandwidth в красивую строку:
- *   12.3 → «12 Мбит/с»
- *   0.5  → «0,5 Мбит/с»
- *   null → null
+ * Форматирует bandwidth в красивую строку. Единицы — из i18n
+ * (`connectivity.unit_mbps`). Десятичный разделитель локализованный (`,` в RU/UK/ES,
+ * `.` в EN/DE) — берём из i18next.resolvedLanguage через локальный switch.
  */
 export function formatBandwidth(mbps: number | null): string | null {
   if (mbps === null) return null;
-  if (mbps >= 10) return `${Math.round(mbps)} Мбит/с`;
-  return `${mbps.toFixed(1).replace('.', ',')} Мбит/с`;
+  const unit = i18next.t('connectivity.unit_mbps');
+  if (mbps >= 10) return `${Math.round(mbps)} ${unit}`;
+  return `${mbps.toFixed(1).replace('.', decimalSeparator())} ${unit}`;
 }
 
 /**
- * Форматирует RTT в мс. NULL если ещё нет первого pong'a.
- *   42  → «42 мс»
- *   1230 → «1230 мс»
+ * Форматирует RTT в мс. NULL если ещё нет первого pong'a. Единица — из
+ * i18n (`connectivity.unit_ms`).
  */
 export function formatRtt(rttMs: number | null): string | null {
   if (rttMs === null) return null;
-  return `${Math.round(rttMs)} мс`;
+  return `${Math.round(rttMs)} ${i18next.t('connectivity.unit_ms')}`;
+}
+
+function decimalSeparator(): string {
+  const lng = (i18next.resolvedLanguage || 'ru').slice(0, 2);
+  // EN — точка. Остальные локали в Pyn (RU/UK/ES/DE) — запятая.
+  return lng === 'en' ? '.' : ',';
 }

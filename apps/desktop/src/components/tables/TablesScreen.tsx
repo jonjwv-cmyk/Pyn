@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
 import { Chrome, RefreshCcw } from 'lucide-react';
 import {
@@ -22,13 +23,14 @@ import {
 import {
   SHEETS_INSPECT_SCRIPT,
   buildClickMenuPathScript,
-  buildExtractMenuScript,
   buildSheetsMaskScript,
   buildSwitchSheetScript,
 } from './sheets-mask';
+import { getFvid, setFvid } from '@/lib/filter-fvid-cache';
 import { SHEETS_PRESENCE_SCRIPT, type PresenceMember } from './sheets-presence';
 import { SheetsLockOverlay } from './SheetsLockOverlay';
 import { SheetsPasswordPrompt } from './SheetsPasswordPrompt';
+import { SheetsConfirmPrompt } from './SheetsConfirmPrompt';
 
 /**
  * Раздел «Таблицы» — embedded Google Sheets через Electron `<webview>`.
@@ -64,6 +66,7 @@ export function TablesScreen({
 }: {
   currentUserName: string;
 }): JSX.Element {
+  const { t } = useTranslation();
   const { files, error, refresh } = useTablesRegistry();
   const activeFileId = useUiStateStore((s) => s.activeTableFileId);
   const activeTabName = useUiStateStore((s) => s.activeTableTabName);
@@ -75,12 +78,49 @@ export function TablesScreen({
   const [presence, setPresence] = useState<PresenceMember[]>([]);
   // file IDs которые когда-либо были активированы и держатся в pool'е.
   const [activatedFileIds, setActivatedFileIds] = useState<readonly string[]>([]);
+  // §v1.2.14 — открытый Pyn-popover (Фильтр / Скрипты). Radix перехватывает
+  // outside click в renderer, но клик в webview-зоне (другой document) до
+  // нас не доходит → popover висит. Поэтому когда popover открыт, рендерим
+  // `<div>` поверх webview (z-30) — он перехватывает mousedown и закрывает.
+  const [openPopover, setOpenPopover] = useState<'filter' | 'scripts' | null>(null);
+
+  /**
+   * §v1.2.14 — Menubar-style hover navigation. Если уже какой-то popover
+   * открыт, hover по соседней кнопке переключает на её popover (или
+   * закрывает, если у кнопки нет popover'a). Юзер кликает один раз и
+   * дальше водит курсором по header — как в нативном menubar Mac/Win.
+   */
+  const handleTriggerHover = useCallback(
+    (target: 'filter' | 'scripts' | null): void => {
+      setOpenPopover((current) => {
+        if (current === null) return null; // no session started
+        if (current === target) return current;
+        return target;
+      });
+    },
+    [],
+  );
+
+  // §v1.2.14 — реактивный набор fileId-ов, у которых маска уже инжектнулась
+  // и таблица отрендерена. До этого момента поверх webview лежит dark overlay
+  // «Загрузка таблицы…» — юзер не видит raw Google UI с menubar'ом и не видит
+  // как у нас на глазах применяется маска. После reload (Google login) набор
+  // очищается → overlay снова появляется → did-stop-loading → set → overlay
+  // убирается.
+  const [readyFileIds, setReadyFileIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   const webviewRefs = useRef<Map<string, TWebview>>(new Map());
   const eventsSetupRef = useRef<Set<string>>(new Set());
   const readyRef = useRef<Set<string>>(new Set());
   const pendingHashRef = useRef<Map<string, number>>(new Map());
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // §v1.2.14 — URL per fileId на последнем did-stop-loading. Google
+  // повторно эмитит did-stop-loading с тем же URL (fetch'и, refresh state)
+  // — на таких событиях мы НЕ пере-инжектим маску и не сбрасываем blur,
+  // чтобы юзер не видел "применение маски на пустом месте".
+  const lastUrlRef = useRef<Map<string, string>>(new Map());
 
   // Default-table выбор на первом рендере (если ничего не активно).
   useEffect(() => {
@@ -141,8 +181,14 @@ export function TablesScreen({
     };
 
     const onDidStopLoading = async (): Promise<void> => {
-      dbg('did-stop-loading url=' + (view.getURL?.() ?? '?'));
-      // Жмём маску и ЖДЁМ — она регистрирует window.__pynSwitchSheet и др.
+      const currentUrl = view.getURL?.() ?? '';
+      const previousUrl = lastUrlRef.current.get(fileId) ?? '';
+      const wasReady = readyRef.current.has(fileId);
+      dbg('did-stop-loading url=' + currentUrl);
+      // Google повторно эмитит did-stop-loading с тем же URL (background
+      // fetch'и). Skip полностью — маска жива.
+      if (wasReady && currentUrl === previousUrl) return;
+      lastUrlRef.current.set(fileId, currentUrl);
       try {
         await view.executeJavaScript?.(buildSheetsMaskScript());
         dbg('mask injected');
@@ -150,9 +196,14 @@ export function TablesScreen({
         dbg('mask inject error: ' + String(e).slice(0, 120));
       }
       updateUrlIfActive();
-      if (!readyRef.current.has(fileId)) {
-        readyRef.current.add(fileId);
-        // Лог инспекта DOM сразу после маски — увидим что в DOM (tabs, collapse, etc.)
+      readyRef.current.add(fileId);
+      setReadyFileIds((prev) => {
+        if (prev.has(fileId)) return prev;
+        const next = new Set(prev);
+        next.add(fileId);
+        return next;
+      });
+      if (!wasReady) {
         try {
           const insp = await view.executeJavaScript?.(SHEETS_INSPECT_SCRIPT);
           dbg('inspect-after-load ' + JSON.stringify(insp));
@@ -160,7 +211,6 @@ export function TablesScreen({
         const pending = pendingHashRef.current.get(fileId);
         if (pending !== undefined) {
           pendingHashRef.current.delete(fileId);
-          // Найти rawName из текущего state для этого fileId.
           const ui = useUiStateStore.getState();
           let pendingName = '';
           if (ui.activeTableFileId === fileId) {
@@ -239,6 +289,22 @@ export function TablesScreen({
     if (url) setCurrentUrl(url);
   }, [activeFile, activeTab]);
 
+  // §v1.2.14 — после успешного Google login reload'им все webview'ы. Иначе
+  // они держат старые logged-out cookies и таблицы рендерятся с «войдите в
+  // аккаунт» баннером несмотря на то что cookies уже скопированы в persist
+  // partition. Event dispatch'ится из GoogleAccountPanel.onLogin.
+  useEffect(() => {
+    const handler = (): void => {
+      readyRef.current.clear();
+      setReadyFileIds(new Set());
+      for (const [, view] of webviewRefs.current) {
+        view.reload?.();
+      }
+    };
+    window.addEventListener('pyn:google-login-success', handler);
+    return () => window.removeEventListener('pyn:google-login-success', handler);
+  }, []);
+
   // Presence-тикер — на active webview каждые 5 сек.
   useEffect(() => {
     if (!activeFile) {
@@ -249,12 +315,22 @@ export function TablesScreen({
     const tick = (): void => {
       const view = webviewRefs.current.get(fileId);
       if (!view || !view.executeJavaScript) return;
-      view
-        .executeJavaScript(SHEETS_PRESENCE_SCRIPT)
-        .then((result) => {
-          if (Array.isArray(result)) setPresence(result as PresenceMember[]);
-        })
-        .catch(() => {});
+      // §2026-05-21 — executeJavaScript бросает SYNC throw "WebView must be
+      // attached to the DOM" когда guest ещё не готов (только что mounted или
+      // unmounted). Promise.catch такие throw не ловит — попадают в window.
+      // onerror и засоряют логи. Оборачиваем sync вызов в try.
+      try {
+        const promise = view.executeJavaScript(SHEETS_PRESENCE_SCRIPT);
+        if (promise && typeof (promise as Promise<unknown>).then === 'function') {
+          (promise as Promise<unknown>)
+            .then((result) => {
+              if (Array.isArray(result)) setPresence(result as PresenceMember[]);
+            })
+            .catch(() => {});
+        }
+      } catch {
+        // Webview ещё не attached — пропускаем тик, следующий через 5с попробует.
+      }
     };
     tick();
     const id = setInterval(tick, 5000);
@@ -263,41 +339,166 @@ export function TablesScreen({
 
   const reload = (): void => {
     if (!activeFile) return;
-    webviewRefs.current.get(activeFile.id)?.reload?.();
+    const fileId = activeFile.id;
+    // §v1.2.14 — при ручном reload сбрасываем ready-флаг, чтобы blur
+    // overlay снова появился. После did-stop-loading + mask injected →
+    // setReadyFileIds(add) → overlay fade-out плавно. Юзер не видит
+    // как Google перерисовывает grid и как мы прикладываем маску.
+    readyRef.current.delete(fileId);
+    setReadyFileIds((prev) => {
+      if (!prev.has(fileId)) return prev;
+      const next = new Set(prev);
+      next.delete(fileId);
+      return next;
+    });
+    webviewRefs.current.get(fileId)?.reload?.();
   };
 
   const clickGoogleMenuPath = useCallback(
     (path: readonly string[]): void => {
       if (!activeFile) return;
       const view = webviewRefs.current.get(activeFile.id);
-      view?.executeJavaScript?.(buildClickMenuPathScript(path)).catch(() => {});
+      if (!view?.executeJavaScript) return;
+      const fileIdShort = activeFile.id.slice(0, 8);
+      view.executeJavaScript(buildClickMenuPathScript(path))
+        .then((r) => {
+          window.pyn?.debugLog?.(
+            `pyn-tables:${fileIdShort}`,
+            'menu-click ' + JSON.stringify(path) + ' = ' + JSON.stringify(r),
+          );
+        })
+        .catch(() => {});
     },
     [activeFile],
   );
 
-  const extractGoogleMenu = useCallback(
-    async (path: readonly string[]): Promise<GoogleMenuItem[]> => {
-      if (!activeFile) return [];
+  /**
+   * Отправить keyboard shortcut в webview. Используется для Cmd+P (Печать) —
+   * Google открывает свой print dialog без открытия меню.
+   */
+  const sendKeyboardShortcut = useCallback(
+    (key: string, modifiers: { meta?: boolean; ctrl?: boolean; alt?: boolean; shift?: boolean }): void => {
+      if (!activeFile) return;
       const view = webviewRefs.current.get(activeFile.id);
-      if (!view?.executeJavaScript) return [];
-      try {
-        const result = await view.executeJavaScript(buildExtractMenuScript(path));
-        const items = Array.isArray(result) ? (result as GoogleMenuItem[]) : [];
-        window.pyn?.debugLog?.(
-          `pyn-tables:${activeFile.id.slice(0, 8)}`,
-          'extract path=' + JSON.stringify(path) + ' count=' + items.length +
-            ' first=' + (items[0]?.label ?? '-'),
-        );
-        return items;
-      } catch (e) {
-        window.pyn?.debugLog?.(
-          `pyn-tables:${activeFile.id.slice(0, 8)}`,
-          'extract ERROR ' + String(e).slice(0, 120),
-        );
-        return [];
-      }
+      if (!view?.executeJavaScript) return;
+      const code = JSON.stringify({
+        key,
+        ctrl: modifiers.ctrl ?? false,
+        alt: modifiers.alt ?? false,
+        shift: modifiers.shift ?? false,
+        meta: modifiers.meta ?? false,
+      });
+      const script =
+        '(function(){var m=' + code + ';' +
+        'var ev=function(t){return new KeyboardEvent(t,{key:m.key,code:"Key"+m.key.toUpperCase(),keyCode:m.key.toUpperCase().charCodeAt(0),which:m.key.toUpperCase().charCodeAt(0),ctrlKey:m.ctrl,altKey:m.alt,shiftKey:m.shift,metaKey:m.meta,bubbles:true,cancelable:true})};' +
+        'var t=document.activeElement||document.body;' +
+        't.dispatchEvent(ev("keydown"));t.dispatchEvent(ev("keypress"));t.dispatchEvent(ev("keyup"));' +
+        'return "sent:"+m.key})()';
+      view.executeJavaScript(script).catch(() => {});
     },
     [activeFile],
+  );
+
+  const isMac = window.pyn?.platform === 'darwin';
+
+  const openPrintDialog = useCallback((): void => {
+    // Cmd+P (Mac) / Ctrl+P (Win) — direct hotkey Google'а для печати.
+    sendKeyboardShortcut('p', { meta: isMac, ctrl: !isMac });
+  }, [sendKeyboardShortcut, isMac]);
+
+  /**
+   * Извлечь список сохранённых Filter Views для текущего листа.
+   * Путь в RU UI Google'а: `Данные › Изменить фильтр`. Submenu содержит
+   * названия filter view'ов; служебные пункты («Создать новый фильтр» и т.п.)
+   * Google возвращает в том же list — фильтруем их по эвристике (пунктам
+   * с эмодзи/глаголами действия они не маркируются, поэтому считаем
+   * filter view'ом всё, что не совпадает по началу с известными action'ами).
+   */
+  const loadFilterViews = useCallback(async (): Promise<string[]> => {
+    if (!activeFile) return [];
+    const view = webviewRefs.current.get(activeFile.id);
+    if (!view?.executeJavaScript) return [];
+    const fileIdShort = activeFile.id.slice(0, 8);
+    // §v1.2.14 — Только через toolbar-кнопку «Режимы фильтрации». Cache
+    // и menubar-fallback убраны — раньше показывали дубли (stale-cache
+    // entries поверх actual toolbar list). Один источник правды — Google.
+    try {
+      const res = await view.executeJavaScript(
+        '(typeof window.__pynExtractFilterViews === "function" ? ' +
+        'window.__pynExtractFilterViews() : null)',
+      );
+      const arr = Array.isArray(res) ? (res as string[]) : [];
+      window.pyn?.debugLog?.(
+        `pyn-tables:${fileIdShort}`,
+        'filter-views via toolbar ' + arr.length +
+          (arr.length > 0 ? ' = ' + arr.join(' | ') : ''),
+      );
+      return arr;
+    } catch (e) {
+      window.pyn?.debugLog?.(
+        `pyn-tables:${fileIdShort}`,
+        'toolbar-extract error: ' + String(e).slice(0, 120),
+      );
+      return [];
+    }
+  }, [activeFile]);
+
+  /**
+   * Применить filter view. Если fvid сохранён в кэше — мгновенно через
+   * `window.location.hash = "gid=X&fvid=Y"` (Google перехватит hashchange
+   * и активирует view без открытия menu). Если fvid'a нет — fallback через
+   * `__pynClickMenuPath` (мерцание menu один раз), после resolved читаем
+   * актуальный hash и сохраняем fvid для следующих применений.
+   */
+  const applyFilterView = useCallback(
+    (label: string): void => {
+      if (!activeFile || !activeTab) return;
+      const view = webviewRefs.current.get(activeFile.id);
+      if (!view?.executeJavaScript) return;
+      const fileIdShort = activeFile.id.slice(0, 8);
+      const cachedFvid = getFvid(activeFile.id, label);
+      if (cachedFvid) {
+        const hash = `gid=${activeTab.gid}&fvid=${cachedFvid}`;
+        view.executeJavaScript(
+          `window.location.hash = ${JSON.stringify(hash)}`,
+        ).catch(() => {});
+        window.pyn?.debugLog?.(
+          `pyn-tables:${fileIdShort}`,
+          'apply-filter-instant "' + label + '" fvid=' + cachedFvid,
+        );
+        return;
+      }
+      // Fallback: через toolbar-кнопку (один click, popup CSS-скрыт).
+      // После apply Google обновит URL hash → читаем fvid → save для
+      // следующего instant apply.
+      const fileId = activeFile.id;
+      view.executeJavaScript(
+        '(typeof window.__pynApplyFilterView === "function" ? ' +
+        'window.__pynApplyFilterView(' + JSON.stringify(label) + ') : "no-fn")',
+      )
+        .then(() => {
+          setTimeout(async () => {
+            try {
+              const hash = await view.executeJavaScript?.(
+                'window.location.hash',
+              );
+              const m =
+                typeof hash === 'string' ? hash.match(/fvid=(\d+)/) : null;
+              if (m && m[1]) {
+                setFvid(fileId, label, m[1]);
+                window.pyn?.debugLog?.(
+                  `pyn-tables:${fileIdShort}`,
+                  'apply-filter-saved "' + label + '" fvid=' + m[1],
+                );
+              }
+            } catch {
+              /* ignore */
+            }
+          }, 600);
+        })
+        .catch(() => {});
+    },
+    [activeFile, activeTab],
   );
 
   const showToast = useCallback((msg: string): void => {
@@ -310,6 +511,7 @@ export function TablesScreen({
   const actions: TableAction[] = activeTab?.actions ?? [];
 
   const [pendingPwAction, setPendingPwAction] = useState<TableAction | null>(null);
+  const [pendingConfirmAction, setPendingConfirmAction] = useState<TableAction | null>(null);
 
   /**
    * Запуск action'а — путь скрипта (macroId === null). Macro-path требует
@@ -349,9 +551,9 @@ export function TablesScreen({
         });
         if (!result.ok) {
           if (result.error === 'wrong_password') {
-            showToast('Неверный пароль');
+            showToast(t('tables.toast_wrong_password'));
           } else {
-            showToast(`Ошибка: ${result.error ?? 'unknown'}`);
+            showToast(t('tables.toast_error', { message: result.error ?? 'unknown' }));
           }
           return;
         }
@@ -370,15 +572,15 @@ export function TablesScreen({
 
         // Перезагрузка active webview — Google'е grid обновится.
         webviewRefs.current.get(activeFile.id)?.reload?.();
-        showToast(`«${action.label}» — готово`);
+        showToast(t('tables.toast_action_done', { action: action.label }));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        showToast(`Ошибка: ${msg.slice(0, 80)}`);
+        showToast(t('tables.toast_error', { message: msg.slice(0, 80) }));
       } finally {
         useSheetsLockStore.getState().release(action.id);
       }
     },
-    [activeFile, activeTab, currentUserName, showToast],
+    [activeFile, activeTab, currentUserName, showToast, t],
   );
 
   /**
@@ -398,7 +600,7 @@ export function TablesScreen({
       if (!activeFile || !activeTab) return;
       const platform = window.pyn?.platform;
       if (platform !== 'win32') {
-        showToast('SAP-макросы доступны только в Windows-версии');
+        showToast(t('tables.toast_macro_mac'));
         return;
       }
       const tabName = activeTab.rawName;
@@ -420,14 +622,14 @@ export function TablesScreen({
           password,
         });
         if (!bundle.ok) {
-          if (bundle.error === 'wrong_password') showToast('Неверный пароль');
-          else showToast(`Не получили VBS: ${bundle.error}`);
+          if (bundle.error === 'wrong_password') showToast(t('tables.toast_wrong_password'));
+          else showToast(t('tables.toast_no_vbs', { error: bundle.error }));
           return;
         }
 
         const vbsRun = await window.pyn?.macro?.runVbs(bundle.bundle.vbsSource);
         if (!vbsRun || !vbsRun.ok || !vbsRun.tsv) {
-          showToast(`VBS не отработал: ${vbsRun?.error ?? 'unknown'}`);
+          showToast(t('tables.toast_vbs_failed', { error: vbsRun?.error ?? 'unknown' }));
           return;
         }
 
@@ -437,7 +639,7 @@ export function TablesScreen({
           actionId: action.id,
         });
         if (!submit.ok) {
-          showToast(`Сервер отверг данные: ${submit.error ?? 'unknown'}`);
+          showToast(t('tables.toast_submit_rejected', { error: submit.error ?? 'unknown' }));
           return;
         }
 
@@ -455,29 +657,32 @@ export function TablesScreen({
 
         webviewRefs.current.get(activeFile.id)?.reload?.();
         showToast(
-          `«${action.label}» — готово (строк: ${submit.rowsInserted ?? '?'})`,
+          t('tables.toast_action_done_rows', {
+            action: action.label,
+            count: submit.rowsInserted ?? '?',
+          }),
         );
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        showToast(`Ошибка: ${msg.slice(0, 80)}`);
+        showToast(t('tables.toast_error', { message: msg.slice(0, 80) }));
       } finally {
         useSheetsLockStore.getState().release(action.id);
       }
     },
-    [activeFile, activeTab, currentUserName, showToast],
+    [activeFile, activeTab, currentUserName, showToast, t],
   );
 
   const handleAction = (action: TableAction): void => {
     if (!loggedIn) {
-      showToast('Войдите в Google чтобы запускать скрипты');
+      showToast(t('tables.toast_need_google_login'));
       return;
     }
     if (action.requiresPassword) {
       setPendingPwAction(action);
       return;
     }
-    if (action.macroId) void runMacroAction(action);
-    else void runScriptAction(action);
+    // Скрипты без пароля — confirm dialog (юзер: «выплывает окно Запустить скрипт?»).
+    setPendingConfirmAction(action);
   };
 
   return (
@@ -489,19 +694,77 @@ export function TablesScreen({
         )}
       >
         <span className="no-drag-region truncate text-[13.5px] font-semibold tracking-[-0.005em] text-text-strong">
-          {activeTab ? customTabName(activeTab.displayName || activeTab.rawName) : 'Таблицы'}
+          {activeTab ? customTabName(activeTab.displayName || activeTab.rawName) : t('tables.title_default')}
         </span>
 
-        <div className="no-drag-region ml-auto flex items-center gap-1.5">
+        <div
+          className="no-drag-region ml-auto flex items-center gap-1.5"
+          onMouseOver={(e) => {
+            // §v1.2.14 — Menubar-style: event delegation на parent. Radix
+            // asChild перехватывает onPointerEnter на Popover.Trigger,
+            // поэтому ловим mouseover bubbling здесь по data-pyn-trigger
+            // атрибуту. Если есть открытый popover — переключаем на тот
+            // что под курсором (или закрываем если кнопка без popover'а).
+            if (!openPopover) return;
+            const t = e.target as HTMLElement;
+            const btn = t.closest('[data-pyn-trigger]') as HTMLElement | null;
+            if (!btn) return;
+            const target = btn.getAttribute('data-pyn-trigger');
+            if (target === 'filter' || target === 'scripts') {
+              handleTriggerHover(target);
+            } else {
+              handleTriggerHover(null);
+            }
+          }}
+        >
+          {activeTab && activeTab.rawName.toLowerCase() === 'workflow' && (
+            <div data-pyn-trigger="filter">
+              <FilterDropdown
+                disabled={!loggedIn}
+                open={openPopover === 'filter'}
+                onOpenChange={(o) =>
+                  setOpenPopover((curr) => {
+                    if (o) return 'filter';
+                    return curr === 'filter' ? null : curr;
+                  })
+                }
+                loadFilterViews={loadFilterViews}
+                onApply={applyFilterView}
+              />
+            </div>
+          )}
           {activeTab && (
-            <EditDropdown
-              disabled
-              extractMenu={extractGoogleMenu}
-              onPick={clickGoogleMenuPath}
-            />
+            <button
+              type="button"
+              data-pyn-trigger="none"
+              disabled={!loggedIn}
+              onClick={openPrintDialog}
+              className={cn(
+                'flex h-7 items-center rounded-md px-2.5 text-[13px] font-medium',
+                'outline-none transition-colors',
+                !loggedIn
+                  ? 'cursor-not-allowed text-text-muted opacity-60'
+                  : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+              )}
+            >
+              {t('tables.btn_print')}
+            </button>
           )}
           {actions.length > 0 && (
-            <ScriptsDropdown actions={actions} disabled={!loggedIn} onPick={handleAction} />
+            <div data-pyn-trigger="scripts">
+              <ScriptsDropdown
+                actions={actions}
+                disabled={!loggedIn}
+                open={openPopover === 'scripts'}
+                onOpenChange={(o) =>
+                  setOpenPopover((curr) => {
+                    if (o) return 'scripts';
+                    return curr === 'scripts' ? null : curr;
+                  })
+                }
+                onPick={handleAction}
+              />
+            </div>
           )}
           {activeFile && <PresencePill members={presence} loggedIn={loggedIn} />}
           {activeFile && (
@@ -512,8 +775,8 @@ export function TablesScreen({
                 'flex h-7 w-7 items-center justify-center rounded-md',
                 'text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong',
               )}
-              aria-label="Перезагрузить"
-              title="Перезагрузить"
+              aria-label={t('tables.reload')}
+              title={t('tables.reload')}
             >
               <RefreshCcw className="h-3.5 w-3.5" strokeWidth={1.75} />
             </button>
@@ -526,7 +789,7 @@ export function TablesScreen({
             onClick={() => void refresh()}
             className="no-drag-region text-[12px] text-text-muted hover:text-text-strong"
           >
-            {error} — повторить
+            {error}
           </button>
         )}
       </header>
@@ -534,8 +797,8 @@ export function TablesScreen({
       <section className="relative flex flex-1 flex-col overflow-hidden bg-bg-deep">
         {activatedFileIds.length === 0 && (
           <EmptyHint
-            title="Выберите таблицу"
-            body="В левой панели — список Google-таблиц. Наведите курсор на таблицу, чтобы увидеть вкладки."
+            title={t('tables.empty_title')}
+            body={t('tables.empty_subtitle')}
           />
         )}
         {activatedFileIds.map((fileId) => {
@@ -548,6 +811,11 @@ export function TablesScreen({
           const initialUrl = initialTab
             ? `https://docs.google.com/spreadsheets/d/${file.id}/edit#gid=${initialTab.gid}`
             : `https://docs.google.com/spreadsheets/d/${file.id}/edit`;
+          // §v1.2.14 — webview visibility управляется ИМПЕРАТИВНО через
+          // ref в onDidStartLoading/onDidStopLoading. React state binding
+          // создавал async gap: Google уже paint'нул UI ДО того как React
+          // успел re-render с visibility:hidden. Imperative style.visibility
+          // через DOM API применяется синхронно в том же tick'е.
           return (
             <webview
               key={fileId}
@@ -561,7 +829,6 @@ export function TablesScreen({
                 display: 'inline-flex',
                 width: '100%',
                 height: '100%',
-                visibility: isActive ? 'visible' : 'hidden',
                 pointerEvents: isActive ? 'auto' : 'none',
                 zIndex: isActive ? 2 : 1,
                 backgroundColor: '#161611',
@@ -569,6 +836,30 @@ export function TablesScreen({
             />
           );
         })}
+        {openPopover && (
+          // §v1.2.14 — overlay поверх webview когда Pyn-popover открыт.
+          // mousedown закрывает popover. Radix не получает outside-click из
+          // webview-document, поэтому ловим click в renderer слое сами.
+          <div
+            aria-hidden
+            className="absolute inset-0 z-30"
+            onMouseDown={() => setOpenPopover(null)}
+          />
+        )}
+        {activeFile && !readyFileIds.has(activeFile.id) && (
+          // §v1.2.14 — Solid loader пока mask не инжектнулась при ПЕРВОЙ
+          // загрузке spreadsheet'a (или ручном reload). На subsequent
+          // navigations (возврат с /revisions, sheet switch) — silent
+          // reinject без loader'a, юзер не видит ничего лишнего.
+          <div
+            className={cn(
+              'absolute inset-0 z-10 flex items-center justify-center',
+              'bg-bg-deep',
+            )}
+          >
+            <span className="text-[12px] text-text-muted">{t('tables.loading_overlay')}</span>
+          </div>
+        )}
         {activeLock &&
           activeTab &&
           activeLock.lockedTabRawNames.includes(activeTab.rawName) && (
@@ -585,6 +876,18 @@ export function TablesScreen({
             else void runScriptAction(a, pw);
           }}
           onCancel={() => setPendingPwAction(null)}
+        />
+        <SheetsConfirmPrompt
+          open={pendingConfirmAction !== null}
+          actionLabel={pendingConfirmAction?.label ?? ''}
+          onConfirm={() => {
+            const a = pendingConfirmAction;
+            setPendingConfirmAction(null);
+            if (!a) return;
+            if (a.macroId) void runMacroAction(a);
+            else void runScriptAction(a);
+          }}
+          onCancel={() => setPendingConfirmAction(null)}
         />
         {toast && (
           <div
@@ -604,49 +907,55 @@ export function TablesScreen({
   );
 }
 
-interface GoogleMenuItem {
-  label: string;
-  hasSubmenu: boolean;
-}
-
-const EDIT_PARENTS = ['Правка', 'Вставка', 'Данные'] as const;
 
 /**
- * Dropdown «Редактирование» — N-уровневое кастомное меню. Каждый уровень
- * рендерится нашим компонентом `MenuColumn` (Linear-style). При hover на
- * пункт с `hasSubmenu === true` — запрашиваем содержимое подменю у Google
- * через `extractMenu(path)` и рендерим следующий уровень справа.
- * Google'е popup-ы скрыты CSS-классом `pyn-menu-extracting` во время
- * extraction'a — юзер их не видит.
- *
- * Клик на leaf-пункт → `onPick(path)` → `__pynClickMenuPath` → Google
- * выполняет действие. UI закрывается, popup'ы Google не мелькают.
+ * Кнопка «Фильтр» — popup со списком сохранённых Filter Views для текущего
+ * листа. Список тянется через programmatic open menu `Данные › Изменить
+ * фильтр` (sheets-mask CSS-класс `pyn-menu-extracting` скрывает Google menu
+ * на время extract'а). Клик по элементу → `__pynClickMenuPath` сразу
+ * применяет filter view, никакого Pyn-overlay'я.
  */
-function EditDropdown({
+function FilterDropdown({
   disabled,
-  extractMenu,
-  onPick,
+  open,
+  onOpenChange,
+  loadFilterViews,
+  onApply,
 }: {
   disabled: boolean;
-  extractMenu: (path: readonly string[]) => Promise<GoogleMenuItem[]>;
-  onPick: (path: readonly string[]) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  loadFilterViews: () => Promise<string[]>;
+  onApply: (label: string) => void;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
+  const { t } = useTranslation();
+  const [items, setItems] = useState<string[] | null>(null);
 
-  const close = useCallback(() => setOpen(false), []);
-
-  // root-items это статичный список {label, hasSubmenu:true} — у каждого
-  // top-level пункта однозначно есть submenu (это и есть наше меню).
-  const rootItems: GoogleMenuItem[] = EDIT_PARENTS.map((label) => ({
-    label,
-    hasSubmenu: true,
-  }));
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setItems(null);
+    loadFilterViews()
+      .then((res) => {
+        if (cancelled) return;
+        setItems(res);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setItems([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root open={open} onOpenChange={onOpenChange}>
       <Popover.Trigger asChild>
         <button
           type="button"
+          data-pyn-trigger="filter"
           disabled={disabled}
           className={cn(
             'flex h-7 items-center rounded-md px-2.5 text-[13px] font-medium',
@@ -656,149 +965,72 @@ function EditDropdown({
               : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
           )}
         >
-          Редактирование
+          {t('tables.btn_filter')}
         </button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
           align="end"
           sideOffset={6}
-          className="z-50"
+          className={cn(
+            'z-50 flex max-h-[380px] w-64 flex-col gap-0.5 overflow-y-auto rounded-lg',
+            'border border-border-default bg-bg-elevated p-1 shadow-xl',
+            'data-[state=open]:animate-in data-[state=closed]:animate-out',
+            'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
+            'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
+          )}
         >
-          <MenuColumn
-            items={rootItems}
-            path={[]}
-            width={44 * 4}
-            extractMenu={extractMenu}
-            onPickLeaf={(path) => {
-              onPick(path);
-              close();
-            }}
-          />
+          {items === null && (
+            <div className="px-2 py-1.5 text-[12px] italic text-text-muted">
+              {t('tables.filter_loading')}
+            </div>
+          )}
+          {items && items.length === 0 && (
+            <div className="px-2 py-1.5 text-[12px] text-text-muted">
+              {t('tables.filter_empty')}
+            </div>
+          )}
+          {items?.map((label) => (
+            <Popover.Close key={label} asChild>
+              <button
+                type="button"
+                onClick={() => onApply(label)}
+                className={cn(
+                  'flex h-8 items-center rounded-md px-2 text-left text-[12.5px]',
+                  'text-text-secondary outline-none transition-colors',
+                  'hover:bg-bg-hover hover:text-text-strong',
+                )}
+              >
+                <span className="truncate">{label}</span>
+              </button>
+            </Popover.Close>
+          ))}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
   );
 }
 
-/**
- * Один уровень меню. Hover на пункт с submenu → загружает дочерние
- * через `extractMenu(path + [item])` и рендерит next-level колонку
- * справа (рекурсивно). Все колонки прижаты вплотную без gap'a — мышь
- * не теряется при переходе между уровнями.
- */
-function MenuColumn({
-  items,
-  path,
-  width,
-  extractMenu,
-  onPickLeaf,
-}: {
-  items: readonly GoogleMenuItem[];
-  path: readonly string[];
-  width: number;
-  extractMenu: (path: readonly string[]) => Promise<GoogleMenuItem[]>;
-  onPickLeaf: (path: readonly string[]) => void;
-}): JSX.Element {
-  const [hovered, setHovered] = useState<string | null>(null);
-  const [childItems, setChildItems] = useState<GoogleMenuItem[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!hovered) {
-      setChildItems(null);
-      return;
-    }
-    const item = items.find((i) => i.label === hovered);
-    if (!item || !item.hasSubmenu) {
-      setChildItems(null);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    extractMenu([...path, hovered]).then((children) => {
-      if (cancelled) return;
-      setChildItems(children);
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [hovered, items, path, extractMenu]);
-
-  return (
-    <div
-      className={cn(
-        'relative flex max-h-[460px] flex-col gap-0.5 overflow-y-auto overflow-x-visible',
-        'rounded-lg border border-border-default bg-bg-elevated p-1 shadow-xl',
-      )}
-      style={{ width }}
-    >
-      {items.map((it) => {
-        const isHovered = hovered === it.label;
-        return (
-          <button
-            key={it.label}
-            type="button"
-            onMouseEnter={() => setHovered(it.label)}
-            onClick={() => {
-              if (!it.hasSubmenu) onPickLeaf([...path, it.label]);
-            }}
-            className={cn(
-              'flex h-8 items-center justify-between rounded-md px-2 text-left text-[12.5px]',
-              'text-text-secondary outline-none transition-colors',
-              'hover:bg-bg-hover hover:text-text-strong',
-              isHovered && 'bg-bg-hover text-text-strong',
-            )}
-          >
-            <span className="flex-1 truncate">{it.label}</span>
-            {it.hasSubmenu && (
-              <span className="ml-2 text-text-muted">›</span>
-            )}
-          </button>
-        );
-      })}
-      {hovered && items.find((i) => i.label === hovered)?.hasSubmenu && (
-        <div
-          className="absolute top-0 z-10"
-          style={{ left: '100%' }}
-        >
-          {loading && !childItems && (
-            <div
-              className="rounded-lg border border-border-default bg-bg-elevated px-3 py-2 text-[12px] italic text-text-muted shadow-xl"
-            >
-              Загрузка…
-            </div>
-          )}
-          {childItems && (
-            <MenuColumn
-              items={childItems}
-              path={[...path, hovered]}
-              width={Math.max(width, 240)}
-              extractMenu={extractMenu}
-              onPickLeaf={onPickLeaf}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ScriptsDropdown({
   actions,
   disabled,
+  open,
+  onOpenChange,
   onPick,
 }: {
   actions: TableAction[];
   disabled: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onPick: (a: TableAction) => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
-    <Popover.Root>
+    <Popover.Root open={open} onOpenChange={onOpenChange}>
       <Popover.Trigger asChild>
         <button
           type="button"
+          data-pyn-trigger="scripts"
           disabled={disabled}
           className={cn(
             'flex h-7 items-center rounded-md px-2.5 text-[13px] font-medium',
@@ -808,7 +1040,7 @@ function ScriptsDropdown({
               : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
           )}
         >
-          Скрипты
+          {t('tables.btn_scripts')}
         </button>
       </Popover.Trigger>
       <Popover.Portal>
@@ -852,14 +1084,12 @@ function PresencePill({
   members: PresenceMember[];
   loggedIn: boolean;
 }): JSX.Element | null {
+  const { t } = useTranslation();
   if (!loggedIn) return null;
-  if (members.length === 0) {
-    return (
-      <span className="rounded-md border border-border-subtle px-2 py-0.5 text-[11px] text-text-muted">
-        Только вы
-      </span>
-    );
-  }
+  // §v1.2.14 — раньше при members.length === 0 показывали «Только вы».
+  // Юзер: не информативно, убрать. Pill теперь появляется только когда
+  // в таблице реально есть другие юзеры (members > 0).
+  if (members.length === 0) return null;
   const anonCount = members.filter((m) => m.anonymous).length;
   const namedCount = members.length - anonCount;
   const tooltip = members.map((m) => m.name).join('\n');
@@ -873,22 +1103,27 @@ function PresencePill({
           : 'border-presence-online/30 bg-presence-online/10 text-presence-online',
       )}
     >
-      <span>+{members.length}</span>
+      <span>{t('tables_presence.overflow', { count: members.length })}</span>
       <span className="text-text-muted">
-        {namedCount > 0 && `${namedCount} ` + plural(namedCount, 'юзер', 'юзера', 'юзеров')}
+        {namedCount > 0 && t(`tables_presence.${pluralKey('named', namedCount)}`, { n: namedCount })}
         {namedCount > 0 && anonCount > 0 && ', '}
-        {anonCount > 0 && `${anonCount} ` + plural(anonCount, 'аноним', 'анонима', 'анонимов')}
+        {anonCount > 0 && t(`tables_presence.${pluralKey('anon', anonCount)}`, { n: anonCount })}
       </span>
     </span>
   );
 }
 
-function plural(n: number, one: string, few: string, many: string): string {
+/**
+ * Slavic plural-rule selector — three forms (one/few/many) для tables_presence.
+ * EN/DE/ES в JSON используют те же 3 ключа с идентичным переводом, поэтому
+ * результат корректен для всех языков.
+ */
+function pluralKey(prefix: 'named' | 'anon', n: number): string {
   const mod10 = n % 10;
   const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
+  if (mod10 === 1 && mod100 !== 11) return `${prefix}_one`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${prefix}_few`;
+  return `${prefix}_many`;
 }
 
 function EmptyHint({ title, body }: { title: string; body: string }): JSX.Element {

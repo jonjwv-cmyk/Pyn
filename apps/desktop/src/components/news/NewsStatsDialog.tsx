@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Check, Circle, X } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
@@ -33,6 +34,7 @@ interface NewsStatsDialogProps {
  * Запросы async на open dialog. Permission: admin-only (сервер enforce'ит).
  */
 export function NewsStatsDialog({ news, open, onOpenChange }: NewsStatsDialogProps) {
+  const { t } = useTranslation();
   // Cache-first: при open берём cached snapshot из store, UI рендерит мгновенно.
   // Параллельно идёт silent fetch — если данные изменились, swap'ятся без
   // мигания «Загрузка». WS `news_update` инвалидирует кеш → следующий open
@@ -100,7 +102,7 @@ export function NewsStatsDialog({ news, open, onOpenChange }: NewsStatsDialogPro
         // cached snapshot — оставляем его и тихо логируем, чтобы UI не мигал
         // на flaky-сетях.
         if (!hasCached) {
-          setError(err instanceof Error ? err.message : 'Не удалось загрузить статистику');
+          setError(err instanceof Error ? err.message : t('news_stats.load_failed'));
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -135,12 +137,12 @@ export function NewsStatsDialog({ news, open, onOpenChange }: NewsStatsDialogPro
         >
           <header className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
             <Dialog.Title className="text-[15px] font-semibold tracking-[-0.005em] text-text-strong">
-              Статистика
+              {t('news_card.action_stats')}
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
                 type="button"
-                aria-label="Закрыть"
+                aria-label={t('common.close')}
                 className={cn(
                   'flex h-7 w-7 items-center justify-center rounded-md',
                   'text-text-muted outline-none transition-colors',
@@ -262,20 +264,23 @@ interface NewsViewProps {
 }
 
 function NewsView({ stats, usersByLogin }: NewsViewProps) {
-  if (!stats) return <EmptyHint>Статистика по новости ещё не собрана.</EmptyHint>;
+  const { t } = useTranslation();
+  if (!stats) return <EmptyHint>{t('news_stats.empty_news')}</EmptyHint>;
 
   const total = stats.readers.length + stats.notReaders.length;
   return (
     <div className="flex flex-col gap-5">
       <p className="text-[12px] text-text-muted">
-        Прочитали <span className="font-medium text-text-strong">{stats.readers.length}</span> из{' '}
-        <span className="font-medium text-text-strong">{total}</span>, не прочитали{' '}
-        <span className="font-medium text-text-strong">{stats.notReaders.length}</span>.
+        <Trans
+          i18nKey="news_stats.summary_news"
+          values={{ read: stats.readers.length, total, not: stats.notReaders.length }}
+          components={{ b: <span className="font-medium text-text-strong" /> }}
+        />
       </p>
 
-      <SubSection title="Прочитали" count={stats.readers.length}>
+      <SubSection title={t('news_stats.section_readers')} count={stats.readers.length}>
         {stats.readers.length === 0 ? (
-          <SubsectionEmpty>Никто ещё не прочитал.</SubsectionEmpty>
+          <SubsectionEmpty>{t('news_stats.empty_readers')}</SubsectionEmpty>
         ) : (
           stats.readers.map((r) => (
             <ReaderRow key={r.userId} reader={r} usersByLogin={usersByLogin} />
@@ -283,9 +288,9 @@ function NewsView({ stats, usersByLogin }: NewsViewProps) {
         )}
       </SubSection>
 
-      <SubSection title="Не прочитали" count={stats.notReaders.length}>
+      <SubSection title={t('news_stats.section_not_readers')} count={stats.notReaders.length}>
         {stats.notReaders.length === 0 ? (
-          <SubsectionEmpty>Все ознакомились.</SubsectionEmpty>
+          <SubsectionEmpty>{t('news_stats.empty_not_readers')}</SubsectionEmpty>
         ) : (
           stats.notReaders.map((u) => (
             <PersonRow key={u.userId} person={u} muted usersByLogin={usersByLogin} />
@@ -329,8 +334,9 @@ interface PollViewProps {
 }
 
 function PollView({ poll, stats, usersByLogin }: PollViewProps) {
-  if (!poll) return <EmptyHint>Опрос не найден.</EmptyHint>;
-  if (!stats) return <EmptyHint>Статистика по опросу ещё не собрана.</EmptyHint>;
+  const { t } = useTranslation();
+  if (!poll) return <EmptyHint>{t('news_stats.no_poll')}</EmptyHint>;
+  if (!stats) return <EmptyHint>{t('news_stats.empty_poll')}</EmptyHint>;
 
   const total = poll.totalVoters;
   const totalPolled = stats.voters.length + stats.notVoters.length;
@@ -378,7 +384,7 @@ function PollView({ poll, stats, usersByLogin }: PollViewProps) {
                 >
                   {isMyVote && (
                     <span
-                      aria-label="Ваш выбор"
+                      aria-label={t('news_stats.my_choice_aria')}
                       className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-accent-clay text-[9px] font-bold text-white"
                     >
                       ✓
@@ -396,14 +402,16 @@ function PollView({ poll, stats, usersByLogin }: PollViewProps) {
       </div>
 
       <p className="text-[12px] text-text-muted">
-        Проголосовало{' '}
-        <span className="font-medium text-text-strong">{stats.voters.length}</span> из{' '}
-        <span className="font-medium text-text-strong">{totalPolled}</span>.
+        <Trans
+          i18nKey="news_stats.summary_poll"
+          values={{ voted: stats.voters.length, total: totalPolled }}
+          components={{ b: <span className="font-medium text-text-strong" /> }}
+        />
       </p>
 
-      <SubSection title="Проголосовали" count={stats.voters.length}>
+      <SubSection title={t('news_stats.section_voters')} count={stats.voters.length}>
         {stats.voters.length === 0 ? (
-          <SubsectionEmpty>Ещё никто не проголосовал.</SubsectionEmpty>
+          <SubsectionEmpty>{t('news_stats.empty_voters')}</SubsectionEmpty>
         ) : (
           stats.voters.map((v) => (
             <VoterRow
@@ -417,9 +425,9 @@ function PollView({ poll, stats, usersByLogin }: PollViewProps) {
         )}
       </SubSection>
 
-      <SubSection title="Не проголосовали" count={stats.notVoters.length}>
+      <SubSection title={t('news_stats.section_not_voters')} count={stats.notVoters.length}>
         {stats.notVoters.length === 0 ? (
-          <SubsectionEmpty>Все участники проголосовали.</SubsectionEmpty>
+          <SubsectionEmpty>{t('news_stats.empty_not_voters')}</SubsectionEmpty>
         ) : (
           stats.notVoters.map((u) => (
             <PersonRow key={u.userId} person={u} muted usersByLogin={usersByLogin} />
@@ -439,6 +447,7 @@ interface VoterRowProps {
 }
 
 function VoterRow({ voter, poll, optionsById, usersByLogin }: VoterRowProps) {
+  const { t } = useTranslation();
   // Каскад: votedOptionTexts → optionsById → news.poll.options
   const optionTexts =
     voter.votedOptionTexts.length > 0
@@ -447,11 +456,11 @@ function VoterRow({ voter, poll, optionsById, usersByLogin }: VoterRowProps) {
           .map(
             (id) => optionsById[id] || poll.options.find((o) => o.id === id)?.text || '',
           )
-          .filter((t) => t.length > 0);
+          .filter((s) => s.length > 0);
   const u = usersByLogin[voter.userId];
   // Если каскад не сработал — показываем «Проголосовал» (без #id, который
   // юзеру не нравится). По крайней мере viewer видит ЧТО юзер участвовал.
-  const choiceLabel = optionTexts.length > 0 ? optionTexts.join(', ') : 'Проголосовал';
+  const choiceLabel = optionTexts.length > 0 ? optionTexts.join(', ') : t('news_stats.voted_label');
 
   return (
     <div className="flex items-center gap-3 py-1">

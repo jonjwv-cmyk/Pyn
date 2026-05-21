@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { MolRecord, ParsedMolQuery } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import {
@@ -47,6 +48,7 @@ export function MolTable({
   onContactAction,
   persistScrollKey,
 }: MolTableProps) {
+  const { t } = useTranslation();
   const tableRef = useRef<HTMLTableElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const molScrollTop = useUiStateStore((s) => s.molScrollTop);
@@ -165,7 +167,7 @@ export function MolTable({
             'text-text-secondary/85',
           )}
         >
-          Что ищем сегодня?
+          {t('mol.search_hero')}
         </p>
       </div>
     );
@@ -174,12 +176,12 @@ export function MolTable({
   if (records.length === 0) {
     const message =
       parsed.mode === 'warehouse'
-        ? 'Склад не найден — попробуйте ещё'
+        ? t('mol.warehouse_not_found')
         : parsed.mode === 'phone'
-          ? 'Телефон не найден — попробуйте ещё'
+          ? t('mol.phone_not_found')
           : parsed.mode === 'email'
-            ? 'E-mail не удалось найти — попробуйте ещё'
-            : 'Сотрудник не найден — попробуйте ещё';
+            ? t('mol.phone_not_found')
+            : t('mol.employee_not_found');
     return (
       <div className="flex flex-1 items-center justify-center">
         <p className="text-[12.5px] text-text-muted">{message}</p>
@@ -221,10 +223,10 @@ export function MolTable({
             {/* Заголовки — center horizontal + middle vertical. */}
             <tr className="text-center text-[10.5px] uppercase tracking-wider text-text-muted">
               <Th>№</Th>
-              <Th>ФИО</Th>
-              <Th>Телефоны</Th>
+              <Th>{t('mol.fio')}</Th>
+              <Th>{t('mol.phones')}</Th>
               <Th>E-mail</Th>
-              <Th>Статус</Th>
+              <Th>{t('mol.status')}</Th>
             </tr>
           </thead>
           <tbody className="select-text cursor-text" onCopy={handleCopy}>
@@ -252,6 +254,7 @@ function MolRow({
   index: number;
   onContactAction: (req: ContactActionRequest) => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const kind = molStatusKind(record.status);
   const mobile = formatMobilePhone(record.mobile);
   const workPhones = splitAndFormatWorkPhones(record.work);
@@ -273,7 +276,7 @@ function MolRow({
       kind: 'call',
       target: record.mobile,
       display: mobile,
-      contactName: record.fio || 'этому контакту',
+      contactName: record.fio || t('mol.contact_unknown'),
     });
 
   const callWork = (workDisplay: string) =>
@@ -281,7 +284,9 @@ function MolRow({
       kind: 'call',
       target: workDisplay,
       display: workDisplay,
-      contactName: `${record.fio || 'контакт'} (рабочий)`,
+      contactName: t('mol.contact_work_suffix', {
+        name: record.fio || t('mol.contact_unknown_short'),
+      }),
     });
 
   const sendMail = () =>
@@ -289,7 +294,7 @@ function MolRow({
       kind: 'mail',
       target: record.mail,
       display: record.mail,
-      contactName: record.fio || 'этому контакту',
+      contactName: record.fio || t('mol.contact_unknown'),
     });
 
   return (

@@ -19,3 +19,4 @@ export * from './mol-query';
 export * from './reactions';
 export * from './types';
 export * from './store';
+export * from './i18n';

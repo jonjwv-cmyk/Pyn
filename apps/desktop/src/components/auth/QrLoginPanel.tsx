@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
+import { Loader2, Menu, ScanLine, Smartphone, LogIn } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import QRCode from 'qrcode';
 import { api } from '@/lib/api';
 import { getDeviceLabel } from '@/lib/device';
@@ -47,6 +50,7 @@ const ERROR_RETRY_MS = 3_000;
  * `key={phase.challenge}` на img). Кнопки «Обновить» нет — всё прозрачно.
  */
 export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
+  const { t } = useTranslation();
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [secondsLeft, setSecondsLeft] = useState(0);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -66,7 +70,7 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
         desktopOs: window.pyn?.platform === 'darwin' ? 'mac' : 'win',
       });
       if (!result.challenge || !result.qrPayload) {
-        setPhase({ kind: 'error', message: 'Сервер не вернул challenge' });
+        setPhase({ kind: 'error', message: t('qr_login.no_challenge') });
         return;
       }
       const qrDataUrl = await QRCode.toDataURL(result.qrPayload, {
@@ -82,7 +86,7 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
       console.error('[pyn:qr] request failed:', err);
       setPhase({
         kind: 'error',
-        message: err instanceof Error ? err.message : 'Не удалось запросить QR',
+        message: err instanceof Error ? err.message : t('qr_login.request_failed'),
       });
     }
   }, []);
@@ -175,25 +179,31 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
     <div className="flex flex-col items-center gap-3">
       <div
         className={cn(
-          'flex h-[240px] w-[240px] items-center justify-center rounded-xl',
+          'flex h-[240px] w-[240px] items-center justify-center overflow-hidden rounded-xl',
           'border border-border-default bg-bg-elevated',
         )}
       >
         {phase.kind === 'loading' && (
-          <span className="text-[12px] text-text-muted">Подготовка QR…</span>
+          <Loader2
+            className="h-7 w-7 animate-spin text-accent-clay opacity-80"
+            strokeWidth={1.5}
+            aria-label={t('common.loading')}
+          />
         )}
         {phase.kind === 'ready' && (
           // `key={challenge}` гарантирует remount img при свапе → Tailwind
           // animate-in fade-in проигрывается на новом коде, старый исчезает
           // одновременно с появлением. Subtle 250ms — не мельтешит.
+          // `rounded-lg` на самом QR — скругляет белые углы кода так чтобы
+          // визуально совпасть с округлой рамкой контейнера.
           <img
             key={phase.challenge}
             src={phase.qrDataUrl}
-            alt="QR-код входа"
+            alt={t('qr_login.qr_alt')}
             width={224}
             height={224}
             className={cn(
-              'select-none',
+              'select-none rounded-lg',
               'animate-in fade-in-0 zoom-in-[0.97] duration-[260ms] ease-out',
             )}
           />
@@ -201,20 +211,78 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
         {phase.kind === 'error' && (
           <div className="flex flex-col items-center gap-1.5 px-4 text-center">
             <p className="text-[12px] text-danger">{phase.message}</p>
-            <p className="text-[11px] text-text-muted">Пробуем снова…</p>
+            <p className="text-[11px] text-text-muted">{t('qr_login.retrying')}</p>
           </div>
         )}
       </div>
 
-      <p className="max-w-[280px] text-center text-[11.5px] leading-snug text-text-muted">
-        Откройте OTLHelper на телефоне → меню → «Войти на ПК» — и наведите камеру на код.
-      </p>
-
       {phase.kind === 'ready' && (
-        <p className="text-[10.5px] tabular-nums text-text-muted">
-          Действителен ещё {secondsLeft} с
+        <p className="text-[11px] tabular-nums text-text-muted">
+          <Trans
+            i18nKey="qr_login.expires_in"
+            values={{ n: secondsLeft }}
+            components={{
+              b: <span className="font-medium text-accent-clay" />,
+            }}
+          />
         </p>
       )}
+
+      <StepsList />
     </div>
+  );
+}
+
+interface StepProps {
+  number: number;
+  icon: LucideIcon;
+  label: string;
+}
+
+/**
+ * Один шаг numbered-инструкции: маленький номер-кружок + иконка + текст.
+ * Linear-style вертикальный список, без чрезмерного зрительного шума.
+ */
+function Step({ number, icon: Icon, label }: StepProps) {
+  return (
+    <li className="flex items-center gap-2.5">
+      <span
+        className={cn(
+          'flex h-5 w-5 shrink-0 items-center justify-center rounded-full',
+          'bg-accent-clay-bg text-[10px] font-semibold tabular-nums text-accent-clay',
+        )}
+      >
+        {number}
+      </span>
+      <Icon className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.75} />
+      <span className="text-[11.5px] leading-snug text-text-secondary">{label}</span>
+    </li>
+  );
+}
+
+/**
+ * Numbered visual steps QR-логина (Linear/Figma-style).
+ *
+ *   ① 📱 Открой Pyn на телефоне
+ *   ② ☰ Перейди в меню
+ *   ③ → Войти на ПК
+ *   ④ ▣ Наведи камеру на код
+ */
+function StepsList() {
+  const { t } = useTranslation();
+  return (
+    <ol
+      className={cn(
+        // 240px — точная ширина QR-контейнера выше; визуально ровно в одной
+        // колонке (QR / счётчик / инструкция).
+        'flex w-[240px] flex-col gap-1.5 rounded-lg',
+        'border border-border-subtle bg-bg-primary/40 px-3 py-2.5',
+      )}
+    >
+      <Step number={1} icon={Smartphone} label={t('qr_login.step_open')} />
+      <Step number={2} icon={Menu} label={t('qr_login.step_menu')} />
+      <Step number={3} icon={LogIn} label={t('qr_login.step_login')} />
+      <Step number={4} icon={ScanLine} label={t('qr_login.step_scan')} />
+    </ol>
   );
 }

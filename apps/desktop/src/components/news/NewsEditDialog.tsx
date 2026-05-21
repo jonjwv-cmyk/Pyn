@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Clock, X } from 'lucide-react';
+import { Clock } from 'lucide-react';
 import { EmojiPickerButton } from '@/components/ui/EmojiPickerButton';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -38,6 +39,7 @@ export function NewsEditDialog({
   createdAt,
   onEdited,
 }: NewsEditDialogProps) {
+  const { t } = useTranslation();
   const [text, setText] = useState(initialText);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,8 +69,7 @@ export function NewsEditDialog({
   // drift'нул) — fallback на тот же UI ниже через error code.
   const windowExpired =
     isOlderThanHours(createdAt, EDIT_WINDOW_HOURS) ||
-    error === 'edit_window_expired' ||
-    error === 'Редактирование невозможно';
+    error === 'edit_window_expired';
 
   const handleSave = async (): Promise<void> => {
     const trimmed = text.trim();
@@ -87,7 +88,7 @@ export function NewsEditDialog({
       if (code === 'edit_window_expired') {
         setError('edit_window_expired');
       } else {
-        setError(err instanceof Error ? err.message : 'Не удалось сохранить');
+        setError(err instanceof Error ? err.message : t('news_edit.save_failed'));
       }
     } finally {
       setSaving(false);
@@ -116,28 +117,15 @@ export function NewsEditDialog({
         >
           <header className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
             <Dialog.Title className="text-[15px] font-semibold tracking-[-0.005em] text-text-strong">
-              {windowExpired ? 'Редактирование невозможно' : 'Редактировать'}
+              {windowExpired ? t('news_edit.title_expired') : t('news_edit.title')}
             </Dialog.Title>
-            <Dialog.Close asChild>
-              <button
-                type="button"
-                aria-label="Закрыть"
-                className={cn(
-                  'flex h-7 w-7 items-center justify-center rounded-md',
-                  'text-text-muted outline-none transition-colors',
-                  'hover:bg-bg-hover hover:text-text-strong',
-                )}
-              >
-                <X className="h-4 w-4" strokeWidth={1.75} />
-              </button>
-            </Dialog.Close>
           </header>
 
           {windowExpired ? (
             <div className="flex flex-col items-center gap-3 px-5 py-6 text-center">
               <Clock className="h-7 w-7 text-text-muted" strokeWidth={1.5} />
               <p className="text-[13px] leading-relaxed text-text-secondary">
-                Прошло более суток с момента публикации.
+                {t('news_edit.expired_body')}
               </p>
               <Dialog.Close asChild>
                 <button
@@ -147,7 +135,7 @@ export function NewsEditDialog({
                     'bg-bg-hover text-text-strong transition-colors hover:bg-bg-pressed',
                   )}
                 >
-                  Понятно
+                  {t('news_edit.ok')}
                 </button>
               </Dialog.Close>
             </div>
@@ -159,7 +147,7 @@ export function NewsEditDialog({
                     ref={textareaRef}
                     value={text}
                     onChange={(e) => setText(e.target.value)}
-                    placeholder="Текст сообщения…"
+                    placeholder={t('news_edit.placeholder')}
                     rows={6}
                     autoFocus
                     className={cn(
@@ -196,7 +184,7 @@ export function NewsEditDialog({
                       'hover:bg-bg-hover hover:text-text-strong',
                     )}
                   >
-                    Отмена
+                    {t('common.cancel')}
                   </button>
                 </Dialog.Close>
                 <button
@@ -210,7 +198,7 @@ export function NewsEditDialog({
                       : 'bg-accent-clay text-white hover:bg-accent-clay-dim',
                   )}
                 >
-                  {saving ? 'Сохранение…' : 'Сохранить'}
+                  {saving ? t('news_edit.saving') : t('news_edit.save')}
                 </button>
               </footer>
             </>

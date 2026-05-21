@@ -1,5 +1,6 @@
 import { PanelLeft, Search } from 'lucide-react';
 import * as Tooltip from '@radix-ui/react-tooltip';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
 interface SidebarHeaderProps {
@@ -33,6 +34,7 @@ export function SidebarHeader({
   onToggleCollapsed,
   onSearchClick,
 }: SidebarHeaderProps) {
+  const { t } = useTranslation();
   const firstButtonRightX = WRAPPER_PADDING_X + HEADER_PADDING_X + BUTTON_SIZE;
   const secondButtonRightX = firstButtonRightX + BUTTON_GAP + BUTTON_SIZE;
 
@@ -40,13 +42,13 @@ export function SidebarHeader({
     <div className="flex h-8 items-center gap-1 px-1">
       <IconButton
         icon={PanelLeft}
-        tooltip={collapsed ? 'Показать сайтбар' : 'Скрыть сайтбар'}
+        tooltip={collapsed ? t('sidebar_extra.show_sidebar') : t('sidebar_extra.hide_sidebar')}
         tooltipSideOffset={sidebarWidth - firstButtonRightX + TOOLTIP_GAP}
         onClick={onToggleCollapsed}
       />
       <IconButton
         icon={Search}
-        tooltip="Поиск"
+        tooltip={t('sidebar_extra.search')}
         tooltipSideOffset={sidebarWidth - secondButtonRightX + TOOLTIP_GAP}
         onClick={onSearchClick}
       />

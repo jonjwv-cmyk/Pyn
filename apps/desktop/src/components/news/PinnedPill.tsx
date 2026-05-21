@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ChevronDown, Pin } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
 import { PresenceDot } from '@/components/ui/PresenceDot';
 import { cn } from '@/lib/cn';
 import type { NewsItem, Role } from '@pyn/core';
 import { NewsCardActionsMenu, NewsCardBody } from './NewsCard';
+import { NewsEditDialog } from './NewsEditDialog';
 import { NewsStatsDialog } from './NewsStatsDialog';
 
 interface PinnedPillProps {
@@ -14,6 +16,8 @@ interface PinnedPillProps {
   onVote?: (newsId: number, optionId: number) => void;
   onTogglePin?: (newsId: number) => void;
   onDelete?: (newsId: number) => void;
+  /** Локальное обновление текста после успешного редактирования. */
+  onEdited?: (newsId: number, newText: string) => void;
   /**
    * Перенести скролл ленты к указанной новости. Click на body pill'а
    * (label «Новость» / «Опрос») триггерит это; chevron'ом ниже остаётся
@@ -38,12 +42,15 @@ export function PinnedPill({
   onVote,
   onTogglePin,
   onDelete,
+  onEdited,
   onJumpToNews,
 }: PinnedPillProps) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
-  const kindLabel = news.kind === 'poll' ? 'Опрос' : 'Новость';
+  const kindLabel = news.kind === 'poll' ? t('news.label_poll') : t('news.label_news');
 
   return (
     <article
@@ -58,7 +65,7 @@ export function PinnedPill({
         <button
           type="button"
           onClick={() => onJumpToNews?.(news.id)}
-          aria-label={`Перейти к: ${kindLabel}`}
+          aria-label={t('pinned_pill.jump_aria', { kind: kindLabel })}
           className={cn(
             'flex min-w-0 flex-1 items-baseline gap-1.5 text-left outline-none',
             'rounded transition-colors hover:text-accent-clay',
@@ -67,16 +74,14 @@ export function PinnedPill({
           <span className="shrink-0 text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
             {kindLabel}
           </span>
-          <span className="shrink-0 text-[12px] text-text-muted">(важно)</span>
+          <span className="shrink-0 text-[12px] text-text-muted">{t('pinned_pill.important')}</span>
         </button>
 
         <NewsCardActionsMenu
           news={news}
           currentUserRole={currentUserRole}
           onOpenStats={() => setStatsOpen(true)}
-          onEdit={() => {
-            /* PinnedPill: edit отсюда не открываем — открыть полную карточку. */
-          }}
+          onEdit={() => setEditOpen(true)}
           onTogglePin={() => onTogglePin?.(news.id)}
           onDelete={() => onDelete?.(news.id)}
         />
@@ -84,7 +89,7 @@ export function PinnedPill({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          aria-label={expanded ? 'Свернуть' : 'Развернуть'}
+          aria-label={expanded ? t('pinned_pill.collapse_aria') : t('pinned_pill.expand_aria')}
           aria-expanded={expanded}
           className={cn(
             'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
@@ -115,6 +120,14 @@ export function PinnedPill({
       )}
 
       <NewsStatsDialog news={news} open={statsOpen} onOpenChange={setStatsOpen} />
+      <NewsEditDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        newsId={news.id}
+        initialText={news.text}
+        createdAt={news.createdAt}
+        onEdited={(newText) => onEdited?.(news.id, newText)}
+      />
     </article>
   );
 }

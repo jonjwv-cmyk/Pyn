@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
 import { Check, Copy, CornerUpLeft } from 'lucide-react';
 import { ALLOWED_REACTIONS } from '@pyn/core';
@@ -44,6 +45,7 @@ export function MessageActionsPopup({
   side = 'top',
   align = 'end',
 }: MessageActionsPopupProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [copiedShown, setCopiedShown] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -116,7 +118,7 @@ export function MessageActionsPopup({
                 className="h-3.5 w-3.5 shrink-0 text-presence-online"
                 strokeWidth={2.5}
               />
-              <span>Скопировано</span>
+              <span>{t('message_actions.copied')}</span>
             </div>
           ) : (
             <>
@@ -146,10 +148,10 @@ export function MessageActionsPopup({
                   <div className="my-1 h-px shrink-0 bg-border-subtle" />
                   <div className="flex flex-col">
                     {onReply && (
-                      <ActionRow icon={CornerUpLeft} label="Ответить" onSelect={handleReply} />
+                      <ActionRow icon={CornerUpLeft} label={t('message_actions.reply')} onSelect={handleReply} />
                     )}
                     {onCopy && (
-                      <ActionRow icon={Copy} label="Копировать" onSelect={handleCopy} />
+                      <ActionRow icon={Copy} label={t('message_actions.copy')} onSelect={handleCopy} />
                     )}
                   </div>
                 </>

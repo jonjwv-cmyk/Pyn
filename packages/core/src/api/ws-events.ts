@@ -45,6 +45,18 @@ export const WS_EVENT_TYPES = {
   SHEET_LOCK_ACQUIRED: 'sheet_lock_acquired',
   /** Скрипт/макрос завершился — снимаем блокировку. */
   SHEET_LOCK_RELEASED: 'sheet_lock_released',
+  /**
+   * Kill switch / app lock state changed. Шлётся при activate/deactivate
+   * developer'ом и при auto-trigger wipe (когда wipe_at истёк). Клиент
+   * показывает overlay (paused) или стирает данные (wiping).
+   */
+  APP_CONTROL_STATE_CHANGED: 'app_control_state_changed',
+  /**
+   * Новая версия приложения опубликована (set_app_version / broadcast_app_version).
+   * Сервер шлёт всем подключённым клиентам — desktop клиент re-checks appStatus
+   * и сразу показывает «Доступно обновление» pill без 30-мин polling-окна.
+   */
+  APP_VERSION_CHANGED: 'app_version_changed',
 } as const;
 
 export type WsEventType = (typeof WS_EVENT_TYPES)[keyof typeof WS_EVENT_TYPES];
@@ -123,4 +135,39 @@ export interface SheetLockReleasedEvent extends WsServerEvent {
   type: 'sheet_lock_released';
   action_id: string;
   error?: string;
+}
+
+/**
+ * Kill switch state changed (2026-05-20). Возможные значения `state`:
+ *   • 'normal'  — блокировка снята (developer cancel'нул)
+ *   • 'paused'  — активна блокировка, до wipe_at countdown идёт
+ *   • 'wiping'  — wipe_at истёк, сервер триггерит стирание данных
+ *   • 'wiped'   — клиенты подтвердили wipe (terminal на сервере)
+ *
+ * `wipe_at` — ISO datetime когда сервер триггернёт wiping. Null если state=normal.
+ * `scope` — обычно 'global'; legacy scope'ы (main, desktop-win, …) присылают
+ * тот же event type для back-compat Android maintenance pause.
+ */
+export interface AppControlStateChangedEvent extends WsServerEvent {
+  type: 'app_control_state_changed';
+  scope: string;
+  state: 'normal' | 'paused' | 'wiping' | 'wiped' | string;
+  title: string;
+  message: string;
+  wipe_at?: string | null;
+  initiated_by?: string;
+}
+
+/**
+ * Опубликована новая версия приложения. `scope` — какая платформа задета
+ * (`main` для Android, `desktop-mac` / `desktop-win` для desktop).
+ * Клиент должен пере-вызвать `appStatus` (а не доверять данным из event'a),
+ * чтобы получить полный response с update_url + binary_sha.
+ */
+export interface AppVersionChangedEvent extends WsServerEvent {
+  type: 'app_version_changed';
+  scope: string;
+  current_version: string;
+  min_version?: string;
+  force_update?: number;
 }

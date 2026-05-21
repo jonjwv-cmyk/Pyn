@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Plus, Trash2, X } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import { EmojiPickerButton } from '@/components/ui/EmojiPickerButton';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -31,6 +32,7 @@ const MAX_OPTIONS = 10;
  * NewsFeed подхватит автоматически через WS-listener.
  */
 export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDialogProps) {
+  const { t } = useTranslation();
   const [question, setQuestion] = useState('');
   const [options, setOptions] = useState<string[]>(['', '']);
   const [submitting, setSubmitting] = useState(false);
@@ -89,7 +91,7 @@ export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDial
       onOpenChange(false);
     } catch (err) {
       const code = err instanceof Error ? err.message : '';
-      setError(serverErrorToText(code));
+      setError(t(serverErrorToKey(code)));
     } finally {
       setSubmitting(false);
     }
@@ -116,16 +118,16 @@ export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDial
           )}
         >
           <Dialog.Title className="text-[15px] font-semibold tracking-[-0.005em] text-text-strong">
-            Создать опрос
+            {t('news_poll_dialog.title')}
           </Dialog.Title>
           <Dialog.Description className="mt-1 text-[12px] text-text-muted">
-            Минимум 2 варианта. Каждый пользователь голосует один раз.
+            {t('news_poll_dialog.subtitle')}
           </Dialog.Description>
 
           <div className="mt-4 flex flex-col gap-3">
             <div>
               <label className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-text-muted">
-                Вопрос
+                {t('news_poll_dialog.question_label')}
               </label>
               <div className="relative">
                 <textarea
@@ -133,7 +135,7 @@ export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDial
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   rows={2}
-                  placeholder="О чём спрашиваем?"
+                  placeholder={t('news_poll_dialog.question_placeholder')}
                   className={cn(
                     'w-full resize-none rounded-lg border border-border-subtle bg-bg-primary/40 px-3 py-2 pr-10',
                     'text-[13px] leading-snug text-text-primary placeholder:text-text-muted',
@@ -148,7 +150,7 @@ export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDial
 
             <div>
               <label className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-text-muted">
-                Варианты ({validOptionsCount}/{MIN_OPTIONS}+)
+                {t('news_poll_dialog.options_label', { count: validOptionsCount, min: MIN_OPTIONS })}
               </label>
               <div className="flex flex-col gap-1.5">
                 {options.map((opt, idx) => (
@@ -158,7 +160,7 @@ export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDial
                       type="text"
                       value={opt}
                       onChange={(e) => handleChangeOption(idx, e.target.value)}
-                      placeholder={`Вариант ${idx + 1}`}
+                      placeholder={t('news_poll_dialog.option_placeholder', { n: idx + 1 })}
                       className={cn(
                         'flex-1 rounded-lg border border-border-subtle bg-bg-primary/40 px-3 py-1.5',
                         'text-[13px] text-text-primary placeholder:text-text-muted',
@@ -169,7 +171,7 @@ export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDial
                       <button
                         type="button"
                         onClick={() => handleRemoveOption(idx)}
-                        aria-label="Удалить вариант"
+                        aria-label={t('news_poll_dialog.option_remove_aria')}
                         className={cn(
                           'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
                           'text-text-muted outline-none transition-colors',
@@ -192,7 +194,7 @@ export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDial
                     )}
                   >
                     <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-                    Добавить вариант
+                    {t('news_poll_dialog.add_option')}
                   </button>
                 )}
               </div>
@@ -214,7 +216,7 @@ export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDial
                   'hover:bg-bg-hover hover:text-text-strong',
                 )}
               >
-                Отмена
+                {t('news_poll_dialog.cancel')}
               </button>
             </Dialog.Close>
             <button
@@ -229,40 +231,27 @@ export function NewsPollDialog({ open, onOpenChange, onPublished }: NewsPollDial
                 'disabled:cursor-not-allowed disabled:opacity-60',
               )}
             >
-              {submitting ? 'Публикуем…' : 'Опубликовать'}
+              {submitting ? t('news_poll_dialog.submitting') : t('news_poll_dialog.submit')}
             </button>
           </div>
 
-          <Dialog.Close asChild>
-            <button
-              type="button"
-              aria-label="Закрыть"
-              className={cn(
-                'absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-md',
-                'text-text-muted outline-none transition-colors',
-                'hover:bg-bg-hover hover:text-text-strong',
-              )}
-            >
-              <X className="h-4 w-4" strokeWidth={1.75} />
-            </button>
-          </Dialog.Close>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
   );
 }
 
-/** Маппинг известных серверных error code'ов в RU-friendly текст. */
-function serverErrorToText(code: string): string {
+/** Маппинг известных серверных error code'ов в translation key. */
+function serverErrorToKey(code: string): string {
   switch (code) {
     case 'poll_payload_invalid':
-      return 'Сервер отверг данные опроса (нужно минимум 2 варианта).';
+      return 'news_poll_dialog.error_invalid_options';
     case 'poll_question_empty':
     case 'poll_options_min_2':
-      return 'Нужен вопрос и минимум 2 непустых варианта.';
+      return 'news_poll_dialog.error_min_options';
     case 'role_forbidden':
-      return 'У вас нет прав публиковать опросы.';
+      return 'news_poll_dialog.error_forbidden';
     default:
-      return code || 'Не удалось создать опрос';
+      return 'news_poll_dialog.error_fallback';
   }
 }

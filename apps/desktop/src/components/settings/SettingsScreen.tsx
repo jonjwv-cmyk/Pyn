@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Role } from '@pyn/core';
 import {
   SettingsSidebar,
@@ -7,6 +8,8 @@ import {
 } from './SettingsSidebar';
 import { SettingsTopBar } from './SettingsTopBar';
 import { GoogleAccountPanel } from './GoogleAccountPanel';
+import { AppControlPanel } from './AppControlPanel';
+import { LanguagePanel } from './LanguagePanel';
 import { useUsersPanelState } from './users/use-users-panel-state';
 
 interface SettingsScreenProps {
@@ -37,6 +40,7 @@ interface SettingsScreenProps {
  * Default subsection: developer → «Пользователи»; остальные роли → «Язык».
  */
 export function SettingsScreen({ myRole, myLogin, onBack }: SettingsScreenProps) {
+  const { t } = useTranslation();
   const [sub, setSub] = useState<SettingsSubSection>(() => defaultSettingsSubSection(myRole));
 
   // Хук всегда вызывается; `active` контролирует polling — выключен когда
@@ -47,7 +51,7 @@ export function SettingsScreen({ myRole, myLogin, onBack }: SettingsScreenProps)
     active: sub === 'users',
   });
 
-  const { title, actions, body } = pickSubSectionUi(sub, usersUi);
+  const { title, actions, body } = pickSubSectionUi(sub, usersUi, t);
 
   return (
     <main className="flex flex-1 flex-col">
@@ -73,33 +77,40 @@ interface SubUi {
 function pickSubSectionUi(
   sub: SettingsSubSection,
   usersUi: SubUi,
+  t: (key: string) => string,
 ): SubUi {
   switch (sub) {
     case 'users':
       return usersUi;
     case 'language':
       return {
-        title: 'Язык',
+        title: t('settings_sidebar.language'),
         actions: null,
-        body: <PlaceholderBody hint="Локализация (RU/EN) — скоро." />,
+        body: <LanguagePanel />,
       };
     case 'appearance':
       return {
-        title: 'Оформление',
+        title: t('settings_sidebar.appearance'),
         actions: null,
-        body: <PlaceholderBody hint="Тема (тёмная/светлая), плотность — скоро." />,
+        body: <PlaceholderBody hint={t('settings_placeholder.appearance')} />,
       };
     case 'google':
       return {
-        title: 'Google',
+        title: t('settings_sidebar.google'),
         actions: null,
         body: <GoogleAccountPanel />,
+      };
+    case 'app-control':
+      return {
+        title: t('settings_sidebar.app_control'),
+        actions: null,
+        body: <AppControlPanel />,
       };
     default:
       return {
         title: String(sub),
         actions: null,
-        body: <PlaceholderBody hint="Скоро будет." />,
+        body: <PlaceholderBody hint={t('settings_placeholder.soon')} />,
       };
   }
 }

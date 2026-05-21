@@ -1,4 +1,5 @@
 import { Check, CheckCheck, CornerUpLeft, Plus } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { AttachmentGroup } from '@/components/ui/AttachmentGroup';
 import { MessageActionsPopup } from '@/components/ui/MessageActionsPopup';
 import { cn } from '@/lib/cn';
@@ -22,6 +23,7 @@ interface ChatMessageProps {
  *   • Reply preview и attachment'ы — внутри bubble, над текстом.
  */
 export function ChatMessage({ message, onReact, onReply }: ChatMessageProps) {
+  const { t } = useTranslation();
   const own = message.isOwn;
   const hasAttachments = (message.attachments?.length ?? 0) > 0;
   const reactions = message.reactions ?? {};
@@ -59,7 +61,7 @@ export function ChatMessage({ message, onReact, onReply }: ChatMessageProps) {
       >
         <button
           type="button"
-          aria-label="Реакции и действия"
+          aria-label={t('chat_message.reactions_aria')}
           className={cn(
             'flex h-6 w-6 shrink-0 items-center justify-center rounded-full',
             'border border-border-subtle bg-bg-elevated text-text-muted shadow-sm',
@@ -100,25 +102,27 @@ export function ChatMessage({ message, onReact, onReply }: ChatMessageProps) {
           />
         )}
         {/*
-          Layout footer'a (время + checkmark):
-            • Есть media → footer overlay-pill'ом в правом-нижнем углу
-              САМОГО attachment (relative wrapper над AttachmentGroup,
-              а не bubble — иначе если ниже attachment'a есть текст, overlay
-              оказывался под текстом, что юзер видел как «дата ниже»).
-            • Только text → footer inline в конце текста. Чистый flow.
-            • Media + text → дата ТОЛЬКО на attachment overlay; текстовый
-              блок без footer (вмещает только text, аккуратнее).
+          §2026-05-19 — Layout footer'a (время + checkmark), 1:1 Telegram:
+            • Только media (без текста) → overlay-pill в правом-нижнем
+              углу attachment'а (с тёмной полупрозрачной подложкой).
+            • Media + text → дата inline в конце text-блока. На media
+              ничего не накладываем (текст и так "подписывает" media).
+            • Только text → дата inline в конце текста.
+          Так дата никогда не закрывает контент: либо она НА media (когда
+          текста нет), либо после текста (когда media с подписью).
         */}
         {hasAttachments && message.attachments && (
           <div className="relative">
             <AttachmentGroup attachments={message.attachments} context="chat" />
-            <MetaFooter
-              own={own}
-              time={message.time}
-              isRead={message.isRead === true}
-              pending={!canAct}
-              variant="overlay"
-            />
+            {!message.text && (
+              <MetaFooter
+                own={own}
+                time={message.time}
+                isRead={message.isRead === true}
+                pending={!canAct}
+                variant="overlay"
+              />
+            )}
           </div>
         )}
 
@@ -126,22 +130,17 @@ export function ChatMessage({ message, onReact, onReply }: ChatMessageProps) {
           <p
             className={cn(
               'min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug',
-              // `break-all` гарантирует перенос даже у длинных слов/URL без
-              // пробелов; иначе bubble мог растягиваться шире своего max-w
-              // и текст обрезался горизонтально.
               '[overflow-wrap:anywhere]',
             )}
           >
             {message.text}
-            {!hasAttachments && (
-              <MetaFooter
-                own={own}
-                time={message.time}
-                isRead={message.isRead === true}
-                pending={!canAct}
-                variant="inline"
-              />
-            )}
+            <MetaFooter
+              own={own}
+              time={message.time}
+              isRead={message.isRead === true}
+              pending={!canAct}
+              variant="inline"
+            />
           </p>
         )}
 
@@ -185,6 +184,7 @@ interface ReplyQuoteProps {
 }
 
 function ReplyQuote({ senderName, text, ownBubble }: ReplyQuoteProps) {
+  const { t } = useTranslation();
   return (
     <div
       className={cn(
@@ -198,10 +198,10 @@ function ReplyQuote({ senderName, text, ownBubble }: ReplyQuoteProps) {
       />
       <span className="flex min-w-0 flex-col leading-tight">
         <span className="truncate text-[11px] font-medium text-accent-clay">
-          {senderName || 'Сообщение'}
+          {senderName || t('chat_message.sender_fallback')}
         </span>
         <span className="line-clamp-1 text-[11.5px] text-text-secondary">
-          {text || '(вложение)'}
+          {text || t('chat_message.attachment_quote')}
         </span>
       </span>
     </div>
@@ -267,6 +267,7 @@ interface ReadReceiptProps {
 }
 
 function ReadReceipt({ isRead, pending, tinted }: ReadReceiptProps) {
+  const { t } = useTranslation();
   if (pending) {
     return (
       <Check
@@ -275,7 +276,7 @@ function ReadReceipt({ isRead, pending, tinted }: ReadReceiptProps) {
           tinted && 'text-white',
         )}
         strokeWidth={2.25}
-        aria-label="Отправляется"
+        aria-label={t('chat_message.sending_aria')}
       />
     );
   }
@@ -287,7 +288,7 @@ function ReadReceipt({ isRead, pending, tinted }: ReadReceiptProps) {
           tinted ? 'text-presence-online' : 'text-presence-online',
         )}
         strokeWidth={2.25}
-        aria-label="Прочитано"
+        aria-label={t('chat_message.read_aria')}
       />
     );
   }
@@ -295,7 +296,7 @@ function ReadReceipt({ isRead, pending, tinted }: ReadReceiptProps) {
     <Check
       className={cn('h-3 w-3 shrink-0', tinted && 'text-white')}
       strokeWidth={2.25}
-      aria-label="Отправлено"
+      aria-label={t('chat_message.sent_aria')}
     />
   );
 }

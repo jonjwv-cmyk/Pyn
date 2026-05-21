@@ -9,7 +9,13 @@
  * Все user-facing timestamps в Pyn проходят через эти helper'ы — UI везде
  * показывает "10:11 AM" / "16.05 2:34 PM" / "сегодня в 11:00 AM" в одной
  * timezone независимо от того где запущен Pyn.
+ *
+ * Локализация: месяцы / дни недели / "Сегодня"/"Вчера" / единицы длительности
+ * берутся через `i18next.t()`. Caller-компоненты подписаны на change-language
+ * через useTranslation() — rerender автоматически пересчитывает форматы.
  */
+
+import i18next from 'i18next';
 
 const YEK_OFFSET_MS = 5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -27,10 +33,25 @@ const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
   timeZone: 'Asia/Yekaterinburg',
 });
 
-const MONTHS_GEN = [
-  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+const MONTH_GEN_KEYS = [
+  'news_schedule_dialog.month_gen_jan', 'news_schedule_dialog.month_gen_feb',
+  'news_schedule_dialog.month_gen_mar', 'news_schedule_dialog.month_gen_apr',
+  'news_schedule_dialog.month_gen_may', 'news_schedule_dialog.month_gen_jun',
+  'news_schedule_dialog.month_gen_jul', 'news_schedule_dialog.month_gen_aug',
+  'news_schedule_dialog.month_gen_sep', 'news_schedule_dialog.month_gen_oct',
+  'news_schedule_dialog.month_gen_nov', 'news_schedule_dialog.month_gen_dec',
 ];
+
+const WEEKDAY_KEYS = [
+  'format_time.weekday_sun', 'format_time.weekday_mon', 'format_time.weekday_tue',
+  'format_time.weekday_wed', 'format_time.weekday_thu', 'format_time.weekday_fri',
+  'format_time.weekday_sat',
+];
+
+function monthGen(idx: number): string {
+  const key = MONTH_GEN_KEYS[idx];
+  return key ? i18next.t(key) : '';
+}
 
 /**
  * Парсит "YYYY-MM-DD HH:MM:SS" как Yekaterinburg local time → UTC Date.
@@ -80,7 +101,7 @@ export function formatFullYek(raw: string | undefined | null): string {
   const d = parseServerDate(raw);
   if (!d) return raw ?? '';
   const { day, month, year } = yekParts(d);
-  const monthName = MONTHS_GEN[month] ?? '';
+  const monthName = monthGen(month);
   const time = TIME_FORMATTER.format(d);
   const nowYear = yekParts(new Date()).year;
   if (year === nowYear) {
@@ -97,7 +118,7 @@ export function formatFullYek(raw: string | undefined | null): string {
 export function formatDateFullYek(d: Date): string {
   if (!d || Number.isNaN(d.getTime())) return '';
   const { day, month, year } = yekParts(d);
-  const monthName = MONTHS_GEN[month] ?? '';
+  const monthName = monthGen(month);
   const time = TIME_FORMATTER.format(d);
   const nowYear = yekParts(new Date()).year;
   if (year === nowYear) {
@@ -112,16 +133,6 @@ export const formatChatListTimeYek = formatFullYek;
 export const formatDateTimeYek = formatFullYek;
 
 // ── Day grouping helpers (для date-разделителей в чате и ленте) ───────────
-
-const WEEKDAYS_RU = [
-  'Воскресенье',
-  'Понедельник',
-  'Вторник',
-  'Среда',
-  'Четверг',
-  'Пятница',
-  'Суббота',
-];
 
 /**
  * Уникальный integer-ключ дня в Yek-календаре для сообщения. Сообщения с
@@ -150,14 +161,15 @@ export function formatDayDividerLabel(raw: string | undefined | null): string {
   const dayKey = yekDayKey(d);
   const todayKey = yekDayKey(new Date());
   const diff = todayKey - dayKey;
-  if (diff === 0) return 'Сегодня';
-  if (diff === 1) return 'Вчера';
+  if (diff === 0) return i18next.t('format_time.today');
+  if (diff === 1) return i18next.t('format_time.yesterday');
   if (diff >= 2 && diff < 7) {
     const shifted = new Date(d.getTime() + YEK_OFFSET_MS);
-    return WEEKDAYS_RU[shifted.getUTCDay()] ?? '';
+    const key = WEEKDAY_KEYS[shifted.getUTCDay()];
+    return key ? i18next.t(key) : '';
   }
   const { day, month, year } = yekParts(d);
-  const monthName = MONTHS_GEN[month] ?? '';
+  const monthName = monthGen(month);
   const nowYear = yekParts(new Date()).year;
   if (year === nowYear) return `${day} ${monthName}`;
   return `${day} ${monthName} ${year}`;
@@ -173,9 +185,12 @@ export function formatDuration(ms: number): string {
   const h = Math.floor(totalSec / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
   const s = totalSec % 60;
-  if (h > 0) return `${h}ч ${pad2(m)}м ${pad2(s)}с`;
-  if (m > 0) return `${m}м ${pad2(s)}с`;
-  return `${s}с`;
+  const hU = i18next.t('format_time.duration_h');
+  const mU = i18next.t('format_time.duration_m');
+  const sU = i18next.t('format_time.duration_s');
+  if (h > 0) return `${h}${hU} ${pad2(m)}${mU} ${pad2(s)}${sU}`;
+  if (m > 0) return `${m}${mU} ${pad2(s)}${sU}`;
+  return `${s}${sU}`;
 }
 
 function pad2(n: number): string {

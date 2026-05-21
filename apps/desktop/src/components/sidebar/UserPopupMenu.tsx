@@ -9,7 +9,8 @@ import {
   Smartphone,
   type LucideIcon,
 } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import { formatDuration } from '@/lib/format-time';
 import { useSessionRemaining } from '@/lib/use-session-remaining';
@@ -67,9 +68,20 @@ export function UserPopupMenu({
   onLogout,
   children,
 }: UserPopupMenuProps) {
+  const { t } = useTranslation();
   const { remainingMs, hasInfo, extensionsUsed, extensionsMax } = useSessionRemaining();
+  // §v1.2.14 — controlled state. Закрываем popup при потере фокуса окном
+  // Pyn'а (юзер кликнул в Google webview — focus уходит на guest process →
+  // window emit 'blur'). Radix не ловит outside-click из webview document.
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onBlur = (): void => setOpen(false);
+    window.addEventListener('blur', onBlur);
+    return () => window.removeEventListener('blur', onBlur);
+  }, [open]);
   return (
-    <DropdownMenu.Root>
+    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
       <DropdownMenu.Trigger asChild>{children}</DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
@@ -100,20 +112,20 @@ export function UserPopupMenu({
               {/* «0» — нулевая (свежая, без продлений); «1/2/3» — после
                    соответствующего продления. После 3-й server тайм-аутнёт
                    сессию → global auth-handler уведёт на QR-login. */}
-              <span title="Номер сессии в этом окне (0 = без продлений)">
-                сессия {extensionsUsed} / {extensionsMax}
+              <span title={t('user_menu.session_counter_tooltip')}>
+                {t('user_menu.session_counter', { used: extensionsUsed, max: extensionsMax })}
               </span>
             </div>
           )}
 
           <Divider />
 
-          <ActionRow icon={Settings} label="Настройки" onClick={onOpenSettings} />
+          <ActionRow icon={Settings} label={t('user_menu.settings')} onClick={onOpenSettings} />
 
           <Divider />
 
-          <VersionRow icon={Monitor} label="Pyn Desktop" value={desktopVersion} />
-          <VersionRow icon={Smartphone} label="Pyn Android" value={androidVersion} />
+          <VersionRow icon={Monitor} label={t('user_menu.version_desktop')} value={desktopVersion} />
+          <VersionRow icon={Smartphone} label={t('user_menu.version_android')} value={androidVersion} />
           <DbVersionRow
             version={dbVersion}
             date={dbDate}
@@ -134,7 +146,7 @@ export function UserPopupMenu({
 
           <Divider />
 
-          <ActionRow icon={LogOut} label="Выйти" onClick={onLogout} variant="danger" />
+          <ActionRow icon={LogOut} label={t('user_menu.logout')} onClick={onLogout} variant="danger" />
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -199,6 +211,7 @@ interface DbVersionRowProps {
  * иконка крутится, нижняя полоса в строке показывает прогресс indeterminate.
  */
 function DbVersionRow({ version, date, loading, onRefresh }: DbVersionRowProps) {
+  const { t } = useTranslation();
   return (
     <div
       className={cn(
@@ -207,7 +220,7 @@ function DbVersionRow({ version, date, loading, onRefresh }: DbVersionRowProps) 
       )}
     >
       <Database className="h-4 w-4 shrink-0 text-text-muted" strokeWidth={1.75} />
-      <span className="flex-1 truncate text-text-secondary">База данных</span>
+      <span className="flex-1 truncate text-text-secondary">{t('user_menu.version_db')}</span>
       <span className="text-text-secondary tabular-nums">{version}</span>
       <span className="text-text-muted tabular-nums">{date}</span>
       <button
@@ -218,8 +231,8 @@ function DbVersionRow({ version, date, loading, onRefresh }: DbVersionRowProps) 
           if (!loading) onRefresh();
         }}
         disabled={loading}
-        aria-label="Проверить и обновить базу"
-        title={loading ? 'Проверяем…' : 'Проверить новую версию'}
+        aria-label={t('user_menu.db_refresh_tooltip')}
+        title={loading ? t('user_menu.db_checking') : t('user_menu.db_refresh_tooltip')}
         className={cn(
           'flex h-5 w-5 shrink-0 items-center justify-center rounded',
           'text-text-muted transition-colors',

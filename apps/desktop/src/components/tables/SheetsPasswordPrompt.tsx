@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { KeyRound, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
+import { PasswordInput } from '@/components/ui/PasswordInput';
 
 /**
  * Modal-prompt пароля для скриптов с `requiresPassword: true`. Pyn-стиль —
@@ -10,15 +12,17 @@ import { cn } from '@/lib/cn';
  */
 export function SheetsPasswordPrompt({
   open,
-  actionLabel,
+  actionLabel: _actionLabel,
   onSubmit,
   onCancel,
 }: {
   open: boolean;
+  /** Сохранено для callers — UI больше не показывает (юзер просил minimal). */
   actionLabel: string;
   onSubmit: (password: string) => void;
   onCancel: () => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [password, setPassword] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -63,35 +67,31 @@ export function SheetsPasswordPrompt({
             >
               <KeyRound className="h-4 w-4" strokeWidth={1.75} />
             </div>
-            <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-1 items-center">
               <Dialog.Title className="text-[14px] font-semibold text-text-strong">
-                Требуется пароль
+                {t('tables.script_password_title')}
               </Dialog.Title>
-              <Dialog.Description className="mt-0.5 text-[12.5px] text-text-secondary">
-                Чтобы запустить «{actionLabel}», введите пароль.
-              </Dialog.Description>
             </div>
             <Dialog.Close asChild>
               <button
                 type="button"
                 className="flex h-6 w-6 items-center justify-center rounded text-text-muted hover:bg-bg-hover hover:text-text-strong"
-                aria-label="Закрыть"
+                aria-label={t('common.close')}
               >
                 <X className="h-3.5 w-3.5" strokeWidth={1.75} />
               </button>
             </Dialog.Close>
           </div>
 
-          <input
+          <PasswordInput
             ref={inputRef}
-            type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') submit();
               if (e.key === 'Escape') onCancel();
             }}
-            placeholder="Пароль"
+            placeholder={t('tables.script_password_placeholder')}
             className={cn(
               'w-full rounded-md border border-border-default bg-bg-surface px-3 py-2',
               'text-[13px] text-text-strong placeholder:text-text-muted',
@@ -111,7 +111,7 @@ export function SheetsPasswordPrompt({
                 'hover:bg-bg-hover hover:text-text-strong',
               )}
             >
-              Отмена
+              {t('tables.script_password_cancel')}
             </button>
             <button
               type="button"
@@ -125,7 +125,7 @@ export function SheetsPasswordPrompt({
                   : 'cursor-not-allowed bg-bg-hover text-text-muted',
               )}
             >
-              Запустить
+              {t('tables.script_password_submit')}
             </button>
           </div>
         </Dialog.Content>

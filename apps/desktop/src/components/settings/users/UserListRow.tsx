@@ -13,6 +13,8 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { api } from '@/lib/api';
 import { Avatar } from '@/components/ui/Avatar';
 import { PresenceDot } from '@/components/ui/PresenceDot';
@@ -60,6 +62,7 @@ interface UserListRowProps {
  * UI guards дублируют server (server тоже откажет с `cannot_*_self`).
  */
 export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }: UserListRowProps) {
+  const { t } = useTranslation();
   const [showRename, setShowRename] = useState(false);
   const [showChangeLogin, setShowChangeLogin] = useState(false);
   const [showChangeRole, setShowChangeRole] = useState(false);
@@ -73,10 +76,10 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
   const presence = isEnabled ? user.presenceStatus ?? 'offline' : 'offline';
 
   const statusLabel = user.isSuspended
-    ? 'Заблокирован'
+    ? t('user_list_row.status_blocked')
     : !user.isActive
-      ? 'Неактивен'
-      : 'Активен';
+      ? t('user_list_row.status_inactive')
+      : t('user_list_row.status_active');
   const statusColor = user.isSuspended
     ? 'text-danger'
     : !user.isActive
@@ -89,15 +92,15 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
     toggleUser(api, user.login)
       .then((res) => {
         const label = res.isSuspended
-          ? 'Заблокирован'
+          ? t('user_list_row.toast_blocked')
           : res.isActive
-            ? 'Разблокирован'
-            : 'Деактивирован';
+            ? t('user_list_row.toast_unblocked')
+            : t('user_list_row.toast_deactivated');
         onStatusChange(label);
         onRefresh();
       })
       .catch((err: { code?: string; message?: string }) => {
-        onStatusChange(`Ошибка: ${err.message || err.code || 'unknown'}`);
+        onStatusChange(t('tables.toast_error', { message: err.message || err.code || 'unknown' }));
       })
       .finally(() => setBusy(false));
   };
@@ -106,9 +109,9 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
     if (busy) return;
     setBusy(true);
     resetPasswordLoginCounter(api)
-      .then(() => onStatusChange('Лимит парольных входов сброшен'))
+      .then(() => onStatusChange(t('user_list_row.toast_password_limit_reset')))
       .catch((err: { code?: string; message?: string }) => {
-        onStatusChange(`Ошибка: ${err.message || err.code || 'unknown'}`);
+        onStatusChange(t('tables.toast_error', { message: err.message || err.code || 'unknown' }));
       })
       .finally(() => setBusy(false));
   };
@@ -145,7 +148,7 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
             </span>
             {isSelf && (
               <span className="rounded bg-bg-hover px-1.5 py-px text-[10px] uppercase tracking-wider text-text-muted">
-                вы
+                {t('user_list_row.you_chip')}
               </span>
             )}
             <RoleBadge role={user.role} />
@@ -157,7 +160,7 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
             {isEnabled && user.presenceStatus && (
               <>
                 <span>·</span>
-                <span>{presenceLabel(user.presenceStatus, user.lastSeenAt)}</span>
+                <span>{presenceLabel(user.presenceStatus, user.lastSeenAt, t)}</span>
               </>
             )}
           </div>
@@ -168,7 +171,7 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                aria-label="Действия"
+                aria-label={t('user_list_row.actions_aria')}
                 className={cn(
                   'flex h-8 w-8 items-center justify-center rounded-md',
                   'text-text-muted outline-none transition-colors',
@@ -188,33 +191,33 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
                   'data-[state=open]:animate-in data-[state=open]:fade-in-0',
                 )}
               >
-                <MenuItem icon={Edit3} label="Переименовать" onSelect={() => setShowRename(true)} />
+                <MenuItem icon={Edit3} label={t('user_list_row.rename')} onSelect={() => setShowRename(true)} />
                 <MenuItem
                   icon={LogIn}
-                  label="Сменить логин"
+                  label={t('user_list_row.change_login')}
                   onSelect={() => setShowChangeLogin(true)}
                   disabled={isSelf}
                 />
                 <MenuItem
                   icon={Shield}
-                  label="Сменить роль"
+                  label={t('user_list_row.change_role')}
                   onSelect={() => setShowChangeRole(true)}
                   disabled={isSelf}
                 />
                 <MenuItem
                   icon={isEnabled ? Ban : CheckCircle2}
-                  label={isEnabled ? 'Заблокировать' : 'Разблокировать'}
+                  label={isEnabled ? t('user_list_row.block') : t('user_list_row.unblock')}
                   onSelect={handleToggle}
                   disabled={isSelf || busy}
                 />
-                <MenuItem icon={Key} label="Сбросить пароль" onSelect={() => setShowReset(true)} />
+                <MenuItem icon={Key} label={t('user_list_row.reset_password')} onSelect={() => setShowReset(true)} />
                 {/* Лимит парольных входов имеет смысл только для ролей, которые
                     логинятся через desktop (admin/developer). User/client идут
                     через mobile QR — для них сброс лимита бесполезен. */}
                 {(user.role === 'admin' || user.role === 'developer') && (
                   <MenuItem
                     icon={RotateCcw}
-                    label="Сбросить лимит парольных входов"
+                    label={t('user_list_row.reset_password_limit')}
                     onSelect={handleResetLimit}
                     disabled={busy}
                   />
@@ -222,7 +225,7 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
                 <Separator />
                 <MenuItem
                   icon={Trash2}
-                  label="Удалить"
+                  label={t('user_list_row.delete')}
                   onSelect={() => setShowDelete(true)}
                   danger
                   disabled={isSelf}
@@ -317,7 +320,8 @@ function MenuItem({ icon: Icon, label, onSelect, danger, disabled }: MenuItemPro
         danger
           ? 'text-danger data-[highlighted]:bg-danger/15'
           : 'text-text-primary data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-strong',
-        disabled && 'cursor-not-allowed opacity-40',
+        // §2026-05-19 — без cursor-not-allowed (на Win рисует круг-перечёркнутый).
+        disabled && 'opacity-40',
       )}
     >
       <Icon
@@ -333,11 +337,11 @@ function Separator() {
   return <DropdownMenu.Separator className="my-1 h-px bg-border-subtle" />;
 }
 
-/** «онлайн / был(а) недавно / 5 мая, 2:34 PM». */
-function presenceLabel(presence: string, lastSeenAt?: string): string {
-  if (presence === 'online') return 'онлайн';
-  if (presence === 'away') return 'был(а) недавно';
-  return lastSeenAt ? formatFullYek(lastSeenAt) : 'оффлайн';
+/** Локализованный presence label: online / away / formatted last seen. */
+function presenceLabel(presence: string, lastSeenAt: string | undefined, t: TFunction): string {
+  if (presence === 'online') return t('user_list_row.presence_online');
+  if (presence === 'away') return t('user_list_row.presence_away');
+  return lastSeenAt ? formatFullYek(lastSeenAt) : t('user_list_row.presence_offline');
 }
 
 // Suppress: KeyRound импортирован на будущее (change_password для self),

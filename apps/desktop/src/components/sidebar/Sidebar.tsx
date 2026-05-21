@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import type { Role } from '@pyn/core';
 import {
   NAV_SECTIONS,
@@ -10,10 +11,12 @@ import { refreshMolFromServer } from '@/lib/mol-repo';
 import { useMolStore, useUiStateStore } from '@/lib/stores';
 import type { NavSection, NavSectionId } from '@/types/nav';
 import { ConnectivityIndicator } from './ConnectivityIndicator';
+import { SessionExpiryPill } from './SessionExpiryPill';
 import { SidebarHeader } from './SidebarHeader';
 import { NavItem } from './NavItem';
 import { BottomUserRow } from './BottomUserRow';
 import { TableNavItems } from './TableNavItems';
+import { UpdateAvailablePill, type UpdatePillStage } from './UpdateAvailablePill';
 import { UserPopupMenu } from './UserPopupMenu';
 
 interface SidebarProps {
@@ -43,6 +46,16 @@ interface SidebarProps {
   /** Клик «Настройки» в попап-меню профиля — открывает Settings overlay. */
   onOpenSettings: () => void;
   onLogout: () => void;
+  /**
+   * Если есть доступное обновление — рендерим Pill над SessionExpiryPill.
+   * State держится в App.tsx (download stage + bytes), Sidebar — pure render.
+   */
+  updatePill?: {
+    stage: UpdatePillStage;
+    bytes?: number;
+    total?: number;
+    onClick: () => void;
+  };
 }
 
 const EXPANDED_WIDTH = 200;
@@ -97,7 +110,9 @@ export function Sidebar({
   onSectionClick,
   onOpenSettings,
   onLogout,
+  updatePill,
 }: SidebarProps) {
+  const { t } = useTranslation();
   // Sections с обновлёнными badges (dynamic поверх hardcoded из NAV_SECTIONS).
   const sections: NavSection[] = NAV_SECTIONS.map((s) => ({
     ...s,
@@ -118,13 +133,13 @@ export function Sidebar({
   // последней проверки. Loading в приоритете (идёт прямо сейчас).
   const dbToast: string | null =
     molStatus === 'loading'
-      ? 'Проверяем версию…'
+      ? t('sidebar_extra.version_checking')
       : molOutcome === 'up-to-date'
-        ? 'База актуальна'
+        ? t('sidebar_extra.db_current')
         : molOutcome === 'updated'
-          ? 'База обновлена'
+          ? t('sidebar_extra.db_updated')
           : molOutcome === 'error'
-            ? 'Ошибка обновления'
+            ? t('sidebar_extra.db_error')
             : null;
   const collapsedWidth = computeCollapsedWidth(sections);
   const width = collapsed ? collapsedWidth : EXPANDED_WIDTH;
@@ -198,6 +213,27 @@ export function Sidebar({
       {/* Flex spacer — придавливает user-row к низу */}
       <div className="flex-1" />
 
+      {/* Update pill — над SessionExpiryPill (юзер сначала видит апдейт,
+          потом критический countdown). В collapsed скрыт. */}
+      {!collapsed && updatePill && (
+        <div className="px-1.5 pb-0.5">
+          <UpdateAvailablePill
+            stage={updatePill.stage}
+            bytes={updatePill.bytes}
+            total={updatePill.total}
+            onClick={updatePill.onClick}
+          />
+        </div>
+      )}
+
+      {/* Session expiry pill — только когда продлений уже нет; в collapsed
+          режиме скрыт (узко для текста таймера). */}
+      {!collapsed && (
+        <div className="px-1.5">
+          <SessionExpiryPill />
+        </div>
+      )}
+
       {/* Connectivity status — над user row, отдельной полоской */}
       <div className="px-1.5">
         <ConnectivityIndicator collapsed={collapsed} />
@@ -210,7 +246,7 @@ export function Sidebar({
           desktopVersion={`v${window.pyn?.appVersion ?? '0.0.0'}`}
           androidVersion="v2.5.13"
           dbVersion={molMeta ? `v${molMeta.version}` : '—'}
-          dbDate={molMeta ? formatDbDate(molMeta.updatedAt) : 'не загружена'}
+          dbDate={molMeta ? formatDbDate(molMeta.updatedAt) : t('sidebar_extra.db_not_loaded')}
           dbLoading={molStatus === 'loading'}
           dbToast={dbToast}
           dbToastKind={molOutcome === 'error' ? 'error' : 'info'}

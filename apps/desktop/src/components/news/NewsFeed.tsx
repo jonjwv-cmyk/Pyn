@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarClock, Clock, ListChecks, Upload } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { Clock, Upload } from 'lucide-react';
 import { DateDivider } from '@/components/ui/DateDivider';
 import { DayLabelPill } from '@/components/ui/DayLabelPill';
 import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
@@ -59,6 +60,7 @@ export function NewsFeed({
   currentUserLogin,
   currentUserRole,
 }: NewsFeedProps) {
+  const { t } = useTranslation();
   // Permission: только admin/developer могут публиковать новости.
   const canPost = can(currentUserRole, 'news.post');
   const items = useNewsStore((s) => s.items);
@@ -95,7 +97,7 @@ export function NewsFeed({
       mapped.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       setItems(mapped);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Не удалось загрузить ленту');
+      setLoadError(err instanceof Error ? err.message : t('news.load_failed'));
     }
   }, [currentUserLogin, setItems]);
 
@@ -164,7 +166,7 @@ export function NewsFeed({
   }, []);
 
   const showScheduledToast = (when: Date) => {
-    setScheduledToast(`Запланировано на ${formatDateFullYek(when)}`);
+    setScheduledToast(t('news.scheduled_toast', { date: formatDateFullYek(when) }));
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => {
       setScheduledToast(null);
@@ -435,7 +437,7 @@ export function NewsFeed({
         // eslint-disable-next-line no-console
         console.error('scheduleMessage failed:', err);
         setLoadError(
-          err instanceof Error ? err.message : 'Не удалось запланировать пост',
+          err instanceof Error ? err.message : t('news.schedule_failed'),
         );
       }
       return;
@@ -465,7 +467,7 @@ export function NewsFeed({
         senderPresence: 'online',
         text,
         createdAt: sent.createdAt,
-        createdAtLabel: 'только что',
+        createdAtLabel: t('news.just_now'),
         isRead: true,
         isPinned: false,
         reactions: {},
@@ -500,21 +502,19 @@ export function NewsFeed({
         >
           <Upload className="h-7 w-7 text-accent-clay" strokeWidth={1.5} />
           <p className="text-[13px] font-medium text-text-strong">
-            Отпустите файл, чтобы прикрепить
+            {t('news.drop_attach')}
           </p>
         </div>
       )}
-      <div className="drag-region flex h-12 shrink-0 items-center justify-end gap-1 px-3">
+      <div className="drag-region flex h-12 shrink-0 items-center justify-end gap-1.5 px-3">
         {canPost && (
           <>
             <TopBarButton
-              icon={ListChecks}
-              label="Создать опрос"
+              label={t('news.btn_poll')}
               onClick={() => setPollDialogOpen(true)}
             />
             <TopBarButton
-              icon={CalendarClock}
-              label="Запланированные публикации"
+              label={t('news.btn_scheduled')}
               onClick={() => setScheduledDialogOpen(true)}
             />
           </>
@@ -534,6 +534,7 @@ export function NewsFeed({
                 onVote={handleVote}
                 onTogglePin={handleTogglePin}
                 onDelete={handleDelete}
+                onEdited={(id, newText) => updateItem(id, { text: newText })}
                 onJumpToNews={jumpToNews}
               />
             ))}
@@ -552,7 +553,7 @@ export function NewsFeed({
           <div className="mx-auto flex max-w-[720px] flex-col gap-2.5 px-6 pt-2 pb-[60px]">
             {showInitialLoading && (
               <p className="py-8 text-center text-[12.5px] text-text-muted">
-                Загрузка ленты…
+                {t('news.loading_feed')}
               </p>
             )}
             {loadError !== null && items.length === 0 && (
@@ -562,11 +563,13 @@ export function NewsFeed({
             )}
             {!showInitialLoading && !loadError && items.length === 0 && (
               <p className="py-8 text-center text-[12.5px] text-text-muted">
-                Лента пуста.
+                {t('news.empty_feed')}
               </p>
             )}
             {newsGroups.map((g) => (
-              <Fragment key={`g-${g.dayKey}`}>
+              // §2026-05-19 — per-group wrapper для sticky DateDivider
+              // (Telegram-style swap при скролле между группами разных дней).
+              <div key={`g-${g.dayKey}`} className="flex flex-col">
                 {g.label && <DateDivider label={g.label} />}
                 {g.items.map((item) => (
                   <div key={item.id} data-news-id={item.id} className="news-row">
@@ -581,7 +584,7 @@ export function NewsFeed({
                     />
                   </div>
                 ))}
-              </Fragment>
+              </div>
             ))}
           </div>
         </div>
@@ -589,7 +592,7 @@ export function NewsFeed({
         {/* Fade-в-фон сверху для плавного «затемнения» при scroll'е вверх. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-5 bg-gradient-to-b from-bg-primary to-transparent" />
 
-        <DayLabelPill label={dayPill.activeLabel} visible={dayPill.isScrolling} />
+        {/* §2026-05-19 — DayLabelPill убран: DateDivider теперь sticky сам. */}
         <ScrollToBottomButton visible={showScrollDown} onClick={scrollToBottom} />
 
         {/* Composer «приклеен» к низу как пилюля. Двухслойный glass:
@@ -646,29 +649,29 @@ export function NewsFeed({
 }
 
 interface TopBarButtonProps {
-  icon: typeof Clock;
   label: string;
   onClick: () => void;
 }
 
 /**
- * Иконка-кнопка в шапке ленты (над разделительной линией). Внутри drag-region,
- * поэтому ставим `no-drag-region` чтобы клик не съедался window-drag'ом.
+ * §v1.2.14 — Текстовая кнопка (без иконки) в шапке ленты. Внутри
+ * drag-region, `no-drag-region` чтобы клик не съедался window-drag.
+ * На Win глобальный `html[data-pyn-platform=win32] .drag-region
+ * { padding-right: 140px }` (см. apps/desktop/src/index.css) даёт
+ * место под нативные min/max/close.
  */
-function TopBarButton({ icon: Icon, label, onClick }: TopBarButtonProps) {
+function TopBarButton({ label, onClick }: TopBarButtonProps) {
   return (
     <button
       type="button"
-      aria-label={label}
-      title={label}
       onClick={onClick}
       className={cn(
-        'no-drag-region flex h-7 w-7 items-center justify-center rounded-md',
-        'text-text-muted outline-none transition-colors',
+        'no-drag-region flex h-7 items-center rounded-md px-2.5',
+        'text-[12.5px] font-medium text-text-secondary outline-none transition-colors',
         'hover:bg-bg-hover hover:text-text-strong',
       )}
     >
-      <Icon className="h-4 w-4" strokeWidth={1.75} />
+      {label}
     </button>
   );
 }

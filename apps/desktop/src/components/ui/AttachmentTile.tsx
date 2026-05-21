@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Download,
   FileArchive,
@@ -316,6 +317,7 @@ function VideoTile({
   wrapperClass,
   mediaSizing,
 }: VideoTileProps) {
+  const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(true);
@@ -499,19 +501,19 @@ function VideoTile({
           <VideoCtl
             position="tr"
             onClick={toggleMute}
-            label={isMuted ? 'Включить звук' : 'Выключить звук'}
+            label={isMuted ? t('attachments.unmute') : t('attachments.mute')}
             icon={isMuted ? VolumeX : Volume2}
           />
           <VideoCtl
             position="bl"
             onClick={togglePlay}
-            label={isPlaying ? 'Пауза' : 'Воспроизвести'}
+            label={isPlaying ? t('attachments.pause') : t('attachments.play')}
             icon={isPlaying ? Pause : Play}
           />
           <VideoCtl
             position="br"
             onClick={enterFullscreen}
-            label="На весь экран"
+            label={t('attachments.fullscreen')}
             icon={Maximize}
           />
           {!isNews && blobUrl && (
@@ -602,6 +604,7 @@ function DownloadOverlayButton({
   filename,
   position,
 }: DownloadOverlayButtonProps) {
+  const { t } = useTranslation();
   const posClass =
     position === 'tl'
       ? 'left-2 top-2'
@@ -615,8 +618,8 @@ function DownloadOverlayButton({
       href={href}
       download={filename}
       onClick={(e) => e.stopPropagation()}
-      aria-label="Скачать"
-      title="Скачать"
+      aria-label={t('attachments.download_aria')}
+      title={t('attachments.download_aria')}
       className={cn(
         'absolute z-10',
         posClass,

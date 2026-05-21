@@ -1,6 +1,7 @@
 import * as React from 'react';
 import * as HoverCard from '@radix-ui/react-hover-card';
 import { FileSpreadsheet } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import {
   customTabName,
@@ -63,6 +64,8 @@ function TableNavRow({
   collapsed: boolean;
   onPick: (sectionId: NavSectionId, fileId: string, tabName: string) => void;
 }): JSX.Element {
+  // useTranslation подписывает на change-language → пересчёт displayName/tab labels.
+  useTranslation();
   const sectionId = makeSheetNavId(file.id);
   const active = activeSection === sectionId;
   const visibleTabs = file.tabs.filter((t) => !t.hidden);
@@ -186,7 +189,11 @@ const CollapsedTextPill = React.forwardRef<HTMLButtonElement, TriggerProps>(
         aria-label={label}
         title={label}
         className={cn(
-          'group flex h-9 w-full items-center justify-center rounded-md',
+          // §2026-05-19 — text-pill в collapsed sidebar выравниваем по
+          // левому краю (justify-start + pl-2.5), как в expanded sidebar.
+          // По центру выглядело криво для коротких/длинных лейблов
+          // ("WF" / "OTIF5") — теперь все начинаются с одной x-позиции.
+          'group flex h-9 w-full items-center justify-start rounded-md pl-2.5',
           'text-[11.5px] font-semibold tabular-nums outline-none',
           'transition-colors',
           active

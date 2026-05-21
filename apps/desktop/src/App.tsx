@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import i18next from 'i18next';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { Sidebar } from '@/components/sidebar';
 import { ChatConversation, ChatList } from '@/components/chats';
 import { MolScreen } from '@/components/mol';
+import { initMol, refreshMolFromServer } from '@/lib/mol-repo';
 import { NewsFeed } from '@/components/news';
 import { TablesScreen } from '@/components/tables';
-import { UpdatePromptDialog } from '@/components/system/UpdatePromptDialog';
+import { UpdateConfirmDialog } from '@/components/system/UpdateConfirmDialog';
 import { clearTablesRegistry } from '@/lib/use-tables-registry';
 import { SettingsScreen } from '@/components/settings';
 import { LoginScreen } from '@/components/auth/LoginScreen';
@@ -17,6 +19,7 @@ import { useChatsStore, useMolStore, useNewsStore, useOutboxStore, useSessionInf
 import { clearAvatarCache } from '@/lib/avatar';
 import { clearAllCache } from '@/lib/cache-storage';
 import { initDeviceId } from '@/lib/device';
+import { initI18n } from '@/lib/i18n';
 import { computeInitials } from '@/lib/initials';
 import { wireToChatMessage, wireToChatPartnerFromMessage } from '@/lib/repositories/chats-repo';
 import type { ChatPartner } from '@/types/chat';
@@ -26,23 +29,30 @@ import {
   addReaction,
   appStatus,
   CHATS_STALE_MS,
+  confirmWipe,
   getAdminChat,
   getAdminMessages,
+  getAppLockStatus,
   getUsers,
   isAdminLike,
   isChatsStale,
+  isDeveloper,
   isUsersStale,
   markMessageRead,
   me,
   removeReaction,
   sendMessage,
+  useAppLockStore,
   useSheetsLockStore,
+  type AppControlStateChangedEvent,
   type AppStatusResponse,
   type NewMessageEvent,
   type Session,
   type SheetLockAcquiredEvent,
   type SheetLockReleasedEvent,
 } from '@pyn/core';
+import { AppLockOverlay } from '@/components/system/AppLockOverlay';
+import { getDeviceId } from '@/lib/device';
 
 /**
  * Корневой layout Pyn.
@@ -64,7 +74,16 @@ export function App() {
   const [hydrating, setHydrating] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<AppStatusResponse | null>(null);
-  const [updateDismissed, setUpdateDismissed] = useState(false);
+  // Update flow state machine. Источник правды — sidebar pill (click drives transitions).
+  //   detected   — pill «Доступно обновление»
+  //   downloading — pill «Загрузка NN%»
+  //   ready      — pill «Обновление готово», + confirm dialog «обновиться?»
+  //   installing — pill «Установка…», installer запущен, app сейчас quit'нется
+  const [updateStage, setUpdateStage] = useState<'detected' | 'downloading' | 'ready' | 'installing'>('detected');
+  const [updateBytes, setUpdateBytes] = useState(0);
+  const [updateTotal, setUpdateTotal] = useState(0);
+  const [updateLocalPath, setUpdateLocalPath] = useState<string | null>(null);
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
   // activeSection + activeChatId — persistent UI-state: при перезапуске
   // Pyn'a продолжаем с того же раздела и чата (Telegram-style continuation).
   const activeSection = useUiStateStore((s) => s.activeSection as NavSectionId);
@@ -104,6 +123,25 @@ export function App() {
     const newsUnread = newsItems.filter((n) => !n.isRead).length;
     return { chats: chatsUnread, news: newsUnread };
   }, [partners, newsItems]);
+
+  // i18n init — один раз на mount. Дожидаемся persist-hydration ui-state-store
+  // (он async через safeStorage IPC), чтобы saved language применился сразу
+  // на старте. Без этого ожидания первый рендер был бы всегда на ru, и через
+  // момент после hydration перепрыгнул бы на сохранённый.
+  useEffect(() => {
+    if (useUiStateStore.persist.hasHydrated()) {
+      initI18n(useUiStateStore.getState().language);
+    } else {
+      const unsub = useUiStateStore.persist.onFinishHydration(() => {
+        initI18n(useUiStateStore.getState().language);
+      });
+      // Safety net: если hydration уже завершён до подписки (race), вызовем init.
+      if (useUiStateStore.persist.hasHydrated()) {
+        initI18n(useUiStateStore.getState().language);
+      }
+      return unsub;
+    }
+  }, []);
 
   // Глобальный handler auth-failure'ов: любой API-call, который возвращает
   // `unauthorized` / `session_expired_window` / `token_*` / etc → ApiClient
@@ -266,9 +304,30 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
-  // Auto-update: при наличии session опрашиваем `app_status` на старте и
-  // раз в 30 мин. Если на сервере есть свежая версия — показываем диалог.
-  // Server-side scope: `desktop-win` для Windows, `desktop-mac` для Mac.
+  // Developer-only: seed AppControlPanel state (оба scope + device counts).
+  // Один запрос на login. Дальше WS push обновляет state, AppControlPanel
+  // рендерится из store без loading-spinner'a при каждом заходе.
+  useEffect(() => {
+    if (!session || !isDeveloper(session.role)) return;
+    getAppLockStatus(api)
+      .then((s) => {
+        useAppLockStore.getState().setAllFromServer({
+          desktop: s.desktop,
+          android: s.android,
+          devicesActive: s.devicesActive,
+          devicesWiped: s.devicesWiped,
+        });
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('getAppLockStatus seed failed:', err);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  // Auto-update + kill switch seed (1 запрос на login + 1 на 30-мин update check).
+  // Сидируем оба scope (desktop + android) в useAppLockStore — потом всё
+  // обновляется через WS push, без поллинга.
   useEffect(() => {
     if (!session) return;
     const platform = window.pyn?.platform;
@@ -286,17 +345,152 @@ export function App() {
         ) {
           setUpdateInfo(res);
         }
-      } catch {
-        /* offline / network — silent, попробуем на следующем тике */
-      }
+        // Сидируем desktop scope из app_status response (desktop клиент).
+        // android scope узнаем позже через get_app_lock_status (когда юзер
+        // зайдёт в Settings → Управление) или через WS push.
+        if (res.appLockState) {
+          useAppLockStore.getState().setScopeFromServer('desktop', {
+            state: res.appLockState,
+            title: res.appLockTitle || '',
+            message: res.appLockMessage || '',
+            wipeAt: res.appLockWipeAt ?? null,
+            initiatedBy: res.appLockInitiatedBy || '',
+          });
+        }
+      } catch { /* offline / network — silent */ }
     };
     void check();
+    // Update-check раз в 30 мин — там и lock state будет освежаться.
     const id = setInterval(() => void check(), 30 * 60 * 1000);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
   }, [session]);
+
+  // ── Update flow: cache check + progress subscription ────────────────
+  // Когда `appStatus` обнаружил новую версию (`updateInfo` set) — сразу
+  // проверяем кэш через IPC. Если файл уже скачан раньше — ставим
+  // stage='ready'. Юзер кликает на pill → confirm dialog без download.
+  useEffect(() => {
+    if (!updateInfo || !updateInfo.updateUrl) return;
+    let cancelled = false;
+    void window.pyn?.update?.checkCached?.(updateInfo.updateUrl, updateInfo.currentVersion)
+      .then((res) => {
+        if (cancelled) return;
+        if (res?.exists) {
+          setUpdateLocalPath(res.localPath);
+          setUpdateStage('ready');
+        }
+      })
+      .catch(() => { /* silent */ });
+    return () => { cancelled = true; };
+  }, [updateInfo]);
+
+  // Подписка на download progress (приходит из main process).
+  useEffect(() => {
+    const unsub = window.pyn?.update?.onProgress?.((p) => {
+      setUpdateBytes(p.bytes);
+      setUpdateTotal(p.total);
+    });
+    return () => { unsub?.(); };
+  }, []);
+
+  // Handler: click на UpdateAvailablePill в sidebar. State machine:
+  //   detected   → start download, stage='downloading'
+  //   downloading → noop (idempotent)
+  //   ready      → open confirm dialog
+  //   installing → noop
+  const handleUpdatePillClick = useCallback(async (): Promise<void> => {
+    if (!updateInfo || !updateInfo.updateUrl) return;
+    if (updateStage === 'ready') {
+      setUpdateConfirmOpen(true);
+      return;
+    }
+    if (updateStage !== 'detected') return;
+    setUpdateStage('downloading');
+    setUpdateBytes(0);
+    setUpdateTotal(0);
+    try {
+      const res = await window.pyn?.update?.download?.(
+        updateInfo.updateUrl,
+        updateInfo.currentVersion,
+        // Server возвращает SHA-256 свежего бинаря в `app_status.binary_sha`.
+        // main process после скачивания сравнит — mismatch = подмена exe в пути,
+        // download rejected, error.
+        updateInfo.binarySha || undefined,
+      );
+      if (res?.ok && res.localPath) {
+        setUpdateLocalPath(res.localPath);
+        setUpdateStage('ready');
+        setUpdateConfirmOpen(true);
+      } else {
+        // Откат на detected — юзер может попробовать снова кликом на pill.
+        setUpdateStage('detected');
+        // eslint-disable-next-line no-console
+        console.warn('[pyn:update] download failed:', res?.error);
+      }
+    } catch (err) {
+      setUpdateStage('detected');
+      // eslint-disable-next-line no-console
+      console.warn('[pyn:update] download error:', err);
+    }
+  }, [updateInfo, updateStage]);
+
+  // Handler: «Да, обновить» в confirm dialog → install + quit.
+  const handleUpdateConfirm = useCallback(async (): Promise<void> => {
+    if (!updateLocalPath) return;
+    setUpdateConfirmOpen(false);
+    setUpdateStage('installing');
+    try {
+      await window.pyn?.update?.install?.(updateLocalPath);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[pyn:update] install failed:', err);
+      setUpdateStage('ready');
+    }
+  }, [updateLocalPath]);
+
+  // WS event: kill switch state changed. Главный канал обновления — push.
+  // Guard: пока у developer'a идёт own toggle для scope — игнорируем echo events
+  // от своего же действия (иначе race с optimistic update делает «прыжки»).
+  // WS push: новая версия приложения опубликована — мгновенный re-check
+  // appStatus вместо ждать следующего 30-мин polling cycle.
+  useWsEvent<{ type: string; scope?: string; current_version?: string }>(
+    'app_version_changed',
+    (event) => {
+      const platform = window.pyn?.platform;
+      const scope: 'desktop-win' | 'desktop-mac' =
+        platform === 'win32' ? 'desktop-win' : 'desktop-mac';
+      // Фильтр: реагируем только если событие касается нашего scope.
+      if (event.scope && event.scope !== scope) return;
+      const appVersion = window.pyn?.appVersion ?? '0.0.0';
+      void appStatus(api, { appScope: scope, appVersion }).then((res) => {
+        if (res.updateUrl && compareSemver(res.currentVersion, appVersion) > 0) {
+          setUpdateInfo(res);
+          setUpdateStage('detected');
+        }
+      }).catch(() => { /* silent */ });
+    },
+  );
+
+  useWsEvent<AppControlStateChangedEvent>('app_control_state_changed', (event) => {
+    if (event.scope !== 'desktop' && event.scope !== 'android') return;
+    const state = useAppLockStore.getState();
+    if (state.pendingScopes.includes(event.scope)) return;
+    state.setScopeFromServer(event.scope, {
+      state: event.state as 'normal' | 'paused' | 'wiping' | 'wiped',
+      title: event.title || '',
+      message: event.message || '',
+      wipeAt: event.wipe_at ?? null,
+      initiatedBy: event.initiated_by || '',
+    });
+    // Auto-trigger wipe только если ЭТОТ клиент (desktop) затронут.
+    if (event.scope === 'desktop' && event.state === 'wiping'
+        && session && !isDeveloper(session.role)) {
+      void triggerAppLockWipe();
+    }
+  });
 
   // Sheets lock — server-authoritative. Initiator делает локальный
   // optimistic acquire перед сетевым вызовом, остальные клиенты узнают
@@ -315,6 +509,21 @@ export function App() {
     if (cur && cur.actionId === event.action_id) {
       useSheetsLockStore.getState().setFromWs(null);
     }
+  });
+
+  // §v1.2.14 — МОЛ-база eager preload + always-on WS push.
+  //
+  // Раньше initMol() и useWsEvent('base_changed') жили внутри MolScreen,
+  // поэтому загрузка случалась только при первом открытии раздела МОЛы,
+  // а WS push обновления игнорировались если юзер сидел в Чатах/Таблицах.
+  // Юзер ожидает: после login база скачивается сразу + любые server-broadcast
+  // обновления применяются автоматически независимо от текущего раздела.
+  useEffect(() => {
+    if (!session) return;
+    void initMol();
+  }, [session]);
+  useWsEvent('base_changed', () => {
+    void refreshMolFromServer({ force: true });
   });
 
   // desktop_kicked → wipe всё.
@@ -449,7 +658,7 @@ export function App() {
         id,
         authorId: 'me',
         text: text.trim(),
-        time: 'в очереди',
+        time: i18next.t('common.queued'),
         isOwn: true,
       });
       return;
@@ -470,7 +679,7 @@ export function App() {
         numericId: sent.id,
         authorId: 'me',
         text: text.trim(),
-        time: 'сейчас',
+        time: i18next.t('common.now'),
         isOwn: true,
       });
     } catch (err) {
@@ -525,8 +734,22 @@ export function App() {
     };
   }, [session, outboxPending, dequeueOutgoing]);
 
+  // ── Kill switch overlay selectors (Rules of Hooks: до early returns!) ──
+  // Desktop client отслеживает только desktop scope для своего overlay'a.
+  // (android scope developer видит в Settings → Управление, но overlay
+  // для android-блока тут не показываем — это второй платформа).
+  const desktopLock = useAppLockStore((s) => s.desktop);
+
   if (hydrating) {
     return <div className="h-full w-full bg-bg-surface" />;
+  }
+
+  // Overlay поверх всего (включая LoginScreen и Settings). Developer'у НЕ
+  // показывается — он управляет состоянием через Settings → Управление.
+  const shouldShowAppLock =
+    desktopLock.state !== 'normal' && (!session || !isDeveloper(session.role));
+  if (shouldShowAppLock) {
+    return <AppLockOverlay state={desktopLock.state} title={desktopLock.title} />;
   }
 
   if (!session) {
@@ -542,19 +765,13 @@ export function App() {
   return (
     <Tooltip.Provider delayDuration={200} skipDelayDuration={1500} disableHoverableContent>
       <SessionExpiryWatch />
-      <div className="flex h-full w-full bg-bg-surface">
-        {showSettings ? (
-          // Settings — full-screen «свой раздел»: основной Sidebar скрыт,
-          // навигация только через внутренний SettingsSidebar + back-кнопку
-          // сверху. Открывается из попап-меню юзера.
-          <SettingsScreen
-            myRole={session.role}
-            myLogin={session.user.login}
-            onBack={() => setShowSettings(false)}
-          />
-        ) : (
-          <>
-            <Sidebar
+      <div className="relative flex h-full w-full bg-bg-surface">
+        {/* §v1.2.14 — Main UI всегда mounted. Settings рендерится
+            overlay'ем (см. ниже) — раньше Settings заменял main через
+            conditional render, что unmount'ило TablesScreen и Chromium
+            webview'ы Google Sheets перезагружались при возврате. */}
+        <>
+          <Sidebar
               collapsed={collapsed}
               activeSection={activeSection}
               username={session.user.fullName || session.user.login}
@@ -578,6 +795,12 @@ export function App() {
                   setActiveChatId(null);
                 })();
               }}
+              updatePill={updateInfo ? {
+                stage: updateStage,
+                bytes: updateBytes,
+                total: updateTotal,
+                onClick: () => void handleUpdatePillClick(),
+              } : undefined}
             />
 
             {activeSection === 'chats' ? (
@@ -596,20 +819,9 @@ export function App() {
                   onReact={handleChatReact}
                 />
               </>
-            ) : activeSection === 'news' ? (
-              <NewsFeed
-                currentUserInitials={initials}
-                currentUserName={session.user.fullName || session.user.login}
-                currentUserLogin={session.user.login}
-                currentUserRole={session.role}
-              />
-            ) : activeSection === 'mol' ? (
+            ) : activeSection === 'news' ? null /* ← рендерится ниже always-mounted */ : activeSection === 'mol' ? (
               <MolScreen />
-            ) : activeSection.startsWith('sheet:') ? (
-              <TablesScreen
-                currentUserName={session.user.fullName || session.user.login}
-              />
-            ) : (
+            ) : activeSection.startsWith('sheet:') ? null /* ← рендерится ниже always-mounted */ : (
               <main className="flex flex-1 flex-col">
                 <div className="drag-region h-8 shrink-0" />
                 <div className="flex flex-1 items-center justify-center">
@@ -619,16 +831,70 @@ export function App() {
                 </div>
               </main>
             )}
-          </>
+
+            {/*
+              §v1.2.14 — TablesScreen ВСЕГДА mounted чтобы Chromium webview'ы
+              открытых таблиц жили как фоновые browser-tabs. Когда юзер уходит
+              в Чаты/Новости/МОЛы и возвращается — таблицы уже загружены,
+              мгновенный switch. Скрываем через `display: none` (CSS-уровень,
+              webContents Chromium остаётся жив, cookies/scroll/state не
+              теряются). До v1.2.14 был conditional render → unmount при
+              уходе → reload при возврате.
+            */}
+            <div
+              className="flex flex-1 flex-col"
+              style={{
+                display: activeSection.startsWith('sheet:') ? 'flex' : 'none',
+              }}
+            >
+              <TablesScreen
+                currentUserName={session.user.fullName || session.user.login}
+              />
+            </div>
+
+            {/*
+              §2026-05-19 — NewsFeed always-mounted (тот же приём что у
+              TablesScreen). При возврате с другого раздела не было «прыжка»
+              скролла: компонент не unmount'ится, scroll-position сохраняется
+              в DOM Chromium'ом независимо от display:none. Restore-effect
+              через ResizeObserver больше не нужен (он и так уже отработал
+              при первом mount).
+            */}
+            <div
+              className="flex flex-1 flex-col"
+              style={{
+                display: activeSection === 'news' ? 'flex' : 'none',
+              }}
+            >
+              <NewsFeed
+                currentUserInitials={initials}
+                currentUserName={session.user.fullName || session.user.login}
+                currentUserLogin={session.user.login}
+                currentUserRole={session.role}
+              />
+            </div>
+        </>
+
+        {/* §v1.2.14 — Settings как overlay поверх main UI. Закрывается
+            через onBack из внутреннего SettingsSidebar. Visually full-screen
+            (z-50 + inset-0 + bg-bg-surface), но main под ним сохраняет
+            mounted state (TablesScreen webview'ы не пересоздаются). */}
+        {showSettings && (
+          <div className="absolute inset-0 z-50 flex bg-bg-surface">
+            <SettingsScreen
+              myRole={session.role}
+              myLogin={session.user.login}
+              onBack={() => setShowSettings(false)}
+            />
+          </div>
         )}
+
         {updateInfo && (
-          <UpdatePromptDialog
-            open={!updateDismissed}
-            currentVersion={window.pyn?.appVersion ?? '0.0.0'}
+          <UpdateConfirmDialog
+            open={updateConfirmOpen}
             newVersion={updateInfo.currentVersion}
-            updateUrl={updateInfo.updateUrl ?? ''}
-            forceUpdate={updateInfo.forceUpdate}
-            onDismiss={() => setUpdateDismissed(true)}
+            onConfirm={() => void handleUpdateConfirm()}
+            onCancel={() => setUpdateConfirmOpen(false)}
           />
         )}
       </div>
@@ -656,6 +922,37 @@ export function App() {
     // следующем login (особенно того же юзера) не использовать stale URL.
     clearAvatarCache();
     await clearAllCache();
+  }
+
+  /**
+   * Kill switch wipe — server triggered 'wiping' через WS. В отличие от
+   * wipeUserData выше (только soft-clear stores + cache), этот стирает
+   * ВЕСЬ userData (включая device.bin = device_id и session.bin) через
+   * main process IPC и relaunch'ит app. После relaunch выглядит как fresh
+   * install: новый device_id, no session → попытка login вернёт 423
+   * пока developer не cancel'нёт state на сервере.
+   */
+  async function triggerAppLockWipe(): Promise<void> {
+    useAppLockStore.getState().markCurrentWiping('desktop');
+    // Best-effort confirm на сервер — server и так сам пометил device wiped
+    // через checkAndTriggerWipe(), но audit row добавится.
+    try {
+      const did = getDeviceId();
+      if (did) await confirmWipe(api, did);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[pyn:app-lock] confirmWipe failed:', err);
+    }
+    // Stop WS перед wipe — иначе reconnect попробует пройти после relaunch.
+    try { await stopWs(); } catch { /* ignore */ }
+    // IPC wipe — main process стирает userData и relaunch'ит. После
+    // вызова renderer process получает SIGTERM, дальше не выполняется.
+    try {
+      await window.pyn?.appLock?.wipe();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[pyn:app-lock] wipe IPC failed:', err);
+    }
   }
 }
 

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import type { ChatPartner } from '@/types/chat';
 import { ChatListRow } from './ChatListRow';
@@ -21,6 +22,7 @@ const CHAT_LIST_WIDTH = 280;
  * области по 50% высоты для Экспедиторов и Клиентов.
  */
 export function ChatList({ conversations, activeId, onSelect }: ChatListProps) {
+  const { t } = useTranslation();
   const users = conversations.filter((c) => c.type === 'user');
   const clients = conversations.filter((c) => c.type === 'client');
 
@@ -36,21 +38,21 @@ export function ChatList({ conversations, activeId, onSelect }: ChatListProps) {
       <div className="mx-3 h-px shrink-0 bg-border-subtle" />
 
       <Block
-        title="Экспедиторы"
+        title={t('chat_list.section_dispatchers')}
         items={users}
         activeId={activeId}
         onSelect={onSelect}
-        emptyHint="Нет диалогов"
+        emptyHint={t('chat_list.empty')}
       />
 
       <div className="mx-3 h-px shrink-0 bg-border-subtle" />
 
       <Block
-        title="Клиенты"
+        title={t('chat_list.section_clients')}
         items={clients}
         activeId={activeId}
         onSelect={onSelect}
-        emptyHint="Нет диалогов"
+        emptyHint={t('chat_list.empty')}
       />
     </aside>
   );

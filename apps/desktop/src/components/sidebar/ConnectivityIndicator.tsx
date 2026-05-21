@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import { formatBandwidth, formatRtt, useConnectivity } from '@/lib/use-connectivity';
 
@@ -28,6 +29,7 @@ interface ConnectivityIndicatorProps {
  * >300 мс — плохо (text-danger).
  */
 export function ConnectivityIndicator({ collapsed }: ConnectivityIndicatorProps) {
+  const { t } = useTranslation();
   const { online, downlinkMbps, rttMs } = useConnectivity();
   const speed = formatBandwidth(downlinkMbps);
   const rtt = online ? formatRtt(rttMs) : null;
@@ -48,7 +50,7 @@ export function ConnectivityIndicator({ collapsed }: ConnectivityIndicatorProps)
     return (
       <div
         className="flex items-center justify-center px-2 py-1"
-        title="Не в сети"
+        title={t('connectivity.offline')}
       >
         <span className="h-2 w-2 rounded-full bg-danger" />
       </div>
@@ -59,7 +61,7 @@ export function ConnectivityIndicator({ collapsed }: ConnectivityIndicatorProps)
   return (
     <div
       className="flex flex-col gap-0 rounded-md px-2 py-1 leading-tight"
-      title={online ? 'Подключено к сети' : 'Нет подключения'}
+      title={online ? t('connectivity.online') : t('connectivity.offline')}
     >
       <span
         className={cn(
@@ -67,7 +69,7 @@ export function ConnectivityIndicator({ collapsed }: ConnectivityIndicatorProps)
           online ? 'text-text-secondary' : 'text-danger',
         )}
       >
-        {online ? 'Онлайн' : 'Не в сети'}
+        {online ? t('connectivity.online') : t('connectivity.offline')}
       </span>
       {online && (rtt || speed) && (
         <span className="flex items-baseline gap-1 text-[11px] tabular-nums">

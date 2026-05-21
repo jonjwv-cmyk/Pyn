@@ -38,6 +38,12 @@ export interface UiState {
   activeTableTabName: string | null;
   /** Свёрнут ли список таблиц в основном Sidebar. По умолчанию раскрыт. */
   tablesListCollapsed: boolean;
+  /**
+   * Выбранный язык интерфейса. `null` = ещё не выбран (используется
+   * autodetect по system locale). На первом change юзера через Settings →
+   * Язык — сохраняется явный выбор.
+   */
+  language: string | null;
 
   setActiveSection: (id: string) => void;
   setActiveChatId: (id: string | null) => void;
@@ -47,6 +53,7 @@ export interface UiState {
   setChatScrollTop: (peer: string, top: number) => void;
   setActiveTable: (fileId: string | null, tabName: string | null) => void;
   setTablesListCollapsed: (v: boolean) => void;
+  setLanguage: (lang: string | null) => void;
   clear: () => void;
 }
 
@@ -60,6 +67,7 @@ const initializer: StateCreator<UiState> = (set) => ({
   activeTableFileId: null,
   activeTableTabName: null,
   tablesListCollapsed: false,
+  language: null,
   setActiveSection: (id) => set({ activeSection: id }),
   setActiveChatId: (id) => set({ activeChatId: id }),
   setMolQuery: (q) => set({ molQuery: q }),
@@ -70,6 +78,7 @@ const initializer: StateCreator<UiState> = (set) => ({
   setActiveTable: (fileId, tabName) =>
     set({ activeTableFileId: fileId, activeTableTabName: tabName }),
   setTablesListCollapsed: (v) => set({ tablesListCollapsed: v }),
+  setLanguage: (lang) => set({ language: lang }),
   clear: () =>
     set({
       activeSection: 'news',
@@ -81,6 +90,7 @@ const initializer: StateCreator<UiState> = (set) => ({
       activeTableFileId: null,
       activeTableTabName: null,
       tablesListCollapsed: false,
+      // language НЕ сбрасываем при logout — он user preference, не session-bound.
     }),
 });
 

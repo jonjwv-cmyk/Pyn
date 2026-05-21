@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { cn } from '@/lib/cn';
 import type { Poll } from '@pyn/core';
@@ -18,6 +19,7 @@ interface NewsPollVotingProps {
  * Подробная разбивка (кто за что) — в NewsStatsDialog через "три точки".
  */
 export function NewsPollVoting({ poll, onVote }: NewsPollVotingProps) {
+  const { t } = useTranslation();
   const [pendingOptionId, setPendingOptionId] = useState<number | null>(null);
   const voted = poll.myVoteOptionId !== null;
   const total = poll.totalVoters;
@@ -57,8 +59,8 @@ export function NewsPollVoting({ poll, onVote }: NewsPollVotingProps) {
 
       <p className="text-[11px] text-text-muted">
         {voted
-          ? `Проголосовало ${total} ${pluralVotes(total)}`
-          : `Опрос ещё открыт — выберите вариант`}
+          ? t('news_polls_voting.voted_count', { n: total, word: t(`news_polls_voting.${pluralVotesKey(total)}`) })
+          : t('news_polls_voting.voting_open_hint')}
       </p>
 
       <ConfirmDialog
@@ -66,12 +68,12 @@ export function NewsPollVoting({ poll, onVote }: NewsPollVotingProps) {
         onOpenChange={(open) => {
           if (!open) setPendingOptionId(null);
         }}
-        title="Подтвердите выбор"
+        title={t('news_polls_voting.confirm_title')}
         description={
-          pendingOption ? `Проголосовать за «${pendingOption.text}»?` : undefined
+          pendingOption
+            ? t('news_polls_voting.confirm_body', { option: pendingOption.text })
+            : undefined
         }
-        confirmLabel="Да"
-        cancelLabel="Нет"
         onConfirm={confirmVote}
       />
     </div>
@@ -112,6 +114,7 @@ interface ResultBarProps {
 }
 
 function ResultBar({ text, pct, votes, isMyVote }: ResultBarProps) {
+  const { t } = useTranslation();
   // Явный border + bg делают опцию видимой даже при pct=0 (иначе бледный
   // progress-bar просто не отображается, и юзер думает "вариантов нет").
   // Выбранную опцию подкрашиваем accent-clay border'ом — мгновенно понятно
@@ -140,7 +143,7 @@ function ResultBar({ text, pct, votes, isMyVote }: ResultBarProps) {
         >
           {isMyVote && (
             <span
-              aria-label="Ваш выбор"
+              aria-label={t('news_polls_voting.my_choice_aria')}
               className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-accent-clay text-[9px] font-bold text-white"
             >
               ✓
@@ -156,11 +159,16 @@ function ResultBar({ text, pct, votes, isMyVote }: ResultBarProps) {
   );
 }
 
-function pluralVotes(n: number): string {
+/**
+ * Slavic plural-rule key для votes. RU/UK дают три формы (one/few/many);
+ * EN/ES/DE в JSON используют те же ключи с идентичным переводом, поэтому
+ * результат корректен и без plural-rules плагина i18next.
+ */
+function pluralVotesKey(n: number): string {
   const mod10 = n % 10;
   const mod100 = n % 100;
-  if (mod100 >= 11 && mod100 <= 14) return 'голосов';
-  if (mod10 === 1) return 'голос';
-  if (mod10 >= 2 && mod10 <= 4) return 'голоса';
-  return 'голосов';
+  if (mod100 >= 11 && mod100 <= 14) return 'votes_many';
+  if (mod10 === 1) return 'votes_one';
+  if (mod10 >= 2 && mod10 <= 4) return 'votes_few';
+  return 'votes_many';
 }

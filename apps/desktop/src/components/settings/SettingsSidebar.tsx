@@ -1,4 +1,5 @@
-import { Activity, AlertCircle, Chrome, Globe, Palette, ScrollText, ServerCog, Users, type LucideIcon } from 'lucide-react';
+import { Chrome, Globe, Palette, ServerCog, Users, type LucideIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { isDeveloper, type Role } from '@pyn/core';
 import { cn } from '@/lib/cn';
 
@@ -8,14 +9,12 @@ export type SettingsSubSection =
   | 'language'
   | 'appearance'
   | 'google'
-  | 'audit'
-  | 'app-control'
-  | 'app-stats'
-  | 'app-errors';
+  | 'app-control';
 
 interface SubItem {
   id: SettingsSubSection;
-  label: string;
+  /** i18n-ключ внутри `settings_sidebar.*`. */
+  labelKey: string;
   icon: LucideIcon;
   /** Видим только developer'у — Пользователи и system-admin утилиты. */
   devOnly?: boolean;
@@ -24,14 +23,11 @@ interface SubItem {
 }
 
 const ALL_ITEMS: SubItem[] = [
-  { id: 'users',        label: 'Пользователи',  icon: Users,       devOnly: true },
-  { id: 'language',     label: 'Язык',          icon: Globe },
-  { id: 'appearance',   label: 'Оформление',    icon: Palette },
-  { id: 'google',       label: 'Google',        icon: Chrome },
-  { id: 'audit',        label: 'Журнал',        icon: ScrollText,  devOnly: true, comingSoon: true },
-  { id: 'app-control',  label: 'Управление',    icon: ServerCog,   devOnly: true, comingSoon: true },
-  { id: 'app-stats',    label: 'Статистика',    icon: Activity,    devOnly: true, comingSoon: true },
-  { id: 'app-errors',   label: 'Ошибки',        icon: AlertCircle, devOnly: true, comingSoon: true },
+  { id: 'users',        labelKey: 'users',       icon: Users,       devOnly: true },
+  { id: 'language',     labelKey: 'language',    icon: Globe },
+  { id: 'appearance',   labelKey: 'appearance',  icon: Palette },
+  { id: 'google',       labelKey: 'google',      icon: Chrome },
+  { id: 'app-control',  labelKey: 'app_control', icon: ServerCog,   devOnly: true },
 ];
 
 interface SettingsSidebarProps {
@@ -56,6 +52,7 @@ export function defaultSettingsSubSection(myRole: Role): SettingsSubSection {
  * выбрать нельзя).
  */
 export function SettingsSidebar({ myRole, activeId, onSelect }: SettingsSidebarProps) {
+  const { t } = useTranslation();
   const items = ALL_ITEMS.filter((item) => !item.devOnly || isDeveloper(myRole));
   return (
     <aside
@@ -84,13 +81,18 @@ export function SettingsSidebar({ myRole, activeId, onSelect }: SettingsSidebarP
               active
                 ? 'bg-bg-hover text-text-strong'
                 : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
-              disabled && 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-text-secondary',
+              // §2026-05-19 — убран `cursor-not-allowed` (юзер: на Win
+              // рисует круг-перечёркнутый, ugly). Disabled state видно
+              // через opacity-40 + soft hover suppress, без cursor change.
+              disabled && 'opacity-40 hover:bg-transparent hover:text-text-secondary',
             )}
           >
             <Icon className="h-4 w-4 shrink-0" strokeWidth={1.75} />
-            <span className="flex-1 truncate">{item.label}</span>
+            <span className="flex-1 truncate">{t(`settings_sidebar.${item.labelKey}`)}</span>
             {disabled && (
-              <span className="text-[10px] uppercase tracking-wider text-text-muted">soon</span>
+              <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                {t('settings_sidebar.soon')}
+              </span>
             )}
           </button>
         );

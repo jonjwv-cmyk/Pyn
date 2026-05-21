@@ -1,5 +1,6 @@
 import { Plus, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useUsersStore } from '@/lib/stores';
@@ -38,6 +39,7 @@ interface UsersPanelUi {
  * выбрал другую подсекцию Settings). Store остаётся как есть.
  */
 export function useUsersPanelState({ myRole, myLogin, active }: UseUsersPanelArgs): UsersPanelUi {
+  const { t } = useTranslation();
   const users = useUsersStore((s) => s.users);
   const setUsers = useUsersStore((s) => s.setUsers);
 
@@ -109,7 +111,10 @@ export function useUsersPanelState({ myRole, myLogin, active }: UseUsersPanelArg
     });
   }, [filtered]);
 
-  const title = users.length > 0 ? `Пользователи · ${users.length}` : 'Пользователи';
+  const title =
+    users.length > 0
+      ? t('users_panel.title_with_count', { count: users.length })
+      : t('users_panel.title');
 
   // Admin видит только список (avatar + имя + last seen). Поиск / refresh /
   // create — read-write controls, доступны только developer'у. UserListRow
@@ -121,7 +126,7 @@ export function useUsersPanelState({ myRole, myLogin, active }: UseUsersPanelArg
         type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="Поиск по логину или имени…"
+        placeholder={t('users_panel.search_placeholder')}
         className={cn(
           'w-[240px] rounded-md border border-border-default bg-bg-elevated px-2.5 py-1 text-[12.5px]',
           'text-text-primary outline-none transition-colors',
@@ -132,7 +137,7 @@ export function useUsersPanelState({ myRole, myLogin, active }: UseUsersPanelArg
         type="button"
         onClick={() => void refresh(false)}
         disabled={loading}
-        aria-label="Обновить"
+        aria-label={t('users_panel.refresh_aria')}
         className={cn(
           'flex h-7 w-7 items-center justify-center rounded-md',
           'text-text-muted outline-none transition-colors',
@@ -152,7 +157,7 @@ export function useUsersPanelState({ myRole, myLogin, active }: UseUsersPanelArg
         )}
       >
         <Plus className="h-3.5 w-3.5" strokeWidth={2} />
-        Создать
+        {t('users_panel.create')}
       </button>
     </>
   ) : null;
@@ -173,10 +178,10 @@ export function useUsersPanelState({ myRole, myLogin, active }: UseUsersPanelArg
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {loading && users.length === 0 ? (
-          <p className="text-center text-[12px] text-text-muted">Загрузка…</p>
+          <p className="text-center text-[12px] text-text-muted">{t('common.loading')}</p>
         ) : sorted.length === 0 ? (
           <p className="text-center text-[12px] text-text-muted">
-            {query.trim() ? 'Никого не нашли' : 'Нет пользователей'}
+            {query.trim() ? t('users_panel.not_found') : t('users_panel.empty')}
           </p>
         ) : (
           <div className="flex flex-col gap-2">

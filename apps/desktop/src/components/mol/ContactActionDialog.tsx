@@ -1,5 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { Phone, Mail, X } from 'lucide-react';
+import { Phone, Mail } from 'lucide-react';
+import { Trans, useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
 export type ContactActionKind = 'call' | 'mail' | 'callWarehouse';
@@ -34,6 +35,7 @@ interface ContactActionDialogProps {
  * стандартный handler ОС (телефония / Mail.app / etc).
  */
 export function ContactActionDialog({ request, onClose }: ContactActionDialogProps) {
+  const { t } = useTranslation();
   const open = request !== null;
 
   const handleConfirm = () => {
@@ -48,12 +50,11 @@ export function ContactActionDialog({ request, onClose }: ContactActionDialogPro
 
   const title =
     request?.kind === 'mail'
-      ? 'Отправить письмо'
+      ? t('mol.contact_email')
       : request?.kind === 'callWarehouse'
-        ? 'Позвонить на склад'
-        : 'Позвонить';
+        ? t('mol.contact_warehouse_call')
+        : t('mol.contact_call');
 
-  const body = request ? buildBody(request) : null;
   const Icon = request?.kind === 'mail' ? Mail : Phone;
 
   return (
@@ -86,7 +87,9 @@ export function ContactActionDialog({ request, onClose }: ContactActionDialogPro
           </div>
 
           <Dialog.Description asChild>
-            <div className="text-[13px] leading-snug text-text-secondary">{body}</div>
+            <div className="text-[13px] leading-snug text-text-secondary">
+              {request && <BodyTrans request={request} />}
+            </div>
           </Dialog.Description>
 
           <div className="mt-5 flex items-center justify-end gap-2">
@@ -98,7 +101,7 @@ export function ContactActionDialog({ request, onClose }: ContactActionDialogPro
                 'hover:bg-bg-hover hover:text-text-strong',
               )}
             >
-              Нет
+              {t('common.no')}
             </button>
             <button
               type="button"
@@ -108,78 +111,35 @@ export function ContactActionDialog({ request, onClose }: ContactActionDialogPro
                 'bg-accent-clay text-white hover:bg-accent-clay-dim',
               )}
             >
-              Да
+              {t('common.yes')}
             </button>
           </div>
 
-          <Dialog.Close asChild>
-            <button
-              type="button"
-              aria-label="Закрыть"
-              className={cn(
-                'absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-md',
-                'text-text-muted outline-none transition-colors',
-                'hover:bg-bg-hover hover:text-text-strong',
-              )}
-            >
-              <X className="h-4 w-4" strokeWidth={1.75} />
-            </button>
-          </Dialog.Close>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
   );
 }
 
-function buildBody(req: ContactActionRequest): JSX.Element {
-  // Две явные строки — первая «что делаем + кому», вторая «куда».
-  // Каждая строка whitespace-nowrap'нется на критичных кусках (email и
-  // телефон) чтобы дикий wrap не разорвал адрес/номер посередине.
-  if (req.kind === 'mail') {
-    return (
-      <div className="space-y-1">
-        <p>
-          Отправить письмо <Strong>{req.contactName}</Strong>
-        </p>
-        <p>
-          на почту <Nowrap>{req.display}</Nowrap>?
-        </p>
-      </div>
-    );
-  }
-  if (req.kind === 'callWarehouse') {
-    return (
-      <div className="space-y-1">
-        <p>
-          Позвонить на <Strong>{req.contactName}</Strong>
-        </p>
-        <p>
-          по телефону <Nowrap>{req.display}</Nowrap>?
-        </p>
-      </div>
-    );
-  }
+/**
+ * Локализованное тело подтверждения. Через `<Trans>` сохраняем подсветку
+ * имени и target'а (телефон / email) — `<b>` chunk styled, остальные слова
+ * следуют грамматике языка.
+ */
+function BodyTrans({ request }: { request: ContactActionRequest }): JSX.Element {
+  const key =
+    request.kind === 'mail'
+      ? 'mol.confirm_mail_body'
+      : request.kind === 'callWarehouse'
+        ? 'mol.confirm_call_warehouse_body'
+        : 'mol.confirm_call_body';
   return (
-    <div className="space-y-1">
-      <p>
-        Позвонить <Strong>{req.contactName}</Strong>
-      </p>
-      <p>
-        по телефону <Nowrap>{req.display}</Nowrap>?
-      </p>
-    </div>
-  );
-}
-
-function Strong({ children }: { children: React.ReactNode }) {
-  return <span className="font-medium text-text-strong">{children}</span>;
-}
-
-/** Email и телефон не должны рваться внутри по пробелам/символам. */
-function Nowrap({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="whitespace-nowrap font-medium text-text-strong tabular-nums">
-      {children}
-    </span>
+    <p>
+      <Trans
+        i18nKey={key}
+        values={{ name: request.contactName, target: request.display }}
+        components={{ b: <span className="whitespace-nowrap font-medium text-text-strong tabular-nums" /> }}
+      />
+    </p>
   );
 }

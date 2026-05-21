@@ -51,14 +51,12 @@ const ROLE_META: Partial<Record<Role, { label: string; bg: string; text: string;
   },
 };
 
-const ROLE_LABEL_RU: Record<Role, string> = {
-  user: 'Пользователь',
-  client: 'Клиент',
-  admin: 'Администратор',
-  developer: 'Разработчик',
-};
-
-/** Полное название роли по-русски (для выбора в Change-role dialog'е и пр.). */
-export function roleDisplayName(role: Role): string {
-  return ROLE_LABEL_RU[role];
+/**
+ * Translation key для отображаемого имени роли. Применяется через
+ * `t(roleDisplayKey(role))` на стороне consumer'a (для Change-role dialog'а
+ * и UserListRow). Раньше функция возвращала RU-литералы; теперь возвращает
+ * стабильный ключ, локализация в @pyn/core/i18n/locales/*.json :: roles.*.
+ */
+export function roleDisplayKey(role: Role): string {
+  return `roles.${role}`;
 }

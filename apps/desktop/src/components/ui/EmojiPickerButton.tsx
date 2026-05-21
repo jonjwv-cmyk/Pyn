@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
 import { Smile } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -28,16 +29,18 @@ interface EmojiPickerButtonProps {
 export function EmojiPickerButton({
   onPick,
   className,
-  label = 'Выбрать эмодзи',
+  label,
 }: EmojiPickerButtonProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const resolvedLabel = label ?? t('emoji_picker.open_aria');
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
         <button
           type="button"
-          aria-label={label}
-          title={label}
+          aria-label={resolvedLabel}
+          title={resolvedLabel}
           className={cn(
             'flex h-7 w-7 shrink-0 items-center justify-center rounded-md outline-none transition-colors',
             'text-text-muted hover:bg-bg-hover hover:text-text-strong',
@@ -66,7 +69,7 @@ export function EmojiPickerButton({
               theme={'dark' as never}
               lazyLoadEmojis
               skinTonesDisabled
-              searchPlaceholder="Поиск…"
+              searchPlaceholder={t('emoji_picker.search_placeholder')}
               previewConfig={{ showPreview: false }}
               width={320}
               height={400}
@@ -83,9 +86,10 @@ export function EmojiPickerButton({
 }
 
 function PickerSkeleton() {
+  const { t } = useTranslation();
   return (
     <div className="flex h-[400px] w-[320px] items-center justify-center text-[12px] text-text-muted">
-      Загрузка…
+      {t('common.loading')}
     </div>
   );
 }

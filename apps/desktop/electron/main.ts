@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { setupMainLog } from './log';
 import { setupApiBridge } from './ipc/api-bridge';
+import { setupAppLockBridge } from './ipc/app-lock-bridge';
 import { setupBlobBridge } from './ipc/blob-bridge';
 import { setupCacheBridge } from './ipc/cache-bridge';
 import { setupGoogleBridge } from './ipc/google-bridge';
@@ -131,6 +132,10 @@ app.whenReady().then(async () => {
   // Auto-update IPC: renderer определяет need-update через app_status endpoint,
   // main качает .exe / .dmg в %LOCALAPPDATA%\Pyn\updates\ и запускает install.
   setupUpdateBridge();
+  // Kill switch / app lock: device-id store (UUID v4, persist через safeStorage) +
+  // full userData wipe + relaunch. Триггерится сервером через WS event
+  // `app_control_state_changed` со state='wiping'.
+  setupAppLockBridge();
 
   createWindow();
 

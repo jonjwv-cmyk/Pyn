@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Check, Clock, X } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -29,6 +30,7 @@ interface ScheduledListDialogProps {
  * Cancel мгновенно мутирует local state (optimistic), при ошибке refresh'имся.
  */
 export function ScheduledListDialog({ open, onOpenChange }: ScheduledListDialogProps) {
+  const { t } = useTranslation();
   // Cache-first: при open сразу берём cached list. Loading-state включаем
   // только при первом open (когда `cachedList === null`). WS news_update
   // kind=scheduled_sent инвалидирует кеш в NewsFeed.tsx.
@@ -53,7 +55,7 @@ export function ScheduledListDialog({ open, onOpenChange }: ScheduledListDialogP
       // даём ему остаться и тихо логируем (юзер увидит свежую попытку при
       // следующем open).
       if (items === null) {
-        setError('Не удалось загрузить запланированные публикации');
+        setError(t('scheduled_list.load_failed'));
       }
     } finally {
       setLoading(false);
@@ -117,10 +119,10 @@ export function ScheduledListDialog({ open, onOpenChange }: ScheduledListDialogP
         >
           <div className="shrink-0 border-b border-border-subtle px-5 pb-3 pt-4">
             <Dialog.Title className="text-[15px] font-semibold tracking-[-0.005em] text-text-strong">
-              Запланированные публикации
+              {t('scheduled_list.title')}
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-[12px] text-text-muted">
-              История за 30 дней.
+              {t('scheduled_list.subtitle')}
             </Dialog.Description>
           </div>
 
@@ -150,7 +152,7 @@ export function ScheduledListDialog({ open, onOpenChange }: ScheduledListDialogP
             {!loading && !error && items !== null && items.length === 0 && (
               <div className="flex flex-col items-center gap-1 px-2 py-6 text-center text-text-muted">
                 <Clock className="h-6 w-6" strokeWidth={1.5} />
-                <p className="text-[12.5px]">Ничего не запланировано</p>
+                <p className="text-[12.5px]">{t('scheduled_list.empty')}</p>
               </div>
             )}
             {!loading && !error && items !== null && items.length > 0 && (
@@ -165,7 +167,7 @@ export function ScheduledListDialog({ open, onOpenChange }: ScheduledListDialogP
           <Dialog.Close asChild>
             <button
               type="button"
-              aria-label="Закрыть"
+              aria-label={t('common.close')}
               className={cn(
                 'absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-md',
                 'text-text-muted outline-none transition-colors',
@@ -187,6 +189,7 @@ interface ScheduledRowProps {
 }
 
 function ScheduledRow({ item, onCancel }: ScheduledRowProps) {
+  const { t } = useTranslation();
   const isPending = item.status === 'pending';
   const isCancelled = item.status === 'cancelled';
   const primaryDate = formatFullYek(
@@ -197,7 +200,7 @@ function ScheduledRow({ item, onCancel }: ScheduledRowProps) {
         : item.sendAt,
   );
   const secondaryDate = isCancelled ? formatFullYek(item.sendAt) : '';
-  const kind = item.kind === 'poll' ? 'Опрос' : 'Новость';
+  const kind = item.kind === 'poll' ? t('news.label_poll') : t('news.label_news');
   const preview = previewText(item);
 
   return (
@@ -211,11 +214,13 @@ function ScheduledRow({ item, onCancel }: ScheduledRowProps) {
         <span className="text-[11.5px] text-text-muted">{primaryDate}</span>
       </div>
       {secondaryDate !== '' && (
-        <span className="text-[10.5px] text-text-muted">Планировалось на {secondaryDate}</span>
+        <span className="text-[10.5px] text-text-muted">
+          {t('scheduled_list.planned_for', { date: secondaryDate })}
+        </span>
       )}
       <p className="line-clamp-3 text-[12.5px] leading-snug text-text-primary">
         <span className="font-medium text-text-strong">{kind}:</span>{' '}
-        {preview || <span className="text-text-muted">(без текста)</span>}
+        {preview || <span className="text-text-muted">{t('scheduled_list.no_text')}</span>}
       </p>
       {isPending && (
         <div className="flex justify-end">
@@ -227,7 +232,7 @@ function ScheduledRow({ item, onCancel }: ScheduledRowProps) {
               'text-danger hover:bg-danger/15',
             )}
           >
-            Отменить
+            {t('scheduled_list.cancel')}
           </button>
         </div>
       )}
@@ -240,11 +245,12 @@ interface StatusBadgeProps {
 }
 
 function StatusBadge({ status }: StatusBadgeProps) {
+  const { t } = useTranslation();
   if (status === 'sent') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-1.5 py-0.5 text-[10.5px] font-medium text-success">
         <Check className="h-3 w-3" strokeWidth={2} />
-        Отправлено
+        {t('scheduled_list.status_sent')}
       </span>
     );
   }
@@ -252,14 +258,14 @@ function StatusBadge({ status }: StatusBadgeProps) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-bg-hover px-1.5 py-0.5 text-[10.5px] font-medium text-text-muted">
         <X className="h-3 w-3" strokeWidth={2} />
-        Отменено
+        {t('scheduled_list.status_cancelled')}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-accent-clay-bg px-1.5 py-0.5 text-[10.5px] font-medium text-accent-clay">
       <Clock className="h-3 w-3" strokeWidth={2} />
-      Запланировано
+      {t('scheduled_list.status_pending')}
     </span>
   );
 }

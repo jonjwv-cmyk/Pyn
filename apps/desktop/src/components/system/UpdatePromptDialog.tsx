@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
-import { ArrowUpCircle, Loader2, X } from 'lucide-react';
+import { ArrowUpCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 /**
@@ -26,6 +27,7 @@ export function UpdatePromptDialog({
   forceUpdate: boolean;
   onDismiss: () => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [stage, setStage] = useState<'idle' | 'downloading' | 'error'>('idle');
   const [bytes, setBytes] = useState(0);
   const [total, setTotal] = useState(0);
@@ -108,31 +110,18 @@ export function UpdatePromptDialog({
             </div>
             <div className="min-w-0 flex-1">
               <Dialog.Title className="text-[14px] font-semibold text-text-strong">
-                {forceUpdate ? 'Требуется обновление' : 'Доступно обновление'}
+                {forceUpdate ? t('update_prompt.title_force') : t('update_prompt.title_available')}
               </Dialog.Title>
               <Dialog.Description className="mt-0.5 text-[12.5px] text-text-secondary">
                 Версия <span className="font-mono">{currentVersion}</span> →{' '}
                 <span className="font-mono text-text-strong">{newVersion}</span>
               </Dialog.Description>
             </div>
-            {dismissable && (
-              <Dialog.Close asChild>
-                <button
-                  type="button"
-                  className="flex h-6 w-6 items-center justify-center rounded text-text-muted hover:bg-bg-hover hover:text-text-strong"
-                  aria-label="Закрыть"
-                >
-                  <X className="h-3.5 w-3.5" strokeWidth={1.75} />
-                </button>
-              </Dialog.Close>
-            )}
           </div>
 
           {stage === 'idle' && (
             <p className="text-[12.5px] leading-relaxed text-text-secondary">
-              {forceUpdate
-                ? 'Текущая версия больше не поддерживается. Обновитесь чтобы продолжить работу.'
-                : 'Pyn перезапустится сам после установки. Несохранённое — потеряется.'}
+              {forceUpdate ? t('update_prompt.body_force') : t('update_prompt.body_optional')}
             </p>
           )}
 
@@ -141,7 +130,7 @@ export function UpdatePromptDialog({
               <div className="flex items-center justify-between text-[12px] text-text-secondary">
                 <span className="flex items-center gap-2">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
-                  Загрузка…
+                  {t('update_prompt.downloading')}
                 </span>
                 <span>{percent}%</span>
               </div>
@@ -161,7 +150,7 @@ export function UpdatePromptDialog({
 
           {stage === 'error' && error && (
             <p className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">
-              Ошибка обновления: {error}
+              {t('update_prompt.error_prefix', { message: error })}
             </p>
           )}
 
@@ -176,7 +165,7 @@ export function UpdatePromptDialog({
                   'hover:bg-bg-hover hover:text-text-strong',
                 )}
               >
-                Позже
+                {t('update_prompt.later')}
               </button>
             )}
             <button
@@ -191,7 +180,7 @@ export function UpdatePromptDialog({
                   : 'bg-accent-clay text-white hover:bg-accent-clay-dim',
               )}
             >
-              {stage === 'error' ? 'Повторить' : 'Обновить'}
+              {stage === 'error' ? t('update_prompt.retry') : t('update_prompt.update')}
             </button>
           </div>
         </Dialog.Content>

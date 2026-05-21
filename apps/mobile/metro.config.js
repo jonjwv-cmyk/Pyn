@@ -11,11 +11,15 @@ const config = getDefaultConfig(projectRoot);
 // Смотрим в workspace для shared packages.
 config.watchFolders = [workspaceRoot];
 
-// pnpm уплотняет node_modules в одну папку — указываем metro где искать.
+// Apps/mobile использует node-linker=hoisted (см. .npmrc) — плоский
+// node_modules. Workspace root остаётся pnpm-strict (он не для RN).
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),
   path.resolve(workspaceRoot, 'node_modules'),
 ];
-config.resolver.disableHierarchicalLookup = true;
+// Включаем hierarchical lookup — RN/Expo пакеты делают require() с относительными
+// путями (например expo/src/Expo.ts require'aет 'expo-modules-core'), Metro
+// должен подниматься по дереву узлов чтобы найти.
+config.resolver.disableHierarchicalLookup = false;
 
 module.exports = config;

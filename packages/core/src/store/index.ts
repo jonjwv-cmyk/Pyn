@@ -64,4 +64,12 @@ export {
   type SheetsLockState,
 } from './sheets-lock-store';
 
+export {
+  useAppLockStore,
+  type AppLockScopeData,
+  type AppLockStoreState,
+} from './app-lock-store';
+// AppLockState и AppLockScope экспортируются через endpoints/app-lock —
+// тут не реэкспортируем чтобы не было дубликатов в re-export цепочке index.ts.
+
 export { createJSONStorage, type StateStorage, type PersistStorage } from 'zustand/middleware';

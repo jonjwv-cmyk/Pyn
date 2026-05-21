@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Clock, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useSessionInfoStore } from '@/lib/stores';
@@ -37,6 +38,7 @@ const EXTENSION_PROMPT_MS = 5 * 60 * 1000;
  * LoginScreen через auth-failure flow).
  */
 export function SessionExpiryWatch() {
+  const { t } = useTranslation();
   /**
    * `null` — никогда не dismiss'или. Число — remaining_ms на момент dismiss'a;
    * больше не показываем пока remaining > это число (т.е. до следующего extend
@@ -89,9 +91,9 @@ export function SessionExpiryWatch() {
     dismissedAtRemainingMs === null || remainingMs > dismissedAtRemainingMs;
   /** Диалог с кнопкой «Продлить» — только если есть свободные продления. */
   const shouldShow = inWarningWindow && hasExtensionsLeft && notDismissed;
-  /** Тонкий non-modal toast — когда продлений нет, но сессия скоро истечёт. */
-  const shouldShowFinalToast =
-    inWarningWindow && !hasExtensionsLeft && notDismissed;
+  // §v1.2.14 — case «продлений нет» теперь — sidebar pill (SessionExpiryPill).
+  // Top-toast убран по UX-request — он закрывался крестиком, теперь
+  // постоянный индикатор в sidebar.
 
   // Reset dismiss при появлении нового info с увеличенным remainingMs (i.e.
   // юзер где-то ещё продлил, или server prolongation подоспел).
@@ -140,10 +142,6 @@ export function SessionExpiryWatch() {
   };
 
   return (
-    <>
-      {shouldShowFinalToast && (
-        <FinalSessionToast remainingMs={remainingMs} onDismiss={handleDismiss} />
-      )}
     <Dialog.Root
       open={shouldShow}
       onOpenChange={(open) => {
@@ -173,21 +171,25 @@ export function SessionExpiryWatch() {
               <Clock className="h-4 w-4 text-accent-clay" strokeWidth={1.75} />
             </span>
             <Dialog.Title className="text-[15px] font-semibold tracking-[-0.005em] text-text-strong">
-              Сессия истекает
+              {t('session_expiry.title')}
             </Dialog.Title>
           </div>
 
           <Dialog.Description asChild>
             <div className="text-[13px] leading-snug text-text-secondary">
               <p>
-                Через{' '}
-                <span className="font-medium text-text-strong tabular-nums">
-                  {formatRemaining(remainingMs)}
-                </span>{' '}
-                сессия завершится. Продлить ещё на 30 минут?
+                {/* Inline-time через сплит шаблона: i18n key возвращает строку
+                    с placeholder '{{time}}', разрезаем на префикс/суффикс и
+                    кладём JSX с tabular-nums в середину для правильного выравнивания. */}
+                {renderWithTime(
+                  t('session_expiry.body', { time: '__TIME__' }),
+                  <span className="font-medium text-text-strong tabular-nums">
+                    {formatRemaining(remainingMs)}
+                  </span>,
+                )}
               </p>
               <p className="mt-1.5 text-[11.5px] text-text-muted">
-                Осталось продлений: {info?.extensionsRemaining ?? 0} из 3.
+                {t('session_expiry.subtext', { n: info?.extensionsRemaining ?? 0 })}
               </p>
             </div>
           </Dialog.Description>
@@ -201,7 +203,7 @@ export function SessionExpiryWatch() {
                 'hover:bg-bg-hover hover:text-text-strong',
               )}
             >
-              Не сейчас
+              {t('session_expiry.dismiss')}
             </button>
             <button
               type="button"
@@ -215,14 +217,14 @@ export function SessionExpiryWatch() {
                 'disabled:cursor-not-allowed disabled:opacity-60',
               )}
             >
-              {extending ? 'Продлеваем…' : 'Продлить'}
+              {extending ? t('session_expiry.extending') : t('session_expiry.extend')}
             </button>
           </div>
 
           <Dialog.Close asChild>
             <button
               type="button"
-              aria-label="Закрыть"
+              aria-label={t('common.close')}
               className={cn(
                 'absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-md',
                 'text-text-muted outline-none transition-colors',
@@ -235,52 +237,6 @@ export function SessionExpiryWatch() {
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
-    </>
-  );
-}
-
-/**
- * Финальный toast — когда юзер уже исчерпал 3 продления и сессия скоро истечёт.
- * Не модальный, не блокирует работу: floating capsule сверху по центру с
- * countdown'ом «через 4:23 потребуется войти заново». Кнопка-крестик прячет
- * до следующего тика; через следующие 30 сек polling vsё равно опять появится,
- * если remaining ещё в окне.
- */
-function FinalSessionToast({
-  remainingMs,
-  onDismiss,
-}: {
-  remainingMs: number;
-  onDismiss: () => void;
-}): JSX.Element {
-  return (
-    <div
-      className={cn(
-        'pointer-events-auto fixed left-1/2 top-3 z-40 -translate-x-1/2',
-        'flex items-center gap-2 rounded-full border border-border-default',
-        'bg-bg-elevated/95 px-3.5 py-1.5 shadow-lg backdrop-blur-sm',
-      )}
-      role="status"
-      aria-live="polite"
-    >
-      <Clock className="h-3.5 w-3.5 shrink-0 text-accent-clay" strokeWidth={1.75} />
-      <span className="text-[12px] text-text-strong">
-        Через{' '}
-        <span className="font-medium tabular-nums">{formatRemaining(remainingMs)}</span>{' '}
-        потребуется войти заново
-      </span>
-      <button
-        type="button"
-        onClick={onDismiss}
-        aria-label="Скрыть"
-        className={cn(
-          'flex h-5 w-5 items-center justify-center rounded-full',
-          'text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong',
-        )}
-      >
-        <X className="h-3 w-3" strokeWidth={1.75} />
-      </button>
-    </div>
   );
 }
 
@@ -290,4 +246,23 @@ function formatRemaining(ms: number): string {
   const min = Math.floor(totalSec / 60);
   const sec = totalSec % 60;
   return `${min}:${sec < 10 ? '0' : ''}${sec}`;
+}
+
+/**
+ * Split i18n строки по маркеру `__TIME__` и подставить JSX-узел внутрь.
+ * Используется чтобы вставить styled <span> с tabular-nums в середину
+ * локализованной фразы вроде «Через {time} сессия завершится…».
+ */
+function renderWithTime(template: string, node: JSX.Element): JSX.Element {
+  const idx = template.indexOf('__TIME__');
+  if (idx === -1) return <>{template}</>;
+  const before = template.slice(0, idx);
+  const after = template.slice(idx + '__TIME__'.length);
+  return (
+    <>
+      {before}
+      {node}
+      {after}
+    </>
+  );
 }

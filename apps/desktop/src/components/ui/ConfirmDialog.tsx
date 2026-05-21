@@ -1,4 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
 interface ConfirmDialogProps {
@@ -32,11 +33,14 @@ export function ConfirmDialog({
   onOpenChange,
   title,
   description,
-  confirmLabel = 'Да',
-  cancelLabel = 'Нет',
+  confirmLabel,
+  cancelLabel,
   variant = 'default',
   onConfirm,
 }: ConfirmDialogProps) {
+  const { t } = useTranslation();
+  const resolvedConfirm = confirmLabel ?? t('common.yes');
+  const resolvedCancel = cancelLabel ?? t('common.no');
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -74,7 +78,7 @@ export function ConfirmDialog({
                   'hover:bg-bg-hover hover:text-text-strong',
                 )}
               >
-                {cancelLabel}
+                {resolvedCancel}
               </button>
             </Dialog.Close>
             <button
@@ -90,7 +94,7 @@ export function ConfirmDialog({
                   : 'bg-accent-clay text-white hover:bg-accent-clay-dim',
               )}
             >
-              {confirmLabel}
+              {resolvedConfirm}
             </button>
           </div>
         </Dialog.Content>

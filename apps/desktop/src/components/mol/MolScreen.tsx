@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMolStore, useUiStateStore } from '@/lib/stores';
-import { initMol, refreshMolFromServer } from '@/lib/mol-repo';
 import { sortMolRecords } from '@/lib/mol-format';
-import { useWsEvent } from '@/lib/ws';
 import {
   dedupeMolByPerson,
   groupByWarehouse,
@@ -49,16 +47,10 @@ export function MolScreen() {
   // основного molQuery (который сохраняется между сессиями).
   const [inlineFilter, setInlineFilter] = useState('');
 
-  useEffect(() => {
-    void initMol();
-  }, []);
-
-  // Server broadcastит `base_changed` через WS когда admin обновил справочник.
-  // Pyn силой rerefresh'ит МОЛы — никакого heartbeat-polling'а, чистый push.
-  // FCM (Android) идёт параллельно — для desktop WS единственный realtime-канал.
-  useWsEvent('base_changed', () => {
-    void refreshMolFromServer({ force: true });
-  });
+  // §v1.2.14 — initMol() и useWsEvent('base_changed') переехали в App.tsx,
+  // чтобы база грузилась сразу после login (не лениво при первом открытии
+  // раздела МОЛы) и WS push обновления применялись независимо от того,
+  // открыт ли сейчас раздел МОЛы. Здесь MolScreen только consumer store'а.
 
   const parsed = useMemo(() => parseMolQuery(query), [query]);
 

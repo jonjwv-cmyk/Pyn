@@ -1,7 +1,7 @@
 import type { ChatMessageWire } from '@pyn/core';
 import type { ChatMessageItem, ChatPartner, ChatPartnerType } from '@/types/chat';
 import { computeInitials } from '@/lib/initials';
-import { formatFullYek } from '@/lib/format-time';
+import { formatFullYek, formatTimeYek } from '@/lib/format-time';
 
 /**
  * `get_admin_messages` возвращает последнее сообщение для каждого peer'a (а
@@ -61,7 +61,11 @@ export function wireToChatMessage(wire: ChatMessageWire, myLogin: string): ChatM
     numericId: wire.id,
     authorId: isOwn ? 'me' : wire.sender_login,
     text: wire.text,
-    time: wire.created_at ? formatFullYek(wire.created_at) : '',
+    // §2026-05-19 — Только время (без даты). Дата отображается отдельно
+    // через DateDivider между группами + sticky day pill при скролле
+    // (Telegram-style). Раньше formatFullYek давал "17 апреля, 9:49 PM"
+    // и эта длинная плашка перекрывала media / прерывала text-bubble.
+    time: wire.created_at ? formatTimeYek(wire.created_at) : '',
     createdAt: wire.created_at,
     // ⚠️ Сервер шлёт `is_read` как viewer-flag (своё всегда = 1; чужое = 1
     // если viewer уже прочитал). Это НЕ read-receipt получателя.

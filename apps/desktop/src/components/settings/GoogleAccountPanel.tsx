@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Check, Chrome, LogIn, LogOut } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
 /**
@@ -17,6 +18,7 @@ interface AccountStatus {
 }
 
 export function GoogleAccountPanel(): JSX.Element {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<AccountStatus>({ loggedIn: false, email: null });
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -43,6 +45,13 @@ export function GoogleAccountPanel(): JSX.Element {
     try {
       await window.pyn.google.openLogin();
       await refresh();
+      // §v1.2.14 — после успешного login broadcast event, который слушает
+      // TablesScreen и reload'ит все Sheets-webview'ы. Иначе они остаются с
+      // logged-out cookies и юзеру нужно перезагружать раздел вручную.
+      const s = await window.pyn.google.checkStatus().catch(() => null);
+      if (s?.loggedIn) {
+        window.dispatchEvent(new CustomEvent('pyn:google-login-success'));
+      }
     } finally {
       setBusy(false);
     }
@@ -81,17 +90,17 @@ export function GoogleAccountPanel(): JSX.Element {
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <h2 className="text-[14px] font-semibold text-text-strong">
             {loading
-              ? 'Проверяем…'
+              ? t('settings_google.checking')
               : status.loggedIn
-                ? 'Вы вошли в Google'
-                : 'Не подключён'}
+                ? t('settings_google.status_logged_in')
+                : t('settings_google.status_logged_out')}
           </h2>
           <p className="text-[12px] text-text-muted">
             {status.loggedIn
               ? status.email
-                ? `Аккаунт: ${status.email}`
-                : 'Сессия активна. Можно редактировать таблицы и запускать скрипты.'
-              : 'Без входа таблицы открыты на чтение, скрипты заблокированы.'}
+                ? t('settings_google.status_account', { email: status.email })
+                : t('settings_google.status_session_active')
+              : t('settings_google.status_no_login')}
           </p>
         </div>
         {status.loggedIn ? (
@@ -109,7 +118,7 @@ export function GoogleAccountPanel(): JSX.Element {
             )}
           >
             <LogOut className="h-3.5 w-3.5" strokeWidth={2} />
-            Выйти
+            {t('settings_google.logout')}
           </button>
         ) : (
           <button
@@ -126,7 +135,7 @@ export function GoogleAccountPanel(): JSX.Element {
             )}
           >
             <LogIn className="h-3.5 w-3.5" strokeWidth={2} />
-            {busy ? 'Открываем…' : 'Войти в Google'}
+            {busy ? t('settings_google.login_loading') : t('settings_google.login')}
           </button>
         )}
       </section>
@@ -134,24 +143,24 @@ export function GoogleAccountPanel(): JSX.Element {
       {!status.loggedIn && (
         <section className="rounded-xl border border-border-subtle bg-bg-primary/40 p-5">
           <h3 className="mb-2 text-[12px] font-medium uppercase tracking-wider text-text-muted">
-            Что будет после входа
+            {t('settings_google.features_title')}
           </h3>
           <ul className="flex flex-col gap-2 text-[12.5px] text-text-secondary">
             <li className="flex items-start gap-2">
               <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-text-muted" />
-              <span>Редактирование ячеек напрямую — сохраняется в Google Sheets.</span>
+              <span>{t('settings_google.feature_edit_cells')}</span>
             </li>
             <li className="flex items-start gap-2">
               <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-text-muted" />
-              <span>Запуск скриптов — макросы для SAP и обработка диапазонов.</span>
+              <span>{t('settings_google.feature_scripts')}</span>
             </li>
             <li className="flex items-start gap-2">
               <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-text-muted" />
-              <span>Меню «Редактировать» — Правка / Вставка / Данные.</span>
+              <span>{t('settings_google.feature_edit_menu')}</span>
             </li>
             <li className="flex items-start gap-2">
               <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-text-muted" />
-              <span>Сессия сохраняется — повторно входить не нужно.</span>
+              <span>{t('settings_google.feature_session_persist')}</span>
             </li>
           </ul>
         </section>

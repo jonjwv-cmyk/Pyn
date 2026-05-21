@@ -162,7 +162,10 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
     const win = new BrowserWindow({
       width: 480,
       height: 640,
-      modal: parent !== null,
+      // §v1.2.14 — НЕ modal. На Mac modal:true превращает окно в "sheet"
+      // (attached к parent, без traffic lights / X-кнопки) — юзер не мог
+      // закрыть. Без modal — standalone окно с нативной строкой заголовка
+      // и красной кнопкой закрытия.
       parent: parent ?? undefined,
       title: 'Вход в Google',
       backgroundColor: '#1F1E1B',
@@ -174,6 +177,14 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
       },
     });
     win.loadURL(LOGIN_URL).catch(() => {});
+
+    // §v1.2.14 — Escape закрывает login-окно. Дополнительный путь
+    // помимо нативной кнопки закрытия в title bar.
+    win.webContents.on('before-input-event', (_e, input) => {
+      if (input.type === 'keyDown' && input.key === 'Escape') {
+        win.close();
+      }
+    });
 
     // §diag v1.2.8 — DevTools в login-окне для диагностики. v1.2.10:
     // только в dev mode или при явном PYN_DEBUG=1 env. В production
@@ -206,31 +217,44 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
       }
     });
 
-    // Авто-закрытие когда Google редиректнул на docs.google.com (успешный login).
-    // Перед close — копируем cookies из ephemeral в persist (иначе они умрут
-    // вместе с in-memory partition).
-    const onNavigation = async (_evt: Electron.Event, url: string) => {
-      if (url.startsWith('https://docs.google.com/spreadsheets')) {
-        if (!cookiesCopied) {
+    // §v1.2.14 — копируем cookies на каждой navigate ASAP когда у Google
+    // появилась session cookie. Это решает проблему "окно не закрывается":
+    // раньше в close-handler делался evt.preventDefault() + async copy,
+    // что блокировало close если копирование зависало.
+    //
+    // Теперь cookies extract'аются ДО юзерского close, а на сам close
+    // ничего не делаем — окно отпускается мгновенно.
+    const tryCopyCookies = async (): Promise<void> => {
+      if (cookiesCopied) return;
+      try {
+        const ephSes = session.fromPartition(ephPartition);
+        const c = await ephSes.cookies.get({ domain: '.google.com' });
+        const hasSession = c.some(
+          (k) =>
+            k.name === 'SID' ||
+            k.name === '__Secure-1PSID' ||
+            k.name === '__Secure-3PSID',
+        );
+        if (hasSession) {
           await copyLoginCookiesToPersist(ephPartition);
           cookiesCopied = true;
         }
+      } catch (e) {
+        console.log('[google-login] tryCopyCookies error:', e);
+      }
+    };
+
+    const onNavigation = (_evt: Electron.Event, url: string): void => {
+      void tryCopyCookies();
+      if (url.startsWith('https://docs.google.com/spreadsheets')) {
         win.close();
       }
     };
     win.webContents.on('will-redirect', onNavigation);
     win.webContents.on('did-navigate', onNavigation);
 
-    // Если юзер вручную закрыл окно — тоже попробуем скопировать cookies
-    // (мог залогиниться, не дойти до docs.google.com и закрыть).
-    win.on('close', async (evt) => {
-      if (cookiesCopied) return;
-      evt.preventDefault();
-      await copyLoginCookiesToPersist(ephPartition);
-      cookiesCopied = true;
-      win.destroy();
-    });
-
+    // Close — без preventDefault. Cookies уже извлекаются на каждой
+    // navigate. Если юзер закрыл до login — копировать нечего.
     win.on('closed', () => {
       void readStatus().then((s) => resolve(s.loggedIn));
     });

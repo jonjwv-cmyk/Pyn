@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as HoverCard from '@radix-ui/react-hover-card';
 import { Avatar } from '@/components/ui/Avatar';
 import { api } from '@/lib/api';
@@ -39,6 +40,7 @@ export function ReactionVotersPopover({
   messageId,
   emoji,
 }: ReactionVotersPopoverProps) {
+  const { t } = useTranslation();
   // Cache-first: cached details из глобального stats-store; popover показывает
   // их мгновенно, fetch идёт silent. WS news_update kind=reaction
   // инвалидирует — следующий hover триггерит refresh.
@@ -95,7 +97,7 @@ export function ReactionVotersPopover({
           <div className="mb-1 flex items-center gap-1.5 px-1 py-0.5">
             <span className="text-[14px] leading-none">{emoji}</span>
             <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-              Реакции
+              {t('reaction_voters.title')}
             </span>
           </div>
           {loading && (
@@ -113,12 +115,12 @@ export function ReactionVotersPopover({
           )}
           {!loading && error && (
             <div className="px-2 py-3 text-center text-[12px] text-danger">
-              Не удалось загрузить
+              {t('reaction_voters.load_failed')}
             </div>
           )}
           {!loading && !error && voters.length === 0 && (
             <div className="px-2 py-3 text-center text-[12px] text-text-muted">
-              Никто
+              {t('reaction_voters.empty')}
             </div>
           )}
           {!loading && !error && voters.length > 0 && (

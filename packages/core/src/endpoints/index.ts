@@ -7,6 +7,7 @@
 // Auth
 export {
   login,
+  androidLogin,
   me,
   appStatus,
   getPasswordCounter,
@@ -17,6 +18,7 @@ export {
   meSessionInfo,
   changePassword,
   type LoginRequest,
+  type AndroidLoginRequest,
   type LoginResponse,
   type MeResponse,
   type AppStatusRequest,
@@ -152,3 +154,15 @@ export {
   type SapDocHit,
   type SheetsClientConfig,
 } from './sheets';
+
+// Kill switch / app lock (2026-05-20)
+export {
+  activateAppLock,
+  deactivateAppLock,
+  getAppLockStatus,
+  confirmWipe,
+  type AppLockState as AppLockServerState,
+  type AppLockScope,
+  type AppLockStatus,
+  type AppLockScopeStatus,
+} from './app-lock';

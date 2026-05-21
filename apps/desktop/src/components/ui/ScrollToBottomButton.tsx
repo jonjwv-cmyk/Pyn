@@ -1,4 +1,5 @@
 import { ChevronDown } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
 interface ScrollToBottomButtonProps {
@@ -23,11 +24,12 @@ export function ScrollToBottomButton({
   onClick,
   className,
 }: ScrollToBottomButtonProps) {
+  const { t } = useTranslation();
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label="Прокрутить к концу"
+      aria-label={t('news.scroll_to_bottom')}
       aria-hidden={!visible}
       tabIndex={visible ? 0 : -1}
       className={cn(
