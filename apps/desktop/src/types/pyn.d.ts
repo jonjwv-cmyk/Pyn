@@ -109,6 +109,19 @@ declare global {
       appLock: {
         wipe: () => Promise<void>;
       };
+      /**
+       * Tray menu actions (custom React menu in popup BrowserWindow).
+       * Закрытие Pyn — только через `quit` отсюда; close-X на main окне
+       * минимизирует в tray.
+       */
+      tray: {
+        show: () => Promise<void>;
+        openSettings: () => Promise<void>;
+        quit: () => Promise<void>;
+        closeMenu: () => Promise<void>;
+        /** Подписка на 'open-settings' event от tray menu. */
+        onOpenSettings: (handler: () => void) => () => void;
+      };
     };
   }
   /**

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage } from 'electron';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { setupMainLog } from './log';
@@ -10,6 +10,7 @@ import { setupGoogleBridge } from './ipc/google-bridge';
 import { setupMacroBridge } from './ipc/macro-bridge';
 import { setupMolBridge } from './ipc/mol-bridge';
 import { setupTokenBridge } from './ipc/token-bridge';
+import { setupTrayBridge } from './ipc/tray-bridge';
 import { setupUpdateBridge } from './ipc/update-bridge';
 import { setupWsBridge } from './ipc/ws-bridge';
 import { startVpsPing, stopVpsPing } from './network/vps-ping';
@@ -40,8 +41,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const isMac = process.platform === 'darwin';
 
-function createWindow(): void {
-  const win = new BrowserWindow({
+// Module-level state: main и tray menu окна, флаг quit и сам Tray.
+// Pyn закрывается ТОЛЬКО через tray menu → quit; close X на main окне
+// = hide в tray (см. mainWindow.on('close')).
+let mainWindow: BrowserWindow | null = null;
+let trayMenuWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
+
+function createMainWindow(): void {
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 880,
@@ -78,25 +87,118 @@ function createWindow(): void {
     },
   });
 
-  win.once('ready-to-show', () => win.show());
+  mainWindow.once('ready-to-show', () => mainWindow?.show());
+
+  // §pyn-1.2.15 — close (X на title-bar) минимизирует в tray, не quit.
+  // Полностью закрыть Pyn можно только через tray menu → «Выйти». Это
+  // мешает случайному закрытию когда юзер ожидает что приложение работает
+  // в фоне (WS connection, push notifications, kill switch listener).
+  mainWindow.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow?.hide();
+    }
+  });
 
   // Гарантированно ставим platform-attr на documentElement до того как
   // React начнёт рендерить — это позволяет CSS-правилам c селектором
   // `html[data-pyn-platform="win32"]` зарезервировать место под Win-controls.
   // preload-вариант ненадёжен: на некоторых билдах document уже не пустой.
-  win.webContents.on('dom-ready', () => {
-    void win.webContents.executeJavaScript(
+  mainWindow.webContents.on('dom-ready', () => {
+    void mainWindow?.webContents.executeJavaScript(
       `document.documentElement.dataset.pynPlatform = ${JSON.stringify(process.platform)};`,
     );
   });
 
   if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL);
+    mainWindow.loadURL(VITE_DEV_SERVER_URL);
     // Auto-open devtools только в dev режиме.
-    win.webContents.openDevTools({ mode: 'detach' });
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    win.loadFile(path.join(__dirname, '../dist/index.html'));
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+}
+
+function createTrayMenuWindow(): void {
+  trayMenuWindow = new BrowserWindow({
+    width: 240,
+    height: 168,
+    show: false,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    focusable: true,
+    hasShadow: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: [`--pyn-app-version=${app.getVersion()}`],
+    },
+  });
+
+  // Hash `#tray` — main.tsx распознаёт и рендерит TrayMenu вместо App.
+  if (VITE_DEV_SERVER_URL) {
+    trayMenuWindow.loadURL(`${VITE_DEV_SERVER_URL}#tray`);
+  } else {
+    trayMenuWindow.loadFile(path.join(__dirname, '../dist/index.html'), { hash: 'tray' });
+  }
+
+  // Закрываем menu при потере фокуса (click вне окна).
+  trayMenuWindow.on('blur', () => {
+    trayMenuWindow?.hide();
+  });
+}
+
+function showTrayMenuAtCursor(): void {
+  if (!trayMenuWindow || trayMenuWindow.isDestroyed()) return;
+  // Positioning: используем bounds tray icon (если есть) или дефолтные
+  // координаты внизу справа для Win (где tray traybar).
+  const trayBounds = tray?.getBounds();
+  const menuWidth = 240;
+  const menuHeight = 168;
+  let x = 100;
+  let y = 100;
+  if (trayBounds && trayBounds.width > 0) {
+    // Tray icon позиция (правый нижний угол на Win, top на Mac).
+    // Меню над/слева от иконки.
+    if (isMac) {
+      x = Math.round(trayBounds.x + trayBounds.width / 2 - menuWidth / 2);
+      y = Math.round(trayBounds.y + trayBounds.height + 4);
+    } else {
+      x = Math.round(trayBounds.x + trayBounds.width / 2 - menuWidth / 2);
+      y = Math.round(trayBounds.y - menuHeight - 4);
+    }
+  }
+  trayMenuWindow.setBounds({ x: Math.max(0, x), y: Math.max(0, y), width: menuWidth, height: menuHeight });
+  trayMenuWindow.show();
+  trayMenuWindow.focus();
+}
+
+function setupTray(): void {
+  // Win: icon.ico содержит все размеры (включая 16x16 для tray).
+  // Mac: icon.icns тоже работает, хотя оптимально template PNG (monochrome).
+  const iconPath = isMac
+    ? path.join(__dirname, '../build/icon.icns')
+    : path.join(__dirname, '../build/icon.ico');
+  const image = nativeImage.createFromPath(iconPath);
+  tray = new Tray(image);
+  tray.setToolTip('Pyn');
+
+  // Single-click — показать main window (Win/Mac default behaviour).
+  tray.on('click', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+  });
+
+  // Right-click → custom React menu (rounded, accent hover).
+  tray.on('right-click', () => {
+    showTrayMenuAtCursor();
+  });
 }
 
 app.whenReady().then(async () => {
@@ -137,19 +239,56 @@ app.whenReady().then(async () => {
   // `app_control_state_changed` со state='wiping'.
   setupAppLockBridge();
 
-  createWindow();
+  // Tray bridge — actions из React tray menu (show/settings/quit/close).
+  setupTrayBridge({
+    showMainWindow: () => {
+      if (!mainWindow) return;
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    },
+    openSettings: () => {
+      if (!mainWindow) return;
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+      // Renderer слушает событие через window.pyn.tray.onOpenSettings → открывает Settings overlay.
+      mainWindow.webContents.send('pyn:tray:open-settings');
+    },
+    quit: () => {
+      isQuitting = true;
+      trayMenuWindow?.destroy();
+      mainWindow?.close();
+      app.quit();
+    },
+    hideMenu: () => {
+      trayMenuWindow?.hide();
+    },
+  });
+
+  createMainWindow();
+  createTrayMenuWindow();
+  setupTray();
 
   // Periodic VPS-ping (RTT для индикатора связи). Идёт в nginx-only endpoint
   // `/__ping`, не задевает Cloudflare Worker — ноль расхода CF дневного лимита.
-  // После createWindow — чтобы installVisibilityHooks подцепил уже-созданное окно.
+  // После createMainWindow — чтобы installVisibilityHooks подцепил уже-созданное окно.
   startVpsPing();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+    else mainWindow.show();
   });
 });
 
+// §pyn-1.2.15 — не quit'аем когда все окна закрыты. Pyn живёт в tray
+// (WS, push, kill switch listener). Quit только через tray → «Выйти».
 app.on('window-all-closed', () => {
+  // На Mac стандарт — приложение остаётся в dock. На Win с tray — то же самое.
+  // Никаких stopVpsPing — мы продолжаем работать в background.
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
   stopVpsPing();
-  if (!isMac) app.quit();
 });

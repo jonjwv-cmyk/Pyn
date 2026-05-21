@@ -8,28 +8,30 @@ import { initMol, refreshMolFromServer } from '@/lib/mol-repo';
 import { NewsFeed } from '@/components/news';
 import { TablesScreen } from '@/components/tables';
 import { UpdateConfirmDialog } from '@/components/system/UpdateConfirmDialog';
-import { clearTablesRegistry } from '@/lib/use-tables-registry';
 import { SettingsScreen } from '@/components/settings';
 import { LoginScreen } from '@/components/auth/LoginScreen';
 import { SessionExpiryWatch } from '@/components/auth/SessionExpiryWatch';
 import { api } from '@/lib/api';
 import { sessionStore } from '@/lib/token-store';
-import { startWs, stopWs, useWsEvent } from '@/lib/ws';
+import { useWsEvent } from '@/lib/ws';
 import { useChatsStore, useMolStore, useNewsStore, useOutboxStore, useSessionInfoStore, useStatsStore, useUiStateStore, useUsersStore } from '@/lib/stores';
-import { clearAvatarCache } from '@/lib/avatar';
-import { clearAllCache } from '@/lib/cache-storage';
 import { initDeviceId } from '@/lib/device';
-import { initI18n } from '@/lib/i18n';
 import { computeInitials } from '@/lib/initials';
 import { wireToChatMessage, wireToChatPartnerFromMessage } from '@/lib/repositories/chats-repo';
+import { isAuthFailure } from '@/lib/version';
+import { triggerAppLockWipe, wipeUserData } from '@/lib/wipe';
+import {
+  useAuthFailureHandler,
+  useInitI18n,
+  useUpdateFlow,
+  useWsLifecycle,
+} from '@/lib/hooks';
 import type { ChatPartner } from '@/types/chat';
 import type { NavSectionId } from '@/types/nav';
 import {
   ApiError,
   addReaction,
-  appStatus,
   CHATS_STALE_MS,
-  confirmWipe,
   getAdminChat,
   getAdminMessages,
   getAppLockStatus,
@@ -45,14 +47,12 @@ import {
   useAppLockStore,
   useSheetsLockStore,
   type AppControlStateChangedEvent,
-  type AppStatusResponse,
   type NewMessageEvent,
   type Session,
   type SheetLockAcquiredEvent,
   type SheetLockReleasedEvent,
 } from '@pyn/core';
 import { AppLockOverlay } from '@/components/system/AppLockOverlay';
-import { getDeviceId } from '@/lib/device';
 
 /**
  * Корневой layout Pyn.
@@ -73,17 +73,19 @@ export function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [hydrating, setHydrating] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState<AppStatusResponse | null>(null);
-  // Update flow state machine. Источник правды — sidebar pill (click drives transitions).
-  //   detected   — pill «Доступно обновление»
-  //   downloading — pill «Загрузка NN%»
-  //   ready      — pill «Обновление готово», + confirm dialog «обновиться?»
-  //   installing — pill «Установка…», installer запущен, app сейчас quit'нется
-  const [updateStage, setUpdateStage] = useState<'detected' | 'downloading' | 'ready' | 'installing'>('detected');
-  const [updateBytes, setUpdateBytes] = useState(0);
-  const [updateTotal, setUpdateTotal] = useState(0);
-  const [updateLocalPath, setUpdateLocalPath] = useState<string | null>(null);
-  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
+  // Update flow state machine вынесен в useUpdateFlow hook (см. lib/hooks/use-update-flow.ts).
+  // Источник правды — sidebar pill (click drives transitions).
+  const {
+    updateInfo,
+    updateStage,
+    updateBytes,
+    updateTotal,
+    updateLocalPath,
+    updateConfirmOpen,
+    setUpdateConfirmOpen,
+    handleUpdatePillClick,
+    handleUpdateConfirm,
+  } = useUpdateFlow(session);
   // activeSection + activeChatId — persistent UI-state: при перезапуске
   // Pyn'a продолжаем с того же раздела и чата (Telegram-style continuation).
   const activeSection = useUiStateStore((s) => s.activeSection as NavSectionId);
@@ -124,43 +126,17 @@ export function App() {
     return { chats: chatsUnread, news: newsUnread };
   }, [partners, newsItems]);
 
-  // i18n init — один раз на mount. Дожидаемся persist-hydration ui-state-store
-  // (он async через safeStorage IPC), чтобы saved language применился сразу
-  // на старте. Без этого ожидания первый рендер был бы всегда на ru, и через
-  // момент после hydration перепрыгнул бы на сохранённый.
-  useEffect(() => {
-    if (useUiStateStore.persist.hasHydrated()) {
-      initI18n(useUiStateStore.getState().language);
-    } else {
-      const unsub = useUiStateStore.persist.onFinishHydration(() => {
-        initI18n(useUiStateStore.getState().language);
-      });
-      // Safety net: если hydration уже завершён до подписки (race), вызовем init.
-      if (useUiStateStore.persist.hasHydrated()) {
-        initI18n(useUiStateStore.getState().language);
-      }
-      return unsub;
-    }
-  }, []);
+  useInitI18n();
 
-  // Глобальный handler auth-failure'ов: любой API-call, который возвращает
-  // `unauthorized` / `session_expired_window` / `token_*` / etc → ApiClient
-  // вызывает этот callback. Wipe всё + перевод на LoginScreen. Не нужно ловить
-  // эти коды в каждом catch'е компонентов.
-  useEffect(() => {
-    api.setOnAuthFailure((code) => {
-      window.pyn?.debugLog?.('auth-failure', `code=${code} — wiping session`);
+  useAuthFailureHandler(
+    useCallback(() => {
       void (async () => {
         await wipeUserData();
         setSession(null);
         setActiveChatId(null);
       })();
-    });
-    return () => {
-      api.setOnAuthFailure(null);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    }, [setActiveChatId]),
+  );
 
   // Restore persisted session на mount.
   useEffect(() => {
@@ -213,14 +189,18 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // WS lifecycle: connect при наличии session, disconnect при logout.
+  useWsLifecycle(session);
+
+  // Tray menu → «Настройки»: открыть Settings overlay в основном окне.
+  // Main process присылает 'pyn:tray:open-settings' через IPC.
   useEffect(() => {
-    if (!session) {
-      void stopWs();
-      return;
-    }
-    void startWs(session.user.login, session.token);
-  }, [session]);
+    const unsub = window.pyn?.tray?.onOpenSettings?.(() => {
+      setShowSettings(true);
+    });
+    return () => {
+      unsub?.();
+    };
+  }, []);
 
   // Обогащение session.user avatar blob params'ами через me().
   // Server возвращает avatar_blob_key_b64/nonce_b64 только в `me()` response,
@@ -324,155 +304,6 @@ export function App() {
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
-
-  // Auto-update + kill switch seed (1 запрос на login + 1 на 30-мин update check).
-  // Сидируем оба scope (desktop + android) в useAppLockStore — потом всё
-  // обновляется через WS push, без поллинга.
-  useEffect(() => {
-    if (!session) return;
-    const platform = window.pyn?.platform;
-    const scope: 'desktop-win' | 'desktop-mac' =
-      platform === 'win32' ? 'desktop-win' : 'desktop-mac';
-    const appVersion = window.pyn?.appVersion ?? '0.0.0';
-    let cancelled = false;
-    const check = async (): Promise<void> => {
-      try {
-        const res = await appStatus(api, { appScope: scope, appVersion });
-        if (cancelled) return;
-        if (
-          res.updateUrl &&
-          compareSemver(res.currentVersion, appVersion) > 0
-        ) {
-          setUpdateInfo(res);
-        }
-        // Сидируем desktop scope из app_status response (desktop клиент).
-        // android scope узнаем позже через get_app_lock_status (когда юзер
-        // зайдёт в Settings → Управление) или через WS push.
-        if (res.appLockState) {
-          useAppLockStore.getState().setScopeFromServer('desktop', {
-            state: res.appLockState,
-            title: res.appLockTitle || '',
-            message: res.appLockMessage || '',
-            wipeAt: res.appLockWipeAt ?? null,
-            initiatedBy: res.appLockInitiatedBy || '',
-          });
-        }
-      } catch { /* offline / network — silent */ }
-    };
-    void check();
-    // Update-check раз в 30 мин — там и lock state будет освежаться.
-    const id = setInterval(() => void check(), 30 * 60 * 1000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [session]);
-
-  // ── Update flow: cache check + progress subscription ────────────────
-  // Когда `appStatus` обнаружил новую версию (`updateInfo` set) — сразу
-  // проверяем кэш через IPC. Если файл уже скачан раньше — ставим
-  // stage='ready'. Юзер кликает на pill → confirm dialog без download.
-  useEffect(() => {
-    if (!updateInfo || !updateInfo.updateUrl) return;
-    let cancelled = false;
-    void window.pyn?.update?.checkCached?.(updateInfo.updateUrl, updateInfo.currentVersion)
-      .then((res) => {
-        if (cancelled) return;
-        if (res?.exists) {
-          setUpdateLocalPath(res.localPath);
-          setUpdateStage('ready');
-        }
-      })
-      .catch(() => { /* silent */ });
-    return () => { cancelled = true; };
-  }, [updateInfo]);
-
-  // Подписка на download progress (приходит из main process).
-  useEffect(() => {
-    const unsub = window.pyn?.update?.onProgress?.((p) => {
-      setUpdateBytes(p.bytes);
-      setUpdateTotal(p.total);
-    });
-    return () => { unsub?.(); };
-  }, []);
-
-  // Handler: click на UpdateAvailablePill в sidebar. State machine:
-  //   detected   → start download, stage='downloading'
-  //   downloading → noop (idempotent)
-  //   ready      → open confirm dialog
-  //   installing → noop
-  const handleUpdatePillClick = useCallback(async (): Promise<void> => {
-    if (!updateInfo || !updateInfo.updateUrl) return;
-    if (updateStage === 'ready') {
-      setUpdateConfirmOpen(true);
-      return;
-    }
-    if (updateStage !== 'detected') return;
-    setUpdateStage('downloading');
-    setUpdateBytes(0);
-    setUpdateTotal(0);
-    try {
-      const res = await window.pyn?.update?.download?.(
-        updateInfo.updateUrl,
-        updateInfo.currentVersion,
-        // Server возвращает SHA-256 свежего бинаря в `app_status.binary_sha`.
-        // main process после скачивания сравнит — mismatch = подмена exe в пути,
-        // download rejected, error.
-        updateInfo.binarySha || undefined,
-      );
-      if (res?.ok && res.localPath) {
-        setUpdateLocalPath(res.localPath);
-        setUpdateStage('ready');
-        setUpdateConfirmOpen(true);
-      } else {
-        // Откат на detected — юзер может попробовать снова кликом на pill.
-        setUpdateStage('detected');
-        // eslint-disable-next-line no-console
-        console.warn('[pyn:update] download failed:', res?.error);
-      }
-    } catch (err) {
-      setUpdateStage('detected');
-      // eslint-disable-next-line no-console
-      console.warn('[pyn:update] download error:', err);
-    }
-  }, [updateInfo, updateStage]);
-
-  // Handler: «Да, обновить» в confirm dialog → install + quit.
-  const handleUpdateConfirm = useCallback(async (): Promise<void> => {
-    if (!updateLocalPath) return;
-    setUpdateConfirmOpen(false);
-    setUpdateStage('installing');
-    try {
-      await window.pyn?.update?.install?.(updateLocalPath);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[pyn:update] install failed:', err);
-      setUpdateStage('ready');
-    }
-  }, [updateLocalPath]);
-
-  // WS event: kill switch state changed. Главный канал обновления — push.
-  // Guard: пока у developer'a идёт own toggle для scope — игнорируем echo events
-  // от своего же действия (иначе race с optimistic update делает «прыжки»).
-  // WS push: новая версия приложения опубликована — мгновенный re-check
-  // appStatus вместо ждать следующего 30-мин polling cycle.
-  useWsEvent<{ type: string; scope?: string; current_version?: string }>(
-    'app_version_changed',
-    (event) => {
-      const platform = window.pyn?.platform;
-      const scope: 'desktop-win' | 'desktop-mac' =
-        platform === 'win32' ? 'desktop-win' : 'desktop-mac';
-      // Фильтр: реагируем только если событие касается нашего scope.
-      if (event.scope && event.scope !== scope) return;
-      const appVersion = window.pyn?.appVersion ?? '0.0.0';
-      void appStatus(api, { appScope: scope, appVersion }).then((res) => {
-        if (res.updateUrl && compareSemver(res.currentVersion, appVersion) > 0) {
-          setUpdateInfo(res);
-          setUpdateStage('detected');
-        }
-      }).catch(() => { /* silent */ });
-    },
-  );
 
   useWsEvent<AppControlStateChangedEvent>('app_control_state_changed', (event) => {
     if (event.scope !== 'desktop' && event.scope !== 'android') return;
@@ -901,94 +732,4 @@ export function App() {
     </Tooltip.Provider>
   );
 
-  /**
-   * Полная очистка user data: session, news cache, chats cache, encrypted
-   * cache на диске, ApiClient token. Вызывается на token expiry / desktop_kicked.
-   */
-  async function wipeUserData(): Promise<void> {
-    await sessionStore.clear().catch(() => {});
-    api.setToken(null);
-    clearNewsStore();
-    clearChatsStore();
-    clearUsersStore();
-    clearSessionInfoStore();
-    clearMolStore();
-    clearUiState();
-    clearOutbox();
-    clearStatsStore();
-    clearTablesRegistry();
-    useSheetsLockStore.getState().reset();
-    // In-memory blob URLs (avatars / attachments) — освобождаем чтобы при
-    // следующем login (особенно того же юзера) не использовать stale URL.
-    clearAvatarCache();
-    await clearAllCache();
-  }
-
-  /**
-   * Kill switch wipe — server triggered 'wiping' через WS. В отличие от
-   * wipeUserData выше (только soft-clear stores + cache), этот стирает
-   * ВЕСЬ userData (включая device.bin = device_id и session.bin) через
-   * main process IPC и relaunch'ит app. После relaunch выглядит как fresh
-   * install: новый device_id, no session → попытка login вернёт 423
-   * пока developer не cancel'нёт state на сервере.
-   */
-  async function triggerAppLockWipe(): Promise<void> {
-    useAppLockStore.getState().markCurrentWiping('desktop');
-    // Best-effort confirm на сервер — server и так сам пометил device wiped
-    // через checkAndTriggerWipe(), но audit row добавится.
-    try {
-      const did = getDeviceId();
-      if (did) await confirmWipe(api, did);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[pyn:app-lock] confirmWipe failed:', err);
-    }
-    // Stop WS перед wipe — иначе reconnect попробует пройти после relaunch.
-    try { await stopWs(); } catch { /* ignore */ }
-    // IPC wipe — main process стирает userData и relaunch'ит. После
-    // вызова renderer process получает SIGTERM, дальше не выполняется.
-    try {
-      await window.pyn?.appLock?.wipe();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[pyn:app-lock] wipe IPC failed:', err);
-    }
-  }
-}
-
-/**
- * Server-side error codes, означающие что сохранённый токен больше не
- * принимается → надо чистить store и просить relogin. Прочие коды (network,
- * replay_detected, invalid_envelope, etc) — transient, сессию не трогаем.
- */
-const AUTH_FAILURE_CODES = new Set<string>([
-  'unauthorized',
-  'token_revoked',
-  'token_expired',
-  'session_not_found',
-  'session_expired_window',
-  'desktop_kicked',
-  'user_inactive',
-  'user_suspended',
-]);
-
-function isAuthFailure(code: string): boolean {
-  return AUTH_FAILURE_CODES.has(code);
-}
-
-/**
- * Сравнение semver-like версий `MAJOR.MINOR.PATCH`. Возвращает 1 если a>b,
- * -1 если a<b, 0 если равны. Pre-release / build-metadata игнорируются
- * (сервер их не использует).
- */
-function compareSemver(a: string, b: string): number {
-  const pa = a.split('.').map((n) => Number.parseInt(n, 10) || 0);
-  const pb = b.split('.').map((n) => Number.parseInt(n, 10) || 0);
-  for (let i = 0; i < 3; i++) {
-    const ai = pa[i] ?? 0;
-    const bi = pb[i] ?? 0;
-    if (ai > bi) return 1;
-    if (ai < bi) return -1;
-  }
-  return 0;
 }

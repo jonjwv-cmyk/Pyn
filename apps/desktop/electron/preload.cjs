@@ -185,4 +185,31 @@ contextBridge.exposeInMainWorld('pyn', {
       return ipcRenderer.invoke('pyn:app-lock:wipe');
     },
   },
+  /**
+   * Tray menu actions. Custom React menu (rendered в отдельном tray
+   * BrowserWindow) вызывает эти actions; main процесс отрабатывает поведение
+   * над main окном / жизненным циклом приложения.
+   */
+  tray: {
+    show: function pynTrayShow() {
+      return ipcRenderer.invoke('pyn:tray:show');
+    },
+    openSettings: function pynTrayOpenSettings() {
+      return ipcRenderer.invoke('pyn:tray:settings');
+    },
+    quit: function pynTrayQuit() {
+      return ipcRenderer.invoke('pyn:tray:quit');
+    },
+    closeMenu: function pynTrayCloseMenu() {
+      return ipcRenderer.invoke('pyn:tray:close-menu');
+    },
+    /** Подписка на событие 'open-settings' от tray bridge. */
+    onOpenSettings: function pynTrayOnOpenSettings(handler) {
+      const wrapped = () => handler();
+      ipcRenderer.on('pyn:tray:open-settings', wrapped);
+      return function unsubscribe() {
+        ipcRenderer.removeListener('pyn:tray:open-settings', wrapped);
+      };
+    },
+  },
 });
