@@ -14,6 +14,7 @@ import { setupTrayBridge } from './ipc/tray-bridge';
 import { setupUpdateBridge } from './ipc/update-bridge';
 import { setupWsBridge } from './ipc/ws-bridge';
 import { startVpsPing, stopVpsPing } from './network/vps-ping';
+import { selfInstallIfNeeded } from './self-install';
 
 // §v1.2.8 — main-process logs в файл (%APPDATA%\Pyn\logs\main-*.log на Win,
 // ~/Library/Application Support/Pyn/logs/main-*.log на Mac). Раньше main
@@ -147,9 +148,30 @@ function createTrayMenuWindow(): void {
   }
 
   // Закрываем menu при потере фокуса (click вне окна).
+  // lastBlurAt тайм-стэмп — toggleTrayMenu ниже фильтрует случай когда blur
+  // случился из-за click'а по самой tray icon (иначе menu re-open'илась бы).
   trayMenuWindow.on('blur', () => {
+    lastBlurAt = Date.now();
     trayMenuWindow?.hide();
   });
+}
+
+let lastBlurAt = 0;
+
+function toggleTrayMenu(): void {
+  if (!trayMenuWindow || trayMenuWindow.isDestroyed()) return;
+  // Если blur случился <150ms назад — значит юзер кликнул по tray icon с
+  // открытым menu, и blur уже спрятал window. Click handler fires второй —
+  // НЕ показываем заново (это нормальный toggle off).
+  if (Date.now() - lastBlurAt < 150) {
+    lastBlurAt = 0;
+    return;
+  }
+  if (trayMenuWindow.isVisible()) {
+    trayMenuWindow.hide();
+  } else {
+    showTrayMenuAtCursor();
+  }
 }
 
 function showTrayMenuAtCursor(): void {
@@ -178,27 +200,25 @@ function showTrayMenuAtCursor(): void {
 }
 
 function setupTray(): void {
-  // Win: icon.ico содержит все размеры (включая 16x16 для tray).
-  // Mac: icon.icns тоже работает, хотя оптимально template PNG (monochrome).
-  const iconPath = isMac
-    ? path.join(__dirname, '../build/icon.icns')
-    : path.join(__dirname, '../build/icon.ico');
-  const image = nativeImage.createFromPath(iconPath);
-  tray = new Tray(image);
+  // Tray icon: используем icon-source.png (1024x1024) и resize'им до menubar
+  // размера. Electron автоматически использует @2x для Retina. icon.icns/.ico
+  // генерируются ImageMagick'ом при build (см. scripts/build-icons.mjs) но не
+  // коммитятся; для dev / fallback берём source PNG напрямую.
+  const sourceIconPath = path.join(__dirname, '../build/icon-source.png');
+  const fullImage = nativeImage.createFromPath(sourceIconPath);
+  // Mac menubar height = 22pt → 22x22 logical (44x44 @2x).
+  // Win tray = 16x16 logical (32x32 @2x на high-DPI).
+  const traySize = isMac ? 22 : 16;
+  const trayImage = fullImage.resize({ width: traySize, height: traySize });
+  tray = new Tray(trayImage);
   tray.setToolTip('Pyn');
 
-  // Single-click — показать main window (Win/Mac default behaviour).
-  tray.on('click', () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    if (!mainWindow.isVisible()) mainWindow.show();
-    mainWindow.focus();
-  });
-
-  // Right-click → custom React menu (rounded, accent hover).
-  tray.on('right-click', () => {
-    showTrayMenuAtCursor();
-  });
+  // §pyn-1.2.15 — left и right click оба toggle'ят menu.
+  // Click когда menu visible → menu прячется (через blur'ом → hide).
+  // Без timer-guard повторный click заново показал бы menu (race: blur fires,
+  // потом click handler → show). Lastblur timestamp фильтрует это.
+  tray.on('click', toggleTrayMenu);
+  tray.on('right-click', toggleTrayMenu);
 }
 
 app.whenReady().then(async () => {
@@ -269,6 +289,10 @@ app.whenReady().then(async () => {
   createMainWindow();
   createTrayMenuWindow();
   setupTray();
+
+  // Self-install: первый запуск с Downloads → copy exe в %APPDATA%\@pyn\desktop\app
+  // + создать desktop shortcut. Если уже installed — no-op. Win-only.
+  selfInstallIfNeeded();
 
   // Periodic VPS-ping (RTT для индикатора связи). Идёт в nginx-only endpoint
   // `/__ping`, не задевает Cloudflare Worker — ноль расхода CF дневного лимита.

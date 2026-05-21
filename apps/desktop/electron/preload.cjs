@@ -148,10 +148,6 @@ contextBridge.exposeInMainWorld('pyn', {
    * установщик, после чего наш process exit'ит.
    */
   update: {
-    /** Legacy: download + install в одной операции. */
-    downloadInstall: function pynUpdateDownloadInstall(url, version) {
-      return ipcRenderer.invoke('pyn:update:download-install', url, version);
-    },
     /** Проверка кэша: вернёт {exists, localPath} если файл уже скачан. */
     checkCached: function pynUpdateCheckCached(url, version) {
       return ipcRenderer.invoke('pyn:update:check-cached', url, version);

@@ -78,11 +78,6 @@ declare global {
       };
       /** Auto-update — download + install с поддержкой SHA verify и кэша. */
       update: {
-        /** Legacy combined endpoint (download + install за один вызов). */
-        downloadInstall: (
-          url: string,
-          version: string,
-        ) => Promise<{ ok: boolean; error?: string }>;
         /** Файл уже скачан? */
         checkCached: (
           url: string,

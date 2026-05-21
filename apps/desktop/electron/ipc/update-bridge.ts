@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { getInstalledExePath } from '../self-install';
 
 /**
  * Auto-update bridge — 3 шага: проверить кэш → скачать → установить.
@@ -148,9 +149,18 @@ export function setupUpdateBridge(): void {
   );
 
   /**
-   * Запустить установщик из ранее скачанного файла.
-   * Portable: spawn новый процесс exe — берёт верх, наш quit'aется.
-   * NSIS: silent install (/S) → auto-launch.
+   * §pyn-1.2.15 — install заменяет installed copy в %APPDATA%\@pyn\desktop\app\Pyn.exe
+   * (см. self-install.ts) и запускает её. Это держит desktop shortcut указывающим
+   * на правильный path даже после auto-update.
+   *
+   * Cmd-chain:
+   *   1. taskkill msedgewebview2 — освобождает file-locks Chromium subprocess'ов
+   *   2. taskkill running Pyn.exe — освобождает lock на самом exe
+   *      (без этого copy не сможет overwrite text section)
+   *   3. timeout 2s — handles release
+   *   4. copy /Y downloaded → installed (overwrite installed copy)
+   *   5. start installed (relaunch именно installed, не downloaded!)
+   *   6. timeout 6s — даём portable extract'нуться до закрытия cmd.exe
    */
   ipcMain.handle(
     'pyn:update:install',
@@ -159,93 +169,22 @@ export function setupUpdateBridge(): void {
         return { ok: false, error: 'platform_not_supported' };
       }
       try {
-        // Проверяем что файл существует
         await readFile(localPath);
       } catch {
         return { ok: false, error: 'local_file_missing' };
       }
 
       const exeName = path.basename(app.getPath('exe'));
-      const isPortable = /portable/i.test(localPath);
-      const installCmd = isPortable
-        ? `start "" "${localPath}"`
-        : `"${localPath}" /S`;
+      const installedExe = getInstalledExePath();
 
-      // Cmd-chain (паттерн из OTLHelper2 production):
-      //   1. taskkill msedgewebview2 — освобождает file-locks Chromium subprocess'ов
-      //   2. taskkill running Pyn.exe — освобождает lock на самом portable exe
-      //      (без этого новый exe не может перезаписать text section своего process'a)
-      //   3. timeout 2s — даём процессам корректно отпустить handles
-      //   4. start новый installer/portable
-      //   5. timeout 6s — даём ему успеть распаковаться/запуститься до того
-      //      как cmd.exe закроется (важно для portable extraction)
       const cmd = `taskkill /F /IM msedgewebview2.exe & `
         + `taskkill /F /IM "${exeName}" & `
         + `timeout /t 2 /nobreak > NUL & `
-        + `${installCmd} & `
+        + `copy /Y "${localPath}" "${installedExe}" & `
+        + `start "" "${installedExe}" & `
         + `timeout /t 6 /nobreak > NUL`;
       spawn('cmd.exe', ['/c', cmd], { detached: true, stdio: 'ignore' }).unref();
 
-      // Чуть больше задержки чтобы cmd-chain точно стартовал до нашего exit.
-      setTimeout(() => app.quit(), 1500);
-      return { ok: true };
-    },
-  );
-
-  /**
-   * Legacy combined endpoint (download + install). Оставлен для обратной
-   * совместимости — UpdatePromptDialog v1 его использует. Новый flow
-   * использует split-методы через sidebar pill.
-   */
-  ipcMain.handle(
-    'pyn:update:download-install',
-    async (event, url: string, version: string): Promise<{ ok: boolean; error?: string }> => {
-      const dl = await new Promise<{ ok: boolean; localPath?: string; error?: string }>((resolve) => {
-        // Re-dispatch через ipc invoke не работает; вызываем inline
-        // упрощённую версию downloads без SHA (legacy).
-        (async () => {
-          if (process.platform !== 'win32') {
-            await shell.openExternal(url);
-            resolve({ ok: true });
-            return;
-          }
-          const dest = path.join(getUpdatesDir(), fileNameFromUrl(url, version));
-          try {
-            const reportProgress = throttle((bytes: number, total: number) => {
-              event.sender.send('pyn:update:progress', { bytes, total });
-            }, PROGRESS_THROTTLE_MS);
-            await new Promise<void>((res2, rej2) => {
-              const request = net.request({ url, method: 'GET', redirect: 'follow' });
-              request.on('response', (response) => {
-                const status = response.statusCode;
-                if (status < 200 || status >= 300) { rej2(new Error(`HTTP ${status}`)); return; }
-                const total = Number(response.headers['content-length'] ?? 0) || 0;
-                let bytes = 0;
-                const sink = createWriteStream(dest);
-                response.on('data', (chunk: Buffer) => {
-                  bytes += chunk.length;
-                  sink.write(chunk);
-                  reportProgress(bytes, total);
-                });
-                response.on('end', () => { sink.end(); sink.on('finish', res2); sink.on('error', rej2); });
-                response.on('error', rej2);
-              });
-              request.on('error', rej2);
-              request.end();
-            });
-            resolve({ ok: true, localPath: dest });
-          } catch (err) {
-            resolve({ ok: false, error: err instanceof Error ? err.message : String(err) });
-          }
-        })();
-      });
-      if (!dl.ok || !dl.localPath) return { ok: false, error: dl.error };
-      const isPortable = /portable/i.test(dl.localPath);
-      const installCmd = isPortable
-        ? `start "" "${dl.localPath}"`
-        : `"${dl.localPath}" /S`;
-      const cmd = `taskkill /F /IM msedgewebview2.exe & timeout /t 2 /nobreak > NUL & ${installCmd}`;
-      spawn('cmd.exe', ['/c', cmd], { detached: true, stdio: 'ignore' }).unref();
       setTimeout(() => app.quit(), 1500);
       return { ok: true };
     },
