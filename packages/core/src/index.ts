@@ -1,10 +1,12 @@
 /**
  * @pyn/core — shared business logic для desktop (Electron) и mobile (RN).
  *
- *   • api       — ApiClient + transport + errors
+ *   • api       — ApiClient + transport + errors + ws-events
  *   • auth      — Role + Permission matrix + Session
  *   • endpoints — типизированные обёртки над action'ами сервера
- *   • crypto    — X25519 + AES-GCM (stage 2)
+ *   • crypto    — X25519 + AES-GCM + HKDF + envelope (REST + WS) + blob
+ *   • store     — Zustand stores (news, chats, mol, users, ui-state, etc)
+ *   • i18n      — initI18n + locales (ru/en/es/uk/de)
  *   • types     — domain types (NewsItem, Poll, ChatPartner, ...)
  *
  * UI код импортирует:

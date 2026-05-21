@@ -18,8 +18,8 @@ Kaspersky не флагал распаковку (PDM heuristic на `%TEMP%`).
   - `apps/desktop/electron/ipc/update-bridge.ts` — IPC handler качает exe
     через `net.request` (с TLS pin) в `%LOCALAPPDATA%\@pyn\desktop\updates\`
     и запускает через `cmd.exe` с kill-WebView2 + relaunch.
-  - `apps/desktop/src/components/system/UpdatePromptDialog.tsx` — UI с
-    прогресс-баром.
+  - `apps/desktop/src/components/system/UpdateConfirmDialog.tsx` — UI
+    подтверждения с прогресс-баром.
   - `apps/desktop/src/App.tsx` — polling `app_status` каждые 30 мин.
 - Все network-стек уже кросс-платформенный (TLS pin, DNS override, proxy
   detection через PowerShell на Win, safeStorage с DPAPI).

@@ -78,7 +78,7 @@ declare global {
       };
       /** Auto-update — download + install с поддержкой SHA verify и кэша. */
       update: {
-        /** Legacy combined endpoint (старый UpdatePromptDialog flow). */
+        /** Legacy combined endpoint (download + install за один вызов). */
         downloadInstall: (
           url: string,
           version: string,

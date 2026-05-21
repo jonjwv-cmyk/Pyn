@@ -62,8 +62,8 @@ const MAX_TEXTAREA_HEIGHT = 220;
  *   • Ряд scheduled-индикатора (если запланировано)
  *   • Главный ряд: [📎] [🕐] [textarea] [↑]
  *
- * Меню скрепки и all-around layout идентичны chat-композеру — DRY через
- * ChatAttachmentMenu. Кнопка clock'a выделена accent-clay когда время выбрано.
+ * Layout идентичен chat-композеру. Кнопка clock'a выделена accent-clay
+ * когда время выбрано.
  */
 export const NewsComposer = forwardRef<NewsComposerHandle, NewsComposerProps>(
 function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
@@ -377,10 +377,8 @@ interface ToolbarButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 }
 
 /**
- * forwardRef обязателен — ChatAttachmentMenu использует Radix DropdownMenu
- * с `asChild`, и Radix должен прикрепить ref к этой кнопке для anchoring'a
- * popup'a. Без forwardRef Radix не получает ref → меню не открывается.
- * Также пропускаем все extra props (data-state, onClick от Radix и т.д.).
+ * forwardRef обязателен для anchoring Radix DropdownMenu / Popover с `asChild`.
+ * Также пропускаем все extra props (data-state, onClick и т.д.).
  */
 const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(
   function ToolbarButton({ icon: Icon, label, active, className, ...rest }, ref) {
