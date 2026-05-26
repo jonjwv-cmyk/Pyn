@@ -59,9 +59,11 @@ jobs:
         shell: pwsh
         run: |
           $version = node -e "console.log(require('./apps/desktop/package.json').version)"
-          $path = "apps/desktop/release/pyn-$version-portable.exe"
+          # electron-builder artifactName в package.json = "Pyn ${version}.exe" (с пробелом).
+          $path = "apps/desktop/release/Pyn $version.exe"
           if (-not (Test-Path $path)) {
             Write-Error "Artifact not found: $path"
+            Get-ChildItem apps/desktop/release/ | ForEach-Object { Write-Host $_.FullName }
             exit 1
           }
           echo "path=$path"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -91,9 +93,9 @@ jobs:
             "${{ steps.artifact.outputs.path }}" \
             root@45.12.239.5:/var/www/otl-releases/pyn-latest.exe.new
           ssh -i ~/.ssh/vps_key root@45.12.239.5 \
-            "mv /var/www/otl-releases/pyn-latest.exe.new /var/www/otl-releases/pyn-latest.exe"
+            "mv /var/www/otl-releases/pyn-latest.exe.new /var/www/otl-releases/pyn-latest.exe && ln -sf /var/www/otl-releases/pyn-latest.exe /var/www/otl-releases/win.exe"
           rm -f ~/.ssh/vps_key
-          echo "Published: https://45-12-239-5.sslip.io/pyn.exe (sha256=${{ steps.artifact.outputs.sha256 }})"
+          echo "Published: https://45-12-239-5.sslip.io/pyn-latest.exe (alias /win.exe, sha256=${{ steps.artifact.outputs.sha256 }})"
 
       - name: Broadcast new version to server (D1 update)
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}

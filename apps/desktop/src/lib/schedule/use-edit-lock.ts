@@ -125,6 +125,19 @@ export function useEditLock(
           const owner = readLockOwner(err);
           setOwnedByOther(owner);
           setOwnedByMe(false);
+        } else if (err instanceof ApiError && err.code === 'too_many_locks') {
+          // v1.2.56 DoS protection: юзер уже держит 10 lock'ов в других popover'ах.
+          // UI просто не блокируется (ownedByMe=false, no overlay) — пусть юзер
+          // закроет старые popover'ы; новый редактирование работает на client'е
+          // optimistically. Toast не пушим — обычный юзер не должен видеть.
+          // eslint-disable-next-line no-console
+          console.warn('[edit-lock] too_many_locks — закройте другие popover\'ы');
+          setError('too_many_locks');
+        } else if (err instanceof ApiError && err.code === 'lock_hold_exceeded') {
+          // Hard cap 30 мин превышен. UI разблокируется (lock release'нут), юзер
+          // продолжает работать, но коллаб-защита снимается. Реальная UX-доработка
+          // (диалог «Продолжить?») — отдельная задача.
+          setError('lock_hold_exceeded');
         } else {
           const msg = err instanceof Error ? err.message : String(err);
           setError(msg);
