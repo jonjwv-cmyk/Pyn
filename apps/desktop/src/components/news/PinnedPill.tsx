@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, Pin } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
 import { PresenceDot } from '@/components/ui/PresenceDot';
+import { useFormatYek } from '@/lib/hooks/use-format-yek';
+import { usePresenceStore } from '@/lib/stores';
 import { cn } from '@/lib/cn';
 import type { NewsItem, Role } from '@pyn/core';
 import { NewsCardActionsMenu, NewsCardBody } from './NewsCard';
@@ -55,11 +57,16 @@ export function PinnedPill({
   return (
     <article
       className={cn(
-        'flex flex-col rounded-xl border bg-bg-elevated',
-        'border-accent-clay-bg/60 ring-1 ring-accent-clay-bg/30',
+        // §pyn-1.2.54 — тонкая accent-clay рамка + semi-transparent bg для
+        // glass-эффекта. Без ring (раньше border+ring = 2px тяжёлой подложки).
+        // PinnedPill теперь живёт в floating overlay с backdrop-blur — pill
+        // полупрозрачен, фон blur показывается через него.
+        'flex flex-col rounded-xl border border-accent-clay/30 bg-bg-elevated/70',
       )}
     >
-      <div className="flex items-center gap-2 px-2.5 py-2">
+      {/* §pyn-1.2.54 — компактный header: py-1, PinChip 20×20, ChevronDown
+          24×24, чуть мельче font. Pill стал ~30px высотой вместо ~40. */}
+      <div className="flex items-center gap-2 px-2 py-1">
         <PinChip />
 
         <button
@@ -71,10 +78,10 @@ export function PinnedPill({
             'rounded transition-colors hover:text-accent-clay',
           )}
         >
-          <span className="shrink-0 text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
+          <span className="shrink-0 text-[12.5px] font-semibold tracking-[-0.005em] text-text-strong">
             {kindLabel}
           </span>
-          <span className="shrink-0 text-[12px] text-text-muted">{t('pinned_pill.important')}</span>
+          <span className="shrink-0 text-[11.5px] text-text-muted">{t('pinned_pill.important')}</span>
         </button>
 
         <NewsCardActionsMenu
@@ -92,13 +99,13 @@ export function PinnedPill({
           aria-label={expanded ? t('pinned_pill.collapse_aria') : t('pinned_pill.expand_aria')}
           aria-expanded={expanded}
           className={cn(
-            'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
+            'flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
             'text-text-muted outline-none transition-colors',
             'hover:bg-bg-hover hover:text-text-strong',
           )}
         >
           <ChevronDown
-            className={cn('h-4 w-4 transition-transform duration-200', expanded && 'rotate-180')}
+            className={cn('h-3.5 w-3.5 transition-transform duration-200', expanded && 'rotate-180')}
             strokeWidth={1.75}
           />
         </button>
@@ -140,12 +147,12 @@ function PinChip() {
   return (
     <span
       className={cn(
-        'flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
+        'flex h-5 w-5 shrink-0 items-center justify-center rounded',
         'bg-accent-clay-bg',
       )}
     >
       <Pin
-        className="h-3.5 w-3.5 fill-accent-clay text-accent-clay"
+        className="h-3 w-3 fill-accent-clay text-accent-clay"
         strokeWidth={1.5}
       />
     </span>
@@ -162,6 +169,8 @@ interface SenderRowProps {
  * запостил, когда плашка свёрнутая показывает только тип.
  */
 function SenderRow({ news }: SenderRowProps) {
+  // §pyn-1.2.27 — reactive формат, заменяет news.createdAtLabel из репо.
+  const dateLabel = useFormatYek(news.createdAt);
   return (
     <div className="flex items-center gap-2.5">
       <span className="relative shrink-0">
@@ -173,21 +182,39 @@ function SenderRow({ news }: SenderRowProps) {
           avatarBlobKey={news.senderAvatarBlobKey}
           avatarBlobNonce={news.senderAvatarBlobNonce}
         />
-        <PresenceDot
-          state={news.senderPresence}
-          size={9}
-          ringClass="ring-bg-elevated"
-          className="absolute -bottom-0.5 -right-0.5"
-        />
+        <PinnedSenderPresenceDot login={news.senderLogin} fallback={news.senderPresence} />
       </span>
       <span className="flex min-w-0 items-baseline gap-2">
         <span className="truncate text-[12.5px] font-medium text-text-strong">
           {news.senderName}
         </span>
         <span className="shrink-0 text-[11px] text-text-muted tabular-nums">
-          {news.createdAtLabel}
+          {dateLabel}
         </span>
       </span>
     </div>
+  );
+}
+
+/**
+ * §pyn-1.2.42 — presence-dot для автора закреплённой новости. Single source
+ * of truth — usePresenceStore. Fallback на server snapshot только до того
+ * как presenceStore получит live данные.
+ */
+function PinnedSenderPresenceDot({
+  login,
+  fallback,
+}: {
+  login: string;
+  fallback: 'online' | 'away' | 'offline';
+}) {
+  const live = usePresenceStore((s) => s.byLogin[login]?.status);
+  return (
+    <PresenceDot
+      state={live ?? fallback}
+      size={9}
+      ringClass="ring-bg-elevated"
+      className="absolute -bottom-0.5 -right-0.5"
+    />
   );
 }

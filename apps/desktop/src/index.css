@@ -23,7 +23,12 @@
   html,
   body,
   #root {
-    @apply h-full w-full bg-bg-surface text-text-primary font-sans antialiased;
+    /* §pyn-2026-05-26: bg-bg-surface вынесен на верхний div в App.tsx
+       (см. line 900). Здесь html/body/#root оставляем БЕЗ background-color —
+       иначе в PDF (printToPDF) этот dark bg через canvas propagation
+       заполняет @page margin area и создаёт тёмную рамку вокруг листа.
+       Visual на экране не меняется — обёртка в App уже даёт bg-bg-surface. */
+    @apply h-full w-full text-text-primary font-sans antialiased;
   }
 
   body {
@@ -112,8 +117,8 @@ input[type='search']::-webkit-search-decoration {
  * характер фона как в Telegram.
  */
 .chat-pattern-bg {
-  background-color: #262624;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><g fill='rgba(217,119,87,0.04)' transform='rotate(-22 80 80)'><text x='10' y='40' font-family='Inter,sans-serif' font-weight='700' font-size='38'>P</text><text x='90' y='110' font-family='Inter,sans-serif' font-weight='700' font-size='38'>P</text></g></svg>");
+  background-color: #1F1E1B;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><g fill='rgba(179,94,69,0.045)'><g transform='translate(10 10)'><rect x='3' y='3' width='9' height='34' rx='1.5'/><rect x='15' y='3' width='23' height='9' rx='1.5'/><rect x='15' y='15' width='17' height='9' rx='1.5'/></g><g transform='translate(90 90)'><rect x='3' y='3' width='9' height='34' rx='1.5'/><rect x='15' y='3' width='23' height='9' rx='1.5'/><rect x='15' y='15' width='17' height='9' rx='1.5'/></g></g></svg>");
   background-repeat: repeat;
   background-size: 160px 160px;
 }
@@ -126,8 +131,8 @@ input[type='search']::-webkit-search-decoration {
  * пилл-карточки новостей чётко считывались поверх него.
  */
 .news-pattern-bg {
-  background-color: #262624;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'><g fill='rgba(217,119,87,0.03)' transform='rotate(22 90 90)'><text x='14' y='46' font-family='Inter,sans-serif' font-weight='700' font-size='40'>P</text><text x='102' y='124' font-family='Inter,sans-serif' font-weight='700' font-size='40'>P</text></g></svg>");
+  background-color: #1F1E1B;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'><g fill='rgba(179,94,69,0.045)'><g transform='translate(14 14)'><rect x='3' y='3' width='10' height='38' rx='1.5'/><rect x='16' y='3' width='25' height='10' rx='1.5'/><rect x='16' y='16' width='19' height='10' rx='1.5'/></g><g transform='translate(104 104)'><rect x='3' y='3' width='10' height='38' rx='1.5'/><rect x='16' y='3' width='25' height='10' rx='1.5'/><rect x='16' y='16' width='19' height='10' rx='1.5'/></g></g></svg>");
   background-repeat: repeat;
   background-size: 180px 180px;
 }
@@ -140,7 +145,7 @@ input[type='search']::-webkit-search-decoration {
  */
 .mol-pattern-bg {
   background-color: #1F1E1B;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'><g fill='rgba(217,119,87,0.025)'><text x='8' y='38' font-family='Inter,sans-serif' font-weight='700' font-size='34'>P</text><text x='82' y='106' font-family='Inter,sans-serif' font-weight='700' font-size='34'>P</text></g></svg>");
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'><g fill='rgba(179,94,69,0.045)'><g transform='translate(8 8)'><rect x='3' y='3' width='8' height='30' rx='1.25'/><rect x='13' y='3' width='20' height='8' rx='1.25'/><rect x='13' y='13' width='15' height='8' rx='1.25'/></g><g transform='translate(82 82)'><rect x='3' y='3' width='8' height='30' rx='1.25'/><rect x='13' y='3' width='20' height='8' rx='1.25'/><rect x='13' y='13' width='15' height='8' rx='1.25'/></g></g></svg>");
   background-repeat: repeat;
   background-size: 140px 140px;
 }
@@ -152,8 +157,8 @@ input[type='search']::-webkit-search-decoration {
  * другой формы»: ни chat, ни news, ни мол.
  */
 .sheets-pattern-bg {
-  background-color: #161611;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'><g fill='rgba(217,119,87,0.05)'><text x='4' y='34' font-family='Inter,sans-serif' font-weight='700' font-size='32'>P</text><text x='64' y='94' font-family='Inter,sans-serif' font-weight='700' font-size='32'>P</text></g></svg>");
+  background-color: #1F1E1B;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'><g fill='rgba(179,94,69,0.045)'><g transform='translate(4 4)'><rect x='2' y='2' width='8' height='28' rx='1.25'/><rect x='12' y='2' width='18' height='8' rx='1.25'/><rect x='12' y='12' width='14' height='8' rx='1.25'/></g><g transform='translate(64 64)'><rect x='2' y='2' width='8' height='28' rx='1.25'/><rect x='12' y='2' width='18' height='8' rx='1.25'/><rect x='12' y='12' width='14' height='8' rx='1.25'/></g></g></svg>");
   background-repeat: repeat;
   background-size: 120px 120px;
 }
@@ -171,10 +176,56 @@ input[type='search']::-webkit-search-decoration {
  * login-карточки в центре.
  */
 .login-pattern-bg {
-  background-color: #1F1E1B;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'><g fill='rgba(217,119,87,0.07)'><text x='10' y='60' font-family='Inter,sans-serif' font-weight='700' font-size='60'>P</text><text x='110' y='150' font-family='Inter,sans-serif' font-weight='700' font-size='60'>P</text></g></svg>");
+  /* §pyn-1.2.54 — единый dark canvas matching splash-bg (#161611).
+     Base color only. Pattern shapes на отдельном слое `.login-bg-pattern`,
+     который fade'ится синхронно с card reveal — даёт «вырисовывание из
+     темноты» эффект. */
+  background-color: #161611;
+}
+
+/* §pyn-1.2.54 — pattern layer (mini Pyn-marks SVG, repeated 200×200).
+   Lives absolute над .login-pattern-bg. Opacity + background-size + filter
+   blur animated синхронно с card reveal:
+   • splash/enter (до 5.5s): opacity 0 — pattern invisible
+   • enter (5.5s, sync с card start): logos start at 120px size + blur 6px →
+     grow to 200px (final) + blur 0 за 1.4s → «вырисовываются из тумана и
+     увеличиваются до своего размера» effect
+   • done: opacity 1 + final size stays */
+.login-bg-pattern {
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'><g fill='rgba(179,94,69,0.06)'><g transform='translate(10 10)'><rect x='4' y='4' width='14' height='52' rx='2'/><rect x='22' y='4' width='36' height='14' rx='2'/><rect x='22' y='22' width='27' height='14' rx='2'/></g><g transform='translate(115 115)'><rect x='4' y='4' width='14' height='52' rx='2'/><rect x='22' y='4' width='36' height='14' rx='2'/><rect x='22' y='22' width='27' height='14' rx='2'/></g></g></svg>");
   background-repeat: repeat;
   background-size: 200px 200px;
+  /* §pyn-1.2.54 — anchor pattern в центре viewport чтобы при animation
+     background-size growth (120 → 200) логотипы «увеличивались from центра»,
+     а не из top-left угла (default 0 0). */
+  background-position: center;
+  pointer-events: none;
+  opacity: 0;
+}
+
+[data-splash-stage='enter'] .login-bg-pattern {
+  /* Same delay (1.9s) + duration (1.4s) что card animation → синхронно
+     start/end. easeOutQuint slow-tail — финальная треть медленно settle'ится. */
+  animation: login-bg-pattern-fade-in 1.4s cubic-bezier(0.16, 1, 0.3, 1) 1.9s forwards;
+}
+
+[data-splash-stage='done'] .login-bg-pattern {
+  opacity: 1;
+}
+
+@keyframes login-bg-pattern-fade-in {
+  0% {
+    opacity: 0;
+    background-size: 120px 120px;
+    filter: blur(6px);
+  }
+  100% {
+    opacity: 1;
+    background-size: 200px 200px;
+    filter: blur(0);
+  }
 }
 
 /**
@@ -213,4 +264,501 @@ input[type='search']::-webkit-search-decoration {
   100% {
     transform: translateX(400%);
   }
+}
+
+/*
+ * §pyn-1.2.34 — Shimmer-gradient бегущий по pill (UpdateAvailablePill —
+ * слева направо, SessionExpiryPill — справа налево). Полупрозрачный
+ * accent-clay свет пересекает pill каждые 2.5 сек.
+ */
+@keyframes pyn-shimmer-ltr {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+@keyframes pyn-shimmer-rtl {
+  0%   { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+.pyn-shimmer-ltr,
+.pyn-shimmer-rtl {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(217, 119, 87, 0.22) 50%,
+    transparent 100%
+  );
+  will-change: transform;
+}
+.pyn-shimmer-ltr {
+  animation: pyn-shimmer-ltr 2.5s linear infinite;
+}
+.pyn-shimmer-rtl {
+  animation: pyn-shimmer-rtl 2.5s linear infinite;
+}
+
+/* ── §pyn-1.2.54 — Splash на запуск (см. SplashScreen.tsx) ─────────────── */
+
+.splash-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* §pyn-1.2.54 — pointer-events: none чтобы прозрачный root не блокировал
+     клики на LoginScreen после bg fade. Сам mark тоже не interactable. */
+  pointer-events: none;
+  /* §pyn-1.2.54 — fade ТОЛЬКО bg-слой (.splash-bg), не сам mark. Иначе при
+     cross-fade с LoginScreen mark получается «вспышка перезагрузки».
+     Mark живёт opacity 1 до момента unmount splash'a (stage='done'). */
+}
+
+/* §pyn-1.2.54 — dark fullscreen фон. Visible во время влёта полосок и
+   сборки иконки. На handoff (5.0s+, после outline) bg БЫСТРО dissolves
+   (0.5s) → LoginScreen pattern bg revealed. Splash-mark остаётся visible
+   на icon position (иконка не fade'ится). Только ПОСЛЕ полного дисcolve
+   bg запускается card animation — это даёт зрителю восприятие двух
+   независимых событий: «splash убрался → card самостоятельно вырос». */
+.splash-bg {
+  position: absolute;
+  inset: 0;
+  background-color: #161611;
+  animation: splash-bg-fade-out 0.5s cubic-bezier(0.4, 0, 0.2, 1) 5s forwards;
+}
+
+@keyframes splash-bg-fade-out {
+  to { opacity: 0; }
+}
+
+/* §pyn-1.2.54 — outline иконки. SVG path stroke #D97757 (accent) рисуется
+   по часовой стрелке через animated stroke-dashoffset 100→0. pathLength=100
+   нормализует длину пути → dasharray:100 = full perimeter. vector-effect:
+   non-scaling-stroke сохраняет stroke-width 1.5px независимо от transform
+   scale (splash-mark scaled 0.28). */
+.splash-mark-outline {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.splash-mark-outline path {
+  fill: none;
+  stroke: #D97757;
+  stroke-width: 1;
+  /* Каждая из ДВУХ половинок path нормализована к pathLength=100. Обе
+     стартуют из top-center и сходятся в bottom-center. dasharray=100
+     совпадает с pathLength, dashoffset 100→0 рисует каждую половинку. */
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  opacity: 0;
+  animation: splash-outline-draw 1.4s cubic-bezier(0.4, 0, 0.2, 1) 3.6s forwards;
+}
+
+.splash-mark {
+  position: relative;
+  /* §pyn-1.2.54 — z-index 1 над .splash-bg. После bg-collapse mark frame
+     остаётся как новая иконка-backdrop. */
+  z-index: 1;
+  width: 200px;
+  height: 200px;
+  /* §pyn-1.2.54 — backdrop #161611 совпадает с splash-bg (фон splash =
+     тот же цвет). До pattern-reveal mark backdrop visually invisible
+     против splash-bg, юзер видит только stripes. Когда pattern-reveal
+     expand'ится вокруг иконки, mark backdrop проявляется как dark icon
+     frame на лightened pattern bg — exactly PynMarkIcon look. */
+  background: #161611;
+  border-radius: 28.57%; /* 16/56 — rounded-2xl proportionally */
+  /* §pyn-1.2.54 — sequential mark motion:
+       0.85-1.20s: hold (полоски собрались, юзер видит итог)
+       1.20-1.70s: shrink В ЦЕНТРЕ (200→56px) — «обозначилась в иконку»
+       1.70-2.65s: lift вверх (translateY 0→-170px, 0.95s) — иконка
+                   проходит ВЕСЬ путь до PynMarkIcon position в card.
+                   -170px соответствует card_h ≈ 450px (большой QR panel).
+       2.65-2.85s: hold (icon приземлилась — юзер видит mark на месте).
+       2.85→: bg fade-out + card scale-in одновременно. */
+  animation:
+    splash-mark-shrink 0.5s cubic-bezier(0.4, 0, 0.2, 1) 1.8s forwards,
+    splash-mark-lift 0.95s cubic-bezier(0.32, 0.72, 0, 1) 2.3s forwards;
+}
+
+.splash-stem,
+.splash-top-bow,
+.splash-mid-bow {
+  position: absolute;
+  border-radius: 4px;
+  /* §pyn-1.2.54 — геометрия 1:1 с PynMarkIcon в LoginScreen:
+     56×56 container (bg-bg-deep rounded-2xl) → 40×40 SVG centered
+     (padding 8px = 14.29% each side) → stripes 15.625-84.375% of SVG.
+     Стрипы percentages относительно 200px container = padding 14.29% +
+     71.43% × svg_pct. Тогда после scale(0.28) splash-mark выглядит как
+     pixel-perfect PynMarkIcon. */
+}
+
+/* Stem: x=40 y=40 w=48 h=176 (of viewBox 256). Base hue. */
+.splash-stem {
+  left: 25.45%;     /* 14.29 + 71.43 × 15.625/100 */
+  top: 25.45%;
+  width: 13.39%;    /* 71.43 × 18.75/100 */
+  height: 49.11%;   /* 71.43 × 68.75/100 */
+  background: #B35E45;
+  opacity: 0;
+  animation: splash-stem-flyin 0.85s cubic-bezier(0.2, 0.7, 0.3, 1) 0.6s forwards;
+}
+
+/* Top-bow: x=96 y=40 w=120 h=48. Highlight tone (+6% L). */
+.splash-top-bow {
+  left: 41.08%;     /* 14.29 + 71.43 × 37.5/100 */
+  top: 25.45%;
+  width: 33.48%;    /* 71.43 × 46.875/100 */
+  height: 13.39%;
+  background: #C56C50;
+  opacity: 0;
+  animation: splash-top-bow-flyin 0.85s cubic-bezier(0.2, 0.7, 0.3, 1) 0.6s forwards;
+}
+
+/* Mid-bow: x=96 y=104 w=88 h=48. Shadow tone (-6% L). */
+.splash-mid-bow {
+  left: 41.08%;
+  top: 43.30%;      /* 14.29 + 71.43 × 40.625/100 */
+  width: 24.55%;    /* 71.43 × 34.375/100 */
+  height: 13.39%;
+  background: #9D533D;
+  opacity: 0;
+  animation: splash-mid-bow-flyin 0.85s cubic-bezier(0.2, 0.7, 0.3, 1) 0.6s forwards;
+}
+
+@keyframes splash-stem-flyin {
+  0% {
+    transform: translateY(120vh);
+    opacity: 0;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes splash-top-bow-flyin {
+  0% {
+    transform: translateX(120vw);
+    opacity: 0;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes splash-mid-bow-flyin {
+  0% {
+    transform: translateX(-120vw);
+    opacity: 0;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* §pyn-1.2.54 — sequential motion: shrink (in-place) → lift (translate).
+   ВАЖНО: порядок `translateY() scale()` НЕ `scale() translateY()`. CSS
+   transforms композируются right-to-left → если scale стоит слева,
+   translateY справа применяется в координатах ДО scale, и финальный
+   визуальный сдвиг получается scaled (×0.28). Тогда mark «не доезжает».
+   Сейчас translateY слева → перемещение в экранных px, scale справа
+   масштабирует элемент относительно его центра вокруг новой позиции. */
+@keyframes splash-mark-shrink {
+  0%   { transform: translateY(0) scale(1); }
+  100% { transform: translateY(0) scale(0.28); }
+}
+@keyframes splash-mark-lift {
+  0%   { transform: translateY(0) scale(0.28); }
+  100% {
+    /* §pyn-1.2.54 — финальная посадка mark'а на icon-position. Используется
+       CSS var `--splash-target-y`, которая высчитывается в runtime через
+       getBoundingClientRect для `[data-pyn-login-mark]` (см. SplashScreen.tsx).
+       Fallback -170px на случай если измерение failed. */
+    transform: translateY(var(--splash-target-y, -170px)) scale(0.28);
+  }
+}
+
+
+/* §pyn-1.2.54 — outline рисуется по часовой стрелке от top-center. 0%
+   keyframe выставляет opacity 1 (override default 0) и сохраняет
+   dashoffset 200 (path invisible). Затем dashoffset animates к 0 → весь
+   периметр прорисовывается полностью. */
+@keyframes splash-outline-draw {
+  0% {
+    opacity: 1;
+    stroke-dashoffset: 100;
+  }
+  100% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+}
+
+/* §pyn-1.2.54 — LoginScreen mark скрыт пока splash на DOM. Pixel-perfect
+   handoff: единственный видимый mark — splash mark до его unmount'a, после
+   чего LoginScreen mark занимает его место в той же точке без перехода/
+   мигания. Без этого правила оба mark рендерились бы одновременно: splash
+   mark fade'ил из 1 в 0, LoginScreen mark из 0 в 1 + scale 0.85→1 от
+   родителя `.login-screen-enter` → вспышка и «дёрганье размера». */
+.splash-root ~ * [data-pyn-login-mark] {
+  visibility: hidden;
+}
+
+/* §pyn-1.2.54 — card LoginScreen скрыт во время splash phase. Animation
+   применяется ТОЛЬКО на card (targeted via [data-login-card]), wrapper и
+   pattern bg LoginScreen остаются СТАТИЧНЫМИ — глаз не видит привязки
+   card к bg, card воспринимается как самостоятельный element. */
+[data-splash-stage='splash'] [data-login-card] {
+  opacity: 0;
+}
+
+[data-splash-stage='enter'] [data-login-card] {
+  /* SEQUENTIAL после splash-bg fade (5.0-5.5s). Card alone animates
+     5.5-6.9s (1.4s, delay 1.9s от enter stage 3.6s → 5.5s start).
+     transform-origin: 50% 56px — центр PynMarkIcon в card-local coords
+     (padding-top 28 + icon-half 28 = 56). Card scales ИЗ этой точки. */
+  transform-origin: 50% 56px;
+  animation: login-card-enter 1.4s cubic-bezier(0.16, 1, 0.3, 1) 1.9s both;
+}
+
+/* ── §pyn-1.2.54 — password popover «pill раскрылся из воздуха» ───────── */
+.password-popover-content {
+  /* Стартует scale(0) — из точки в центре card, разворачивается до полного
+     size. opacity 0→1 + transform-origin = center (default). easeOutQuint
+     (Linear/Figma slow-tail) — плавный «магический» reveal без jolt'а в
+     конце. transform-origin center → form появляется ровно из своего центра. */
+  transform-origin: center;
+  animation: password-popover-enter 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes password-popover-enter {
+  0% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* §pyn-1.2.54 — Linear/Figma 2026 reveal на card. Применяется ТОЛЬКО на
+   card div ([data-login-card]), pattern bg LoginScreen остаётся статичным.
+   transform-origin: 50% 56px — центр PynMarkIcon внутри card (padding 28
+   + icon-half 28). Card scales 0.15 → 1 РОВНО от точки иконки → визуально
+   card вырастает из icon position. Pattern bg fixed → нет «привязки» card
+   к фону. */
+@keyframes login-card-enter {
+  0% {
+    opacity: 0;
+    transform: scale(0.15);
+    filter: blur(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+
+/* ── §pyn-1.2.54 — PynLoader: pyn-mark animated as universal loading indicator ── */
+.pyn-loader {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: middle;
+  /* overflow: hidden — полоски в loop'е заходят/выходят из-за edge квадрата
+     loader'а, не вылезают за «невидимый квадрат рядом» (inline в тексте). */
+  overflow: hidden;
+}
+.pyn-loader-sm { width: 16px; height: 16px; }
+.pyn-loader-md { width: 24px; height: 24px; }
+.pyn-loader-lg { width: 40px; height: 40px; }
+.pyn-loader-xl { width: 56px; height: 56px; }
+
+.pyn-loader-stem,
+.pyn-loader-top-bow,
+.pyn-loader-mid-bow {
+  position: absolute;
+  border-radius: 8%;
+  /* §pyn-1.2.54 — GPU compositor layer для transform/opacity. Без этого
+     браузер может re-rasterize stripe на каждом кадре loop'a → visible
+     frame skips («фризы»). С will-change стрипа живёт на отдельном GPU
+     слое, animation smooth 60fps. */
+  will-change: transform, opacity;
+}
+
+/* Геометрия 1:1 с splash-mark — stem (vertical accent), top-bow, mid-bow.
+   Те же canon brand colors. */
+.pyn-loader-stem {
+  left: 15.625%;
+  top: 15.625%;
+  width: 18.75%;
+  height: 68.75%;
+  background: #B35E45;
+  animation: pyn-loader-stem-cycle 1.8s linear infinite;
+}
+
+.pyn-loader-top-bow {
+  left: 37.5%;
+  top: 15.625%;
+  width: 46.875%;
+  height: 18.75%;
+  background: #C56C50;
+  animation: pyn-loader-top-bow-cycle 1.8s linear infinite;
+}
+
+.pyn-loader-mid-bow {
+  left: 37.5%;
+  top: 40.625%;
+  width: 34.375%;
+  height: 18.75%;
+  background: #9D533D;
+  animation: pyn-loader-mid-bow-cycle 1.8s linear infinite;
+}
+
+/* Каждая полоска идёт PASS-THROUGH: заходит с одной стороны, settles в
+   центр, продолжает движение в том же направлении и выходит с противоположной
+   стороны. Затем (с opacity 0) телепортируется обратно к entry point и снова
+   идёт через — бесшовный continuous loop. translate ~110% own-size с
+   overflow:hidden на .pyn-loader → полоска не вылетает за квадрат.
+     stem:    bottom (110%) → 0 → top (-110%)
+     top-bow: right (110%) → 0 → left (-110%)
+     mid-bow: left (-110%) → 0 → right (110%) */
+/* Tight invisible teleport (89-90%) — стрипа уже opacity 0 на 85%, hold
+   на exit position до 89%, в 1% времени телепорт обратно в entry, hold
+   там до 100%. С linear timing смена положения instantly invisible — нет
+   visible motion в этот момент → нет «фризов» от mid-flight re-rasterization. */
+@keyframes pyn-loader-stem-cycle {
+  0%   { transform: translateY(110%); opacity: 0; }
+  15%  { transform: translateY(55%); opacity: 1; }
+  35%  { transform: translateY(0); opacity: 1; }
+  60%  { transform: translateY(0); opacity: 1; }
+  85%  { transform: translateY(-110%); opacity: 0; }
+  89%  { transform: translateY(-110%); opacity: 0; }
+  90%  { transform: translateY(110%); opacity: 0; }
+  100% { transform: translateY(110%); opacity: 0; }
+}
+
+@keyframes pyn-loader-top-bow-cycle {
+  0%   { transform: translateX(110%); opacity: 0; }
+  15%  { transform: translateX(55%); opacity: 1; }
+  35%  { transform: translateX(0); opacity: 1; }
+  60%  { transform: translateX(0); opacity: 1; }
+  85%  { transform: translateX(-110%); opacity: 0; }
+  89%  { transform: translateX(-110%); opacity: 0; }
+  90%  { transform: translateX(110%); opacity: 0; }
+  100% { transform: translateX(110%); opacity: 0; }
+}
+
+@keyframes pyn-loader-mid-bow-cycle {
+  0%   { transform: translateX(-110%); opacity: 0; }
+  15%  { transform: translateX(-55%); opacity: 1; }
+  35%  { transform: translateX(0); opacity: 1; }
+  60%  { transform: translateX(0); opacity: 1; }
+  85%  { transform: translateX(110%); opacity: 0; }
+  89%  { transform: translateX(110%); opacity: 0; }
+  90%  { transform: translateX(-110%); opacity: 0; }
+  100% { transform: translateX(-110%); opacity: 0; }
+}
+
+/* ── §pyn-1.2.54 — Team-mark splash cycle (collapsed sidebar) ──
+   Та же геометрия и направления что PynLoader, но 30-секундный cycle:
+   ~1.5s полоски прилетают и складываются в логотип, ~26s mark hold,
+   ~1.5s полоски расходятся, ~1s invisible teleport, repeat.
+   Юзер хочет subtle «маркер живёт» — раз в полминуты лого появляется
+   с splash-движением и снова уходит. */
+.team-mark {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  overflow: hidden;
+}
+.team-mark-stem,
+.team-mark-top-bow,
+.team-mark-mid-bow {
+  position: absolute;
+  border-radius: 8%;
+  will-change: transform, opacity;
+}
+.team-mark-stem {
+  left: 15.625%;
+  top: 15.625%;
+  width: 18.75%;
+  height: 68.75%;
+  background: #B35E45;
+  animation: pyn-team-stem-cycle 30s linear infinite;
+}
+.team-mark-top-bow {
+  left: 37.5%;
+  top: 15.625%;
+  width: 46.875%;
+  height: 18.75%;
+  background: #C56C50;
+  animation: pyn-team-top-bow-cycle 30s linear infinite;
+}
+.team-mark-mid-bow {
+  left: 37.5%;
+  top: 40.625%;
+  width: 34.375%;
+  height: 18.75%;
+  background: #9D533D;
+  animation: pyn-team-mid-bow-cycle 30s linear infinite;
+}
+
+/* Скорость splash-фазы соответствует PynLoader (~0.6s arrive, ~0.6s leave).
+   Внутри 30s: 0-2% appearance, 2-92% hold, 92-94% disappearance, остальное —
+   invisible teleport до следующего цикла. */
+@keyframes pyn-team-stem-cycle {
+  0%    { transform: translateY(110%); opacity: 0; }
+  0.8%  { transform: translateY(55%); opacity: 1; }
+  2%    { transform: translateY(0); opacity: 1; }
+  92%   { transform: translateY(0); opacity: 1; }
+  93.2% { transform: translateY(-55%); opacity: 1; }
+  94.5% { transform: translateY(-110%); opacity: 0; }
+  99%   { transform: translateY(-110%); opacity: 0; }
+  100%  { transform: translateY(110%); opacity: 0; }
+}
+
+@keyframes pyn-team-top-bow-cycle {
+  0%    { transform: translateX(110%); opacity: 0; }
+  0.8%  { transform: translateX(55%); opacity: 1; }
+  2%    { transform: translateX(0); opacity: 1; }
+  92%   { transform: translateX(0); opacity: 1; }
+  93.2% { transform: translateX(-55%); opacity: 1; }
+  94.5% { transform: translateX(-110%); opacity: 0; }
+  99%   { transform: translateX(-110%); opacity: 0; }
+  100%  { transform: translateX(110%); opacity: 0; }
+}
+
+@keyframes pyn-team-mid-bow-cycle {
+  0%    { transform: translateX(-110%); opacity: 0; }
+  0.8%  { transform: translateX(-55%); opacity: 1; }
+  2%    { transform: translateX(0); opacity: 1; }
+  92%   { transform: translateX(0); opacity: 1; }
+  93.2% { transform: translateX(55%); opacity: 1; }
+  94.5% { transform: translateX(110%); opacity: 0; }
+  99%   { transform: translateX(110%); opacity: 0; }
+  100%  { transform: translateX(-110%); opacity: 0; }
 }

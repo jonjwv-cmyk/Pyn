@@ -5,6 +5,7 @@ import { Chrome, RefreshCcw } from 'lucide-react';
 import {
   checkSheetActionStatus,
   getMacroBundle,
+  releaseSheetLock,
   runScript,
   submitMacroData,
   useSheetsLockStore,
@@ -12,6 +13,7 @@ import {
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useUiStateStore } from '@/lib/stores';
+import { useGoogleAuthStatus } from '@/lib/use-google-auth';
 import {
   customActionLabel,
   customTabName,
@@ -30,6 +32,7 @@ import { getFvid, setFvid } from '@/lib/filter-fvid-cache';
 import { SHEETS_PRESENCE_SCRIPT, type PresenceMember } from './sheets-presence';
 import { SheetsLockOverlay } from './SheetsLockOverlay';
 import { SheetsPasswordPrompt } from './SheetsPasswordPrompt';
+import { PynLoader } from '@/components/ui/PynLoader';
 import { SheetsConfirmPrompt } from './SheetsConfirmPrompt';
 
 /**
@@ -63,8 +66,11 @@ type TWebview = HTMLElement & {
 
 export function TablesScreen({
   currentUserName,
+  currentUserLogin,
 }: {
   currentUserName: string;
+  /** §pyn-1.2.43 — login для sheet_lock_acquired broadcast (avatar/presence lookup). */
+  currentUserLogin: string;
 }): JSX.Element {
   const { t } = useTranslation();
   const { files, error, refresh } = useTablesRegistry();
@@ -82,7 +88,7 @@ export function TablesScreen({
   // outside click в renderer, но клик в webview-зоне (другой document) до
   // нас не доходит → popover висит. Поэтому когда popover открыт, рендерим
   // `<div>` поверх webview (z-30) — он перехватывает mousedown и закрывает.
-  const [openPopover, setOpenPopover] = useState<'filter' | 'scripts' | null>(null);
+  const [openPopover, setOpenPopover] = useState<'filter' | 'scripts' | 'check' | null>(null);
 
   /**
    * §v1.2.14 — Menubar-style hover navigation. Если уже какой-то popover
@@ -91,7 +97,7 @@ export function TablesScreen({
    * дальше водит курсором по header — как в нативном menubar Mac/Win.
    */
   const handleTriggerHover = useCallback(
-    (target: 'filter' | 'scripts' | null): void => {
+    (target: 'filter' | 'scripts' | 'check' | null): void => {
       setOpenPopover((current) => {
         if (current === null) return null; // no session started
         if (current === target) return current;
@@ -182,16 +188,23 @@ export function TablesScreen({
 
     const onDidStopLoading = async (): Promise<void> => {
       const currentUrl = view.getURL?.() ?? '';
-      const previousUrl = lastUrlRef.current.get(fileId) ?? '';
       const wasReady = readyRef.current.has(fileId);
       dbg('did-stop-loading url=' + currentUrl);
-      // Google повторно эмитит did-stop-loading с тем же URL (background
-      // fetch'и). Skip полностью — маска жива.
-      if (wasReady && currentUrl === previousUrl) return;
+      // §pyn-1.2.20 — ВСЕГДА re-inject mask на каждом did-stop-loading.
+      // Раньше был skip когда wasReady && URL same — но Google revert
+      // версии в Sheets UI и webview.reload() после макроса делают full
+      // DOM reset на том же URL → наш `<style id="pyn-sheets-mask">`
+      // уничтожается → маска слетает → юзер видел raw Google UI с
+      // menubar/toolbar/etc. Юзер: «слетает маска и не возвращается».
+      //
+      // Скрипт инжекта идемпотентен (внутри `if (!document.getElementById
+      // (STYLE_ID))` — не дублирует если уже есть). Поэтому безопасно
+      // вызывать на ЛЮБОМ did-stop-loading: если DOM жив и style есть —
+      // no-op; если DOM перерисован — восстановит. Overhead minimal.
       lastUrlRef.current.set(fileId, currentUrl);
       try {
         await view.executeJavaScript?.(buildSheetsMaskScript());
-        dbg('mask injected');
+        dbg('mask ensured');
       } catch (e) {
         dbg('mask inject error: ' + String(e).slice(0, 120));
       }
@@ -507,7 +520,11 @@ export function TablesScreen({
     toastTimerRef.current = setTimeout(() => setToast(null), 2400);
   }, []);
 
-  const loggedIn = currentUrl.startsWith('https://docs.google.com/spreadsheets');
+  // §pyn-1.2.43 — authoritative loggedIn из Google account state (main process
+  // проверяет partition cookies через window.pyn.google.checkStatus). Раньше
+  // был URL-based proxy (currentUrl.startsWith) — ненадёжно при истёкших
+  // cookies или logout через Settings без reload webview.
+  const { loggedIn } = useGoogleAuthStatus();
   const actions: TableAction[] = activeTab?.actions ?? [];
 
   const [pendingPwAction, setPendingPwAction] = useState<TableAction | null>(null);
@@ -536,6 +553,7 @@ export function TablesScreen({
         actionId: action.id,
         actionLabel: action.label,
         userName: currentUserName,
+        userLogin: currentUserLogin,
         tabName,
         lockedTabRawNames: lockedTabs,
       });
@@ -577,6 +595,11 @@ export function TablesScreen({
         const msg = e instanceof Error ? e.message : String(e);
         showToast(t('tables.toast_error', { message: msg.slice(0, 80) }));
       } finally {
+        // §pyn-1.2.20 — server-side broadcast `sheet_lock_released` (раньше
+        // server делал это сразу после Apps Script dispatch → маска
+        // снималась через 5 сек у всех клиентов). Теперь release делает
+        // initiator после polling alive=false.
+        await releaseSheetLock(api, action.id).catch(() => undefined);
         useSheetsLockStore.getState().release(action.id);
       }
     },
@@ -612,6 +635,7 @@ export function TablesScreen({
         actionId: action.id,
         actionLabel: action.label,
         userName: currentUserName,
+        userLogin: currentUserLogin,
         tabName,
         lockedTabRawNames: lockedTabs,
       });
@@ -620,6 +644,12 @@ export function TablesScreen({
         const bundle = await getMacroBundle(api, {
           actionId: action.id,
           password,
+          // §pyn-1.2.20 — server теперь broadcastит sheet_lock_acquired при
+          // выдаче bundle, чтобы и другие клиенты видели маску при macro.
+          // Передаём labels/names для содержательного отображения у них.
+          tabName,
+          actionLabel: action.label,
+          userName: currentUserName,
         });
         if (!bundle.ok) {
           if (bundle.error === 'wrong_password') showToast(t('tables.toast_wrong_password'));
@@ -666,6 +696,9 @@ export function TablesScreen({
         const msg = e instanceof Error ? e.message : String(e);
         showToast(t('tables.toast_error', { message: msg.slice(0, 80) }));
       } finally {
+        // §pyn-1.2.20 — release всех клиентов через server WS broadcast.
+        // Symmetric с acquired broadcast в handleGetMacroBundle.
+        await releaseSheetLock(api, action.id).catch(() => undefined);
         useSheetsLockStore.getState().release(action.id);
       }
     },
@@ -710,7 +743,7 @@ export function TablesScreen({
             const btn = t.closest('[data-pyn-trigger]') as HTMLElement | null;
             if (!btn) return;
             const target = btn.getAttribute('data-pyn-trigger');
-            if (target === 'filter' || target === 'scripts') {
+            if (target === 'filter' || target === 'scripts' || target === 'check') {
               handleTriggerHover(target);
             } else {
               handleTriggerHover(null);
@@ -733,6 +766,23 @@ export function TablesScreen({
               />
             </div>
           )}
+          {activeFile?.statsUrl &&
+            activeTab &&
+            (activeTab.rawName === 'workflow' || activeTab.rawName === 'wf_plan') && (
+              <div data-pyn-trigger="check">
+                <CheckDropdown
+                  disabled={!loggedIn}
+                  open={openPopover === 'check'}
+                  onOpenChange={(o) =>
+                    setOpenPopover((curr) => {
+                      if (o) return 'check';
+                      return curr === 'check' ? null : curr;
+                    })
+                  }
+                  url={activeFile.statsUrl}
+                />
+              </div>
+            )}
           {activeTab && (
             <button
               type="button"
@@ -846,18 +896,31 @@ export function TablesScreen({
             onMouseDown={() => setOpenPopover(null)}
           />
         )}
-        {activeFile && !readyFileIds.has(activeFile.id) && (
+        {files.length > 0 && (!activeFile || !readyFileIds.has(activeFile.id)) && (
           // §v1.2.14 — Solid loader пока mask не инжектнулась при ПЕРВОЙ
           // загрузке spreadsheet'a (или ручном reload). На subsequent
           // navigations (возврат с /revisions, sheet switch) — silent
           // reinject без loader'a, юзер не видит ничего лишнего.
+          //
+          // §pyn-1.2.50 — overlay активен также пока activeFile ещё не
+          // выбран (useEffect выбора default-table занимает один React tick).
+          // Без этого юзер видел raw Google UI «секунду» до того как loader
+          // успевал смонтироваться.
           <div
             className={cn(
               'absolute inset-0 z-10 flex items-center justify-center',
               'bg-bg-deep',
             )}
           >
-            <span className="text-[12px] text-text-muted">{t('tables.loading_overlay')}</span>
+            {/* §pyn-1.2.54 — text "Загрузка таблицы…" покрупнее + inline
+                PynLoader sm рядом (полоски сходятся в логотип и расходятся
+                в маленьком невидимом квадрате 16×16). */}
+            <div className="flex items-center gap-2.5">
+              <span className="text-[15px] font-medium text-text-secondary">
+                {t('tables.loading_overlay')}
+              </span>
+              <PynLoader size="sm" />
+            </div>
           </div>
         )}
         {activeLock &&
@@ -1005,6 +1068,170 @@ function FilterDropdown({
               </button>
             </Popover.Close>
           ))}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+/**
+ * §2026-05-23 — Кнопка «Проверка» (только на табах workflow/wf_plan). Polling'ует
+ * standalone Apps Script web app (URL приходит с сервера в `TableFile.statsUrl`)
+ * только пока popover открыт. Скрипт отдаёт `{rows, matched, total, mode, v}`;
+ * `v` — версия, выставляется onEdit-trigger'ом в скрипте при изменении
+ * workflow B:H или wf_plan W:X. Когда `?v=<known>` — сервер мгновенно
+ * отвечает `{unchanged:true}` без чтения таблицы (~50ms).
+ */
+interface CheckPayload {
+  rows: string[];
+  matched: number;
+  total: number;
+  mode: 'no_sheets' | 'no_supply' | 'all_ok' | 'missing';
+}
+
+const CHECK_POLL_MS = 1200;
+
+function CheckDropdown({
+  disabled,
+  open,
+  onOpenChange,
+  url,
+}: {
+  disabled: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  url: string;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const [payload, setPayload] = useState<CheckPayload | null>(null);
+  const versionRef = useRef<string>('');
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async (): Promise<void> => {
+      if (cancelled) return;
+      try {
+        const sep = url.indexOf('?') >= 0 ? '&' : '?';
+        const fullUrl = versionRef.current
+          ? url + sep + 'v=' + encodeURIComponent(versionRef.current)
+          : url;
+        const resp = await fetch(fullUrl, { cache: 'no-store' });
+        const json = (await resp.json()) as Partial<CheckPayload> & {
+          unchanged?: boolean;
+          v?: string;
+        };
+        if (cancelled) return;
+        if (json.unchanged !== true) {
+          if (typeof json.v === 'string') versionRef.current = json.v;
+          setPayload({
+            rows: Array.isArray(json.rows) ? json.rows : [],
+            matched: typeof json.matched === 'number' ? json.matched : 0,
+            total: typeof json.total === 'number' ? json.total : 0,
+            mode: (json.mode as CheckPayload['mode']) ?? 'no_supply',
+          });
+        }
+      } catch {
+        // Сеть/Apps Script упал — silent retry на следующем тике.
+      }
+      if (!cancelled) {
+        timer = setTimeout(() => void tick(), CHECK_POLL_MS);
+      }
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [open, url]);
+
+  const hasSupply = payload !== null
+    && payload.mode !== 'no_supply'
+    && payload.mode !== 'no_sheets'
+    && payload.total > 0;
+  const isOk = hasSupply && payload!.matched === payload!.total;
+
+  return (
+    <Popover.Root open={open} onOpenChange={onOpenChange}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          data-pyn-trigger="check"
+          disabled={disabled}
+          className={cn(
+            'flex h-7 items-center rounded-md px-2.5 text-[13px] font-medium',
+            'outline-none transition-colors',
+            disabled
+              ? 'cursor-not-allowed text-text-muted opacity-60'
+              : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+          )}
+        >
+          {t('tables.btn_check')}
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={6}
+          className={cn(
+            'z-50 flex w-72 flex-col gap-1 rounded-lg p-1',
+            'border border-border-default bg-bg-elevated shadow-xl',
+            'data-[state=open]:animate-in data-[state=closed]:animate-out',
+            'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
+            'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
+          )}
+        >
+          {payload === null && (
+            <div className="px-2 py-1.5 text-[12px] italic text-text-muted">
+              {t('tables.filter_loading')}
+            </div>
+          )}
+          {payload !== null && !hasSupply && (
+            <div className="flex items-center gap-2 rounded-md px-2 py-1.5">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400/90" />
+              <span className="text-[12.5px] font-medium text-text-secondary">
+                {t('tables.check_no_supply')}
+              </span>
+            </div>
+          )}
+          {hasSupply && (
+            <>
+              <div className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={cn(
+                      'h-2 w-2 shrink-0 rounded-full',
+                      isOk ? 'bg-emerald-400/95' : 'bg-rose-400/95',
+                    )}
+                  />
+                  <span className="text-[12.5px] font-semibold text-text-strong">OBD</span>
+                </div>
+                <span className="text-[12.5px] font-semibold tabular-nums text-text-strong">
+                  {payload!.matched} / {payload!.total}
+                </span>
+              </div>
+              {!isOk && payload!.rows.length > 0 && (
+                <ul
+                  className={cn(
+                    'flex max-h-[300px] flex-col gap-0.5 overflow-y-auto rounded-md p-1',
+                    'border border-border-subtle/40 bg-bg-deep/40',
+                  )}
+                >
+                  {payload!.rows.map((row, i) => (
+                    <li
+                      key={i}
+                      className="rounded bg-rose-400/5 px-2 py-1 text-[12px] leading-tight text-rose-300/90"
+                    >
+                      {row}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

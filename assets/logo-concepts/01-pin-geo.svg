@@ -1,0 +1,14 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Концепт A — Pin Geo.
+    Чистый pin маркер из двух simple shapes: круг сверху + треугольник снизу
+    (математически выровненные точки касания). Без gradient'а. Sharp corners.
+    Linear/Figma 2026 vibe: 1 brand color, остальное негативное пространство.
+  -->
+  <rect width="256" height="256" rx="48" fill="#0F0F0F"/>
+  <!-- Outer pin shape — single fill, math-precise: круг r=44, треугольник касательный -->
+  <path d="M128 56 C103.7 56 84 75.7 84 100 C84 138 128 200 128 200 C128 200 172 138 172 100 C172 75.7 152.3 56 128 56 Z"
+        fill="#D97757"/>
+  <!-- Inner dot — negative space через bg-цвет -->
+  <circle cx="128" cy="100" r="16" fill="#0F0F0F"/>
+</svg>

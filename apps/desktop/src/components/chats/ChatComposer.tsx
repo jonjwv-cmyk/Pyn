@@ -201,7 +201,7 @@ function ChatComposer(
   };
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-40">
       {/* Blur-layer mask «50% → transparent» вверх: blur активен в нижней
           половине pill'а и ниже, выше pill — чётко. */}
       <div

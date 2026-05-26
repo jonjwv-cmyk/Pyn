@@ -182,6 +182,28 @@ export function useUpdateFlow(session: Session | null): UseUpdateFlowResult {
     },
   );
 
+  // §pyn-1.2.32 — focus-refetch fallback (App.tsx dispatch'ает custom event при
+  // window focus). В сетях где WS не открывается (HTTP 407 на NTLM-прокси)
+  // `app_version_changed` push никогда не доходит → pill «Доступно обновление»
+  // не появляется в running session. При возврате фокуса делаем тот же
+  // appStatus HTTP-запрос что и при mount — гарантированно покрывает gap.
+  useEffect(() => {
+    if (!session) return;
+    const onRefresh = () => {
+      const scope = getDesktopScope();
+      const appVersion = window.pyn?.appVersion ?? '0.0.0';
+      void appStatus(api, { appScope: scope, appVersion })
+        .then((res) => {
+          if (res.updateUrl && compareSemver(res.currentVersion, appVersion) > 0) {
+            setUpdateInfo(res);
+          }
+        })
+        .catch(() => { /* silent */ });
+    };
+    window.addEventListener('pyn:refresh-on-focus', onRefresh);
+    return () => window.removeEventListener('pyn:refresh-on-focus', onRefresh);
+  }, [session]);
+
   return {
     updateInfo,
     updateStage,

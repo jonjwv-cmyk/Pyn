@@ -12,6 +12,7 @@ import {
   useMolStore,
   useNewsStore,
   useOutboxStore,
+  usePresenceStore,
   useSessionInfoStore,
   useStatsStore,
   useUiStateStore,
@@ -36,6 +37,7 @@ export async function wipeUserData(): Promise<void> {
   useUiStateStore.getState().clear();
   useOutboxStore.getState().clear();
   useStatsStore.getState().clear();
+  usePresenceStore.getState().clear();
   clearTablesRegistry();
   useSheetsLockStore.getState().reset();
   // In-memory blob URLs (avatars / attachments) — освобождаем чтобы при

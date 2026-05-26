@@ -8,7 +8,7 @@ import {
 import { cn } from '@/lib/cn';
 import { formatDbDate } from '@/lib/mol-format';
 import { refreshMolFromServer } from '@/lib/mol-repo';
-import { useMolStore, useUiStateStore } from '@/lib/stores';
+import { useMolStore, usePresenceStore, useUiStateStore } from '@/lib/stores';
 import type { NavSection, NavSectionId } from '@/types/nav';
 import { ConnectivityIndicator } from './ConnectivityIndicator';
 import { SessionExpiryPill } from './SessionExpiryPill';
@@ -16,6 +16,7 @@ import { SidebarHeader } from './SidebarHeader';
 import { NavItem } from './NavItem';
 import { BottomUserRow } from './BottomUserRow';
 import { TableNavItems } from './TableNavItems';
+import { TeamPill } from './TeamPill';
 import { UpdateAvailablePill, type UpdatePillStage } from './UpdateAvailablePill';
 import { UserPopupMenu } from './UserPopupMenu';
 
@@ -125,6 +126,12 @@ export function Sidebar({
   const molStatus = useMolStore((s) => s.status);
   const molOutcome = useMolStore((s) => s.lastRefreshOutcome);
 
+  // §pyn-1.2.42 — self-status из единого presenceStore (раньше был hardcoded
+  // 'online'). Source of truth — server через heartbeat response → setOne.
+  const myPresence = usePresenceStore((s) =>
+    userLogin ? s.byLogin[userLogin]?.status ?? 'online' : 'online',
+  );
+
   // State выбранной таблицы/вкладки — persist'ится в ui-state-store, чтобы
   // и Sidebar (table-nav-items), и TablesScreen (webview) читали единый источник.
   const setActiveTable = useUiStateStore((s) => s.setActiveTable);
@@ -213,26 +220,31 @@ export function Sidebar({
       {/* Flex spacer — придавливает user-row к низу */}
       <div className="flex-1" />
 
+      {/* §pyn-1.2.43 — Team pill: другие admin/developer (без self) с presence.
+          Источник правды для статусов — usePresenceStore. Реактивно
+          обновляется при WS push presence_change. */}
+      {userLogin && <TeamPill myLogin={userLogin} myRole={userRole} collapsed={collapsed} />}
+
       {/* Update pill — над SessionExpiryPill (юзер сначала видит апдейт,
-          потом критический countdown). В collapsed скрыт. */}
-      {!collapsed && updatePill && (
+          потом критический countdown). §pyn-1.2.54 — рендерится и в collapsed
+          (компактный «Обновить» лейбл), чтобы не было layout-скачка при сворачивании. */}
+      {updatePill && (
         <div className="px-1.5 pb-0.5">
           <UpdateAvailablePill
             stage={updatePill.stage}
             bytes={updatePill.bytes}
             total={updatePill.total}
+            collapsed={collapsed}
             onClick={updatePill.onClick}
           />
         </div>
       )}
 
-      {/* Session expiry pill — только когда продлений уже нет; в collapsed
-          режиме скрыт (узко для текста таймера). */}
-      {!collapsed && (
-        <div className="px-1.5">
-          <SessionExpiryPill />
-        </div>
-      )}
+      {/* Session expiry pill — только когда продлений уже нет.
+          §pyn-1.2.54 — collapsed показывает компактный «OFF» + timer, без скачков. */}
+      <div className="px-1.5">
+        <SessionExpiryPill collapsed={collapsed} />
+      </div>
 
       {/* Connectivity status — над user row, отдельной полоской */}
       <div className="px-1.5">
@@ -263,7 +275,7 @@ export function Sidebar({
             avatarUrl={userAvatarUrl}
             avatarBlobKey={userAvatarBlobKey}
             avatarBlobNonce={userAvatarBlobNonce}
-            presence="online"
+            presence={myPresence}
             collapsed={collapsed}
           />
         </UserPopupMenu>

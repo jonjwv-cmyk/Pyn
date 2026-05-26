@@ -1,0 +1,7 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- Colorway B — brand-bookcloth (#CC785C). Тёплый терракот, ближе к red. -->
+  <rect width="256" height="256" rx="48" fill="#161611"/>
+  <rect x="56"  y="56"  width="38"  height="144" rx="6" fill="#CC785C"/>
+  <rect x="104" y="56"  width="96"  height="40"  rx="6" fill="#CC785C"/>
+  <rect x="104" y="108" width="72"  height="38"  rx="6" fill="#CC785C"/>
+</svg>

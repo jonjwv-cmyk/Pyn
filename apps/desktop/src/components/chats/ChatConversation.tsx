@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Avatar } from '@/components/ui/Avatar';
@@ -8,10 +8,11 @@ import { PresenceDot } from '@/components/ui/PresenceDot';
 import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { formatDayDividerLabel, formatFullYek, yekDayKeyFor } from '@/lib/format-time';
+import { formatDayDividerLabel, yekDayKeyFor } from '@/lib/format-time';
+import { useFormatYek } from '@/lib/hooks/use-format-yek';
 import { useFileDrop } from '@/lib/use-file-drop';
 import { useScrollDayPill } from '@/lib/use-scroll-day-pill';
-import { useUiStateStore, useUsersStore } from '@/lib/stores';
+import { usePresenceStore, useUiStateStore } from '@/lib/stores';
 import { loadDraft, saveDraft } from '@pyn/core';
 import type { ChatMessageItem, ChatPartner, PendingAttachment } from '@/types/chat';
 import type { PresenceState } from '@/types/presence';
@@ -27,6 +28,8 @@ interface ChatConversationProps {
     replyToId?: number,
   ) => void;
   onReact?: (messageId: number, emoji: string) => void;
+  /** §pyn-1.2.37 — callback от intersection-observer: peer-message в viewport. */
+  onMarkRead?: (messageId: number) => void;
 }
 
 /**
@@ -37,7 +40,7 @@ interface ChatConversationProps {
  * передаём в ChatComposer как initialText. `key={partner.id}` форсит remount
  * Composer'а — иначе текст из предыдущего чата не сбросится при переключении.
  */
-export function ChatConversation({ partner, messages, onSend, onReact }: ChatConversationProps) {
+export function ChatConversation({ partner, messages, onSend, onReact, onMarkRead }: ChatConversationProps) {
   const [initialDraft, setInitialDraft] = useState('');
   const [replyTo, setReplyTo] = useState<ChatMessageItem | null>(null);
   const composerRef = useRef<ChatComposerHandle>(null);
@@ -126,6 +129,7 @@ export function ChatConversation({ partner, messages, onSend, onReact }: ChatCon
               partnerId={partner.id}
               onReact={onReact}
               onReply={setReplyTo}
+              onMarkRead={onMarkRead}
             />
             <ChatComposer
               ref={composerRef}
@@ -140,7 +144,10 @@ export function ChatConversation({ partner, messages, onSend, onReact }: ChatCon
         </>
       ) : (
         <>
-          <div className="drag-region h-11 shrink-0" />
+          {/* §pyn-1.2.22 — пустое состояние без выбранного чата:
+              top-strip унифицирован bg-bg-surface (раньше прозрачно
+              на chat-pattern-bg → темнее sidebar'а). */}
+          <div className="drag-region h-12 shrink-0 border-b border-border-subtle bg-bg-surface" />
           <EmptyState />
         </>
       )}
@@ -160,21 +167,25 @@ interface ChatHeaderProps {
  */
 function ChatHeader({ partner }: ChatHeaderProps) {
   const { t } = useTranslation();
-  // last_seen_at иногда отсутствует в `get_admin_messages` (когда LAST
-  // message отправили мы — server возвращает receiver_last_seen_at="").
-  // Fallback: `usersStore` (admin-only get_users) — там реальный last_seen
-  // на момент префетча. Берём более свежее из двух.
-  const userLastSeen = useUsersStore((s) => s.users.find((u) => u.login === partner.id)?.lastSeenAt);
-  const fromStoreLabel = userLastSeen ? formatFullYek(userLastSeen) : '';
-  const lastSeenLabel = partner.lastSeenAtLabel || fromStoreLabel;
+  // §pyn-1.2.39 — presence + lastSeenAt из глобального usePresenceStore.
+  // Store заполняется из get_admin_messages / get_users / get_news_readers
+  // (bulk setMany) и обновляется WS push presence_change (setOne).
+  // Selector выбирает строго одну запись по login → только этот header
+  // re-render'ится при изменении presence этого peer'а.
+  const presenceInfo = usePresenceStore((s) => s.byLogin[partner.id]);
+  const presence = presenceInfo?.status ?? 'offline';
+  const lastSeenLabel = useFormatYek(presenceInfo?.lastSeenAt);
 
   return (
     <>
       {/* Header — solid bg, перекрывает chat-pattern-bg main'а; иначе узор
-          просвечивал бы под аватаркой и именем контакта. */}
+          просвечивал бы под аватаркой и именем контакта.
+          §pyn-1.2.22 — bg-bg-surface (был bg-bg-primary), чтобы titlebar-strip
+          с Win min/max/close controls был единого цвета с Sidebar/ChatList/
+          MOL/Tables. */}
       <div
         className={cn(
-          'drag-region flex h-12 shrink-0 items-center gap-2.5 bg-bg-primary px-4',
+          'drag-region flex h-12 shrink-0 items-center gap-2.5 border-b border-border-subtle bg-bg-surface px-4',
         )}
       >
         <span className="relative shrink-0">
@@ -187,7 +198,7 @@ function ChatHeader({ partner }: ChatHeaderProps) {
             avatarBlobNonce={partner.avatarBlobNonce}
           />
           <PresenceDot
-            state={partner.presence}
+            state={presence}
             size={9}
             ringClass="ring-bg-primary"
             className="absolute -bottom-0.5 -right-0.5"
@@ -198,7 +209,7 @@ function ChatHeader({ partner }: ChatHeaderProps) {
             {partner.name}
           </span>
           <span className="truncate text-[11px] text-text-muted">
-            {presenceText(partner.presence, lastSeenLabel, t)}
+            {presenceText(presence, lastSeenLabel, t)}
           </span>
         </span>
       </div>
@@ -230,15 +241,18 @@ interface MessageListProps {
   partnerId: string;
   onReact?: (messageId: number, emoji: string) => void;
   onReply?: (message: ChatMessageItem) => void;
+  onMarkRead?: (messageId: number) => void;
 }
 
-function MessageList({ messages, partnerId, onReact, onReply }: MessageListProps) {
+function MessageList({ messages, partnerId, onReact, onReply, onMarkRead }: MessageListProps) {
+  const { i18n } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showScrollDown, setShowScrollDown] = useState(false);
   const dayPill = useScrollDayPill(scrollRef);
   // Persist scroll-position per peer — при reopen Pyn'a возвращаемся ровно
-  // туда же в конкретном чате. Persist через safeStorage IPC async —
-  // ждём `hasHydrated` прежде чем что-то восстанавливать.
+  // туда же в конкретном чате. §pyn-1.2.54: pattern скопирован с NewsFeed —
+  // saved = АБСОЛЮТНЫЙ scrollTop. ResizeObserver в restore-эффекте re-applies
+  // target при image/video lazy-load (CLS protection 3s после mount).
   //
   // ВАЖНО: selector только для ТЕКУЩЕГО peer'a, не весь object. Иначе
   // любое сохранение другого peer'a re-trigger'ит наш эффект.
@@ -277,6 +291,8 @@ function MessageList({ messages, partnerId, onReact, onReply }: MessageListProps
 
   // Группируем сообщения по yek-дню. Между разными днями вставляется
   // `DateDivider`. Group by dayKey (uniq integer per Yek calendar day).
+  // §pyn-1.2.25 — `i18n.language` в deps: при смене языка labels пере-формируются.
+  // Раньше работало «случайно» — re-mount при смене peer'а пересчитывал useMemo.
   const groups = useMemo(() => {
     const out: { dayKey: number; label: string; items: ChatMessageItem[] }[] = [];
     for (const m of messages) {
@@ -300,35 +316,105 @@ function MessageList({ messages, partnerId, onReact, onReply }: MessageListProps
       }
     }
     return out;
-  }, [messages]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, i18n.language]);
 
-  // EFFECT 1: Restore scroll один раз для нового peer'a — когда (1) UI
-  // hydrated, (2) есть messages для рендера. Не triggers повторно при
-  // scroll'е юзера (persistedScrollForPeer обновится через handleScroll,
-  // но guard refs блокирует повторный restore).
-  useEffect(() => {
-    if (!uiHydrated) return;
+  // §pyn-1.2.54 — Scroll-restore: news pattern + useLayoutEffect.
+  // ResizeObserver re-apply при image/video lazy-load (3s lock или до первого
+  // user-action) — как в news. Per-peer ref (разные чаты restore'ятся
+  // независимо). Fresh chat (saved<=0) → scroll to bottom (Telegram-style).
+  //
+  // useLayoutEffect (вместо useEffect как в news) — нужен для inter-chat
+  // switch (A→B→A). В news partnerId-эквивалента нет, useEffect ok; в chat
+  // partnerId меняется → re-render с messages чата B → если scroll set'ить
+  // AFTER paint (useEffect), first frame B показывает scrollTop чата A
+  // (clamp к top после смены контента) → видимый flicker «top→target».
+  // useLayoutEffect set'ит scrollTop SYNC между DOM commit и paint → first
+  // frame B уже на правильной позиции. Section-switch (display:none↔flex)
+  // partnerId не меняет → effect не fires → DOM scroll сохраняется браузером.
+  useLayoutEffect(() => {
     if (scrollRestoredForPeerRef.current === partnerId) return;
+    if (!uiHydrated) return;
     if (messages.length === 0) return;
     const el = scrollRef.current;
     if (!el) return;
-    const saved = persistedScrollForPeer;
-    // rAF — bubbles должны отрисоваться, scrollHeight стабильный.
-    requestAnimationFrame(() => {
+    const target = persistedScrollForPeer;
+
+    if (target <= 0) {
+      // Fresh chat — scroll to bottom + ResizeObserver re-apply при image-load
+      // (CLS protection 3s или до первого user-action).
+      el.scrollTop = el.scrollHeight;
+      lastSavedScrollRef.current = el.scrollTop;
+      const observer = new ResizeObserver(() => {
+        if (scrollRestoredForPeerRef.current === partnerId) return;
+        const node = scrollRef.current;
+        if (!node) return;
+        node.scrollTop = node.scrollHeight;
+      });
+      observer.observe(el);
+      for (const child of Array.from(el.children)) observer.observe(child);
+      const stableTimer = setTimeout(() => {
+        scrollRestoredForPeerRef.current = partnerId;
+        prevMessagesLengthRef.current = messages.length;
+        observer.disconnect();
+      }, 3000);
+      const onUserAction = (): void => {
+        scrollRestoredForPeerRef.current = partnerId;
+        prevMessagesLengthRef.current = messages.length;
+        observer.disconnect();
+        clearTimeout(stableTimer);
+      };
+      el.addEventListener('wheel', onUserAction, { passive: true, once: true });
+      el.addEventListener('touchstart', onUserAction, { passive: true, once: true });
+      el.addEventListener('keydown', onUserAction, { once: true });
+      return () => {
+        observer.disconnect();
+        clearTimeout(stableTimer);
+        el.removeEventListener('wheel', onUserAction);
+        el.removeEventListener('touchstart', onUserAction);
+        el.removeEventListener('keydown', onUserAction);
+      };
+    }
+
+    // Saved > 0 — exact restore + ResizeObserver re-apply (news pattern 1:1).
+    el.scrollTop = target;
+    setShowScrollDown(false);
+
+    const reapply = (): void => {
+      if (scrollRestoredForPeerRef.current === partnerId) return;
       const node = scrollRef.current;
       if (!node) return;
-      if (saved > 0) {
-        node.scrollTop = saved;
-      } else {
-        node.scrollTop = node.scrollHeight;
-      }
-      lastSavedScrollRef.current = node.scrollTop;
+      if (Math.abs(node.scrollTop - target) > 2) node.scrollTop = target;
+    };
+    const observer = new ResizeObserver(reapply);
+    observer.observe(el);
+    for (const child of Array.from(el.children)) observer.observe(child);
+
+    const stableTimer = setTimeout(() => {
       scrollRestoredForPeerRef.current = partnerId;
+      lastSavedScrollRef.current = el.scrollTop;
       prevMessagesLengthRef.current = messages.length;
-      setShowScrollDown(false);
-    });
-    // persistedScrollForPeer НЕ в deps — мы используем его как initial value,
-    // дальнейшие изменения от собственного save игнорируем (иначе loop).
+      observer.disconnect();
+    }, 3000);
+
+    const onUserAction = (): void => {
+      scrollRestoredForPeerRef.current = partnerId;
+      lastSavedScrollRef.current = el.scrollTop;
+      prevMessagesLengthRef.current = messages.length;
+      observer.disconnect();
+      clearTimeout(stableTimer);
+    };
+    el.addEventListener('wheel', onUserAction, { passive: true, once: true });
+    el.addEventListener('touchstart', onUserAction, { passive: true, once: true });
+    el.addEventListener('keydown', onUserAction, { once: true });
+
+    return () => {
+      observer.disconnect();
+      clearTimeout(stableTimer);
+      el.removeEventListener('wheel', onUserAction);
+      el.removeEventListener('touchstart', onUserAction);
+      el.removeEventListener('keydown', onUserAction);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [partnerId, uiHydrated, messages.length === 0]);
 
@@ -354,8 +440,8 @@ function MessageList({ messages, partnerId, onReact, onReply }: MessageListProps
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     setShowScrollDown(distanceFromBottom > 64);
     dayPill.onScroll();
-    // Throttled save — пишем persist через 250ms после паузы в скролле, и
-    // только если значение реально изменилось (избегаем спама IPC writes).
+    // §pyn-1.2.54 — saved = АБСОЛЮТНЫЙ scrollTop (как в NewsFeed pattern).
+    // ResizeObserver в restore-эффекте re-applies target при image-load.
     if (!uiHydrated || scrollRestoredForPeerRef.current !== partnerId) return;
     const current = el.scrollTop;
     if (Math.abs(current - lastSavedScrollRef.current) < 8) return;
@@ -379,7 +465,8 @@ function MessageList({ messages, partnerId, onReact, onReply }: MessageListProps
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="absolute inset-0 flex flex-col gap-1.5 overflow-y-auto px-4 pt-4 pb-[72px]"
+        // §pyn-1.2.54 — pb-[60px] matches NewsFeed.
+        className="absolute inset-0 flex flex-col gap-1.5 overflow-y-auto px-4 pt-4 pb-[60px]"
       >
         {groups.map((g) => (
           // §2026-05-19 — per-group wrapper для sticky DateDivider.
@@ -390,13 +477,11 @@ function MessageList({ messages, partnerId, onReact, onReply }: MessageListProps
           <div key={g.dayKey} className="flex flex-col gap-1.5">
             {g.label && <DateDivider label={g.label} />}
             {g.items.map((m) => (
-              <ChatMessage key={m.id} message={m} onReact={onReact} onReply={onReply} />
+              <ChatMessage key={m.id} message={m} onReact={onReact} onReply={onReply} onMarkRead={onMarkRead} />
             ))}
           </div>
         ))}
       </div>
-      {/* Fade-в-фон сверху для плавного «затемнения» при scroll'е вверх. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-5 bg-gradient-to-b from-bg-primary to-transparent" />
       {/* §2026-05-19 — DayLabelPill убран: `DateDivider` теперь sticky
           (CSS position: sticky), сам прилипает к верху при скролле и
           выталкивается следующим divider'ом. Дубликат floating-pill'a

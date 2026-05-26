@@ -35,6 +35,7 @@ export interface TableFile {
   id: string;
   title: string;
   emoji?: string;
+  statsUrl?: string | null;
   tabs: TableTab[];
 }
 

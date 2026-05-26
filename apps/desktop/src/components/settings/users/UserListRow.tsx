@@ -19,7 +19,8 @@ import { api } from '@/lib/api';
 import { Avatar } from '@/components/ui/Avatar';
 import { PresenceDot } from '@/components/ui/PresenceDot';
 import { cn } from '@/lib/cn';
-import { formatFullYek } from '@/lib/format-time';
+import { useFormatYek } from '@/lib/hooks/use-format-yek';
+import { usePresenceStore } from '@/lib/stores';
 import {
   isDeveloper,
   resetPasswordLoginCounter,
@@ -73,7 +74,14 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
   const isSelf = user.login === myLogin;
   const isDev = isDeveloper(myRole);
   const isEnabled = user.isActive && !user.isSuspended;
-  const presence = isEnabled ? user.presenceStatus ?? 'offline' : 'offline';
+  // §pyn-1.2.39 — presence из глобального usePresenceStore (single source of truth).
+  // До v1.2.39 читали user.presenceStatus из getUsers — это был snapshot на
+  // момент login, не обновлялся live → в Settings мог быть offline для юзера
+  // который в Чатах online. Теперь WS push presence_change → setOne →
+  // selector выдаёт fresh status во всех компонентах.
+  const presenceInfo = usePresenceStore((s) => s.byLogin[user.login]);
+  const presence = isEnabled ? (presenceInfo?.status ?? 'offline') : 'offline';
+  const lastSeenAt = presenceInfo?.lastSeenAt || user.lastSeenAt;
 
   const statusLabel = user.isSuspended
     ? t('user_list_row.status_blocked')
@@ -157,10 +165,10 @@ export function UserListRow({ user, myRole, myLogin, onStatusChange, onRefresh }
             <span className="font-mono">{user.login}</span>
             <span>·</span>
             <span className={statusColor}>{statusLabel}</span>
-            {isEnabled && user.presenceStatus && (
+            {isEnabled && (
               <>
                 <span>·</span>
-                <span>{presenceLabel(user.presenceStatus, user.lastSeenAt, t)}</span>
+                <PresenceText presence={presence} lastSeenAt={lastSeenAt} />
               </>
             )}
           </div>
@@ -337,11 +345,25 @@ function Separator() {
   return <DropdownMenu.Separator className="my-1 h-px bg-border-subtle" />;
 }
 
-/** Локализованный presence label: online / away / formatted last seen. */
-function presenceLabel(presence: string, lastSeenAt: string | undefined, t: TFunction): string {
-  if (presence === 'online') return t('user_list_row.presence_online');
-  if (presence === 'away') return t('user_list_row.presence_away');
-  return lastSeenAt ? formatFullYek(lastSeenAt) : t('user_list_row.presence_offline');
+/**
+ * §pyn-1.2.27 — Reactive presence label. Раньше `presenceLabel(...)` была
+ * чистой функцией с `formatFullYek` который не реагирует на смену языка
+ * (formatters per-language cached, но сам компонент не re-render'ится при
+ * changeLanguage без useTranslation). Sub-component с `useFormatYek` —
+ * react-i18next подписан на language change, re-render автоматический.
+ */
+function PresenceText({
+  presence,
+  lastSeenAt,
+}: {
+  presence: string;
+  lastSeenAt: string | undefined;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const lastSeenLabel = useFormatYek(lastSeenAt);
+  if (presence === 'online') return <span>{t('user_list_row.presence_online')}</span>;
+  if (presence === 'away') return <span>{t('user_list_row.presence_away')}</span>;
+  return <span>{lastSeenLabel || t('user_list_row.presence_offline')}</span>;
 }
 
 // Suppress: KeyRound импортирован на будущее (change_password для self),

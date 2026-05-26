@@ -266,6 +266,9 @@ export interface NewsReaderWire {
   user_login: string;
   full_name?: string;
   read_at?: string;
+  /** §pyn-1.2.40 — presence для PresenceDot в NewsStatsDialog. */
+  presence_status?: 'online' | 'away' | 'offline';
+  last_seen_at?: string;
 }
 
 export interface NewsReadersResponse {
@@ -315,6 +318,9 @@ export interface PollVoterWire {
   selected_option_texts?: string[];
   option_id?: number;
   voted_at?: string;
+  /** §pyn-1.2.40 — presence для PresenceDot в NewsStatsDialog. */
+  presence_status?: 'online' | 'away' | 'offline';
+  last_seen_at?: string;
 }
 
 export interface PollStatsResponse {

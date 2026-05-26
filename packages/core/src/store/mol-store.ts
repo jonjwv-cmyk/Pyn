@@ -38,6 +38,15 @@ export interface MolState {
   }) => void;
   setStatus: (status: MolLoadStatus, errorMessage?: string | null) => void;
   setRefreshOutcome: (outcome: MolRefreshOutcome) => void;
+  /**
+   * §pyn-1.2.21 — optimistic update meta из WS `base_changed` event ДО
+   * того как snapshot скачался. Юзер видит новый counter мгновенно;
+   * actual records загрузятся в фоне через refreshMolFromServer.
+   */
+  setCountsFromWs: (args: {
+    recordsCount: number | null;
+    previousRecordsCount: number | null;
+  }) => void;
   clear: () => void;
 }
 
@@ -58,6 +67,31 @@ const initializer: StateCreator<MolState> = (set) => ({
     })),
   setStatus: (status, errorMessage = null) => set({ status, errorMessage }),
   setRefreshOutcome: (outcome) => set({ lastRefreshOutcome: outcome }),
+  setCountsFromWs: ({ recordsCount, previousRecordsCount }) =>
+    set((prev) => {
+      // Если ещё нет meta — создаём минимальную (snapshot догрузится позже).
+      const baseMeta: BaseMeta = prev.meta ?? {
+        version: '',
+        updatedAt: '',
+        note: '',
+        createdAt: '',
+        recordsCount: null,
+        previous: null,
+      };
+      return {
+        meta: {
+          ...baseMeta,
+          recordsCount,
+          previous: previousRecordsCount !== null
+            ? {
+                version: baseMeta.previous?.version ?? '',
+                updatedAt: baseMeta.previous?.updatedAt ?? '',
+                recordsCount: previousRecordsCount,
+              }
+            : baseMeta.previous,
+        },
+      };
+    }),
   clear: () =>
     set({
       records: [],

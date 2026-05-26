@@ -1,7 +1,8 @@
 import type { ChatMessageWire } from '@pyn/core';
 import type { ChatMessageItem, ChatPartner, ChatPartnerType } from '@/types/chat';
 import { computeInitials } from '@/lib/initials';
-import { formatFullYek, formatTimeYek } from '@/lib/format-time';
+import { formatTimeYek } from '@/lib/format-time';
+import { normalizePresence } from '@/types/presence';
 
 /**
  * `get_admin_messages` возвращает последнее сообщение для каждого peer'a (а
@@ -46,10 +47,14 @@ export function wireToChatPartnerFromMessage(wire: ChatMessageWire, myLogin: str
     avatarBlobKey: peerAvatarBlobKey || undefined,
     avatarBlobNonce: peerAvatarBlobNonce || undefined,
     lastMessage: wire.text,
-    lastMessageTime: wire.created_at ? formatFullYek(wire.created_at) : '',
-    lastSeenAtLabel: peerLastSeenAt ? formatFullYek(peerLastSeenAt) : '',
+    // §pyn-1.2.27 — raw timestamps. Format делает useFormatYek в render
+    // (reactive к смене языка).
+    lastMessageAt: wire.created_at ?? '',
+    lastSeenAt: peerLastSeenAt || undefined,
     unreadCount: wire.unread_count ?? 0,
-    presence: peerPresence ?? 'offline',
+    // §pyn-1.2.37 — normalize: server шлёт 'paused' для background, маппим
+    // в 'away'. Без этого жёлтая точка прозрачная (class не сматчился).
+    presence: normalizePresence(peerPresence),
   };
 }
 

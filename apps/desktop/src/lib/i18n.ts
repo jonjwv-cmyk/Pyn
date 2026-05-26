@@ -11,27 +11,36 @@ import {
  * i18n bootstrap для desktop.
  *
  * Order of locale resolution:
- *   1. Saved preference (from ui-state-store, передаётся caller'ом в `initI18n`)
+ *   1. Saved preference (из ui-state-store / localStorage backup)
  *   2. Default `ru`
  *
  * §2026-05-21 — autodetect через `navigator.language` убран. Юзер хочет
- * чтобы при первом запуске всегда был русский, а не OS-locale — даже на
- * macOS с EN-локалью.
+ * чтобы при первом запуске всегда был русский, а не OS-locale.
  *
- * Persist выбора — App.tsx сохраняет в ui-state-store при change через
- * Settings → Язык. Store hydrate'ится через safeStorage IPC asynchronously,
- * поэтому caller должен ждать `useUiStateStore.persist.hasHydrated()` перед
- * вызовом initI18n — иначе savedLanguage всегда будет null и мы инициализируем
- * на ru до прихода persisted value.
+ * §pyn-1.2.25 — `initI18n` теперь возвращает Promise. main.tsx делает
+ * `await initI18n(...)` ДО первого render, чтобы tray window и все
+ * format-time.ts вызовы стартовали с правильной локалью без флэша
+ * raw-keys / «16 мая» в EN UI. Sync caller'ы (use-init-i18n.ts) могут
+ * просто `void initI18n(...)`.
+ *
+ * Также пишет savedLanguage в localStorage — tray window через main.tsx
+ * читает этот cache synchronously, без electron safeStorage IPC.
  */
 
+const STORAGE_KEY = 'pyn:i18n:lang';
 let inited = false;
 
-export function initI18n(savedLanguage: string | null): SupportedLanguage {
+export async function initI18n(savedLanguage: string | null): Promise<SupportedLanguage> {
   const lang = savedLanguage ? normalizeLanguage(savedLanguage) : DEFAULT_LANGUAGE;
 
+  // Persist в localStorage как sync-readable бэкап для tray window (он
+  // открывается отдельным BrowserWindow и не ждёт ui-state-store hydrate).
+  if (savedLanguage) {
+    try { localStorage.setItem(STORAGE_KEY, lang); } catch { /* ignore quota */ }
+  }
+
   if (!inited) {
-    void i18next.use(initReactI18next).init({
+    await i18next.use(initReactI18next).init({
       resources: I18N_RESOURCES,
       lng: lang,
       fallbackLng: DEFAULT_LANGUAGE,
@@ -39,13 +48,14 @@ export function initI18n(savedLanguage: string | null): SupportedLanguage {
       returnNull: false,
     });
     inited = true;
-  } else {
-    void i18next.changeLanguage(lang);
+  } else if (i18next.language !== lang) {
+    await i18next.changeLanguage(lang);
   }
   return lang;
 }
 
 /** Smena языка в runtime — вызывается из Settings → Язык. */
 export function changeLanguage(lang: SupportedLanguage): void {
+  try { localStorage.setItem(STORAGE_KEY, lang); } catch { /* ignore quota */ }
   void i18next.changeLanguage(lang);
 }

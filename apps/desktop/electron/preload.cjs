@@ -2,7 +2,7 @@
 // (он упорно бандлит ESM-обёртку даже с format:'cjs', что ломает Electron sandbox).
 // Файл копируется vite-плагином в dist-electron/preload.cjs при старте.
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // app.getVersion() недоступен в sandboxed preload'е (main экспонирует через
 // additionalArguments, см. main.ts::createWindow). Парсим из process.argv —
@@ -182,6 +182,71 @@ contextBridge.exposeInMainWorld('pyn', {
     },
   },
   /**
+   * webUtils.getPathForFile — Electron 33 заменил File.path. Используется в
+   * Storage drag-drop: renderer берёт File из dataTransfer и достаёт
+   * абсолютный fs path через эту функцию для последующего fs.upload.
+   */
+  webUtils: {
+    getPathForFile: function pynWebUtilsGetPath(file) {
+      return webUtils.getPathForFile(file);
+    },
+  },
+  /**
+   * Print + Save PDF. Используется в графике/Пробе: юзер кликает кнопку
+   * Печать → popover с двумя действиями. dialog = системный print dialog,
+   * savePdf = printToPDF + showSaveDialog с suggested filename.
+   */
+  print: {
+    /**
+     * «Печать» — генерит PDF и открывает в дефолтном системном вьюере,
+     * чтобы юзер нажал Cmd+P внутри. Tmp-файл удаляется через 2 минуты.
+     * @param defaultName — basename для tmp-файла (для удобства в titlebar
+     *                     viewer'а). Без .pdf — добавляется автоматом.
+     */
+    dialog: function pynPrintDialog(defaultName) {
+      return ipcRenderer.invoke('pyn:print:dialog', String(defaultName || 'document'));
+    },
+    savePdf: function pynPrintSavePdf(defaultName) {
+      return ipcRenderer.invoke('pyn:print:save-pdf', String(defaultName || 'document'));
+    },
+  },
+  /**
+   * SMB-проводник для сетевой папки Экспедиция. Win-only (на Mac возвращает
+   * platform_not_supported). Все операции под whitelist root'ом.
+   */
+  fs: {
+    platform: function pynFsPlatform() {
+      return ipcRenderer.invoke('pyn:fs:platform');
+    },
+    list: function pynFsList(dirPath) {
+      return ipcRenderer.invoke('pyn:fs:list', dirPath);
+    },
+    open: function pynFsOpen(filePath) {
+      return ipcRenderer.invoke('pyn:fs:open', filePath);
+    },
+    reveal: function pynFsReveal(filePath) {
+      return ipcRenderer.invoke('pyn:fs:reveal', filePath);
+    },
+    delete: function pynFsDelete(targetPath) {
+      return ipcRenderer.invoke('pyn:fs:delete', targetPath);
+    },
+    upload: function pynFsUpload(srcPath, destDir) {
+      return ipcRenderer.invoke('pyn:fs:upload', srcPath, destDir);
+    },
+    mkdir: function pynFsMkdir(parentDir, name) {
+      return ipcRenderer.invoke('pyn:fs:mkdir', parentDir, name);
+    },
+    rename: function pynFsRename(oldPath, newName) {
+      return ipcRenderer.invoke('pyn:fs:rename', oldPath, newName);
+    },
+    copy: function pynFsCopy(srcPath, destDir) {
+      return ipcRenderer.invoke('pyn:fs:copy', srcPath, destDir);
+    },
+    move: function pynFsMove(srcPath, destDir) {
+      return ipcRenderer.invoke('pyn:fs:move', srcPath, destDir);
+    },
+  },
+  /**
    * Tray menu actions. Custom React menu (rendered в отдельном tray
    * BrowserWindow) вызывает эти actions; main процесс отрабатывает поведение
    * над main окном / жизненным циклом приложения.
@@ -207,5 +272,17 @@ contextBridge.exposeInMainWorld('pyn', {
         ipcRenderer.removeListener('pyn:tray:open-settings', wrapped);
       };
     },
+  },
+  /**
+   * §pyn-1.2.41 — native window visibility (minimize/hide/restore/show/blur/focus).
+   * Renderer слушает чтобы сразу слать heartbeat при смене состояния — точнее
+   * чем window.blur/focus, который не всегда срабатывает при minimize в taskbar.
+   */
+  onVisibilityChange: function pynOnVisibilityChange(handler) {
+    const wrapped = (_evt, state) => handler(state);
+    ipcRenderer.on('pyn:visibility', wrapped);
+    return function unsubscribe() {
+      ipcRenderer.removeListener('pyn:visibility', wrapped);
+    };
   },
 });

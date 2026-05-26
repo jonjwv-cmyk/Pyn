@@ -1,5 +1,6 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import * as RadixDialog from '@radix-ui/react-dialog';
 import { Clock, Upload } from 'lucide-react';
 import { DateDivider } from '@/components/ui/DateDivider';
 import { DayLabelPill } from '@/components/ui/DayLabelPill';
@@ -13,10 +14,11 @@ import { useWsEvent } from '@/lib/ws';
 import { wireToNewsItem } from '@/lib/repositories/news-repo';
 import {
   addReaction,
+  ApiError,
   can,
   getNews,
-  isNewsStale,
   loadDraft,
+  markMessageRead,
   pinMessage,
   removeReaction,
   saveDraft,
@@ -60,7 +62,7 @@ export function NewsFeed({
   currentUserLogin,
   currentUserRole,
 }: NewsFeedProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   // Permission: только admin/developer могут публиковать новости.
   const canPost = can(currentUserRole, 'news.post');
   const items = useNewsStore((s) => s.items);
@@ -87,6 +89,24 @@ export function NewsFeed({
   // "Запланировано на 5 мая, 2:34 PM". Авто-скрывается через timer ref ниже.
   const [scheduledToast, setScheduledToast] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // §pyn-1.2.54 — error-dialog для pin/unpin failures (limit reached, network).
+  // Центрированный alert-dialog с backdrop + кнопкой «Принято» — заметнее тоста,
+  // юзер должен дочитать message и явно подтвердить.
+  const [errorDialogMessage, setErrorDialogMessage] = useState<string | null>(null);
+
+  // §pyn-1.2.37 — dedup mark-read для новостей. Intersection-observer в NewsCard
+  // emit'ит при первом попадании в viewport, но при scroll back и refresh items
+  // мог бы повторно сработать → лишний HTTP. Set хранит уже-отправленные id.
+  const markedReadRef = useRef<Set<number>>(new Set());
+  const handleNewsMarkRead = useCallback((newsId: number): void => {
+    if (markedReadRef.current.has(newsId)) return;
+    markedReadRef.current.add(newsId);
+    void markMessageRead(api, newsId).catch((err) => {
+      markedReadRef.current.delete(newsId);
+      // eslint-disable-next-line no-console
+      console.warn('news mark_read failed:', err);
+    });
+  }, []);
 
   const refreshNews = useCallback(async (): Promise<void> => {
     setLoadError(null);
@@ -101,15 +121,24 @@ export function NewsFeed({
     }
   }, [currentUserLogin, setItems]);
 
-  // Initial mount: serve cached, refetch если stale. Сам `items` cached'ятся
-  // через Zustand persist — при первом mount после реонстарта Pyn'a там уже
-  // что-то есть (если был login раньше). lastFetchedAt не в deps useEffect'a
-  // намеренно — refetch только on mount, не каждый раз когда меняется.
+  // §pyn-1.2.54 — Initial mount: ВСЕГДА refreshNews (без isNewsStale check).
+  // Persisted store мог иметь stale pinned state (например, 143 застряла с 3 мая,
+  // юзер не видел её на client → server считал 3 pinned → 4-я pin fails). Always-
+  // refresh гарантирует свежее состояние pinned. Cache показывается мгновенно
+  // (stale-while-revalidate), fresh data заменяет через несколько ms.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (isNewsStale(lastFetchedAt)) {
-      void refreshNews();
-    }
+    void refreshNews();
+  }, [refreshNews]);
+
+  // §pyn-1.2.32 — focus-refetch fallback (App.tsx dispatch'ает custom event при
+  // window focus). В сетях где WS не работает — `new_news` push не доходит,
+  // счётчики и новые посты не появляются. При возврате фокуса делаем re-fetch
+  // через HTTP-канал.
+  useEffect(() => {
+    const onRefresh = () => { void refreshNews(); };
+    window.addEventListener('pyn:refresh-on-focus', onRefresh);
+    return () => window.removeEventListener('pyn:refresh-on-focus', onRefresh);
   }, [refreshNews]);
 
   // Real-time: `new_news` при публикации, `news_update` при любой мутации.
@@ -174,11 +203,58 @@ export function NewsFeed({
     }, SCHEDULED_TOAST_MS);
   };
 
+  const showErrorDialog = (msg: string): void => {
+    setErrorDialogMessage(msg);
+  };
+
   const pinned = useMemo(() => items.filter((i) => i.isPinned), [items]);
+
+  // §pyn-1.2.54 — измеряем реальную геометрию pinned-overlay через ResizeObserver,
+  // а не assume'им фиксированную высоту pill (она зависит от padding/border/expanded
+  // state, простые константы дают cumulative error при 2+ pills → divider за pill
+  // и blur не на середине нижнего). Из измеренной overlayHeight выводим:
+  // last pill bottom/middle, blur mask middle/end percent, divider sticky offset.
+  const PINNED_GAP = 6;
+  const PINNED_TOP_PAD = 12;
+  const PINNED_BOTTOM_PAD = 8;
+  const DIVIDER_GAP = 12;
+  const NO_PINNED_BLUR_H = 30;
+  const pinnedContentRef = useRef<HTMLDivElement>(null);
+  const [measuredOverlayH, setMeasuredOverlayH] = useState(0);
+  useLayoutEffect(() => {
+    if (pinned.length === 0) {
+      setMeasuredOverlayH(0);
+      return;
+    }
+    const el = pinnedContentRef.current;
+    if (!el) return;
+    const measure = (): void => setMeasuredOverlayH(el.offsetHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [pinned.length]);
+  const pillAreaH = Math.max(0, measuredOverlayH - PINNED_TOP_PAD - PINNED_BOTTOM_PAD);
+  const totalGap = Math.max(0, pinned.length - 1) * PINNED_GAP;
+  const avgPillH = pinned.length > 0 ? Math.max(0, (pillAreaH - totalGap) / pinned.length) : 0;
+  const lastPillBottom = pinned.length > 0 ? PINNED_TOP_PAD + pinned.length * avgPillH + totalGap : 0;
+  const lastPillMiddle = pinned.length > 0 ? lastPillBottom - avgPillH / 2 : 0;
+  const pinnedBlurHeight = pinned.length > 0 ? lastPillBottom + 8 : 0;
+  const pinnedBlurMaskMidPct =
+    pinnedBlurHeight > 0 ? Math.round((lastPillMiddle / pinnedBlurHeight) * 100) : 0;
+  const pinnedBlurMaskEndPct =
+    pinnedBlurHeight > 0 ? Math.round((lastPillBottom / pinnedBlurHeight) * 100) : 0;
+  const blurFadeEnd = pinned.length > 0 ? lastPillBottom : NO_PINNED_BLUR_H;
+  const scrollPaddingTop = blurFadeEnd + DIVIDER_GAP;
+  const dividerTopOffset = blurFadeEnd + DIVIDER_GAP;
 
   // Группировка news-карточек по yek-дню для date-разделителей. Pinned
   // дублируются — они И сверху как pill, И в общем потоке (Telegram-style).
   // Это позволяет click'у на pinned-pill `scrollIntoView` к real-row в ленте.
+  // §pyn-1.2.25 — `i18n.language` в deps: иначе при смене языка через Settings
+  // useMemo не пересчитывается → labels («16 мая») остаются на старой локали
+  // пока компонент не re-mount'нется (лента mounted постоянно, в отличие от
+  // ChatConversation который re-mount'ится при смене peer'а).
   const newsGroups = useMemo(() => {
     const out: { dayKey: number; label: string; items: typeof items }[] = [];
     for (const item of items) {
@@ -201,7 +277,8 @@ export function NewsFeed({
       }
     }
     return out;
-  }, [items]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, i18n.language]);
 
   // Persist scroll-position. Persist через safeStorage IPC = async,
   // throttled save (250ms после паузы) чтобы не спамить IPC writes.
@@ -260,10 +337,41 @@ export function NewsFeed({
     const el = scrollRef.current;
     if (!el) return;
     const target = persistedScrollTop;
+
+    // §pyn-1.2.54 — Fresh feed (saved<=0, например после QR login или wipe) →
+    // scroll сразу в bottom (последние новости). ResizeObserver re-applies
+    // scrollHeight при image/video lazy-load — 3s lock или до user-action.
+    // Это зеркало chat fresh-case: «открываем на самых свежих».
     if (target <= 0) {
-      scrollRestoredRef.current = true;
-      lastSavedScrollRef.current = 0;
-      return;
+      el.scrollTop = el.scrollHeight;
+      lastSavedScrollRef.current = el.scrollTop;
+      const followBottom = new ResizeObserver(() => {
+        if (scrollRestoredRef.current) return;
+        const node = scrollRef.current;
+        if (!node) return;
+        node.scrollTop = node.scrollHeight;
+      });
+      followBottom.observe(el);
+      for (const child of Array.from(el.children)) followBottom.observe(child);
+      const freshLockTimer = setTimeout(() => {
+        scrollRestoredRef.current = true;
+        followBottom.disconnect();
+      }, 3000);
+      const onFreshUserAction = (): void => {
+        scrollRestoredRef.current = true;
+        followBottom.disconnect();
+        clearTimeout(freshLockTimer);
+      };
+      el.addEventListener('wheel', onFreshUserAction, { passive: true, once: true });
+      el.addEventListener('touchstart', onFreshUserAction, { passive: true, once: true });
+      el.addEventListener('keydown', onFreshUserAction, { once: true });
+      return () => {
+        followBottom.disconnect();
+        clearTimeout(freshLockTimer);
+        el.removeEventListener('wheel', onFreshUserAction);
+        el.removeEventListener('touchstart', onFreshUserAction);
+        el.removeEventListener('keydown', onFreshUserAction);
+      };
     }
 
     // Immediate apply (target может clamp'нуться браузером если scrollHeight
@@ -385,17 +493,52 @@ export function NewsFeed({
     });
   };
 
-  const handleTogglePin = (newsId: number) => {
+  const handleTogglePin = async (newsId: number) => {
     const current = items.find((i) => i.id === newsId);
     if (!current) return;
     const willPin = !current.isPinned;
     updateItem(newsId, { isPinned: willPin });
     const action = willPin ? pinMessage : unpinMessage;
-    action(api, newsId).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.error('pin toggle failed:', err);
-      void refreshNews();
-    });
+
+    // §pyn-1.2.54 — retry с exponential backoff для network/transient failures.
+    // Логические ошибки (pin_limit_reached / already_pinned / message_not_found)
+    // не retry'им — это окончательное состояние server'а.
+    const MAX_RETRIES = 3;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        await action(api, newsId);
+        return;
+      } catch (err) {
+        if (err instanceof ApiError) {
+          if (err.code === 'pin_limit_reached') {
+            showErrorDialog(t('news.pin_limit_reached'));
+            void refreshNews();
+            return;
+          }
+          if (
+            err.code === 'already_pinned' ||
+            err.code === 'message_not_found' ||
+            err.code === 'admin_only'
+          ) {
+            // eslint-disable-next-line no-console
+            console.warn('pin toggle rejected:', err.code);
+            void refreshNews();
+            return;
+          }
+        }
+        if (attempt < MAX_RETRIES - 1) {
+          // eslint-disable-next-line no-console
+          console.warn(`pin toggle attempt ${attempt + 1} failed, retrying:`, err);
+          await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+          continue;
+        }
+        // Все попытки исчерпаны — показываем toast + refresh.
+        // eslint-disable-next-line no-console
+        console.error('pin toggle final failure:', err);
+        showErrorDialog(willPin ? t('news.pin_failed') : t('news.unpin_failed'));
+        void refreshNews();
+      }
+    }
   };
 
   const handleDelete = (newsId: number) => {
@@ -489,7 +632,10 @@ export function NewsFeed({
 
   return (
     <main
-      className="relative flex flex-1 flex-col bg-bg-primary"
+      // §pyn-1.2.54 — news-pattern-bg на ROOT (вместо bg-bg-primary) →
+      // pattern continuous от topbar до bottom. Pinned panel и scroll
+      // inherit единый фон без визуальных швов.
+      className="news-pattern-bg relative flex flex-1 flex-col"
       {...(canPost ? dropProps : {})}
     >
       {canPost && dragging && (
@@ -506,7 +652,11 @@ export function NewsFeed({
           </p>
         </div>
       )}
-      <div className="drag-region flex h-12 shrink-0 items-center justify-end gap-1.5 px-3">
+      {/* §pyn-1.2.22 — top-bar bg унифицирован с Tables/MOL/Sidebar
+          (bg-bg-surface), чтобы Win min/max/close controls не сливались
+          с тёмным фоном feed'а — раньше ribbon под кнопками был bg-bg-primary
+          и резко отличался от соседних панелей (Sidebar/ChatList). */}
+      <div className="drag-region flex h-12 shrink-0 items-center justify-end gap-1.5 border-b border-border-subtle bg-bg-surface px-3">
         {canPost && (
           <>
             <TopBarButton
@@ -520,37 +670,20 @@ export function NewsFeed({
           </>
         )}
       </div>
-      <div className="mx-3 h-px shrink-0 bg-border-subtle" />
 
-      {pinned.length > 0 && (
-        <div className="shrink-0">
-          <div className="mx-auto flex max-w-[720px] flex-col gap-2 px-6 pb-2 pt-3">
-            {pinned.map((item) => (
-              <PinnedPill
-                key={item.id}
-                news={item}
-                currentUserRole={currentUserRole}
-                onReact={handleReact}
-                onVote={handleVote}
-                onTogglePin={handleTogglePin}
-                onDelete={handleDelete}
-                onEdited={(id, newText) => updateItem(id, { text: newText })}
-                onJumpToNews={jumpToNews}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="news-pattern-bg relative flex-1 overflow-hidden">
+      <div className="relative flex-1 overflow-hidden">
         <div
           ref={scrollRef}
           onScroll={checkScroll}
           className="absolute inset-0 overflow-y-auto"
         >
-          {/* pb-[60px] — компактный отступ; последние новости почти впритык
-              к pill'у, но не теряются под ним. */}
-          <div className="mx-auto flex max-w-[720px] flex-col gap-2.5 px-6 pt-2 pb-[60px]">
+          {/* Padding-top — точно резервирует место под floating PinnedPill overlay
+              (см. константы выше: lastPillBottom + PINNED_BOTTOM_PAD).
+              pb-[60px] — отступ под floating composer. */}
+          <div
+            className="mx-auto flex max-w-[720px] flex-col gap-2.5 px-6 pb-[60px]"
+            style={{ paddingTop: `${scrollPaddingTop}px` }}
+          >
             {showInitialLoading && (
               <p className="py-8 text-center text-[12.5px] text-text-muted">
                 {t('news.loading_feed')}
@@ -569,8 +702,15 @@ export function NewsFeed({
             {newsGroups.map((g) => (
               // §2026-05-19 — per-group wrapper для sticky DateDivider
               // (Telegram-style swap при скролле между группами разных дней).
-              <div key={`g-${g.dayKey}`} className="flex flex-col">
-                {g.label && <DateDivider label={g.label} />}
+              // §pyn-1.2.51 — gap-2.5 ВНУТРИ группы: новости одного дня
+              // больше не слипаются как один блок, между ними visible
+              // промежуток 10px (same as between groups).
+              <div key={`g-${g.dayKey}`} className="flex flex-col gap-2.5">
+                {g.label && (
+                  // §pyn-1.2.54 — sticky top offset под floating PinnedPill,
+                  // чтобы divider останавливался в clear-зоне ПОД blur'ом (crisp).
+                  <DateDivider label={g.label} topOffset={dividerTopOffset} />
+                )}
                 {g.items.map((item) => (
                   <div key={item.id} data-news-id={item.id} className="news-row">
                     <NewsCard
@@ -581,6 +721,7 @@ export function NewsFeed({
                       onTogglePin={handleTogglePin}
                       onDelete={handleDelete}
                       onEdited={(id, newText) => updateItem(id, { text: newText })}
+                      onMarkRead={handleNewsMarkRead}
                     />
                   </div>
                 ))}
@@ -589,8 +730,58 @@ export function NewsFeed({
           </div>
         </div>
 
-        {/* Fade-в-фон сверху для плавного «затемнения» при scroll'е вверх. */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-5 bg-gradient-to-b from-bg-primary to-transparent" />
+        {/* §pyn-1.2.54 — floating top overlay: либо PinnedPill (если есть
+            закреплённые) поверх scroll'а как floating-плашка, либо просто
+            top blur fade (mirror composer). Юзер: «сверху пиллы закреплённых
+            словно сверху ленты как строка ввода новости и далее красивый блюр
+            стекло чутка ниже пилла». */}
+        {pinned.length > 0 ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30">
+            {/* §pyn-1.2.54 — blur mask mirror composer (centered on last pill):
+                solid blur от topbar до СЕРЕДИНЫ последнего pill'a, fade через
+                нижнюю половину последнего pill, transparent ниже. DateDivider
+                на dividerTopOffset попадает в clear-зону → читается crisp. */}
+            <div
+              aria-hidden
+              className="absolute inset-x-0 top-0 backdrop-blur-xl"
+              style={{
+                height: `${pinnedBlurHeight}px`,
+                maskImage: `linear-gradient(to bottom, black ${pinnedBlurMaskMidPct}%, transparent ${pinnedBlurMaskEndPct}%)`,
+                WebkitMaskImage: `linear-gradient(to bottom, black ${pinnedBlurMaskMidPct}%, transparent ${pinnedBlurMaskEndPct}%)`,
+              }}
+            />
+            <div
+              ref={pinnedContentRef}
+              className="pointer-events-auto relative mx-auto flex max-w-[720px] flex-col gap-1.5 px-6 pb-2 pt-3"
+            >
+              {pinned.map((item) => (
+                <PinnedPill
+                  key={item.id}
+                  news={item}
+                  currentUserRole={currentUserRole}
+                  onReact={handleReact}
+                  onVote={handleVote}
+                  onTogglePin={handleTogglePin}
+                  onDelete={handleDelete}
+                  onEdited={(id, newText) => updateItem(id, { text: newText })}
+                  onJumpToNews={jumpToNews}
+                />
+              ))}
+            </div>
+          </div>
+        ) : (
+          /* §pyn-1.2.54 — без pinned: мелкий blur fade под topbar (NO_PINNED_BLUR_H).
+             Divider sticky ниже blur'a (см. dividerTopOffset) в чистой зоне. */
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-0 z-10 backdrop-blur-xl"
+            style={{
+              height: `${NO_PINNED_BLUR_H}px`,
+              maskImage: 'linear-gradient(to bottom, black 50%, transparent 100%)',
+              WebkitMaskImage: 'linear-gradient(to bottom, black 50%, transparent 100%)',
+            }}
+          />
+        )}
 
         {/* §2026-05-19 — DayLabelPill убран: DateDivider теперь sticky сам. */}
         <ScrollToBottomButton visible={showScrollDown} onClick={scrollToBottom} />
@@ -599,7 +790,7 @@ export function NewsFeed({
             нижний — backdrop-blur с gradient mask (плавный переход
             blur→clear вверху), верхний — pill сам. */}
         {canPost && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-40">
             {/* Glass-fade с mask «50% → transparent»: blur в нижней
                 половине pill'а + ниже, верхняя половина прозрачная. */}
             <div
@@ -644,6 +835,53 @@ export function NewsFeed({
         open={scheduledDialogOpen}
         onOpenChange={setScheduledDialogOpen}
       />
+
+      {/* §pyn-1.2.54 — Alert-dialog по центру с одной строкой + кнопкой
+          «Принято». Используется для pin_limit_reached и pin/unpin failures. */}
+      <RadixDialog.Root
+        open={errorDialogMessage !== null}
+        onOpenChange={(o) => !o && setErrorDialogMessage(null)}
+      >
+        <RadixDialog.Portal>
+          <RadixDialog.Overlay
+            className={cn(
+              'fixed inset-0 z-40 bg-bg-deep/70 backdrop-blur-[2px]',
+              'data-[state=open]:animate-in data-[state=closed]:animate-out',
+              'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
+            )}
+          />
+          <RadixDialog.Content
+            className={cn(
+              // §pyn-1.2.54 — width auto + max-w viewport gap: dialog растягивается
+              // под одну строку текста (whitespace-nowrap). Если локаль очень
+              // длинная — clamp к viewport - 48px, иначе wrap.
+              'fixed left-1/2 top-1/2 z-50 w-auto max-w-[calc(100vw-48px)] -translate-x-1/2 -translate-y-1/2',
+              'rounded-xl border border-border-default bg-bg-elevated px-5 py-4 shadow-2xl',
+              'data-[state=open]:animate-in data-[state=closed]:animate-out',
+              'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
+              'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
+            )}
+          >
+            <RadixDialog.Title className="whitespace-nowrap text-[13.5px] font-medium text-text-strong">
+              {errorDialogMessage}
+            </RadixDialog.Title>
+            <div className="mt-4 flex items-center justify-end">
+              <RadixDialog.Close asChild>
+                <button
+                  type="button"
+                  autoFocus
+                  className={cn(
+                    'rounded-md bg-accent-clay px-3.5 py-1.5 text-[13px] font-medium text-white outline-none transition-colors',
+                    'hover:bg-accent-clay-dim',
+                  )}
+                >
+                  {t('common.acknowledge')}
+                </button>
+              </RadixDialog.Close>
+            </div>
+          </RadixDialog.Content>
+        </RadixDialog.Portal>
+      </RadixDialog.Root>
     </main>
   );
 }

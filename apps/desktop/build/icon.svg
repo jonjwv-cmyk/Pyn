@@ -1,0 +1,20 @@
+<svg width="1024" height="1024" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Pyn Logo — Canon T2 final.
+    Polish'нутая версия для app icon. 8-grid pixel-snap, mark занимает 70%
+    canvas (Apple icon-best-practice). Tonal T2 ±6% L от base #B35E45.
+
+    Background: #161611 (bg-deep — app underlay). Rounded square rx=56
+    (22% radius — между «Apple squircle» 22% и Material rounded 25%).
+  -->
+  <rect width="256" height="256" rx="56" fill="#161611"/>
+
+  <!-- Stem: x=40, y=40, w=48, h=176, rx=8. Base hue. -->
+  <rect x="40" y="40" width="48" height="176" rx="8" fill="#B35E45"/>
+
+  <!-- Top-bow: x=96, y=40, w=120, h=48, rx=8. Highlight +6% L. -->
+  <rect x="96" y="40" width="120" height="48" rx="8" fill="#C56C50"/>
+
+  <!-- Mid-bow: x=96, y=104, w=88, h=48, rx=8. Shadow -6% L. -->
+  <rect x="96" y="104" width="88" height="48" rx="8" fill="#9D533D"/>
+</svg>

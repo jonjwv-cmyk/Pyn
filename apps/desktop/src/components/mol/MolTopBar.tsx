@@ -1,4 +1,4 @@
-import { IdCard, AlertCircle, Filter, X } from 'lucide-react';
+import { IdCard, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
@@ -8,36 +8,26 @@ interface MolTopBarProps {
   recordCount: number;
   /** Сколько было в предыдущей версии базы. null = ещё не было. */
   previousCount: number | null;
-  /**
-   * Inline-фильтр поверх уже найденных строк. Показывается ТОЛЬКО когда
-   * основной query что-то нашёл (`canFilter=true`). Не персистится — это
-   * временный refinement в рамках текущего просмотра, в отличие от молQuery.
-   */
-  inlineFilter: string;
-  setInlineFilter: (v: string) => void;
-  canFilter: boolean;
 }
 
 /**
  * Top-bar раздела МОЛы. Заголовок «МОЛы» + счётчик загруженных записей +
- * inline-фильтр поверх найденных (когда есть результаты).
+ * diff с предыдущей версией.
+ *
+ * §pyn-1.2.27 — inline-фильтр «Уточнить по найденному» удалён: per-column
+ * фильтры в заголовках таблицы покрывают эту функциональность.
  *
  * Кнопки обновления тут нет — она единственная и живёт в попап-меню юзера
- * (DbVersionRow рядом с версией базы). Дублировать здесь смысла нет: юзер
- * всегда может открыть попап одним кликом.
+ * (DbVersionRow). Дублировать здесь смысла нет.
  *
- * Снизу — тонкая indeterminate progress-полоска, показывается во время
- * download'a snapshot'a (status='loading'). Это даёт юзеру понять что
- * refresh идёт даже если попап закрыт.
+ * Снизу — тонкая indeterminate progress-полоска во время download'a
+ * snapshot'a (status='loading').
  */
 export function MolTopBar({
   status,
   errorMessage,
   recordCount,
   previousCount,
-  inlineFilter,
-  setInlineFilter,
-  canFilter,
 }: MolTopBarProps) {
   const { t } = useTranslation();
   const loading = status === 'loading';
@@ -94,38 +84,6 @@ export function MolTopBar({
           <AlertCircle className="h-3.5 w-3.5" strokeWidth={1.75} />
           {errorMessage}
         </span>
-      )}
-
-      {/* Inline-фильтр — узкая строка справа от счётчиков. Появляется только
-          когда основной поиск что-то нашёл. Сужает уже-отображаемые строки,
-          без обращения к серверу. Esc / крестик — сброс. */}
-      {canFilter && (
-        <div className="no-drag-region ml-1 flex items-center gap-1.5 rounded-md border border-border-subtle bg-bg-elevated/45 px-2 py-1">
-          <Filter className="h-3 w-3 shrink-0 text-text-muted" strokeWidth={1.75} />
-          <input
-            type="text"
-            value={inlineFilter}
-            onChange={(e) => setInlineFilter(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') setInlineFilter('');
-            }}
-            placeholder={t('mol.filter_placeholder')}
-            className="w-44 bg-transparent text-[12px] text-text-strong placeholder:text-text-muted/70 outline-none"
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-          />
-          {inlineFilter && (
-            <button
-              type="button"
-              onClick={() => setInlineFilter('')}
-              className="text-text-muted hover:text-text-strong"
-              aria-label={t('mol.clear_filter_aria')}
-            >
-              <X className="h-3 w-3" strokeWidth={1.75} />
-            </button>
-          )}
-        </div>
       )}
 
       {/* Indeterminate progress на нижней границе. Чистый CSS — анимированная

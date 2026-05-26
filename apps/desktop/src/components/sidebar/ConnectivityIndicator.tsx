@@ -42,25 +42,48 @@ export function ConnectivityIndicator({ collapsed }: ConnectivityIndicatorProps)
           ? 'text-amber-400'
           : 'text-danger';
 
-  // В collapsed-режиме: ничего когда онлайн (avatar ниже имеет свою
-  // presence-dot — две зелёные точки рядом выглядели как баг). Показываем
-  // явный красный dot только при offline — это требует внимания.
+  // §pyn-1.2.54 — collapsed показывает те же 3 метрики что expanded, но
+  // stacked в 3 строки (текст центрирован, без точки/иконки). Чтобы при
+  // toggle collapse не было layout shift'а — pill всегда занимает одинаковое
+  // место в sidebar.
   if (collapsed) {
-    if (online) return null;
+    // §pyn-1.2.54 — текст в одну строку каждый (whitespace-nowrap), шрифт 9.5px
+    // чтобы строки типа «11 Мбит/с» / «11 Mbit/s» / «11 Мбіт/с» во всех локалях
+    // вписывались в collapsed-width sidebar без переноса. Padding px-1.5
+    // выравнивает текст с другими sidebar-элементами по невидимой левой линии.
     return (
       <div
-        className="flex items-center justify-center px-2 py-1"
-        title={t('connectivity.offline')}
+        className="flex h-10 flex-col items-start justify-center gap-0 overflow-hidden px-1.5 py-0.5 text-left"
+        title={online ? t('connectivity.online') : t('connectivity.offline')}
       >
-        <span className="h-2 w-2 rounded-full bg-danger" />
+        <span
+          className={cn(
+            'whitespace-nowrap text-[9px] leading-[11px]',
+            online ? 'text-text-secondary' : 'text-danger',
+          )}
+        >
+          {online ? t('connectivity.online') : t('connectivity.offline')}
+        </span>
+        {online && rtt && (
+          <span className={cn('whitespace-nowrap text-[9px] leading-[11px] tabular-nums', rttColor)}>
+            {rtt}
+          </span>
+        )}
+        {online && speed && (
+          <span className="whitespace-nowrap text-[9px] leading-[11px] tabular-nums text-text-muted">
+            {speed}
+          </span>
+        )}
       </div>
     );
   }
 
   // Развёрнутый: только текст, без иконки. Две строки — статус и метрики.
+  // §pyn-1.2.54 — px-1.5 (6) выравнивает текст с другими элементами sidebar
+  // (NavItem icons, BottomUserRow avatar) на единой линии слева.
   return (
     <div
-      className="flex flex-col gap-0 rounded-md px-2 py-1 leading-tight"
+      className="flex h-10 flex-col justify-center gap-0 rounded-md px-1.5 py-1 leading-tight"
       title={online ? t('connectivity.online') : t('connectivity.offline')}
     >
       <span

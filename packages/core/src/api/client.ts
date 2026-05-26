@@ -38,7 +38,17 @@ export class ApiClient {
   private token: string | null = null;
   private onAuthFailure: AuthFailureHandler | null = null;
 
-  constructor(private readonly transport: ApiTransport) {}
+  /**
+   * §pyn-1.2.49 — appVersion отправляется как HTTP-header `X-Pyn-Version`
+   * каждым request'ом. VPS nginx читает этот header в plaintext (он вне
+   * E2E-конверта, как Authorization) и блокирует устаревшие клиенты на
+   * edge'е до forward'а к CF — это экономит CF request count.
+   * Body остаётся encrypted, никакая чувствительная информация не утекает.
+   */
+  constructor(
+    private readonly transport: ApiTransport,
+    private readonly appVersion?: string,
+  ) {}
 
   setToken(token: string | null): void {
     this.token = token;
@@ -89,6 +99,7 @@ export class ApiClient {
       'X-OTL-Crypto': 'v1',
     };
     if (sig !== null) headers['X-Request-Sig'] = sig;
+    if (this.appVersion) headers['X-Pyn-Version'] = this.appVersion;
 
     // 5. Transport (bytes → bytes).
     let responseBytes: Uint8Array;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import i18next from 'i18next';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { Sidebar } from '@/components/sidebar';
@@ -6,18 +6,22 @@ import { ChatConversation, ChatList } from '@/components/chats';
 import { MolScreen } from '@/components/mol';
 import { initMol, refreshMolFromServer } from '@/lib/mol-repo';
 import { NewsFeed } from '@/components/news';
+import { ProbaScreen } from '@/components/proba';
+import { StorageScreen } from '@/components/storage';
 import { TablesScreen } from '@/components/tables';
 import { UpdateConfirmDialog } from '@/components/system/UpdateConfirmDialog';
 import { SettingsScreen } from '@/components/settings';
 import { LoginScreen } from '@/components/auth/LoginScreen';
+import { SplashScreen } from '@/components/auth/SplashScreen';
 import { SessionExpiryWatch } from '@/components/auth/SessionExpiryWatch';
 import { api } from '@/lib/api';
 import { sessionStore } from '@/lib/token-store';
 import { useWsEvent } from '@/lib/ws';
-import { useChatsStore, useMolStore, useNewsStore, useOutboxStore, useSessionInfoStore, useStatsStore, useUiStateStore, useUsersStore } from '@/lib/stores';
+import { useChatsStore, useMolStore, useNewsStore, useOutboxStore, usePresenceStore, useSessionInfoStore, useStatsStore, useUiStateStore, useUsersStore } from '@/lib/stores';
 import { initDeviceId } from '@/lib/device';
 import { computeInitials } from '@/lib/initials';
 import { wireToChatMessage, wireToChatPartnerFromMessage } from '@/lib/repositories/chats-repo';
+import { extractPresenceFromChatWires } from '@/lib/repositories/presence-fill';
 import { isAuthFailure } from '@/lib/version';
 import { triggerAppLockWipe, wipeUserData } from '@/lib/wipe';
 import {
@@ -36,6 +40,7 @@ import {
   getAdminMessages,
   getAppLockStatus,
   getUsers,
+  heartbeat,
   isAdminLike,
   isChatsStale,
   isDeveloper,
@@ -47,6 +52,7 @@ import {
   useAppLockStore,
   useSheetsLockStore,
   type AppControlStateChangedEvent,
+  type BaseChangedEvent,
   type NewMessageEvent,
   type Session,
   type SheetLockAcquiredEvent,
@@ -71,6 +77,77 @@ import { AppLockOverlay } from '@/components/system/AppLockOverlay';
  */
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
+  // §pyn-1.2.54 — splash state machine. `splashSession` инкрементируется
+  // при replay → useEffect ниже пересоздаёт timers. До этого фикса dep
+  // на самом splashStage вызывал cleanup, который убивал свои же timers
+  // (splash застревал на 'enter', 'done' никогда не наступал, кнопка
+  // replay не показывалась).
+  type SplashStage = 'splash' | 'enter' | 'done';
+  const [splashStage, setSplashStage] = useState<SplashStage>('splash');
+  const [splashSession, setSplashSession] = useState(0);
+
+  // §pyn-1.2.54 — runtime measurement реальной позиции PynMarkIcon в DOM.
+  // useLayoutEffect — синхронно после mount, ДО browser paint.
+  // Зависит ОТ splashSession чтобы replay тоже триггерил замер.
+  const [iconCenterY, setIconCenterY] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (session) return;
+    const tryMeasure = (tag: string): boolean => {
+      const icon = document.querySelector<HTMLElement>(
+        '[data-pyn-login-mark]',
+      );
+      if (!icon) {
+        window.pyn?.debugLog?.('splash:measure', `[${tag}] icon NOT FOUND`);
+        return false;
+      }
+      const rect = icon.getBoundingClientRect();
+      if (rect.height === 0) {
+        window.pyn?.debugLog?.('splash:measure', `[${tag}] zero rect`);
+        return false;
+      }
+      const cy = Math.round(rect.top + rect.height / 2);
+      window.pyn?.debugLog?.(
+        'splash:measure',
+        `[${tag}] iconCenterY=${cy}`,
+      );
+      setIconCenterY(cy);
+      return true;
+    };
+    if (tryMeasure('sync')) return;
+    const raf = requestAnimationFrame(() => {
+      if (!tryMeasure('rAF')) setTimeout(() => tryMeasure('100ms'), 100);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [session, splashSession]);
+  const splashTargetY =
+    iconCenterY !== null ? iconCenterY - window.innerHeight / 2 : null;
+
+  // §pyn-1.2.54 — dev-кнопка для повтора splash. Инкремент splashSession
+  // → useEffect ниже пересоздаст timers с нуля.
+  const replaySplash = useCallback(() => {
+    setIconCenterY(null);
+    setSplashStage('splash');
+    setSplashSession((s) => s + 1);
+  }, []);
+  useEffect(() => {
+    setSplashStage('splash');
+    // §pyn-1.2.54 — тайминги:
+    //   0–0.6s         → пустой тёмный экран
+    //   0.6–1.45s      → полоски влетают и формируют логотип
+    //   1.8–2.3s       → mark shrink
+    //   2.3–3.25s      → mark lift к icon position
+    //   3.25–3.6s      → hold
+    //   3.6s enter     → outline draws по часовой стрелке (1.4s)
+    //   5.0–5.5s       → splash-bg dissolves (0.5s), LoginScreen pattern revealed
+    //   5.5–6.9s       → card animation вырастает из иконки (1.4s, SEQUENTIAL после bg)
+    //   6.9s done      → splash unmount, LoginScreen mark visible
+    const enterId = setTimeout(() => setSplashStage('enter'), 3600);
+    const doneId = setTimeout(() => setSplashStage('done'), 6900);
+    return () => {
+      clearTimeout(enterId);
+      clearTimeout(doneId);
+    };
+  }, [splashSession]);
   const [hydrating, setHydrating] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
   // Update flow state machine вынесен в useUpdateFlow hook (см. lib/hooks/use-update-flow.ts).
@@ -92,6 +169,23 @@ export function App() {
   const setActiveSection = useUiStateStore((s) => s.setActiveSection);
   const activeChatId = useUiStateStore((s) => s.activeChatId);
   const setActiveChatId = useUiStateStore((s) => s.setActiveChatId);
+  // §pyn-1.2.54 — openedChatIds: per-peer persistent DOM tree (Tables-style).
+  // Каждый chat юзер хоть раз кликнул — остаётся mounted с display-toggle до
+  // logout / restart. При inter-chat switch DOM tree уже-открытого peer'a
+  // preserved → scroll и загруженные images intact → instant без re-mount
+  // ChatMessage/AttachmentTile (которые бы дали fresh `<img>` async-load CLS).
+  // Не persist между restart'ами — fresh start = пустой Set, первый клик
+  // open'ит (один initial-load CLS как обычно).
+  const [openedChatIds, setOpenedChatIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!activeChatId) return;
+    setOpenedChatIds((prev) => {
+      if (prev.has(activeChatId)) return prev;
+      const next = new Set(prev);
+      next.add(activeChatId);
+      return next;
+    });
+  }, [activeChatId]);
   // Settings — overlay поверх основной зоны (открывается из попап-меню юзера,
   // не из Sidebar). Back-кнопка просто снимает overlay, основная nav-секция
   // не меняется — юзер вернётся точно туда же где был.
@@ -247,6 +341,9 @@ export function App() {
     const myLogin = session.user.login;
     try {
       const wire = await getAdminMessages(api, { limit: 100 });
+      // §pyn-1.2.39 — заполняем presenceStore из попутных presence-полей в wire.
+      // Тем самым source-of-truth для presence единый (см. presence-store.ts).
+      usePresenceStore.getState().setMany(extractPresenceFromChatWires(wire));
       const byPeer = new Map<string, ChatPartner>();
       for (const msg of wire) {
         const partner = wireToChatPartnerFromMessage(msg, myLogin);
@@ -276,7 +373,13 @@ export function App() {
     if (!isAdminLike(session.role)) return;
     if (!isUsersStale(usersLastFetchedAt)) return;
     getUsers(api)
-      .then((users) => setUsers(users))
+      .then((users) => {
+        setUsers(users);
+        // §pyn-1.2.39 — попутно fill presenceStore.
+        usePresenceStore.getState().setMany(
+          users.map((u) => ({ login: u.login, status: u.presenceStatus, lastSeenAt: u.lastSeenAt })),
+        );
+      })
       .catch((err) => {
         // eslint-disable-next-line no-console
         console.warn('getUsers failed:', err);
@@ -331,6 +434,7 @@ export function App() {
       actionId: event.action_id,
       actionLabel: event.action_label,
       userName: event.user_name,
+      userLogin: event.user_login || '',
       tabName: event.tab_name,
       lockedTabRawNames: Array.isArray(event.locked_tabs) ? event.locked_tabs : [],
     });
@@ -353,7 +457,16 @@ export function App() {
     if (!session) return;
     void initMol();
   }, [session]);
-  useWsEvent('base_changed', () => {
+  useWsEvent<BaseChangedEvent>('base_changed', (event) => {
+    // §pyn-1.2.21 — server теперь шлёт counts → optimistic update мета
+    // (UI MolTopBar мгновенно показывает «было N → сейчас M (±K)»), а
+    // снапшот records догружается в фоне для actual поиска.
+    if (event.records_count !== undefined || event.previous_records_count !== undefined) {
+      useMolStore.getState().setCountsFromWs({
+        recordsCount: event.records_count ?? null,
+        previousRecordsCount: event.previous_records_count ?? null,
+      });
+    }
     void refreshMolFromServer({ force: true });
   });
 
@@ -368,6 +481,148 @@ export function App() {
     })();
   });
 
+  // §pyn-1.2.32 — focus-refetch fallback. В корп окружениях где WS не открывается
+  // (HTTP 407 от прокси с NTLM) push-события `new_message` / `app_version_changed`
+  // не доходят. При возврате фокуса на Pyn делаем re-fetch через HTTP-канал
+  // (он работает прозрачно через NTLM). Это не polling: триггерится естественным
+  // действием юзера. Дополнительно dispatch'ает 'pyn:refresh-on-focus' —
+  // useUpdateFlow и NewsFeed подписаны и тоже сделают свой re-fetch.
+  useEffect(() => {
+    if (!session) return;
+    const onFocus = () => {
+      void refreshConversations();
+      window.dispatchEvent(new CustomEvent('pyn:refresh-on-focus'));
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [session, refreshConversations]);
+
+  // §pyn-1.2.34 — handler `unread_update` (server broadcasts when статус
+  // сообщения меняется на 'read'). Раньше handler отсутствовал → counter
+  // у других admin/dev клиентов не пересчитывался когда один из них прочитал
+  // сообщение от user/client. Теперь shared inbox sync'ируется live.
+  useWsEvent('unread_update', () => {
+    if (!session) return;
+    void refreshConversations();
+  });
+
+  // §pyn-1.2.38 → §pyn-1.2.39 — presence_change handler. Server broadcast'ит
+  // при изменении app_state любого user'а (через heartbeat в v1.2.39 и при
+  // WS hello/close в любой версии). В v1.2.39 источник правды — глобальный
+  // `usePresenceStore`; компоненты (UserListRow, ChatList, ChatConversation
+  // header, NewsStatsDialog) читают presence оттуда по login. Один WS push →
+  // обновляется во всех местах одновременно.
+  useWsEvent<{
+    type: 'presence_change';
+    login: string;
+    status: string;
+    last_seen_at?: string;
+  }>('presence_change', (event) => {
+    if (!event.login) return;
+    usePresenceStore.getState().setOne(event.login, event.status, event.last_seen_at);
+  });
+
+  // §pyn-1.2.39 — message_read handler. Server broadcast'ит при mark_message_read
+  // чат-сообщения. Помечаем own message как прочитанное в открытом чате
+  // (если он сейчас активен и сообщение там есть) → ✓✓ появляются мгновенно
+  // без re-entry в чат. Юзер увидел уведомление о новом сообщении в mobile,
+  // открыл его → server marks read → desktop отправитель видит ✓✓ за ~500ms.
+  useWsEvent<{
+    type: 'message_read';
+    message_id: number;
+    reader_login: string;
+    sender_login: string;
+  }>('message_read', (event) => {
+    if (!session) return;
+    // Меня интересует только когда МОЁ сообщение прочитано. Server шлёт всем
+    // в room, но имеет смысл только для отправителя — отображаем ✓✓.
+    if (event.sender_login !== session.user.login) return;
+    const peer = event.reader_login;
+    const messages = useChatsStore.getState().messagesByPeer[peer];
+    if (!messages || messages.length === 0) return;
+    let mutated = false;
+    const next = messages.map((m) => {
+      if (m.isOwn && m.numericId === event.message_id && !m.isRead) {
+        mutated = true;
+        return { ...m, isRead: true };
+      }
+      return m;
+    });
+    if (mutated) setMessagesForPeer(peer, next);
+  });
+
+  // §pyn-1.2.38 → §pyn-1.2.48 — heartbeat строго event-driven. Source-of-truth
+  // для visibility — native Electron events (BrowserWindow on minimize/hide/
+  // restore/show) через IPC; window blur/focus + navigator online/offline
+  // оставлены как fallback (срабатывают когда юзер переключился на другое
+  // приложение или сеть отвалилась).
+  //
+  // §pyn-1.2.48 — regular 30s interval УБРАН. Сервер актуализирует last_seen
+  // на любом authed action (см. server-modular/index.js middleware), а cron
+  // sweep (раз в 5 мин, threshold 20 мин) подчищает дохлые сессии. Это даёт
+  // ~120 req/час экономии CF на одного клиента без потери presence accuracy.
+  //
+  // Server использует `app_state` в sessions для aggregation:
+  //   • foreground recently → online
+  //   • background → paused (через grace window)
+  //   • никакой активности > 20 мин → offline (via cron sweep)
+  useEffect(() => {
+    if (!session) return;
+    const myLogin = session.user.login;
+    let currentState: 'foreground' | 'background' = document.hasFocus()
+      ? 'foreground'
+      : 'background';
+
+    // §pyn-1.2.42 — обёртка вокруг heartbeat. Success → setOne authoritative
+    // self-status от сервера. Fail (network error) → setOne offline — юзер
+    // сам видит у себя offline когда сеть упала, не «лжёт» себе online.
+    const sendHeartbeat = (state: 'foreground' | 'background'): void => {
+      heartbeat(api, state)
+        .then((res) => {
+          usePresenceStore.getState().setOne(myLogin, res.presenceStatus, res.lastSeenAt);
+        })
+        .catch(() => {
+          // Network/server failure — мы offline относительно сервера.
+          usePresenceStore.getState().setOne(myLogin, 'offline');
+        });
+    };
+
+    // §pyn-1.2.42 — optimistic при mount: ставим self online сразу, пока
+    // первый heartbeat не подтвердил. Без этого UI читает stale persisted
+    // status из прошлой сессии (если был paused — жёлтая точка мигает).
+    usePresenceStore.getState().setOne(myLogin, 'online');
+    sendHeartbeat(currentState);
+
+    const setState = (state: 'foreground' | 'background'): void => {
+      if (currentState === state) return;
+      currentState = state;
+      sendHeartbeat(state);
+    };
+    const onFocus = () => setState('foreground');
+    const onBlur = () => setState('background');
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('blur', onBlur);
+    // §pyn-1.2.41 — native BrowserWindow events через IPC. Точнее чем
+    // window.blur/focus: ловит minimize-в-taskbar и hide-в-tray, которые
+    // в Win-Chromium не всегда триггерят web blur.
+    const unsubVisibility = window.pyn?.onVisibilityChange?.(setState);
+    // §pyn-1.2.42 — navigator online/offline. Когда браузер сам обнаружил
+    // сетевую недоступность — instant offline без ожидания heartbeat fail.
+    const onOnline = () => sendHeartbeat(currentState);
+    const onOffline = () => {
+      usePresenceStore.getState().setOne(myLogin, 'offline');
+    };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      unsubVisibility?.();
+    };
+  }, [session]);
+
   // new_message → refresh conversations + если открыт чат с этим peer'ом,
   // перезагрузить переписку (или append, если это собственный outgoing).
   useWsEvent<NewMessageEvent>('new_message', (event) => {
@@ -379,6 +634,7 @@ export function App() {
     if (activeChatId && relevantPeer === activeChatId) {
       getAdminChat(api, { userLogin: activeChatId, limit: 200 })
         .then((wire) => {
+          usePresenceStore.getState().setMany(extractPresenceFromChatWires(wire));
           setMessagesForPeer(activeChatId, wire.map((m) => wireToChatMessage(m, myLogin)));
         })
         .catch((err) => {
@@ -397,6 +653,7 @@ export function App() {
     getAdminChat(api, { userLogin: peer, limit: 200 })
       .then((wire) => {
         if (cancelled) return;
+        usePresenceStore.getState().setMany(extractPresenceFromChatWires(wire));
         setMessagesForPeer(peer, wire.map((m) => wireToChatMessage(m, myLogin)));
         // Mark последнего unread от peer'a → server пометит весь thread до этого id.
         const lastUnreadFromPeer = wire
@@ -428,6 +685,28 @@ export function App() {
     () => (activeChatId ? messagesByPeer[activeChatId] ?? [] : []),
     [activeChatId, messagesByPeer],
   );
+
+  // §pyn-1.2.54 — partnersById для O(1) lookup при render'е opened-chat-Map.
+  const partnersById = useMemo(() => {
+    const map = new Map<string, ChatPartner>();
+    for (const p of partners) map.set(p.id, p);
+    return map;
+  }, [partners]);
+
+  // §pyn-1.2.37 — dedup IDs которые уже пометили прочитанными. Без этого
+  // intersection observer мог бы повторно слать mark_message_read при
+  // ре-mount компонента (новый messages array, тот же id) → лишние HTTP.
+  const markedReadRef = useRef<Set<number>>(new Set());
+  const handleChatMarkRead = useCallback((messageId: number): void => {
+    if (!session) return;
+    if (markedReadRef.current.has(messageId)) return;
+    markedReadRef.current.add(messageId);
+    void markMessageRead(api, messageId).catch((err) => {
+      markedReadRef.current.delete(messageId);
+      // eslint-disable-next-line no-console
+      console.warn('intersection mark_read failed:', err);
+    });
+  }, [session]);
 
   const handleChatReact = (messageId: number, emoji: string): void => {
     if (!session || !activeChatId) return;
@@ -584,9 +863,30 @@ export function App() {
   }
 
   if (!session) {
+    // §pyn-1.2.54 — `data-splash-stage` attribute на wrapper cascade'ит к
+    // потомкам, CSS таргетит `[data-login-card]` (карточка LoginScreen)
+    // для animation. Pattern bg LoginScreen остаётся СТАТИЧНЫМ — animation
+    // применяется ТОЛЬКО на card, не на wrapper.
     return (
       <Tooltip.Provider delayDuration={200} skipDelayDuration={1500} disableHoverableContent>
-        <LoginScreen onSuccess={setSession} />
+        {splashStage !== 'done' && (
+          <SplashScreen
+            targetY={splashTargetY}
+            iconCenterY={iconCenterY}
+          />
+        )}
+        <div className="h-full" data-splash-stage={splashStage}>
+          <LoginScreen onSuccess={setSession} />
+        </div>
+        {import.meta.env.DEV && splashStage === 'done' && (
+          <button
+            type="button"
+            onClick={replaySplash}
+            className="fixed bottom-4 right-4 z-[2000] rounded-full border border-border-default bg-bg-elevated px-3 py-1.5 text-[11px] font-medium text-text-secondary shadow-lg transition-colors hover:bg-bg-hover hover:text-text-strong"
+          >
+            ↻ Splash
+          </button>
+        )}
       </Tooltip.Provider>
     );
   }
@@ -634,24 +934,12 @@ export function App() {
               } : undefined}
             />
 
-            {activeSection === 'chats' ? (
-              <>
-                <ChatList
-                  conversations={partners}
-                  activeId={activeChatId}
-                  onSelect={setActiveChatId}
-                />
-                <ChatConversation
-                  partner={activeChat}
-                  messages={messages}
-                  onSend={(text, atts, replyToId) => {
-                    void handleSendMessage(text, atts, replyToId);
-                  }}
-                  onReact={handleChatReact}
-                />
-              </>
-            ) : activeSection === 'news' ? null /* ← рендерится ниже always-mounted */ : activeSection === 'mol' ? (
+            {activeSection === 'chats' ? null /* ← рендерится ниже always-mounted */ : activeSection === 'news' ? null /* ← рендерится ниже always-mounted */ : activeSection === 'mol' ? (
               <MolScreen />
+            ) : activeSection === 'vault' ? (
+              <StorageScreen />
+            ) : activeSection === 'proba' ? (
+              <ProbaScreen />
             ) : activeSection.startsWith('sheet:') ? null /* ← рендерится ниже always-mounted */ : (
               <main className="flex flex-1 flex-col">
                 <div className="drag-region h-8 shrink-0" />
@@ -680,6 +968,7 @@ export function App() {
             >
               <TablesScreen
                 currentUserName={session.user.fullName || session.user.login}
+                currentUserLogin={session.user.login}
               />
             </div>
 
@@ -703,6 +992,71 @@ export function App() {
                 currentUserLogin={session.user.login}
                 currentUserRole={session.role}
               />
+            </div>
+
+            {/*
+              §pyn-1.2.54 — Chats: always-mounted ChatList + per-peer ChatConversation
+              Map (Tables-style). Каждый chat юзер хоть раз открыл — свой
+              ChatConversation остаётся mounted в DOM (display: flex/none).
+              Inter-chat switch = display toggle, никакого re-mount ChatMessage/
+              AttachmentTile, никакого fresh async-image-load CLS, scroll и
+              decrypted blob URLs preserved браузером. Empty-state (activeChatId=null
+              или peer ещё не в opened-set) показывается отдельным ChatConversation
+              с partner=null. Memory: один ChatConversation на каждый посещённый
+              в этой сессии chat (типично <30); очищается на logout/wipe.
+            */}
+            <div
+              className="flex flex-1"
+              style={{
+                display: activeSection === 'chats' ? 'flex' : 'none',
+              }}
+            >
+              <ChatList
+                conversations={partners}
+                activeId={activeChatId}
+                onSelect={setActiveChatId}
+              />
+              <div className="relative flex flex-1 flex-col">
+                <div
+                  className="flex flex-1 flex-col"
+                  style={{
+                    display: activeChat ? 'none' : 'flex',
+                  }}
+                >
+                  <ChatConversation
+                    partner={null}
+                    messages={[]}
+                    onSend={(text, atts, replyToId) => {
+                      void handleSendMessage(text, atts, replyToId);
+                    }}
+                    onReact={handleChatReact}
+                    onMarkRead={handleChatMarkRead}
+                  />
+                </div>
+                {Array.from(openedChatIds).map((peerId) => {
+                  const peer = partnersById.get(peerId);
+                  if (!peer) return null;
+                  const peerMessages = messagesByPeer[peerId] ?? [];
+                  const isActive = activeChatId === peerId;
+                  return (
+                    <div
+                      key={peerId}
+                      className="flex flex-1 flex-col"
+                      style={{ display: isActive ? 'flex' : 'none' }}
+                    >
+                      <ChatConversation
+                        partner={peer}
+                        messages={peerMessages}
+                        onSend={(text, atts, replyToId) => {
+                          void handleSendMessage(text, atts, replyToId);
+                        }}
+                        onReact={handleChatReact}
+                        onMarkRead={handleChatMarkRead}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
             </div>
         </>
 

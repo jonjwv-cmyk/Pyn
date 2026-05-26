@@ -32,4 +32,6 @@ const transport: ApiTransport = async (body, headers, opts) => {
   }
 };
 
-export const api = new ApiClient(transport);
+// §pyn-1.2.49 — appVersion в header для VPS nginx edge-block старых билдов.
+// Сам window.pyn.appVersion парсится в preload из process.argv.
+export const api = new ApiClient(transport, window.pyn?.appVersion);

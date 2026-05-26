@@ -1,0 +1,102 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" font-family="Inter, system-ui, sans-serif">
+  <!-- 5 colorways × 2 строки. Все 10 вариантов одной формы D/v2. -->
+  <rect width="1280" height="640" fill="#0A0A0A"/>
+
+  <!-- Helper: один блок-плашка с лого + подпись -->
+  <!-- Row 1 -->
+
+  <!-- 1. clay-dim on deep (CANON) -->
+  <g transform="translate(0,0)">
+    <rect width="256" height="256" fill="#0A0A0A"/>
+    <g transform="translate(0,0)">
+      <rect width="256" height="256" rx="48" fill="#161611"/>
+      <rect x="56" y="56" width="38" height="144" rx="6" fill="#B35E45"/>
+      <rect x="104" y="56" width="96" height="40" rx="6" fill="#B35E45"/>
+      <rect x="104" y="108" width="72" height="38" rx="6" fill="#B35E45"/>
+    </g>
+    <text x="12" y="296" fill="#A6A39B" font-size="13">01 clay-dim · deep · CANON</text>
+  </g>
+
+  <!-- 2. accent-clay on deep -->
+  <g transform="translate(256,0)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#D97757"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#D97757"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#D97757"/>
+    <text x="12" y="296" fill="#A6A39B" font-size="13">02 clay · deep</text>
+  </g>
+
+  <!-- 3. bookcloth on deep -->
+  <g transform="translate(512,0)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#CC785C"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#CC785C"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#CC785C"/>
+    <text x="12" y="296" fill="#A6A39B" font-size="13">03 bookcloth · deep</text>
+  </g>
+
+  <!-- 4. kraft on deep -->
+  <g transform="translate(768,0)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#D4A37F"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#D4A37F"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#D4A37F"/>
+    <text x="12" y="296" fill="#A6A39B" font-size="13">04 kraft · deep</text>
+  </g>
+
+  <!-- 5. manilla on deep -->
+  <g transform="translate(1024,0)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#E9D7B3"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#E9D7B3"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#E9D7B3"/>
+    <text x="12" y="296" fill="#A6A39B" font-size="13">05 manilla · deep</text>
+  </g>
+
+  <!-- Row 2 -->
+
+  <!-- 6. clay-dim on primary (warm dark) -->
+  <g transform="translate(0,320)">
+    <rect width="256" height="256" rx="48" fill="#262624"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#B35E45"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#B35E45"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#B35E45"/>
+    <text x="12" y="616" fill="#A6A39B" font-size="13">06 clay-dim · bg-primary</text>
+  </g>
+
+  <!-- 7. text-strong (off-white) on deep — mono luxury -->
+  <g transform="translate(256,320)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#F5F4EF"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#F5F4EF"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#F5F4EF"/>
+    <text x="12" y="616" fill="#A6A39B" font-size="13">07 off-white · deep · mono</text>
+  </g>
+
+  <!-- 8. claydim on manilla — INVERTED light bg -->
+  <g transform="translate(512,320)">
+    <rect width="256" height="256" rx="48" fill="#E9D7B3"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#B35E45"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#B35E45"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#B35E45"/>
+    <text x="12" y="616" fill="#A6A39B" font-size="13">08 clay-dim · manilla · INVERTED</text>
+  </g>
+
+  <!-- 9. two-tone: kraft stem + bookcloth bow -->
+  <g transform="translate(768,320)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#D4A37F"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#CC785C"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#B35E45"/>
+    <text x="12" y="616" fill="#A6A39B" font-size="13">09 kraft + bookcloth + claydim · 3-tone</text>
+  </g>
+
+  <!-- 10. manilla on bookcloth — fully warm -->
+  <g transform="translate(1024,320)">
+    <rect width="256" height="256" rx="48" fill="#CC785C"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#E9D7B3"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#E9D7B3"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#E9D7B3"/>
+    <text x="12" y="616" fill="#A6A39B" font-size="13">10 manilla · bookcloth · fully warm</text>
+  </g>
+</svg>

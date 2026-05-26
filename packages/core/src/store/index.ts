@@ -59,6 +59,14 @@ export {
 } from './stats-store';
 
 export {
+  createPresenceStore,
+  type PresenceState,
+  type PresenceInfo,
+  type PresenceEntry,
+  type PresenceStatus,
+} from './presence-store';
+
+export {
   useSheetsLockStore,
   type SheetLock,
   type SheetsLockState,
@@ -69,7 +77,15 @@ export {
   type AppLockScopeData,
   type AppLockStoreState,
 } from './app-lock-store';
+
+export { useStorageStore } from './storage-store';
 // AppLockState и AppLockScope экспортируются через endpoints/app-lock —
 // тут не реэкспортируем чтобы не было дубликатов в re-export цепочке index.ts.
 
 export { createJSONStorage, type StateStorage, type PersistStorage } from 'zustand/middleware';
+
+// Re-export raw zustand для downstream-пакетов (desktop / mobile) которые
+// делают свои inline-store'ы (например `useWarehousesStore` в desktop) и
+// не хотят добавлять зависимость на пакет zustand напрямую — берут через
+// @pyn/core. Так workspace остаётся single-source для версии zustand.
+export { create as createZustandStore } from 'zustand';

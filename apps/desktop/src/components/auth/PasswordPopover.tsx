@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import * as Popover from '@radix-ui/react-popover';
 import { KeyRound } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -12,28 +11,57 @@ import { cn } from '@/lib/cn';
 import { getDeviceId, getDeviceLabel } from '@/lib/device';
 import { PasswordInput } from '@/components/ui/PasswordInput';
 
-interface PasswordPopoverProps {
-  /** Колбэк со свежим LoginResponse при успешном логине. */
-  onSuccess: (result: LoginResponse) => Promise<void>;
-  /** Контроллер open-state — поднят наверх (LoginScreen), чтобы main-area
-   *  могла blur'нуться при open. */
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+interface PasswordTriggerProps {
+  onClick: () => void;
+  active: boolean;
 }
 
 /**
- * Popover-форма ввода логина и пароля. Trigger — кнопка с иконкой ключа в
- * top-right карточки login'а. При open:
- *   • main login-content (QR + steps + counter) blur'ится через `[data-pw-open]`
- *     state на root LoginScreen.
- *   • Popover не закрывается ни по click-outside, ни по Esc — только через
- *     явные кнопки «Отмена» / «Войти». Это спасает от случайных закрытий с
- *     частично-набранным паролем.
+ * §pyn-1.2.54 — trigger button «Войти по паролю» (key icon + label).
+ * Open-state управляется снаружи (LoginScreen) — visual `active` ставит
+ * фон/цвет hover-like когда popover открыт.
+ */
+export function PasswordTrigger({ onClick, active }: PasswordTriggerProps): JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        // §pyn-1.2.54 — max-w-[140px] чтобы кнопка НЕ перекрывала PynMarkIcon
+        // в центре card (card 360px wide, icon 56px = 140px на каждую сторону
+        // до пересечения). items-start + mt-0.5 на icon → визуально align с
+        // первой строкой когда текст wraps. leading-tight + py-1 даёт
+        // auto-height до 2 строк без overflow.
+        'flex max-w-[140px] items-start gap-1.5 rounded-md px-2 py-1',
+        'text-left text-[11.5px] leading-tight text-text-muted outline-none transition-colors',
+        'hover:bg-bg-hover hover:text-text-primary',
+        active && 'bg-bg-hover text-text-primary',
+      )}
+    >
+      <KeyRound className="mt-0.5 h-3 w-3 shrink-0" strokeWidth={1.75} />
+      <span>{t('login.switch_password')}</span>
+    </button>
+  );
+}
+
+interface PasswordPopoverProps {
+  /** Колбэк со свежим LoginResponse при успешном логине. */
+  onSuccess: (result: LoginResponse) => Promise<void>;
+  /** Закрыть popover (Отмена). */
+  onCancel: () => void;
+}
+
+/**
+ * §pyn-1.2.54 — форма ввода логина и пароля, **отцентрирована внутри
+ * LoginScreen card** через absolute inset-0 + flex center. Появляется
+ * как «pill раскрылся из воздуха» — scale(0)→scale(1) + opacity 0→1
+ * easeOutQuint (Linear/Figma slow-tail). Не закрывается ни по click-outside,
+ * ни по Esc — только через явные кнопки «Отмена» / «Войти».
  */
 export function PasswordPopover({
   onSuccess,
-  open,
-  onOpenChange,
+  onCancel,
 }: PasswordPopoverProps) {
   const { t } = useTranslation();
   const [loginValue, setLoginValue] = useState('');
@@ -69,106 +97,85 @@ export function PasswordPopover({
     setLoginValue('');
     setPassword('');
     setError(null);
-    onOpenChange(false);
+    onCancel();
   };
 
   const canSubmit = loginValue.trim().length > 0 && password.length > 0 && !loading;
 
   return (
-    <Popover.Root open={open} onOpenChange={onOpenChange}>
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'flex h-7 items-center gap-1.5 rounded-md px-2',
-            'text-[11.5px] text-text-muted outline-none transition-colors',
-            'hover:bg-bg-hover hover:text-text-primary',
-            'data-[state=open]:bg-bg-hover data-[state=open]:text-text-primary',
-          )}
-        >
-          <KeyRound className="h-3 w-3 shrink-0" strokeWidth={1.75} />
-          <span>{t('login.switch_password')}</span>
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          side="bottom"
-          align="start"
-          sideOffset={8}
-          collisionPadding={12}
-          // Запрет close на click-outside и Esc — только явные кнопки.
-          onInteractOutside={(e) => e.preventDefault()}
-          onEscapeKeyDown={(e) => e.preventDefault()}
-          className={cn(
-            'z-50 w-[320px] rounded-xl border border-border-default bg-bg-elevated p-4 shadow-2xl',
-            'data-[state=open]:animate-in data-[state=closed]:animate-out',
-            'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
-            'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
-          )}
-        >
-          <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-            <p className="text-[12px] text-text-muted">{t('login.subtitle_password')}</p>
+    <div
+      className={cn(
+        'absolute inset-0 z-30 flex items-center justify-center',
+        'rounded-2xl bg-bg-surface/85 backdrop-blur-sm',
+      )}
+    >
+      <form
+        onSubmit={handleSubmit}
+        className={cn(
+          'password-popover-content flex w-[300px] flex-col gap-3',
+          'rounded-xl border border-border-default bg-bg-elevated p-4 shadow-2xl',
+        )}
+      >
+        <p className="text-[12px] text-text-muted">{t('login.subtitle_password')}</p>
 
-            <div className="flex flex-col gap-2">
-              <Field
-                label={t('login.login_label')}
-                value={loginValue}
-                onChange={setLoginValue}
-                placeholder="username"
-                autoFocus
-                autoComplete="username"
-              />
-              <Field
-                label={t('login.password_label')}
-                type="password"
-                value={password}
-                onChange={setPassword}
-                placeholder="••••••••"
-                autoComplete="current-password"
-              />
-            </div>
+        <div className="flex flex-col gap-2">
+          <Field
+            label={t('login.login_label')}
+            value={loginValue}
+            onChange={setLoginValue}
+            placeholder="username"
+            autoFocus
+            autoComplete="username"
+          />
+          <Field
+            label={t('login.password_label')}
+            type="password"
+            value={password}
+            onChange={setPassword}
+            placeholder="••••••••"
+            autoComplete="current-password"
+          />
+        </div>
 
-            {error !== null && (
-              <div
-                className={cn(
-                  'rounded-md border border-danger/30 bg-danger/10 px-3 py-2',
-                  'text-[12px] leading-snug text-danger',
-                )}
-              >
-                {error}
-              </div>
+        {error !== null && (
+          <div
+            className={cn(
+              'rounded-md border border-danger/30 bg-danger/10 px-3 py-2',
+              'text-[12px] leading-snug text-danger',
             )}
+          >
+            {error}
+          </div>
+        )}
 
-            <div className="mt-1 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={handleCancel}
-                disabled={loading}
-                className={cn(
-                  'flex h-8 items-center rounded-md px-3 text-[13px]',
-                  'text-text-secondary outline-none transition-colors',
-                  'hover:bg-bg-hover hover:text-text-strong',
-                )}
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                type="submit"
-                disabled={!canSubmit}
-                className={cn(
-                  'flex h-8 items-center rounded-md px-3 text-[13px] font-medium transition-colors',
-                  canSubmit
-                    ? 'bg-accent-clay text-white hover:bg-accent-clay-dim'
-                    : 'cursor-not-allowed bg-bg-hover text-text-muted',
-                )}
-              >
-                {loading ? t('login.submit_loading') : t('login.submit')}
-              </button>
-            </div>
-          </form>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+        <div className="mt-1 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={handleCancel}
+            disabled={loading}
+            className={cn(
+              'flex h-8 items-center rounded-md px-3 text-[13px]',
+              'text-text-secondary outline-none transition-colors',
+              'hover:bg-bg-hover hover:text-text-strong',
+            )}
+          >
+            {t('common.cancel')}
+          </button>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className={cn(
+              'flex h-8 items-center rounded-md px-3 text-[13px] font-medium transition-colors',
+              canSubmit
+                ? 'bg-accent-clay text-white hover:bg-accent-clay-dim'
+                : 'cursor-not-allowed bg-bg-hover text-text-muted',
+            )}
+          >
+            {loading ? t('login.submit_loading') : t('login.submit')}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 

@@ -6,6 +6,8 @@ import { setupApiBridge } from './ipc/api-bridge';
 import { setupAppLockBridge } from './ipc/app-lock-bridge';
 import { setupBlobBridge } from './ipc/blob-bridge';
 import { setupCacheBridge } from './ipc/cache-bridge';
+import { setupFsBridge } from './ipc/fs-bridge';
+import { setupPrintBridge } from './ipc/print-bridge';
 import { setupGoogleBridge } from './ipc/google-bridge';
 import { setupMacroBridge } from './ipc/macro-bridge';
 import { setupMolBridge } from './ipc/mol-bridge';
@@ -15,6 +17,7 @@ import { setupUpdateBridge } from './ipc/update-bridge';
 import { setupWsBridge } from './ipc/ws-bridge';
 import { startVpsPing, stopVpsPing } from './network/vps-ping';
 import { selfInstallIfNeeded } from './self-install';
+import { unlinkSync } from 'node:fs';
 
 // §v1.2.8 — main-process logs в файл (%APPDATA%\Pyn\logs\main-*.log на Win,
 // ~/Library/Application Support/Pyn/logs/main-*.log на Mac). Раньше main
@@ -41,6 +44,37 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Vite dev server URL (когда running `pnpm dev`).
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const isMac = process.platform === 'darwin';
+
+/**
+ * §pyn-1.2.54 — после успешного auto-update новый exe стартует с CLI-арг
+ * `--remove-prev=<path>` (см. update-bridge.ts install). Здесь чистим
+ * этот старый файл. Делаем с задержкой 5s, чтобы прежний процесс точно
+ * успел отпустить лок и Касперский завершил scan'.
+ */
+function removePreviousExeIfRequested(): void {
+  const arg = process.argv.find((a) => a.startsWith('--remove-prev='));
+  if (!arg) return;
+  const prevPath = arg.slice('--remove-prev='.length).replace(/^"|"$/g, '');
+  if (!prevPath) return;
+  // Same exe — никогда не удалять себя.
+  if (
+    path.normalize(prevPath).toLowerCase()
+    === path.normalize(process.execPath).toLowerCase()
+  ) {
+    return;
+  }
+  setTimeout(() => {
+    try {
+      unlinkSync(prevPath);
+      // eslint-disable-next-line no-console
+      console.log(`[update] removed previous exe: ${prevPath}`);
+    } catch (e) {
+      // Локирован/уже удалён — не критично.
+      // eslint-disable-next-line no-console
+      console.warn('[update] failed to remove previous exe:', e);
+    }
+  }, 5000);
+}
 
 // Module-level state: main и tray menu окна, флаг quit и сам Tray.
 // Pyn закрывается ТОЛЬКО через tray menu → quit; close X на main окне
@@ -101,6 +135,24 @@ function createMainWindow(): void {
     }
   });
 
+  // §pyn-1.2.41 — native visibility events. window.blur/focus в renderer
+  // не всегда срабатывает при minimize в taskbar (Win-Chromium quirk),
+  // плюс при hide-в-tray webContents не получает blur (окно «уничтожено»
+  // визуально, но фоновый процесс жив). Слушаем native BrowserWindow events
+  // и эмитим IPC `pyn:visibility` { state: 'foreground' | 'background' }
+  // → renderer триггерит heartbeat сразу + presence_change на сервере
+  // broadcast'ится ≤200ms.
+  const emitVisibility = (state: 'foreground' | 'background') => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('pyn:visibility', state);
+  };
+  mainWindow.on('minimize', () => emitVisibility('background'));
+  mainWindow.on('hide', () => emitVisibility('background'));
+  mainWindow.on('blur', () => emitVisibility('background'));
+  mainWindow.on('restore', () => emitVisibility('foreground'));
+  mainWindow.on('show', () => emitVisibility('foreground'));
+  mainWindow.on('focus', () => emitVisibility('foreground'));
+
   // Гарантированно ставим platform-attr на documentElement до того как
   // React начнёт рендерить — это позволяет CSS-правилам c селектором
   // `html[data-pyn-platform="win32"]` зарезервировать место под Win-controls.
@@ -122,15 +174,28 @@ function createMainWindow(): void {
 
 function createTrayMenuWindow(): void {
   trayMenuWindow = new BrowserWindow({
-    width: 240,
-    height: 168,
+    // §pyn-1.2.30 — высоту уменьшил с 124 до 118 (юзер заметил больше воздуха
+    // снизу чем сверху). 3 items × h-8 = 96 + gap-0.5 × 2 = 4 + p-1 × 2 = 8 →
+    // 108px content; 118 окно даёт по 5px сверху/снизу, симметрично.
+    width: 220,
+    height: 118,
     show: false,
     frame: false,
     transparent: true,
+    // §pyn-1.2.34 — backgroundMaterial убран окончательно. На Win 11 он
+    // рисовал системный acrylic-фон в square области ВСЕГО окна → виден
+    // square под нашим rounded блоком. Без него + transparent: true + CSS
+    // rounded-2xl на корневом div дают чистую rounded форму (как ChatGPT).
+    backgroundColor: '#00000000',
     alwaysOnTop: true,
     resizable: false,
     skipTaskbar: true,
     focusable: true,
+    // §pyn-1.2.34 — hasShadow: false. native Win shadow рисует rectangular
+    // shadow вокруг square окна → визуально проявляется «системная подложка
+    // под нашим rounded блоком» (юзер сравнил с ChatGPT — там shadow только
+    // вокруг скруглённой формы). Чистый transparent + CSS shadow на rounded
+    // div даёт корректный визуал.
     hasShadow: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -179,8 +244,8 @@ function showTrayMenuAtCursor(): void {
   // Positioning: используем bounds tray icon (если есть) или дефолтные
   // координаты внизу справа для Win (где tray traybar).
   const trayBounds = tray?.getBounds();
-  const menuWidth = 240;
-  const menuHeight = 168;
+  const menuWidth = 220;
+  const menuHeight = 118;
   let x = 100;
   let y = 100;
   if (trayBounds && trayBounds.width > 0) {
@@ -228,6 +293,20 @@ app.whenReady().then(async () => {
   // даже без видимого меню — Chromium всегда обрабатывает их.
   Menu.setApplicationMenu(null);
 
+  // §pyn-1.2.43 — Mac dock icon. В production electron-builder embed'ит
+  // .icns в bundle и dock берёт оттуда автоматически. В dev (`pnpm dev`)
+  // Electron показывает дефолтный icon — переопределяем вручную чтобы
+  // юзер видел Pyn-brand даже при разработке.
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      const iconPath = path.join(__dirname, '..', 'build', 'icon-source.png');
+      const img = nativeImage.createFromPath(iconPath);
+      if (!img.isEmpty()) app.dock.setIcon(img);
+    } catch (err) {
+      console.warn('[pyn:dock] setIcon failed:', err);
+    }
+  }
+
   // Network: detect proxy → configure session → register IPC handler.
   // Делаем до createWindow чтобы первый renderer fetch уже видел готовый bridge.
   await setupApiBridge();
@@ -259,6 +338,13 @@ app.whenReady().then(async () => {
   // `app_control_state_changed` со state='wiping'.
   setupAppLockBridge();
 
+  // §pyn-1.2.16 — SMB-проводник для сетевой папки Экспедиция (Win-only).
+  setupFsBridge();
+
+  // Print + Save PDF — в Пробе/Графике юзер вызывает popover «Печать ▸»
+  // с двумя действиями: системный print dialog или сохранить как PDF.
+  setupPrintBridge();
+
   // Tray bridge — actions из React tray menu (show/settings/quit/close).
   setupTrayBridge({
     showMainWindow: () => {
@@ -289,6 +375,11 @@ app.whenReady().then(async () => {
   createMainWindow();
   createTrayMenuWindow();
   setupTray();
+
+  // §pyn-1.2.54 — если запущены с CLI-арг --remove-prev=<path> (новый
+  // build стартует с этим арг'ом из update-bridge install), удаляем старый
+  // exe. Задержка 5 сек чтобы прежний процесс успел release file-lock'и.
+  removePreviousExeIfRequested();
 
   // Self-install: первый запуск с Downloads → copy exe в %APPDATA%\@pyn\desktop\app
   // + создать desktop shortcut. Если уже installed — no-op. Win-only.

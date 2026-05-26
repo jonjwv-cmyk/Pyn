@@ -18,14 +18,18 @@ export interface ChatPartner {
   avatarBlobKey?: string;
   avatarBlobNonce?: string;
   lastMessage: string;
-  /** Локализованное время последнего сообщения ("5 мая, 2:34 PM"). */
-  lastMessageTime: string;
   /**
-   * Локализованное время последнего онлайна — для header'а "был в сети ...".
-   * Берётся из server-side `last_seen_at`, НЕ из времени последнего сообщения.
-   * Пустая строка / undefined если сервер не вернул значение.
+   * §pyn-1.2.27 — raw server timestamp последнего сообщения. Раньше тут
+   * лежал pre-formatted label («5 мая, 2:34 PM») что ломалось при смене
+   * языка (store не пересчитывался). Теперь формат делает useFormatYek
+   * в render time, reactive к i18n.language.
    */
-  lastSeenAtLabel?: string;
+  lastMessageAt: string;
+  /**
+   * Raw server timestamp последнего онлайна (для presence-label в header'е
+   * чата). Пусто если сервер не вернул значение.
+   */
+  lastSeenAt?: string;
   unreadCount?: number;
   /** Состояние присутствия — всегда отображается точкой на аватаре. */
   presence: PresenceState;

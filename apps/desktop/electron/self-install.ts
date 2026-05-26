@@ -1,89 +1,98 @@
-import { app, shell } from 'electron';
+import { app } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const INSTALL_DIR_NAME = 'app';
-const INSTALLED_EXE_NAME = 'Pyn.exe';
-const DESKTOP_SHORTCUT_NAME = 'Pyn.lnk';
+const DESKTOP_EXE_NAME = 'Pyn.exe';
 
 /**
- * Путь куда Pyn копирует себя на первом запуске (Win-only).
- *   %APPDATA%\@pyn\desktop\app\Pyn.exe
- */
-export function getInstalledExePath(): string {
-  return path.join(app.getPath('userData'), INSTALL_DIR_NAME, INSTALLED_EXE_NAME);
-}
-
-/**
- * Запущены ли мы уже из installed location. Если да — selfInstall no-op.
- */
-export function isRunningFromInstalled(): boolean {
-  if (process.platform !== 'win32') return true;
-  const installed = getInstalledExePath();
-  return (
-    path.normalize(process.execPath).toLowerCase()
-    === path.normalize(installed).toLowerCase()
-  );
-}
-
-/**
- * §pyn-1.2.15 — self-install для portable Win .exe.
+ * §pyn-1.2.26 — distribution model упрощён.
  *
- * Flow:
- *   1. Юзер качает Pyn.exe в Downloads (или shared folder сети)
- *   2. Запускает Pyn.exe — Pyn копирует себя в %APPDATA%\@pyn\desktop\app\Pyn.exe
- *   3. Создаёт ярлык на десктопе указывающий на installed copy
- *   4. Юзер может удалить Downloads\Pyn.exe — ярлык продолжает работать
+ * Раньше: portable .exe запускался → копировался в `%APPDATA%\@pyn\desktop\app\`
+ * → создавался ярлык на Desktop → ярлык запускал installed copy. На практике
+ * Касперский ломал portable extract installed exe → ffmpeg.dll error → ярлык
+ * не работал, юзер открывал downloaded exe вручную.
  *
- * Auto-update (см. update-bridge.ts) тоже заменяет именно installed copy,
- * не downloaded — ярлык всегда указывает на правильный path.
+ * Сейчас: Pyn = просто .exe на рабочем столе. Update flow (update-bridge.ts)
+ * скачивает свежий exe сразу в `%USERPROFILE%\Desktop\Pyn.exe`, заменяя
+ * старый. Self-install здесь делает только:
+ *   1. Cleanup orphaned `%LOCALAPPDATA%\Pyn-portable-*` (corrupt extracts).
+ *   2. При первом запуске из не-Desktop места (Downloads) → copy себя на
+ *      Desktop\Pyn.exe (если там пусто). Юзер сразу видит Pyn на Desktop
+ *      и может удалить originals из Downloads.
  *
- * Windows-only. Mac DMG / Linux AppImage — другой distribution pattern.
+ * Никаких installed copy / shortcut creation / shortcut revalidation.
  */
 export function selfInstallIfNeeded(): void {
   if (process.platform !== 'win32') return;
 
   try {
-    const currentExe = process.execPath;
-    const installedExe = getInstalledExePath();
-    const installDir = path.dirname(installedExe);
-
-    // Уже запущены из installed location — никаких изменений.
-    if (isRunningFromInstalled()) {
-      console.log('[self-install] running from installed location, no-op');
-      return;
-    }
-
-    // Создаём install dir если нет.
-    if (!fs.existsSync(installDir)) {
-      fs.mkdirSync(installDir, { recursive: true });
-      console.log(`[self-install] created install dir: ${installDir}`);
-    }
-
-    // Копируем exe в installed location.
-    if (!fs.existsSync(installedExe)) {
-      console.log(`[self-install] copying ${currentExe} → ${installedExe}`);
-      fs.copyFileSync(currentExe, installedExe);
-      console.log('[self-install] copy done');
-    } else {
-      console.log('[self-install] installed copy already exists, skipping copy');
-    }
-
-    // Создаём desktop shortcut.
-    const desktopPath = app.getPath('desktop');
-    const shortcutPath = path.join(desktopPath, DESKTOP_SHORTCUT_NAME);
-    if (!fs.existsSync(shortcutPath)) {
-      const ok = shell.writeShortcutLink(shortcutPath, 'create', {
-        target: installedExe,
-        description: 'Pyn',
-        icon: installedExe,
-        iconIndex: 0,
-      });
-      console.log(`[self-install] desktop shortcut: ${ok ? 'created' : 'failed'}`);
-    } else {
-      console.log('[self-install] desktop shortcut already exists');
-    }
+    cleanupStalePortableDirs();
+    // §pyn-1.2.54 — ensureDesktopExeOnFirstRun убран. Update flow теперь
+    // сам скачивает свежий exe на Desktop с именем `Pyn <version>.exe`
+    // (см. update-bridge.ts), и старый удаляет через --remove-prev arg.
+    // Первый запуск из Downloads — юзер сам запускает / перемещает.
   } catch (err) {
     console.error('[self-install] failed:', err);
+  }
+}
+
+/**
+ * Удаляем все `%LOCALAPPDATA%\Pyn-portable-*` — extract-папки portable
+ * wrapper'а от предыдущих exe. Текущий процесс держит свой extract залоченным,
+ * rmSync такие пропускает. Это решает `ffmpeg.dll not found` когда extract
+ * corrupt после прерванного Касперским запуска.
+ */
+function cleanupStalePortableDirs(): void {
+  try {
+    const localAppData = process.env.LOCALAPPDATA;
+    if (!localAppData) return;
+    const entries = fs.readdirSync(localAppData, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (!e.name.startsWith('Pyn-portable-')) continue;
+      const full = path.join(localAppData, e.name);
+      try {
+        fs.rmSync(full, { recursive: true, force: true });
+        console.log(`[self-install] cleaned stale portable dir: ${e.name}`);
+      } catch {
+        // Locked → это наш активный extract либо antivirus scan. Пропускаем.
+      }
+    }
+  } catch (err) {
+    console.warn('[self-install] portable cleanup error:', err);
+  }
+}
+
+/**
+ * Если Pyn запущен НЕ с Desktop и Desktop\Pyn.exe не существует —
+ * скопировать сюда. Юзер скачал в Downloads, кликнул → теперь Pyn также
+ * на Desktop, может удалить Downloads-копию. Update flow дальше держит
+ * Desktop\Pyn.exe актуальным.
+ *
+ * Если Desktop\Pyn.exe УЖЕ есть (даже устаревший) — не перезаписываем:
+ * перезапись это работа update-bridge, и она происходит с taskkill, иначе
+ * file-locked.
+ */
+function ensureDesktopExeOnFirstRun(): void {
+  const desktop = app.getPath('desktop');
+  const desktopExe = path.join(desktop, DESKTOP_EXE_NAME);
+  const currentExe = process.execPath;
+
+  if (
+    path.normalize(currentExe).toLowerCase()
+    === path.normalize(desktopExe).toLowerCase()
+  ) {
+    return;
+  }
+
+  if (fs.existsSync(desktopExe)) {
+    return;
+  }
+
+  try {
+    fs.copyFileSync(currentExe, desktopExe);
+    console.log(`[self-install] copied to desktop: ${desktopExe}`);
+  } catch (err) {
+    console.error('[self-install] desktop copy failed:', err);
   }
 }

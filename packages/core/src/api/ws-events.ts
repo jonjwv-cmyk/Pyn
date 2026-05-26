@@ -28,6 +28,13 @@ export interface WsServerEvent {
 /** Имена событий, которые мы знаем и обрабатываем. */
 export const WS_EVENT_TYPES = {
   NEW_MESSAGE: 'new_message',
+  /**
+   * §pyn-1.2.39 — server broadcast при `mark_message_read` чат-сообщения.
+   * Идёт В ДОБАВОК к generic `unread_update`. Отличие: содержит конкретный
+   * `message_id` + `reader_login` → отправитель моментально проставит ✓✓
+   * в открытом чате без re-entry. `unread_update` остаётся для counter sync.
+   */
+  MESSAGE_READ: 'message_read',
   NEW_NEWS: 'new_news',
   /**
    * Унифицированный update для feed-записей: реакция, голос, pin/unpin,
@@ -57,6 +64,25 @@ export const WS_EVENT_TYPES = {
    * и сразу показывает «Доступно обновление» pill без 30-мин polling-окна.
    */
   APP_VERSION_CHANGED: 'app_version_changed',
+  /**
+   * §TZ-SERVER-SYNC-COLLAB этап B — server broadcast после successful PUT
+   * на /schedule/put. Все клиенты сравнивают payload.version с локальной;
+   * если новее → refetch (или sister-инстанс sender'а уже знает новую version
+   * из PUT response и skip'ит). Включает (year, month) для адресной фильтрации.
+   */
+  SCHEDULE_STATE_CHANGED: 'schedule_state_changed',
+  /**
+   * §TZ-SERVER-SYNC-COLLAB этап C — захвачен collaboration lock на resource.
+   * Payload содержит user info для overlay'я (avatar + name) без нужды в
+   * отдельном get_user lookup'е. Sender игнорирует через сравнение user_login.
+   */
+  SCHEDULE_LOCK_ACQUIRED: 'schedule_lock_acquired',
+  /**
+   * §TZ-SERVER-SYNC-COLLAB этап C — освобождён lock (explicit release или
+   * lease expired через cleanup cron). Клиенты с активным overlay для этого
+   * resource_id убирают overlay.
+   */
+  SCHEDULE_LOCK_RELEASED: 'schedule_lock_released',
 } as const;
 
 export type WsEventType = (typeof WS_EVENT_TYPES)[keyof typeof WS_EVENT_TYPES];
@@ -72,6 +98,21 @@ export interface NewMessageEvent extends WsServerEvent {
   kind?: string;
   sender_login: string;
   receiver_login?: string;
+}
+
+/**
+ * §pyn-1.2.39 — chat-сообщение прочитано получателем. Используется для
+ * мгновенной простановки ✓✓ у отправителя в открытом чате (Telegram-style).
+ * Шлётся ТОЛЬКО для чат-сообщений; для news/poll использует generic
+ * `unread_update` без id.
+ */
+export interface MessageReadEvent extends WsServerEvent {
+  type: 'message_read';
+  message_id: number;
+  /** Login юзера который прочитал — peer (получатель сообщения). */
+  reader_login: string;
+  /** Login автора сообщения — нужен клиенту чтобы понять "это моё сообщение?". */
+  sender_login: string;
 }
 
 export interface NewNewsEvent extends WsServerEvent {
@@ -107,6 +148,10 @@ export interface BaseChangedEvent extends WsServerEvent {
   type: 'base_changed';
   base_version: string;
   base_updated_at?: string;
+  /** §pyn-1.2.21 — counts от сервера, чтобы клиент мгновенно показал diff. */
+  records_count?: number | null;
+  previous_records_count?: number | null;
+  diff_count?: number | null;
 }
 
 export interface DesktopKickedEvent extends WsServerEvent {
@@ -123,6 +168,8 @@ export interface SheetLockAcquiredEvent extends WsServerEvent {
   action_id: string;
   action_label: string;
   user_name: string;
+  /** §pyn-1.2.43 — login для presence/avatar lookup в SheetsLockOverlay. */
+  user_login?: string;
   tab_name: string;
   locked_tabs: string[];
 }
@@ -170,4 +217,53 @@ export interface AppVersionChangedEvent extends WsServerEvent {
   current_version: string;
   min_version?: string;
   force_update?: number;
+}
+
+/**
+ * §TZ-SERVER-SYNC-COLLAB этап B (2026-05-27) — изменён snapshot графика за
+ * (year, month). Клиенты у которых открыт этот же месяц И version устаревшая
+ * выполняют `scheduleGet` чтобы подтянуть свежий state.
+ *
+ * Sender также получает event (server'у дешевле broadcast всем чем filtering
+ * по connection ID). На клиенте дедупликация через сравнение версий:
+ * если event.version <= localVersion → skip.
+ */
+export interface ScheduleStateChangedEvent extends WsServerEvent {
+  type: 'schedule_state_changed';
+  year: number;
+  month: number;
+  version: number;
+  /** Login юзера, чьим PUT'ом был триггер. Может быть пустым. */
+  updated_by?: string;
+  /** Имя юзера для UI отображения «{name} обновил график». */
+  updated_by_name?: string;
+}
+
+/**
+ * §TZ-SERVER-SYNC-COLLAB этап C (2026-05-27) — захвачен collaboration lock
+ * на конкретный resource_id (e.g. 'schedule:2026-05:exceptions'). Все клиенты
+ * у которых открыт этот же resource заблокируют UI с overlay'ем (если они НЕ
+ * owner). Sender игнорирует через сравнение `user_login`.
+ *
+ * Avatar fields копируются из users.avatar_* колонок в момент acquire'а —
+ * клиент рендерит overlay сразу, без дополнительного get_users lookup'а.
+ */
+export interface ScheduleLockAcquiredEvent extends WsServerEvent {
+  type: 'schedule_lock_acquired';
+  resource_id: string;
+  user_login: string;
+  full_name: string;
+  avatar_url?: string;
+  avatar_blob_key?: string;
+  avatar_blob_nonce?: string;
+}
+
+/**
+ * §TZ-SERVER-SYNC-COLLAB этап C — освобождён lock (explicit release owner'ом
+ * ИЛИ TTL expired через cleanup cron). Клиенты с активным overlay для этого
+ * resource убирают overlay и разрешают редактирование.
+ */
+export interface ScheduleLockReleasedEvent extends WsServerEvent {
+  type: 'schedule_lock_released';
+  resource_id: string;
 }

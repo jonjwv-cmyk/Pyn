@@ -1,0 +1,18 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Концепт C — P-Pin Mark (monogram).
+    Буква P где dot заменён на pin-точку (классическая «капля» на месте hole'a).
+    Wordmark-friendly: рядом с "Pyn" в Inter Tight выглядит strong.
+    Стиль San Francisco icon design: geometric letter с одной хитростью.
+  -->
+  <rect width="256" height="256" rx="48" fill="#0F0F0F"/>
+  <!-- Вертикальная опора P -->
+  <rect x="76" y="56" width="22" height="144" rx="2" fill="#D97757"/>
+  <!-- Bow P (внешняя дуга) + pin-tail внутри (вместо круга-hole'a) -->
+  <path d="M98 56 H148 C176.5 56 196 75.5 196 104 C196 132.5 176.5 152 148 152 H98 V56 Z
+           M120 78 V130 H148 C162.5 130 174 118.5 174 104 C174 89.5 162.5 78 148 78 H120 Z"
+        fill="#D97757"
+        fill-rule="evenodd"/>
+  <!-- Pin-tail: маленький треугольник, выходящий из bottom P-bow вниз -->
+  <path d="M138 152 L148 178 L158 152 Z" fill="#D97757"/>
+</svg>

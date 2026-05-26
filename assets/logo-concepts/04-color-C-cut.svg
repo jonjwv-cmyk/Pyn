@@ -1,0 +1,42 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Concept — D/v2 (clay-dim) с 45° cut на top-bow.
+    Subtle nod на движение/forward, отсылает к pin/направлению без
+    добавления нового элемента. Top-bow получает диагональный срез
+    в правом верхнем углу (16px катет), остальные углы — rounded как
+    у всех блоков. Stem и mid-bow без изменений.
+  -->
+  <rect width="256" height="256" rx="48" fill="#161611"/>
+
+  <!-- Stem (без изменений) -->
+  <rect x="56" y="56" width="38" height="144" rx="6" fill="#B35E45"/>
+
+  <!--
+    Top-bow с угловым срезом.
+    Углы: TL rounded(6), BL rounded(6), BR rounded(6), TR — 45° cut (16px катет).
+    Coords:
+      TL  (104, 56) с rx=6 → начало path = (110, 56)
+      Top edge до cut: (110,56) → (184,56)
+      Diagonal cut:    (184,56) → (200,72)
+      Right edge:      (200,72) → (200,90)
+      BR rounded:      (200,90) → arc → (194,96)
+      Bottom edge:     (194,96) → (110,96)
+      BL rounded:      (110,96) → arc → (104,90)
+      Left edge:       (104,90) → (104,62)
+      TL rounded:      (104,62) → arc → (110,56)
+  -->
+  <path d="M 110 56
+           L 184 56
+           L 200 72
+           L 200 90
+           A 6 6 0 0 1 194 96
+           L 110 96
+           A 6 6 0 0 1 104 90
+           L 104 62
+           A 6 6 0 0 1 110 56
+           Z"
+        fill="#B35E45"/>
+
+  <!-- Mid-bow (без изменений) -->
+  <rect x="104" y="108" width="72" height="38" rx="6" fill="#B35E45"/>
+</svg>

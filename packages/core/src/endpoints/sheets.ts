@@ -229,6 +229,25 @@ export async function checkSheetActionStatus(
   };
 }
 
+/**
+ * §pyn-1.2.20 — `release_sheet_lock` — явный release маски после polling.
+ * Server broadcastит `sheet_lock_released` → все клиенты в room снимают
+ * overlay. Раньше release делал server сразу после Apps Script dispatch →
+ * маска снималась за 5 сек, юзер видел «маска слетела» при работе скрипта.
+ *
+ * Вызывается из initiator'а после того как `checkSheetActionStatus` вернул
+ * `alive=false` (или после timeout polling). Безопасно вызывать многократно.
+ */
+export async function releaseSheetLock(
+  client: ApiClient,
+  actionId: string,
+): Promise<{ ok: boolean }> {
+  const wire = await client.call<{ ok: boolean }>('release_sheet_lock', {
+    action_id: actionId,
+  });
+  return { ok: !!wire.ok };
+}
+
 // ── SAP-macro flow (Windows-only) ─────────────────────────────────────────
 
 export interface MacroBundle {
@@ -262,7 +281,14 @@ interface MacroBundleWire {
  */
 export async function getMacroBundle(
   client: ApiClient,
-  args: { actionId: string; password?: string },
+  args: {
+    actionId: string;
+    password?: string;
+    /** §pyn-1.2.20 — для broadcast sheet_lock_acquired (label/tab/user). */
+    tabName?: string;
+    actionLabel?: string;
+    userName?: string;
+  },
 ): Promise<
   | { ok: true; bundle: MacroBundle }
   | { ok: false; error: string }
@@ -270,6 +296,9 @@ export async function getMacroBundle(
   const wire = await client.call<MacroBundleWire>('get_macro_bundle', {
     action_id: args.actionId,
     password: args.password,
+    tab_name: args.tabName,
+    action_label: args.actionLabel,
+    user_name: args.userName,
   });
   if (!wire.ok || !wire.vbs_source || !wire.macro_token) {
     return { ok: false, error: wire.error ?? 'unknown' };

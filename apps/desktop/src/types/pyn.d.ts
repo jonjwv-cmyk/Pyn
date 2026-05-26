@@ -105,6 +105,71 @@ declare global {
         wipe: () => Promise<void>;
       };
       /**
+       * Electron webUtils — для drag-drop из OS получаем absolute path.
+       */
+      webUtils: {
+        getPathForFile: (file: File) => string;
+      };
+      /**
+       * SMB-проводник для сетевой папки Экспедиция. Win-only.
+       * UNC root: \\fs1\Exchange\00000899 - Экспедиция\
+       */
+      fs: {
+        platform: () => Promise<{
+          platform: string;
+          supported: boolean;
+          root: string;
+        }>;
+        list: (dirPath: string) => Promise<{
+          ok: boolean;
+          entries?: Array<{
+            name: string;
+            isDirectory: boolean;
+            size: number;
+            mtime: number;
+            fullPath: string;
+          }>;
+          error?: string;
+        }>;
+        open: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
+        reveal: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
+        delete: (targetPath: string) => Promise<{ ok: boolean; error?: string }>;
+        upload: (
+          srcPath: string,
+          destDir: string,
+        ) => Promise<{ ok: boolean; error?: string }>;
+        mkdir: (
+          parentDir: string,
+          name: string,
+        ) => Promise<{ ok: boolean; error?: string }>;
+        rename: (
+          oldPath: string,
+          newName: string,
+        ) => Promise<{ ok: boolean; newPath?: string; error?: string }>;
+        copy: (
+          srcPath: string,
+          destDir: string,
+        ) => Promise<{ ok: boolean; newPath?: string; error?: string }>;
+        move: (
+          srcPath: string,
+          destDir: string,
+        ) => Promise<{ ok: boolean; newPath?: string; error?: string }>;
+      };
+      /**
+       * Print + Save PDF. Используется в графике/Пробе и других печатных
+       * разделах. dialog = системный print dialog. savePdf = printToPDF
+       * + showSaveDialog. Возврат включает `canceled: true` если юзер
+       * закрыл saveDialog без выбора файла.
+       */
+      print: {
+        dialog: (
+          defaultName?: string,
+        ) => Promise<{ ok: boolean; error?: string }>;
+        savePdf: (
+          defaultName?: string,
+        ) => Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
+      };
+      /**
        * Tray menu actions (custom React menu in popup BrowserWindow).
        * Закрытие Pyn — только через `quit` отсюда; close-X на main окне
        * минимизирует в tray.
@@ -117,6 +182,14 @@ declare global {
         /** Подписка на 'open-settings' event от tray menu. */
         onOpenSettings: (handler: () => void) => () => void;
       };
+      /**
+       * §pyn-1.2.41 — native BrowserWindow visibility (minimize/hide/restore/
+       * show/blur/focus → 'foreground' | 'background'). Renderer слушает чтобы
+       * сразу слать heartbeat в правильном state — точнее чем web `blur`/`focus`.
+       */
+      onVisibilityChange: (
+        handler: (state: 'foreground' | 'background') => void,
+      ) => () => void;
     };
   }
   /**

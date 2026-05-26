@@ -19,17 +19,37 @@ let bridgeUnsubscribe: (() => void) | null = null;
 
 function ensureBridgeSubscribed(): void {
   if (bridgeUnsubscribe) return;
-  if (typeof window === 'undefined' || !window.pyn?.ws) return;
-  bridgeUnsubscribe = window.pyn.ws.onEvent((event) => {
+  if (typeof window === 'undefined') return;
+
+  // §pyn-1.2.33 — два транспорта одновременно: WS через main-process IPC и
+  // SSE через CustomEvent в renderer. Оба пишут в один listeners-set.
+  // Если оба активны → события дублируются (idempotent handlers OK; для не-
+  // идемпотентных можно добавить dedup по event.id позже).
+  const wsUnsub = window.pyn?.ws?.onEvent((event) => {
     for (const l of listeners) {
-      try {
-        l(event);
-      } catch (err) {
+      try { l(event); } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[pyn:ws] listener threw:', err);
       }
     }
   });
+
+  const sseHandler = (e: Event) => {
+    const event = (e as CustomEvent).detail as WsServerEvent | undefined;
+    if (!event) return;
+    for (const l of listeners) {
+      try { l(event); } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[pyn:sse] listener threw:', err);
+      }
+    }
+  };
+  window.addEventListener('pyn:server-event', sseHandler);
+
+  bridgeUnsubscribe = () => {
+    wsUnsub?.();
+    window.removeEventListener('pyn:server-event', sseHandler);
+  };
 }
 
 /** Подписка на все WS события. Возвращает unsubscribe. */

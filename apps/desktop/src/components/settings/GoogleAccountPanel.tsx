@@ -63,6 +63,11 @@ export function GoogleAccountPanel(): JSX.Element {
     try {
       const s = await window.pyn.google.logout();
       setStatus(s);
+      // §pyn-1.2.43 — broadcast event так чтобы все слушатели (TablesScreen
+      // через useGoogleAuthStatus) сразу узнали о logout, без ожидания
+      // checkStatus refetch'а. Кнопки скриптов/фильтра/печати/Проверка
+      // моментально становятся серыми.
+      window.dispatchEvent(new CustomEvent('pyn:google-logout'));
     } finally {
       setBusy(false);
     }

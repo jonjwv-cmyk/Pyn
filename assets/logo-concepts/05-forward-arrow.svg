@@ -1,0 +1,19 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Концепт E — Forward Arrow / Pivot.
+    Pin-точка с диагональной стрелкой-маршрутом вверх-вправо. Динамика, movement,
+    «доставка вперёд». Самый «эмоциональный» из вариантов — чувствуется action.
+    Stripe / Polestar vibe.
+  -->
+  <rect width="256" height="256" rx="48" fill="#0F0F0F"/>
+  <!-- Pin (нижний левый) — origin маршрута -->
+  <path d="M80 200 C68 200 60 192 60 180 C60 168 80 144 80 144 C80 144 100 168 100 180 C100 192 92 200 80 200 Z"
+        fill="#D97757"/>
+  <!-- Стрелка-маршрут, выходящая из pin'а вверх-вправо. Sharp arrow-head. -->
+  <path d="M88 168 L188 88 M188 88 L188 124 M188 88 L152 88"
+        stroke="#D97757"
+        stroke-width="12"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        fill="none"/>
+</svg>

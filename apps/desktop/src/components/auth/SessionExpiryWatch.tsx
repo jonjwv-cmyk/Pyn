@@ -8,7 +8,23 @@ import { useSessionInfoStore } from '@/lib/stores';
 import { useSessionRemaining } from '@/lib/use-session-remaining';
 import { extendSession, meSessionInfo } from '@pyn/core';
 
-const POLL_INTERVAL_MS = 30_000;
+/**
+ * §pyn-1.2.46 — adaptive polling. До этого был фиксированный 30s polling
+ * `me_session_info` = 120 req/час/юзер. Большую часть времени сессия далека
+ * от expiry (часы), polling такой частоты — избыточен.
+ *
+ * Логика:
+ *   • remaining > WARN window (30 мин) → poll каждые 5 минут (12 req/час)
+ *   • remaining ≤ WARN window           → poll каждые 30 сек (как раньше)
+ *
+ * Между server-poll'ами countdown UI идёт локально через useSessionRemaining
+ * (compute из expires_at + local time). Никаких stale issues — server-truth
+ * подтверждается раз в 5 мин.
+ */
+const POLL_FAR_MS = 5 * 60 * 1000;  // 5 минут — когда expiry > 30 мин
+const POLL_NEAR_MS = 30_000;        // 30 сек — когда близко к expiry
+const POLL_NEAR_WINDOW_MS = 30 * 60 * 1000; // < 30 мин = "near"
+
 /**
  * За сколько до истечения сессии показывать prompt продления. 1:1 с
  * Kotlin `SessionLifecycleManager.kt::EXTENSION_PROMPT_MS` (5 минут).
@@ -65,16 +81,26 @@ export function SessionExpiryWatch() {
     }
   }, [setSharedInfo]);
 
-  // Polling каждые 30 сек + immediate fetch при mount.
+  // §pyn-1.2.46 — adaptive polling: 5 мин если сессия далека от expiry,
+  // 30s когда близко (< 30 мин). Снижает жор CF в 10× для typical 4-8h
+  // сессий — 12 req/час вместо 120 пока сессия не приблизилась к концу.
   useEffect(() => {
     void refreshInfo();
-    const id = setInterval(() => {
-      void refreshInfo();
-    }, POLL_INTERVAL_MS);
-    return () => {
-      clearInterval(id);
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+    const schedule = (): void => {
+      const remaining = info?.remainingMs ?? Number.MAX_SAFE_INTEGER;
+      const nextDelay = remaining <= POLL_NEAR_WINDOW_MS ? POLL_NEAR_MS : POLL_FAR_MS;
+      timerId = setTimeout(async () => {
+        await refreshInfo();
+        schedule();
+      }, nextDelay);
     };
-  }, [refreshInfo]);
+    schedule();
+    return () => {
+      if (timerId) clearTimeout(timerId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshInfo, info?.remainingMs]);
 
   // PC-сессия может быть явно помечена is_pc=true, либо derived из
   // sessionKind. Server иногда отдаёт только session_kind="pc_qr"/"pc_password"
@@ -177,17 +203,17 @@ export function SessionExpiryWatch() {
 
           <Dialog.Description asChild>
             <div className="text-[13px] leading-snug text-text-secondary">
+              {/* §pyn-1.2.54 — два отдельных предложения, не один абзац с wrap'ом.
+                  Юзер просил «две строки два предложения не одно с переносом». */}
               <p>
-                {/* Inline-time через сплит шаблона: i18n key возвращает строку
-                    с placeholder '{{time}}', разрезаем на префикс/суффикс и
-                    кладём JSX с tabular-nums в середину для правильного выравнивания. */}
                 {renderWithTime(
-                  t('session_expiry.body', { time: '__TIME__' }),
+                  t('session_expiry.body_line1', { time: '__TIME__' }),
                   <span className="font-medium text-text-strong tabular-nums">
                     {formatRemaining(remainingMs)}
                   </span>,
                 )}
               </p>
+              <p>{t('session_expiry.body_line2')}</p>
               <p className="mt-1.5 text-[11.5px] text-text-muted">
                 {t('session_expiry.subtext', { n: info?.extensionsRemaining ?? 0 })}
               </p>

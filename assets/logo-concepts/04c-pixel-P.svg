@@ -1,0 +1,32 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Концепт D (v4) — Pixel-grid P.
+    Буква P из равных квадратов (как из контейнеров в штабеле). 5×5 grid,
+    каждая ячейка = 38×38 с gap 4px. Самый «технологичный» из D-вариантов.
+    Чувствуется system-design / Notion.
+
+    P-pattern (X = filled container):
+      X X X .
+      X . X .
+      X X X .
+      X . . .
+      X . . .
+  -->
+  <rect width="256" height="256" rx="48" fill="#161611"/>
+  <g fill="#D97757">
+    <!-- Row 0 (top) -->
+    <rect x="56"  y="56"  width="38" height="38" rx="5"/>
+    <rect x="98"  y="56"  width="38" height="38" rx="5"/>
+    <rect x="140" y="56"  width="38" height="38" rx="5"/>
+    <!-- Row 1 -->
+    <rect x="56"  y="98"  width="38" height="38" rx="5"/>
+    <rect x="140" y="98"  width="38" height="38" rx="5"/>
+    <!-- Row 2 -->
+    <rect x="56"  y="140" width="38" height="38" rx="5"/>
+    <rect x="98"  y="140" width="38" height="38" rx="5"/>
+    <rect x="140" y="140" width="38" height="38" rx="5"/>
+    <!-- Row 3 -->
+    <rect x="56"  y="182" width="38" height="38" rx="5"/>
+    <!-- (Row 4 убран — 4 ряда дают P пропорциональнее в квадратном canvas'е) -->
+  </g>
+</svg>

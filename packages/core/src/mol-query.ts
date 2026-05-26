@@ -43,6 +43,13 @@ const SEPARATORS = /[\s/\-]+/;
 const ONLY_DIGITS_OR_SEPARATORS = /^[\d\s/\-]+$/;
 const CYRILLIC = /[а-яА-ЯёЁ]/;
 const LATIN = /[a-zA-Z]/;
+// §pyn-1.2.54 — склад: 4 знака, первые 3 — цифры, 4-й — цифра или буква
+// (кириллица или латиница). Примеры: `0609`, `8024`, `824Т`, `824T`.
+// Юзер: «если впереди три цифры потом буква любая хоть латинская хоть кириллица».
+const WAREHOUSE_TOKEN = /^\d{3}[\dA-Za-zА-Яа-яёЁ]$/;
+// Partial input — юзер ещё печатает (1-3 digit'a). Чтобы в режиме warehouse
+// показать как invalidTokens, а не неверно ребрендить в phone/name.
+const PARTIAL_WAREHOUSE = /^\d{1,4}$/;
 
 /**
  * Правила определения режима (приоритет сверху вниз):
@@ -69,29 +76,48 @@ export function parseMolQuery(input: string): ParsedMolQuery {
     return { mode: 'email', raw, tokens: [raw] };
   }
 
-  if (CYRILLIC.test(raw)) {
-    return { mode: 'name', raw, tokens: [raw] };
-  }
-
-  if (ONLY_DIGITS_OR_SEPARATORS.test(raw)) {
-    const allTokens = raw.split(SEPARATORS).filter((t) => t.length > 0);
-    if (allTokens.length > 0) {
-      // Phone — любой токен длиннее 4 цифр (склад — ровно 4).
-      const hasLongToken = allTokens.some((t) => t.length > 4);
-      if (hasLongToken) {
+  // §pyn-1.2.54 — warehouse-check ПЕРЕД cyrillic/latin: склад может содержать
+  // букву в 4-й позиции (824Т, 824T), и это не должно сбить parser в name-mode.
+  const splitTokens = raw.split(SEPARATORS).filter((t) => t.length > 0);
+  if (splitTokens.length > 0) {
+    const isAllWarehouseLike = splitTokens.every(
+      (t) => WAREHOUSE_TOKEN.test(t) || PARTIAL_WAREHOUSE.test(t),
+    );
+    const anyValid = splitTokens.some((t) => WAREHOUSE_TOKEN.test(t));
+    const allDigitsOnly = ONLY_DIGITS_OR_SEPARATORS.test(raw);
+    if (isAllWarehouseLike && (anyValid || allDigitsOnly)) {
+      // Если все digits-only И есть длинный (>4) токен — это телефон, не склад.
+      if (allDigitsOnly && splitTokens.some((t) => t.length > 4)) {
         return { mode: 'phone', raw, tokens: [raw.replace(/\D/g, '')] };
       }
-      // Warehouse — фильтруем только валидные 4-значные. Неполные —
-      // в invalidTokens (для error-карточки).
-      const valid = allTokens.filter((t) => t.length === 4);
-      const invalid = allTokens.filter((t) => t.length !== 4);
+      const valid = Array.from(new Set(splitTokens.filter((t) => WAREHOUSE_TOKEN.test(t))));
+      const invalid = Array.from(new Set(splitTokens.filter((t) => !WAREHOUSE_TOKEN.test(t))));
       return {
         mode: 'warehouse',
         raw,
-        tokens: Array.from(new Set(valid)),
-        invalidTokens: invalid.length > 0 ? Array.from(new Set(invalid)) : undefined,
+        tokens: valid,
+        invalidTokens: invalid.length > 0 ? invalid : undefined,
       };
     }
+  }
+
+  // Pure-digit ввод который не matched warehouse-pattern — phone (длинный).
+  if (ONLY_DIGITS_OR_SEPARATORS.test(raw)) {
+    const allTokens = splitTokens;
+    if (allTokens.some((t) => t.length > 4)) {
+      return { mode: 'phone', raw, tokens: [raw.replace(/\D/g, '')] };
+    }
+    // Все короткие digit'ы, но не сформировался валидный warehouse — partial.
+    return {
+      mode: 'warehouse',
+      raw,
+      tokens: [],
+      invalidTokens: Array.from(new Set(allTokens)),
+    };
+  }
+
+  if (CYRILLIC.test(raw)) {
+    return { mode: 'name', raw, tokens: [raw] };
   }
 
   if (LATIN.test(raw)) {
@@ -115,16 +141,27 @@ export function matchesMolQuery(record: MolRecord, parsed: ParsedMolQuery): bool
       if (parsed.tokens.length === 0) return false;
       const wid = record.warehouseId.trim();
       if (!wid) return false;
-      // Точное совпадение (склад = ровно 4-значный токен).
-      return parsed.tokens.some((t) => wid === t);
+      // §pyn-1.2.54 — case-insensitive compare: warehouse-id может содержать
+      // букву (824Т / 824T), юзер вводит в любом регистре.
+      const widLower = wid.toLowerCase();
+      return parsed.tokens.some((t) => widLower === t.toLowerCase());
     }
     case 'phone': {
-      const phone = t0;
-      if (!phone) return false;
+      const q = t0;
+      if (!q) return false;
       const mobile = record.mobile.replace(/\D/g, '');
       const work = record.work.replace(/\D/g, '');
       const warehousePhones = record.warehouseWorkPhones.replace(/\D/g, '');
-      return mobile.includes(phone) || work.includes(phone) || warehousePhones.includes(phone);
+      // §pyn-1.2.22 — search также по табельному (digits). Юзер: «добавить
+      // поиск по табельному номеру». Естественно — юзер вводит число и
+      // оно ищется в телефонах и в tab одновременно.
+      const tab = record.tab.replace(/\D/g, '');
+      return (
+        mobile.includes(q)
+        || work.includes(q)
+        || warehousePhones.includes(q)
+        || (tab.length > 0 && tab.includes(q))
+      );
     }
     case 'email': {
       const q = t0.toLowerCase();
@@ -187,7 +224,15 @@ export function dedupeMolByPerson(records: MolRecord[]): DedupedMolRecord[] {
   const byKey = new Map<string, { record: MolRecord; wids: string[] }>();
   const order: string[] = [];
   for (const r of records) {
-    const key = `${r.fio.trim().toLowerCase()}|${r.mobile.trim()}`;
+    // §pyn-1.2.22 — unique key = табельный номер (юзер: «уникальный МОЛ
+    // это именно табельный номер. если в гугл таблице изменится телефон
+    // почта или даже фамилия а табельный сохранится тогда это ничего не
+    // значит»). Fallback на fio+mobile только если tab пустой (защита от
+    // legacy записей без табельного).
+    const tab = r.tab.trim();
+    const key = tab.length > 0
+      ? `tab:${tab}`
+      : `nm:${r.fio.trim().toLowerCase()}|${r.mobile.trim()}`;
     const existing = byKey.get(key);
     if (existing) {
       const wid = r.warehouseId.trim();

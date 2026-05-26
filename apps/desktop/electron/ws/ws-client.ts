@@ -400,8 +400,19 @@ function handleMessage(data: RawData, isBinary: boolean): void {
     if (msg.type === 'crypto_ok') {
       // eslint-disable-next-line no-console
       console.log('[pyn:ws] crypto_ok — sending hello');
+      // §pyn-1.2.28 — `app_scope` в hello → server при handshake шлёт нам
+      // current `app_version_changed` (см. ws-room.js::hello). Это закрывает
+      // дыру: раньше event broadcast'ился один раз во время publish, и если
+      // в этот момент клиент был disconnected → событие терялось → pill
+      // появлялась только после restart Pyn (initial appStatus fetch).
+      const appScope = process.platform === 'win32' ? 'desktop-win' : 'desktop-mac';
       state.ws?.send(
-        JSON.stringify({ type: 'hello', login: state.login, token: state.token }),
+        JSON.stringify({
+          type: 'hello',
+          login: state.login,
+          token: state.token,
+          app_scope: appScope,
+        }),
       );
       state.reconnectAttempt = 0;
       // Готовы шифровать исходящие frame'ы (presence/typing/...). Server

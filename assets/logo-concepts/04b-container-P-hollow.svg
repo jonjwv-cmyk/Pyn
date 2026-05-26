@@ -1,0 +1,17 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Концепт D (v3) — P with hollow bow.
+    4 контейнера формирующих P с открытым "глазом" посередине (как в типографике).
+    Чувствуется sharper: видно классическую P (stem + top + side + mid),
+    но через геометричные blocks.
+  -->
+  <rect width="256" height="256" rx="48" fill="#161611"/>
+  <!-- Stem -->
+  <rect x="56"  y="56"  width="38"  height="144" rx="6" fill="#D97757"/>
+  <!-- Top horizontal -->
+  <rect x="104" y="56"  width="96"  height="36"  rx="6" fill="#D97757"/>
+  <!-- Right vertical (closing the bow) -->
+  <rect x="162" y="100" width="38"  height="56"  rx="6" fill="#D97757"/>
+  <!-- Mid horizontal -->
+  <rect x="104" y="124" width="72"  height="32"  rx="6" fill="#D97757"/>
+</svg>

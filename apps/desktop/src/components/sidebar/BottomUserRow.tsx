@@ -53,14 +53,19 @@ export const BottomUserRow = forwardRef<HTMLButtonElement, BottomUserRowProps>(
         type="button"
         onClick={onClick}
         className={cn(
-          'flex w-full items-center gap-2 rounded-md px-1.5 py-1.5',
+          // §pyn-1.2.54 — h-10 (40px) фиксированная высота как у других sidebar-
+          // элементов (pills, Connectivity). Без этого long username с line-clamp-2
+          // делал button до 48px в expanded → jump 8px при toggle collapse.
+          'flex h-10 w-full items-center gap-2 rounded-md px-1.5',
           'text-text-primary transition-colors',
           'hover:bg-bg-hover hover:text-text-strong',
           'data-[state=open]:bg-bg-hover data-[state=open]:text-text-strong',
         )}
         {...props}
       >
-        <span className="relative flex h-7 w-7 shrink-0 items-center justify-center">
+        {/* §pyn-1.2.54 — justify-start: avatar выровнен с другими элементами
+            sidebar (icons, mark) по одной вертикальной линии слева. */}
+        <span className="relative flex h-7 w-7 shrink-0 items-center justify-start">
           <Avatar
             initials={initials}
             size={26}
@@ -73,11 +78,13 @@ export const BottomUserRow = forwardRef<HTMLButtonElement, BottomUserRowProps>(
             state={presence}
             size={9}
             ringClass="ring-bg-surface"
-            className="absolute bottom-0 right-0"
+            className="absolute bottom-0 right-[2px]"
           />
         </span>
 
-        {/* Имя — плавно сворачивается при collapse */}
+        {/* Имя — плавно сворачивается при collapse. §pyn-1.2.54: truncate
+            (single line + ellipsis) вместо line-clamp-2 — иначе wrap'нутое
+            2-строчное имя растягивало BottomUserRow до 48px и давал jump. */}
         <span
           className={cn(
             'flex min-w-0 flex-1 items-center overflow-hidden',
@@ -85,7 +92,7 @@ export const BottomUserRow = forwardRef<HTMLButtonElement, BottomUserRowProps>(
             collapsed ? 'max-w-0 opacity-0' : 'max-w-[160px] opacity-100',
           )}
         >
-          <span className="line-clamp-2 text-left text-[13px] font-medium leading-tight tracking-[-0.005em]">
+          <span className="truncate text-left text-[13px] font-medium leading-tight tracking-[-0.005em]">
             {username}
           </span>
         </span>

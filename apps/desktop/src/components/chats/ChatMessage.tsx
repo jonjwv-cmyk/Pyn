@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Check, CheckCheck, CornerUpLeft, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { AttachmentGroup } from '@/components/ui/AttachmentGroup';
@@ -10,6 +11,12 @@ interface ChatMessageProps {
   onReact?: (messageId: number, emoji: string) => void;
   /** Если задан — popup показывает кнопку «Ответить»; caller подымает state в композер. */
   onReply?: (message: ChatMessageItem) => void;
+  /**
+   * §pyn-1.2.37 — callback когда сообщение попало в viewport. Используется
+   * для intersection-observer mark-read: peer-side unread сообщения
+   * автоматически отмечаются прочитанными при появлении на экране.
+   */
+  onMarkRead?: (messageId: number) => void;
 }
 
 /**
@@ -22,10 +29,38 @@ interface ChatMessageProps {
  *     убирает «раздутость» bubble под пустой реакционный chip.
  *   • Reply preview и attachment'ы — внутри bubble, над текстом.
  */
-export function ChatMessage({ message, onReact, onReply }: ChatMessageProps) {
+export function ChatMessage({ message, onReact, onReply, onMarkRead }: ChatMessageProps) {
   const { t } = useTranslation();
   const own = message.isOwn;
   const hasAttachments = (message.attachments?.length ?? 0) > 0;
+
+  // §pyn-1.2.37 — IntersectionObserver для непрочитанных peer-сообщений.
+  // Когда bubble попадает в viewport — emit onMarkRead → App.tsx делает
+  // markMessageRead → server marks status='read' → broadcast unread_update →
+  // счётчик у всех админов падает мгновенно. Юзер «прокрутился к сообщению →
+  // оно считается прочитанным».
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const needsMark =
+    !own && message.isRead === false && typeof message.numericId === 'number' && !!onMarkRead;
+  useEffect(() => {
+    if (!needsMark || !wrapperRef.current) return;
+    const id = message.numericId!;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            onMarkRead?.(id);
+            observer.disconnect();
+            break;
+          }
+        }
+      },
+      // 50% видимости bubble в viewport scroll-area → mark.
+      { threshold: 0.5 },
+    );
+    observer.observe(wrapperRef.current);
+    return () => observer.disconnect();
+  }, [needsMark, message.numericId, onMarkRead]);
   const reactions = message.reactions ?? {};
   const myReactions = message.myReactions ?? [];
   const reactionEntries = Object.entries(reactions).filter(([, c]) => c > 0);
@@ -76,6 +111,7 @@ export function ChatMessage({ message, onReact, onReply }: ChatMessageProps) {
 
   return (
     <div
+      ref={wrapperRef}
       className={cn(
         'group flex w-full items-end gap-1.5',
         own ? 'justify-end' : 'justify-start',

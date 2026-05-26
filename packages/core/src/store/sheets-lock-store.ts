@@ -19,8 +19,14 @@ export interface SheetLock {
   actionId: string;
   /** Человеко-читаемая подпись из registry — отображается в overlay. */
   actionLabel: string;
-  /** Login юзера который запустил. */
+  /** ФИО юзера который запустил (для отображения в overlay). */
   userName: string;
+  /**
+   * §pyn-1.2.43 — login юзера-инициатора. Используется для lookup avatar
+   * + presence (через `usePresenceStore.byLogin[userLogin]`). Опционально
+   * для back-compat со старым клиентом без поля.
+   */
+  userLogin?: string;
   /** Имя листа (rawName) где была инициирована операция. */
   tabName: string;
   /** Какие листы Google Sheets перекрыты overlay'ем (по rawName). */

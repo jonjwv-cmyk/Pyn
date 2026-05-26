@@ -1,0 +1,21 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Концепт B — Route Dots.
+    Маршрут A→B→C через 3 точки соединённых тонкой линией с одним bend.
+    Самый минималистичный. Без букв. Чистая идея «маршрут / логистика».
+    Стиль Stripe/Linear: monoline, single accent.
+  -->
+  <rect width="256" height="256" rx="48" fill="#0F0F0F"/>
+  <!-- Маршрут: ломаная через 3 точки. stroke-linecap=round для мягких концов. -->
+  <path d="M 64 184 L 128 96 L 192 152"
+        stroke="#D97757"
+        stroke-width="10"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        fill="none"/>
+  <!-- 3 точки маршрута, последняя — pin-shaped (большая) для финальной destination -->
+  <circle cx="64" cy="184" r="12" fill="#D97757"/>
+  <circle cx="128" cy="96" r="12" fill="#D97757"/>
+  <circle cx="192" cy="152" r="16" fill="#D97757"/>
+  <circle cx="192" cy="152" r="6" fill="#0F0F0F"/>
+</svg>

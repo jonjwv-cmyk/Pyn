@@ -1,10 +1,14 @@
 /**
  * Унифицированный формат времени по Екатеринбургу в 12-часовой нотации.
  *
- * Сервер OTLHelper2 пишет даты в формате `YYYY-MM-DD HH:MM:SS` (MySQL DATETIME),
- * и эти значения — **локальное время Екатеринбурга** (UTC+5), а не UTC.
- * Поэтому при parse'е делаем сдвиг на -5 часов чтобы получить корректный
- * UTC-момент, дальше форматируем обратно в Yek через `Intl.DateTimeFormat`.
+ * §pyn-1.2.36 — Pyn-сервер (Cloudflare D1) пишет timestamps через
+ * `datetime('now')` — это **UTC**. Раньше код предполагал что это Yek-локальное
+ * время (legacy assumption от OTLHelper2) и делал `-5h` shift → все даты в UI
+ * были на 5 часов в прошлом. Подтверждено логом: server отдаёт
+ * `created_at:"2026-05-23 17:29:41"` + `yek_hm:"22:59"` — значит 17:29 = UTC,
+ * Yek = 22:29. Сейчас parseServerDate интерпретирует строку как UTC напрямую,
+ * Intl.DateTimeFormat с `timeZone: 'Asia/Yekaterinburg'` рендерит правильное
+ * локальное время Yek.
  *
  * Все user-facing timestamps в Pyn проходят через эти helper'ы — UI везде
  * показывает "10:11 AM" / "16.05 2:34 PM" / "сегодня в 11:00 AM" в одной
@@ -20,18 +24,45 @@ import i18next from 'i18next';
 const YEK_OFFSET_MS = 5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
-  hour: 'numeric',
-  minute: '2-digit',
-  hour12: true,
-  timeZone: 'Asia/Yekaterinburg',
-});
+// §pyn-1.2.23 — formatters per-language, не hardcoded. Раньше TIME=en-US,
+// SHORT_DATE=ru-RU висели как module-level const → не реагировали на смену
+// языка. Юзер видел mix: «16 мая, 8:52 AM» вместо «May 16, 8:52 AM» в EN UI.
+// Cache per language чтобы не создавать formatter на каждом вызове.
+const _timeCache = new Map<string, Intl.DateTimeFormat>();
+const _shortDateCache = new Map<string, Intl.DateTimeFormat>();
 
-const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
-  day: '2-digit',
-  month: '2-digit',
-  timeZone: 'Asia/Yekaterinburg',
-});
+function currentLang(): string {
+  return i18next.language || 'en-US';
+}
+
+function timeFormatter(): Intl.DateTimeFormat {
+  const lang = currentLang();
+  let f = _timeCache.get(lang);
+  if (!f) {
+    f = new Intl.DateTimeFormat(lang, {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Yekaterinburg',
+    });
+    _timeCache.set(lang, f);
+  }
+  return f;
+}
+
+function shortDateFormatter(): Intl.DateTimeFormat {
+  const lang = currentLang();
+  let f = _shortDateCache.get(lang);
+  if (!f) {
+    f = new Intl.DateTimeFormat(lang, {
+      day: '2-digit',
+      month: '2-digit',
+      timeZone: 'Asia/Yekaterinburg',
+    });
+    _shortDateCache.set(lang, f);
+  }
+  return f;
+}
 
 const MONTH_GEN_KEYS = [
   'news_schedule_dialog.month_gen_jan', 'news_schedule_dialog.month_gen_feb',
@@ -70,14 +101,14 @@ export function parseServerDate(raw: string | undefined | null): Date | null {
   const hour = Number(m[4]);
   const minute = Number(m[5]);
   const second = Number(m[6]);
-  // Yek local time → UTC: subtract +5h offset.
-  return new Date(Date.UTC(year, month, day, hour - 5, minute, second));
+  // §pyn-1.2.36 — server (D1 SQLite datetime('now')) даёт UTC. Никакого shift.
+  return new Date(Date.UTC(year, month, day, hour, minute, second));
 }
 
 /** Время "10:11 AM" в Yek TZ, в 12-часовом формате. */
 export function formatTimeYek(raw: string | undefined | null): string {
   const d = parseServerDate(raw);
-  return d ? TIME_FORMATTER.format(d) : (raw ?? '');
+  return d ? timeFormatter().format(d) : (raw ?? '');
 }
 
 /**
@@ -85,7 +116,7 @@ export function formatTimeYek(raw: string | undefined | null): string {
  */
 export function formatShortDateYek(raw: string | undefined | null): string {
   const d = parseServerDate(raw);
-  return d ? SHORT_DATE_FORMATTER.format(d) : (raw ?? '');
+  return d ? shortDateFormatter().format(d) : (raw ?? '');
 }
 
 /**
@@ -102,7 +133,7 @@ export function formatFullYek(raw: string | undefined | null): string {
   if (!d) return raw ?? '';
   const { day, month, year } = yekParts(d);
   const monthName = monthGen(month);
-  const time = TIME_FORMATTER.format(d);
+  const time = timeFormatter().format(d);
   const nowYear = yekParts(new Date()).year;
   if (year === nowYear) {
     return `${day} ${monthName}, ${time}`;
@@ -119,7 +150,7 @@ export function formatDateFullYek(d: Date): string {
   if (!d || Number.isNaN(d.getTime())) return '';
   const { day, month, year } = yekParts(d);
   const monthName = monthGen(month);
-  const time = TIME_FORMATTER.format(d);
+  const time = timeFormatter().format(d);
   const nowYear = yekParts(new Date()).year;
   if (year === nowYear) {
     return `${day} ${monthName}, ${time}`;

@@ -38,7 +38,9 @@ export default {
         'success':  '#7DC061',
 
         'presence-online':   '#7DC061',
-        'presence-away':     '#E5A83B',
+        // §pyn-1.2.36 — yellow ярче (#FFB72B вместо #E5A83B), не выглядит
+        // «прозрачным» на dark theme рядом с тёмным ring.
+        'presence-away':     '#FFB72B',
         'presence-offline':  '#E57373',
       },
       fontFamily: {

@@ -8,6 +8,7 @@ import type {
 } from '@pyn/core';
 import { computeInitials } from '@/lib/initials';
 import { formatFullYek } from '@/lib/format-time';
+import { normalizePresence } from '@/types/presence';
 
 /**
  * Repository: wire DTO от сервера (`get_news`) → domain модель для UI.
@@ -25,7 +26,7 @@ export function wireToNewsItem(wire: NewsItemWire, myLogin: string): NewsItem {
     senderAvatarUrl: wire.sender_avatar_url ?? '',
     senderAvatarBlobKey: wire.sender_avatar_blob_key_b64,
     senderAvatarBlobNonce: wire.sender_avatar_blob_nonce_b64,
-    senderPresence: wire.sender_presence_status ?? 'offline',
+    senderPresence: normalizePresence(wire.sender_presence_status),
     text: wire.text,
     createdAt: wire.created_at ?? '',
     createdAtLabel: wire.created_at ? formatFullYek(wire.created_at) : '',

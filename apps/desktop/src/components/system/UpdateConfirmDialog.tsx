@@ -60,7 +60,9 @@ export function UpdateConfirmDialog({
           </div>
 
           <p className="text-[12px] leading-relaxed text-text-muted">
-            {t('update.dialog_body')}
+            {t('update.dialog_body_line1')}
+            <br />
+            {t('update.dialog_body_line2')}
           </p>
 
           <div className="mt-4 flex justify-end gap-2">

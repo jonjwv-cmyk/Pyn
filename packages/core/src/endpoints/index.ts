@@ -10,6 +10,7 @@ export {
   androidLogin,
   me,
   appStatus,
+  heartbeat,
   getPasswordCounter,
   loginResponseToSession,
   requestPcSessionQr,
@@ -142,6 +143,7 @@ export {
   updateCell,
   runScript,
   checkSheetActionStatus,
+  releaseSheetLock,
   getMacroBundle,
   submitMacroData,
   searchSapDoc,
@@ -155,6 +157,13 @@ export {
   type SheetsClientConfig,
 } from './sheets';
 
+// Storage activity (§pyn-1.2.53) — кто последний открывал файл/папку
+export {
+  logStorageOpen,
+  getStorageOpeners,
+  type StorageOpenerInfo,
+} from './storage-activity';
+
 // Kill switch / app lock (2026-05-20)
 export {
   activateAppLock,
@@ -166,3 +175,20 @@ export {
   type AppLockStatus,
   type AppLockScopeStatus,
 } from './app-lock';
+
+// Schedule (§TZ-SERVER-SYNC-COLLAB этап A — server-sync графика, 2026-05-27)
+export {
+  scheduleGet,
+  schedulePut,
+  scheduleMonthsList,
+  readConflictSnapshot,
+  scheduleLockAcquire,
+  scheduleLockHeartbeat,
+  scheduleLockRelease,
+  readLockOwner,
+  type ScheduleStatePayload,
+  type ScheduleSnapshot,
+  type ScheduleMonthSummary,
+  type SchedulePutResult,
+  type ScheduleLockOwner,
+} from './schedule';

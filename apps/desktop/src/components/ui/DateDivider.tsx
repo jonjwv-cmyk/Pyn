@@ -1,5 +1,12 @@
 interface DateDividerProps {
   label: string;
+  /**
+   * §pyn-1.2.54 — динамический top offset для sticky-позиционирования (px).
+   * NewsFeed передаёт height pinned-overlay чтобы sticky divider останавливался
+   * ПОД pinned-плашками, а не прятался за ними. ChatConversation не передаёт →
+   * default 8px (top-2).
+   */
+  topOffset?: number;
 }
 
 /**
@@ -18,11 +25,10 @@ interface DateDividerProps {
  * сверху рисовался отдельно с opacity-fade. Юзер: "не отдельно дубликат
  * вверху, а сам divider прилипает" → это как раз position: sticky.
  */
-export function DateDivider({ label }: DateDividerProps) {
+export function DateDivider({ label, topOffset }: DateDividerProps) {
   // Сам span — sticky (не обёртка). `width: fit-content` + `mx-auto`
   // центрируют без flex'a (важно: sticky внутри flex с gap'ом иногда
-  // криво работает в Chromium). top-2 = прилипает на 8px от верха
-  // scroll-container'а.
+  // криво работает в Chromium). top dynamic = topOffset px или 8px default.
   //
   // §2026-05-19 — z-index поднят до z-30: media (video/iframe/img) внутри
   // sticky-группы создавали свой composited stacking layer и перекрывали
@@ -31,11 +37,18 @@ export function DateDivider({ label }: DateDividerProps) {
   return (
     <span
       data-day-label={label}
+      style={{ top: topOffset !== undefined ? `${topOffset}px` : undefined }}
       className={
         // §2026-05-19 — subtle pill: лёгкая полупрозрачная подложка в тон
         // фона + приглушённый текст. Дата читаема, но не выпрыгивает
         // акцентом — как и просил юзер.
-        'sticky top-2 z-30 mx-auto my-2 inline-block w-fit ' +
+        // top-2 fallback когда topOffset не передан (chat и др).
+        // z-30 нужен чтобы pill был выше composited media layers (video/img
+        // в группе). PinnedPill overlay z-30 — divider в DOM раньше, поэтому
+        // overlay визуально побеждает при перекрытии (correct stacking).
+        // Composer z-40 — выше divider'а (divider уходит под composer blur).
+        'sticky z-30 mx-auto my-2 inline-block w-fit ' +
+        (topOffset !== undefined ? '' : 'top-2 ') +
         'rounded-full bg-bg-elevated/40 px-2.5 py-0.5 text-[11px] ' +
         'font-medium tracking-[0.005em] text-text-muted backdrop-blur-[3px]'
       }

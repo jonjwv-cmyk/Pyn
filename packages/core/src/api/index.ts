@@ -12,6 +12,7 @@ export {
   type WsServerEvent,
   type WsEventType,
   type NewMessageEvent,
+  type MessageReadEvent,
   type NewNewsEvent,
   type NewsUpdateEvent,
   type UnreadUpdateEvent,
@@ -22,4 +23,7 @@ export {
   type SheetLockReleasedEvent,
   type AppControlStateChangedEvent,
   type AppVersionChangedEvent,
+  type ScheduleStateChangedEvent,
+  type ScheduleLockAcquiredEvent,
+  type ScheduleLockReleasedEvent,
 } from './ws-events';

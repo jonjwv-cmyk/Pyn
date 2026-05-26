@@ -281,10 +281,12 @@ interface PcSessionStatusWire {
 export async function checkPcSessionStatus(
   client: ApiClient,
   challenge: string,
+  longPoll = false,
 ): Promise<CheckPcSessionStatusResponse> {
   try {
     const wire = await client.call<PcSessionStatusWire>('check_pc_session_status', {
       challenge,
+      long_poll: longPoll || undefined,
     });
     const status = parseStatus(wire.status);
     if (status === 'redeemed' && wire.session) {
@@ -447,6 +449,49 @@ interface AppStatusWire {
   app_lock_scope?: string | null;
   app_lock_wipe_at?: string | null;
   app_lock_initiated_by?: string;
+}
+
+/**
+ * §pyn-1.2.38 — heartbeat endpoint. Server использует `app_state` в sessions
+ * для presence aggregation (`db.js::getPresenceByLogins`): foreground in last
+ * 120s → online, background in last 30 min → paused. Без heartbeat от
+ * desktop server считает initial app_state из login (foreground default),
+ * и юзер всегда выглядит online даже при свёрнутом окне.
+ *
+ * Pyn должен звать это:
+ *   • при window blur     → app_state: 'background'
+ *   • при window focus    → app_state: 'foreground'
+ *   • периодически (60s)  → текущий state (keep-alive last_seen)
+ */
+/**
+ * §pyn-1.2.42 — heartbeat возвращает агрегированный self-status (учёт
+ * multi-device). Клиент использует для authoritative обновления своего
+ * статуса в presenceStore — не локальная догадка.
+ */
+export interface HeartbeatResponse {
+  presenceStatus: 'online' | 'away' | 'offline';
+  lastSeenAt: string;
+}
+
+export async function heartbeat(
+  client: ApiClient,
+  appState: 'foreground' | 'background',
+): Promise<HeartbeatResponse> {
+  const wire = await client.call<{
+    ok: boolean;
+    presence_status?: string;
+    last_seen_at?: string;
+  }>('heartbeat', { app_state: appState });
+  return {
+    presenceStatus: normalizeHeartbeatPresence(wire.presence_status),
+    lastSeenAt: wire.last_seen_at || '',
+  };
+}
+
+function normalizeHeartbeatPresence(raw: string | undefined): 'online' | 'away' | 'offline' {
+  if (raw === 'online') return 'online';
+  if (raw === 'paused' || raw === 'away') return 'away';
+  return 'offline';
 }
 
 export async function appStatus(

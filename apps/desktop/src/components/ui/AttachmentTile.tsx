@@ -17,7 +17,7 @@ import {
   VolumeX,
   type LucideIcon,
 } from 'lucide-react';
-import { useDecryptedBlob } from '@/lib/avatar';
+import { getDimsSync, setDimsSync, useDecryptedBlob } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 import type { Attachment } from '@pyn/core';
 
@@ -75,6 +75,18 @@ export function AttachmentTile({ attachment, context = 'chat' }: AttachmentTileP
     : 'block h-auto w-auto max-h-[420px] object-contain';
 
   if (isImage) {
+    // Sync read natural dims из module-level cache (заполняется после первого
+    // img.onload + persists в IDB через rebuild'ы). Если known → HTML5 атрибуты
+    // width/height резервируют точный placeholder ДО async image-load →
+    // scrollHeight стабилен с frame 1 → scroll-restore попадает в реальный
+    // bottom/target → нет CLS jump'а при inter-chat switch.
+    const cachedDims = getDimsSync(attachment.url);
+    const handleImgLoad = (e: React.SyntheticEvent<HTMLImageElement>): void => {
+      const img = e.currentTarget;
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        setDimsSync(attachment.url, img.naturalWidth, img.naturalHeight);
+      }
+    };
     return (
       <div
         className={cn(
@@ -101,7 +113,14 @@ export function AttachmentTile({ attachment, context = 'chat' }: AttachmentTileP
               draggable={!isNews}
               className={cn('block', isNews && 'select-none cursor-default')}
             >
-              <img src={blobUrl} alt="" className={mediaSizing} />
+              <img
+                src={blobUrl}
+                alt=""
+                width={cachedDims?.w}
+                height={cachedDims?.h}
+                onLoad={handleImgLoad}
+                className={mediaSizing}
+              />
             </a>
             {!isNews && (
               <DownloadOverlayButton

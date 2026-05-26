@@ -3,6 +3,7 @@ import {
   createMolStore,
   createNewsStore,
   createOutboxStore,
+  createPresenceStore,
   createSessionInfoStore,
   createStatsStore,
   createUiStateStore,
@@ -10,6 +11,7 @@ import {
   type ChatsState,
   type NewsState,
   type OutboxState,
+  type PresenceState,
   type UiState,
   type UsersState,
 } from '@pyn/core';
@@ -57,3 +59,11 @@ export const useOutboxStore = createOutboxStore(createCacheStorage<OutboxState>(
  * WS news_update event инвалидирует записи по messageId.
  */
 export const useStatsStore = createStatsStore();
+/**
+ * §pyn-1.2.39 — глобальный presence (single source of truth). Заполняется
+ * из get_users / get_admin_messages / get_news_readers (bulk setMany) и
+ * обновляется WS push presence_change (setOne). Все компоненты-потребители
+ * (UserListRow, ChatList, ChatConversation, NewsStatsDialog) читают через
+ * `usePresenceStore((s) => s.byLogin[login])`.
+ */
+export const usePresenceStore = createPresenceStore(createCacheStorage<PresenceState>());

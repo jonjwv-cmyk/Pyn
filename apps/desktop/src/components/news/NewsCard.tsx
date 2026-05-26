@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
@@ -15,6 +15,8 @@ import { AttachmentGroup } from '@/components/ui/AttachmentGroup';
 import { Avatar } from '@/components/ui/Avatar';
 import { PresenceDot } from '@/components/ui/PresenceDot';
 import { cn } from '@/lib/cn';
+import { useFormatYek } from '@/lib/hooks/use-format-yek';
+import { usePresenceStore } from '@/lib/stores';
 import { MessageActionsPopup } from '@/components/ui/MessageActionsPopup';
 import { can, isAdminLike, type NewsItem, type Role } from '@pyn/core';
 import { NewsEditDialog } from './NewsEditDialog';
@@ -32,6 +34,8 @@ interface NewsCardProps {
   onDelete?: (newsId: number) => void;
   /** Optimistic update текста после редактирования. */
   onEdited?: (newsId: number, newText: string) => void;
+  /** §pyn-1.2.37 — intersection-observer mark-read для непрочитанных новостей. */
+  onMarkRead?: (newsId: number) => void;
 }
 
 // Реакции 1:1 с server validation (`@pyn/core/reactions.ts::ALLOWED_REACTIONS`).
@@ -56,13 +60,40 @@ export function NewsCard({
   onTogglePin,
   onDelete,
   onEdited,
+  onMarkRead,
 }: NewsCardProps) {
   const { t } = useTranslation();
   const [statsOpen, setStatsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  // §pyn-1.2.27 — reactive формат вместо застрявшего createdAtLabel из репо.
+  const dateLabel = useFormatYek(news.createdAt);
+
+  // §pyn-1.2.37 — IO mark-read: непрочитанная новость, попавшая в viewport (50%),
+  // помечается прочитанной. App.tsx-like dedup делает NewsFeed через своё ref.
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const needsMark = !news.isRead && !news.isOwn && !!onMarkRead;
+  useEffect(() => {
+    if (!needsMark || !wrapperRef.current) return;
+    const id = news.id;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            onMarkRead?.(id);
+            observer.disconnect();
+            break;
+          }
+        }
+      },
+      { threshold: 0.5 },
+    );
+    observer.observe(wrapperRef.current);
+    return () => observer.disconnect();
+  }, [needsMark, news.id, onMarkRead]);
 
   return (
     <article
+      ref={wrapperRef}
       className={cn(
         'group/news flex flex-col gap-3 rounded-xl border bg-bg-elevated px-4 py-3.5',
         news.isPinned
@@ -80,12 +111,10 @@ export function NewsCard({
             avatarBlobKey={news.senderAvatarBlobKey}
             avatarBlobNonce={news.senderAvatarBlobNonce}
           />
-          <PresenceDot
-            state={news.senderPresence}
-            size={10}
-            ringClass="ring-bg-elevated"
-            className="absolute -bottom-0.5 -right-0.5"
-          />
+          {/* §pyn-1.2.42 — presence из единого presenceStore (single source
+              of truth). Раньше news.senderPresence был snapshot на момент
+              fetch news — не обновлялся live при WS push presence_change. */}
+          <SenderPresenceDot login={news.senderLogin} fallback={news.senderPresence} />
         </span>
 
         <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -93,7 +122,7 @@ export function NewsCard({
             {news.senderName}
           </span>
           <span className="shrink-0 text-[11px] text-text-muted tabular-nums">
-            {news.createdAtLabel}
+            {dateLabel}
           </span>
           {!news.isRead && !news.isOwn && (
             <span
@@ -362,4 +391,26 @@ function ReactionsRow({
   );
 }
 
-
+/**
+ * §pyn-1.2.42 — presence-dot для автора новости. Читает из единого
+ * `usePresenceStore`. Fallback на server-snapshot (news.senderPresence)
+ * только пока presenceStore ещё не получил данные для этого login —
+ * редкий edge на cold start до WS push / get_users.
+ */
+function SenderPresenceDot({
+  login,
+  fallback,
+}: {
+  login: string;
+  fallback: 'online' | 'away' | 'offline';
+}) {
+  const live = usePresenceStore((s) => s.byLogin[login]?.status);
+  return (
+    <PresenceDot
+      state={live ?? fallback}
+      size={10}
+      ringClass="ring-bg-elevated"
+      className="absolute -bottom-0.5 -right-0.5"
+    />
+  );
+}

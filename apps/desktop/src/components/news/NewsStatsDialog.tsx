@@ -3,11 +3,12 @@ import { Trans, useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Check, Circle, X } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
+import { PresenceDot } from '@/components/ui/PresenceDot';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatFullYek } from '@/lib/format-time';
 import { computeInitials } from '@/lib/initials';
-import { useStatsStore, useUsersStore } from '@/lib/stores';
+import { usePresenceStore, useStatsStore, useUsersStore } from '@/lib/stores';
 import {
   getNewsReaders,
   getPollStats,
@@ -86,12 +87,23 @@ export function NewsStatsDialog({ news, open, onOpenChange }: NewsStatsDialogPro
         if (news.kind === 'poll' && news.poll) {
           const wire = await getPollStats(api, news.poll.id);
           if (cancelled) return;
+          // §pyn-1.2.40 — fill presenceStore из voters/nonVoters (server отдаёт
+          // presence_status в response). PresenceDot в строках реактивный
+          // через usePresenceStore (любой WS push presence_change обновит).
+          usePresenceStore.getState().setMany([
+            ...wire.voters.map((v) => ({ login: v.user_login, status: v.presence_status, lastSeenAt: v.last_seen_at })),
+            ...wire.nonVoters.map((u) => ({ login: u.user_login, status: u.presence_status, lastSeenAt: u.last_seen_at })),
+          ]);
           const stats = wireToPollStats(wire);
           setPollStats(stats);
           setStatsPoll(news.poll.id, stats);
         } else {
           const wire = await getNewsReaders(api, news.id);
           if (cancelled) return;
+          usePresenceStore.getState().setMany([
+            ...wire.readUsers.map((u) => ({ login: u.user_login, status: u.presence_status, lastSeenAt: u.last_seen_at })),
+            ...wire.unreadUsers.map((u) => ({ login: u.user_login, status: u.presence_status, lastSeenAt: u.last_seen_at })),
+          ]);
           const stats = wireToNewsStats(wire);
           setNewsStats(stats);
           setStatsReaders(news.id, stats);
@@ -311,10 +323,9 @@ function ReaderRow({ reader, usersByLogin }: ReaderRowProps) {
   return (
     <div className="flex items-center gap-3 py-1">
       <Check className="h-3.5 w-3.5 shrink-0 text-presence-online" strokeWidth={2.25} />
-      <Avatar
+      <AvatarWithPresence
+        userId={reader.userId}
         initials={reader.initials}
-        size={26}
-        login={reader.userId}
         avatarUrl={u?.avatarUrl}
         avatarBlobKey={u?.avatarBlobKey}
         avatarBlobNonce={u?.avatarBlobNonce}
@@ -465,10 +476,9 @@ function VoterRow({ voter, poll, optionsById, usersByLogin }: VoterRowProps) {
   return (
     <div className="flex items-center gap-3 py-1">
       <Check className="h-3.5 w-3.5 shrink-0 text-presence-online" strokeWidth={2.25} />
-      <Avatar
+      <AvatarWithPresence
+        userId={voter.userId}
         initials={voter.initials}
-        size={26}
-        login={voter.userId}
         avatarUrl={u?.avatarUrl}
         avatarBlobKey={u?.avatarBlobKey}
         avatarBlobNonce={u?.avatarBlobNonce}
@@ -505,10 +515,9 @@ function PersonRow({ person, muted, usersByLogin }: PersonRowProps) {
         )}
         strokeWidth={1.75}
       />
-      <Avatar
+      <AvatarWithPresence
+        userId={person.userId}
         initials={person.initials}
-        size={26}
-        login={person.userId}
         avatarUrl={u?.avatarUrl}
         avatarBlobKey={u?.avatarBlobKey}
         avatarBlobNonce={u?.avatarBlobNonce}
@@ -522,6 +531,47 @@ function PersonRow({ person, muted, usersByLogin }: PersonRowProps) {
         {person.name}
       </span>
     </div>
+  );
+}
+
+/**
+ * §pyn-1.2.40 — Avatar + PresenceDot для строк статистики (readers / voters /
+ * notReaders / notVoters). Presence реактивный через usePresenceStore —
+ * WS push presence_change обновляет dot без re-fetch'а stats.
+ */
+interface AvatarWithPresenceProps {
+  userId: string;
+  initials: string;
+  avatarUrl?: string;
+  avatarBlobKey?: string | null;
+  avatarBlobNonce?: string | null;
+}
+
+function AvatarWithPresence({
+  userId,
+  initials,
+  avatarUrl,
+  avatarBlobKey,
+  avatarBlobNonce,
+}: AvatarWithPresenceProps) {
+  const presence = usePresenceStore((s) => s.byLogin[userId]?.status ?? 'offline');
+  return (
+    <span className="relative shrink-0">
+      <Avatar
+        initials={initials}
+        size={26}
+        login={userId}
+        avatarUrl={avatarUrl}
+        avatarBlobKey={avatarBlobKey ?? undefined}
+        avatarBlobNonce={avatarBlobNonce ?? undefined}
+      />
+      <PresenceDot
+        state={presence}
+        size={9}
+        ringClass="ring-bg-elevated"
+        className="absolute -bottom-0.5 -right-0.5"
+      />
+    </span>
   );
 }
 

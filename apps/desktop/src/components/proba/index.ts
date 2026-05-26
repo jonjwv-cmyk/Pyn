@@ -1,0 +1,1 @@
+export { ProbaScreen } from './ProbaScreen';

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMolStore, useUiStateStore } from '@/lib/stores';
 import { sortMolRecords } from '@/lib/mol-format';
 import {
@@ -42,48 +42,29 @@ export function MolScreen() {
   const query = useUiStateStore((s) => s.molQuery);
   const setQuery = useUiStateStore((s) => s.setMolQuery);
   const [actionRequest, setActionRequest] = useState<ContactActionRequest | null>(null);
-  // Inline-фильтр поверх уже-найденных строк. Local state — НЕ persist'им:
-  // это временное сужение в рамках текущего просмотра, отличающееся от
-  // основного molQuery (который сохраняется между сессиями).
-  const [inlineFilter, setInlineFilter] = useState('');
 
-  // §v1.2.14 — initMol() и useWsEvent('base_changed') переехали в App.tsx,
-  // чтобы база грузилась сразу после login (не лениво при первом открытии
-  // раздела МОЛы) и WS push обновления применялись независимо от того,
-  // открыт ли сейчас раздел МОЛы. Здесь MolScreen только consumer store'а.
+  // §v1.2.14 — initMol() и useWsEvent('base_changed') переехали в App.tsx.
+  // §pyn-1.2.27 — inline-фильтр «Уточнить по найденному» удалён: per-column
+  // фильтры в MolTable покрывают эту функциональность.
 
   const parsed = useMemo(() => parseMolQuery(query), [query]);
-
-  // При смене основного query — обнулить inline-фильтр. Иначе при переходе
-  // от `0609 петров` → `0610` остаточный фильтр давал бы пустой результат.
-  useEffect(() => {
-    setInlineFilter('');
-  }, [parsed.raw]);
 
   const filtered = useMemo(() => {
     if (parsed.mode === 'empty') return [];
     return records.filter((r) => matchesMolQuery(r, parsed));
   }, [records, parsed]);
 
-  // Sort на original matched — sortMolRecords уже стабильный (статус → ФИО);
-  // dedupe потом подхватит первую запись каждого person в правильном порядке.
   const sortedMatched = useMemo(() => sortMolRecords(filtered), [filtered]);
 
-  // Для таблицы — dedupe по person, чтобы человек на 50 складах не дублировался
-  // 50 раз. В warehouse-mode дедуп НЕ делаем: там цель — показать каждый
-  // отдельный склад как отдельную запись.
+  // §pyn-1.2.54 — dedupe по табельному применяется во ВСЕХ режимах поиска
+  // (включая warehouse). Юзер: если один человек числится на N складах,
+  // в таблице показываем 1 строку. Сводка по складам остаётся в sidebar
+  // через warehouseGroups, использующий sortedMatched (без dedupe).
   const dedupedRecords = useMemo<MolRecord[]>(() => {
-    if (parsed.mode === 'warehouse') return sortedMatched;
     return dedupeMolByPerson(sortedMatched).map((d) => d.record);
-  }, [parsed.mode, sortedMatched]);
+  }, [sortedMatched]);
 
-  // Inline-фильтр работает ПОВЕРХ tableRecords (после dedupe/sort). Простой
-  // substring-match по основным полям, lowercase-insensitive. Без сетевых
-  // запросов — чисто клиентская фильтрация уже-загруженных строк.
-  const tableRecords = useMemo<MolRecord[]>(() => {
-    if (!inlineFilter.trim()) return dedupedRecords;
-    return dedupedRecords.filter((r) => matchesInlineFilter(r, inlineFilter));
-  }, [dedupedRecords, inlineFilter]);
+  const tableRecords = dedupedRecords;
 
   // Sidebar формируем из ВСЕХ matched (без dedupe) — иначе пропадут другие
   // склады человека. Один и тот же человек на складах 0609, 0610, 0611 даст
@@ -116,9 +97,6 @@ export function MolScreen() {
         errorMessage={errorMessage}
         recordCount={uniquePeopleCount}
         previousCount={meta?.previous?.recordsCount ?? null}
-        inlineFilter={inlineFilter}
-        setInlineFilter={setInlineFilter}
-        canFilter={parsed.mode !== 'empty' && dedupedRecords.length > 0}
       />
       <div className="flex flex-1 overflow-hidden">
         <section className="mol-pattern-bg relative flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -150,34 +128,6 @@ export function MolScreen() {
 
 function hasAnyNotFound(nf: NotFoundList): boolean {
   return nf.warehouses.length > 0 || nf.emails.length > 0 || nf.names.length > 0;
-}
-
-/**
- * Простой substring-match для inline-фильтра. Проверяет основные текстовые
- * поля (ФИО, должность, телефоны, email, статус, таб.номер) на содержание
- * подстроки. Lowercase-insensitive. Цифры в телефонах нормализуются —
- * чтобы «9014» матчилось как с «8 901 438 ...», так и с «901-438».
- */
-function matchesInlineFilter(record: MolRecord, filter: string): boolean {
-  const q = filter.trim().toLowerCase();
-  if (!q) return true;
-  const qDigits = q.replace(/\D/g, '');
-  const fields = [
-    record.fio,
-    record.position,
-    record.mail,
-    record.status,
-    record.tab,
-  ];
-  for (const f of fields) {
-    if (f && f.toLowerCase().includes(q)) return true;
-  }
-  if (qDigits) {
-    const mobileDigits = (record.mobile || '').replace(/\D/g, '');
-    const workDigits = (record.work || '').replace(/\D/g, '');
-    if (mobileDigits.includes(qDigits) || workDigits.includes(qDigits)) return true;
-  }
-  return false;
 }
 
 function buildNotFound(

@@ -8,7 +8,11 @@ import { getUsers, isDeveloper, type Role, type UserSummary } from '@pyn/core';
 import { CreateUserDialog } from './UserDialogs';
 import { UserListRow } from './UserListRow';
 
-const POLL_MS = 5_000;
+// §pyn-1.2.46 — было 5_000 (720 req/час когда юзер в Settings/Users panel).
+// 60_000 даёт 60 req/час — для имени/role изменений 1 минуты достаточно.
+// Presence changes идут live через WS push presence_change → этот polling
+// нужен только для редких rename/role/role-change events.
+const POLL_MS = 60_000;
 /** Через сколько ms toast'а message исчезает. */
 const TOAST_FADE_MS = 4_000;
 

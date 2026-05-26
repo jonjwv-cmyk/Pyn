@@ -1,6 +1,6 @@
 {
   "name": "@pyn/desktop",
-  "version": "1.2.15",
+  "version": "1.2.55",
   "private": true,
   "description": "Pyn Desktop — Electron app (Mac, Windows)",
   "main": "dist-electron/main.js",
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@pyn/core": "workspace:*",
+    "@radix-ui/react-context-menu": "^2.2.16",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-hover-card": "^1.1.15",
@@ -55,7 +56,8 @@
     "productName": "Pyn",
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "build/icon-source.png"
     ],
     "directories": {
       "output": "release",
@@ -64,7 +66,7 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": "dmg",
-      "icon": "build/icon.icns"
+      "icon": "build/icon-source.png"
     },
     "win": {
       "target": [
@@ -75,11 +77,11 @@
           ]
         }
       ],
-      "icon": "build/icon.ico",
-      "artifactName": "pyn-${version}-portable.exe"
+      "icon": "build/icon-source.png",
+      "artifactName": "Pyn ${version}.exe"
     },
     "portable": {
-      "artifactName": "pyn-${version}-portable.exe",
+      "artifactName": "Pyn ${version}.exe",
       "requestExecutionLevel": "user"
     }
   }

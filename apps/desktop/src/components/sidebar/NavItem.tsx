@@ -39,8 +39,10 @@ export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick }
         active && 'bg-bg-selected text-text-strong',
       )}
     >
-      {/* Icon-box фиксирован — стабильная позиция при collapse/expand */}
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center">
+      {/* Icon-box: justify-start — все элементы sidebar (mark, icon, avatar)
+          выровнены по одной невидимой вертикальной линии слева, независимо
+          от размера content'а. §pyn-1.2.54. */}
+      <span className="flex h-7 w-7 shrink-0 items-center justify-start">
         <Icon
           className={cn(
             'h-[18px] w-[18px] transition-colors',

@@ -108,9 +108,10 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
 
     const { challenge, expiresAt } = phase;
 
-    // Countdown: каждую секунду пересчитываем `secondsLeft`. На 0 — если
-    // refresh ещё не отстрелял (медленная сеть), сразу триггерим фоновой
-    // запрос. Старый QR остаётся видимым до прихода нового.
+    // Countdown: каждую секунду пересчитываем `secondsLeft`. На 0 —
+    // переходим в loading state (PynLoader анимация полосок visible
+    // минимум 1.8s = полный цикл), затем новый QR. Юзер видит «срок
+    // вышел → анимация → новый код».
     const updateCountdown = () => {
       const left = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
       setSecondsLeft(left);
@@ -132,32 +133,41 @@ export function QrLoginPanel({ onSuccess }: QrLoginPanelProps) {
       Math.max(0, leadMs),
     );
 
-    // Polling status check.
-    pollTimerRef.current = setInterval(async () => {
-      try {
-        const result = await checkPcSessionStatus(api, challenge);
-        if (result.status === 'redeemed' && result.session) {
-          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-          if (tickTimerRef.current) clearInterval(tickTimerRef.current);
-          if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-          // Token сразу setToken'им в ApiClient — все последующие calls используют.
-          api.setToken(result.session.token);
-          onSuccess(result.session);
-        } else if (result.status === 'expired') {
-          // Server отверг — попробуем фоном получить новый.
-          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-          if (tickTimerRef.current) clearInterval(tickTimerRef.current);
-          void requestNewQr(true);
+    // §pyn-1.2.45 — long-polling вместо setInterval. Сервер держит запрос
+    // до 25 сек ждая redeem'а. При scan'е возвращается мгновенно (~100ms).
+    // После каждого response клиент сразу запускает новый long-poll.
+    // Только ОДИН запрос в любой момент времени → −97% жора на CF.
+    let cancelled = false;
+    const longPoll = async (): Promise<void> => {
+      while (!cancelled) {
+        try {
+          const result = await checkPcSessionStatus(api, challenge, true);
+          if (cancelled) return;
+          if (result.status === 'redeemed' && result.session) {
+            if (tickTimerRef.current) clearInterval(tickTimerRef.current);
+            if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+            api.setToken(result.session.token);
+            onSuccess(result.session);
+            return;
+          }
+          if (result.status === 'expired') {
+            if (tickTimerRef.current) clearInterval(tickTimerRef.current);
+            void requestNewQr(true);
+            return;
+          }
+          // pending → сразу новый long-poll (без задержки, сервер сам держит 25s).
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[pyn:qr] long-poll failed:', err);
+          // Transient — пауза 2 сек, потом retry. Не зацикливаться на network down.
+          await new Promise((r) => setTimeout(r, 2_000));
         }
-      } catch (err) {
-        // Transient ошибки игнорим — следующий poll попробует снова.
-        // eslint-disable-next-line no-console
-        console.warn('[pyn:qr] poll failed:', err);
       }
-    }, POLL_INTERVAL_MS);
+    };
+    void longPoll();
 
     return () => {
-      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      cancelled = true;
       if (tickTimerRef.current) clearInterval(tickTimerRef.current);
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     };

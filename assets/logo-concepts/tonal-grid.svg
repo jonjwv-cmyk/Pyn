@@ -1,0 +1,51 @@
+<svg width="1024" height="320" viewBox="0 0 1024 320" xmlns="http://www.w3.org/2000/svg" font-family="Inter, system-ui, sans-serif">
+  <!--
+    Tonal variation на canon (clay-dim, HSL 14° 44% 49%).
+    Логика «света сверху»: top-bow lightest, stem mid, mid-bow darkest.
+    Шаг 0% / 3% / 6% / 10% L — от canon к bold градации.
+  -->
+  <rect width="1024" height="320" fill="#0A0A0A"/>
+
+  <!-- T0: Canon solid -->
+  <g transform="translate(0,0)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#B35E45"/>
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#B35E45"/>
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#B35E45"/>
+    <text x="12" y="296" fill="#A6A39B" font-size="13">T0 · canon solid (0%)</text>
+  </g>
+
+  <!-- T1: Subtle 3% step -->
+  <g transform="translate(256,0)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <!-- stem: canon #B35E45 -->
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#B35E45"/>
+    <!-- top-bow: +3% L = #BC6549 -->
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#BC6549"/>
+    <!-- mid-bow: -3% L = #A85A41 -->
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#A85A41"/>
+    <text x="12" y="296" fill="#A6A39B" font-size="13">T1 · subtle (±3% L)</text>
+  </g>
+
+  <!-- T2: Medium 6% step -->
+  <g transform="translate(512,0)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#B35E45"/>
+    <!-- top-bow: +6% L = #C56C50 -->
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#C56C50"/>
+    <!-- mid-bow: -6% L = #9D533D -->
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#9D533D"/>
+    <text x="12" y="296" fill="#A6A39B" font-size="13">T2 · medium (±6% L)</text>
+  </g>
+
+  <!-- T3: Bold 10% step -->
+  <g transform="translate(768,0)">
+    <rect width="256" height="256" rx="48" fill="#161611"/>
+    <rect x="56" y="56" width="38" height="144" rx="6" fill="#B35E45"/>
+    <!-- top-bow: +10% L = #D27B5C -->
+    <rect x="104" y="56" width="96" height="40" rx="6" fill="#D27B5C"/>
+    <!-- mid-bow: -10% L = #8C4A33 -->
+    <rect x="104" y="108" width="72" height="38" rx="6" fill="#8C4A33"/>
+    <text x="12" y="296" fill="#A6A39B" font-size="13">T3 · bold (±10% L)</text>
+  </g>
+</svg>

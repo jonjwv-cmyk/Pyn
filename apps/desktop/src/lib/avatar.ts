@@ -24,6 +24,99 @@ function cacheKey(url: string, keyB64: string): string {
 }
 
 /**
+ * §pyn-1.2.54 — Natural dimensions cache для image-attachments. Keyed by URL
+ * (без keyB64 — natural dims зависят только от исходного blob'a, не от
+ * расшифровки). Используется AttachmentTile'ом для HTML5 `<img width=X
+ * height=Y>` атрибутов — браузер резервирует точный placeholder ДО async
+ * image-load → scrollHeight стабилен с frame 1 → scroll-restore попадает в
+ * реальный bottom/target → нет visible CLS jump'а при inter-chat switch.
+ *
+ * Two-tier persistence:
+ *   • In-memory Map для sync-чтения в render-фазе (lazy useState init).
+ *   • IndexedDB для переживания Pyn restart — первый просмотр каждой картинки
+ *     per machine = один CLS-кадр, дальше forever clean (включая после restart).
+ *
+ * preload() запускается lazy при первом import'е модуля; до его finish'a
+ * memCache пуст и getDimsSync вернёт null (graceful — будет один CLS).
+ */
+interface DimsRecord {
+  w: number;
+  h: number;
+}
+const dimsCache = new Map<string, DimsRecord>();
+
+const DIMS_DB_NAME = 'pyn-image-dims';
+const DIMS_STORE = 'dims';
+
+let dimsDbPromise: Promise<IDBDatabase> | null = null;
+function getDimsDB(): Promise<IDBDatabase> {
+  if (!dimsDbPromise) {
+    dimsDbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DIMS_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(DIMS_STORE)) {
+          db.createObjectStore(DIMS_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  return dimsDbPromise;
+}
+
+// Lazy preload при первом import'е модуля — fire-and-forget. До finish'a
+// getDimsSync вернёт null, что приемлемо (graceful first-paint CLS).
+void (async () => {
+  try {
+    const db = await getDimsDB();
+    const tx = db.transaction(DIMS_STORE, 'readonly');
+    const store = tx.objectStore(DIMS_STORE);
+    const req = store.openCursor();
+    await new Promise<void>((resolve, reject) => {
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) {
+          resolve();
+          return;
+        }
+        dimsCache.set(cursor.key as string, cursor.value as DimsRecord);
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[pyn:dims] preload failed:', err);
+  }
+})();
+
+/** Sync-чтение natural dims по attachment URL. null = ещё не виделось. */
+export function getDimsSync(url: string): DimsRecord | null {
+  return dimsCache.get(url) ?? null;
+}
+
+/** Запись dims после первого `img.onload`. Идемпотентно. */
+export function setDimsSync(url: string, w: number, h: number): void {
+  if (w <= 0 || h <= 0) return;
+  const prev = dimsCache.get(url);
+  if (prev && prev.w === w && prev.h === h) return;
+  const dims: DimsRecord = { w, h };
+  dimsCache.set(url, dims);
+  void (async () => {
+    try {
+      const db = await getDimsDB();
+      const tx = db.transaction(DIMS_STORE, 'readwrite');
+      tx.objectStore(DIMS_STORE).put(dims, url);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[pyn:dims] persist failed:', err);
+    }
+  })();
+}
+
+/**
  * Полная очистка in-memory кэша расшифрованных blob'ов. Вызывается на
  * logout — гарантирует, что blob URLs предыдущего юзера не «протекут» в
  * сессию следующего (даже если URL avatar'а совпадает — например один и
@@ -42,6 +135,18 @@ export function clearAvatarCache(): void {
   }
   cache.clear();
   inflight.clear();
+  // dims-cache тоже чистим — следующий юзер не должен «угадывать» размеры
+  // картинок предыдущего. IDB clear fire-and-forget.
+  dimsCache.clear();
+  void (async () => {
+    try {
+      const db = await getDimsDB();
+      const tx = db.transaction(DIMS_STORE, 'readwrite');
+      tx.objectStore(DIMS_STORE).clear();
+    } catch {
+      /* clear errors — silent (next session will work из пустого cache) */
+    }
+  })();
 }
 
 /**
@@ -153,11 +258,33 @@ export function useDecryptedBlob(
    * передан, magic-bytes детектор покроет только images. */
   knownMime?: string,
 ): string | null {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  // §pyn-1.2.54 — useState lazy init читает module-level cache SYNC. Если URL
+  // уже расшифровывался в этой сессии — first render возвращает blob URL,
+  // <img src> декодит из browser bitmap-cache на первом paint'e, scrollHeight
+  // включает natural-image-высоту с frame'a 1. Без этого useState(null) давал
+  // placeholder h-32 на первом paint → useEffect после paint → setBlobUrl →
+  // image natural-size на втором paint → CLS, который при scroll-restore
+  // вылазит как «прыжок» (target клампится к меньшему scrollHeight, потом
+  // ResizeObserver re-applies к финальному target). Inter-chat switch создаёт
+  // новые AttachmentTile-инстансы для сообщений нового peer'a — каждый mount
+  // проходил через этот null→url цикл, отсюда видимый прыжок.
+  const [blobUrl, setBlobUrl] = useState<string | null>(() => {
+    if (!url || !keyB64) return null;
+    return cache.get(cacheKey(url, keyB64)) ?? null;
+  });
 
   useEffect(() => {
     if (!url || !keyB64) {
       setBlobUrl(null);
+      return;
+    }
+    // Re-check cache на смену url'a в уже-mounted-компоненте: useState init
+    // фиксирует cache snapshot только при первом mount'е, последующая смена
+    // url-props (редко, но возможно — edit message с replaced attachment) не
+    // переинициализирует initial → нужен sync re-check здесь тоже.
+    const cached = cache.get(cacheKey(url, keyB64));
+    if (cached) {
+      setBlobUrl(cached);
       return;
     }
     let cancelled = false;

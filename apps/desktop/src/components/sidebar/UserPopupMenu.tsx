@@ -206,23 +206,31 @@ interface DbVersionRowProps {
 }
 
 /**
- * База данных — версия + дата + кнопка проверки/обновления в одной строке.
+ * База данных — версия + дата сверху, подпись «База данных» снизу,
+ * кнопка обновления справа. §pyn-1.2.22 — раньше всё в одну строку с
+ * truncate label'ом «Б…»; теперь стек, label виден целиком.
  * Refresh не закрывает popup при клике (preventDefault). Во время loading
- * иконка крутится, нижняя полоса в строке показывает прогресс indeterminate.
+ * иконка крутится, нижняя полоса показывает прогресс indeterminate.
  */
 function DbVersionRow({ version, date, loading, onRefresh }: DbVersionRowProps) {
   const { t } = useTranslation();
   return (
     <div
       className={cn(
-        'relative flex h-8 items-center gap-2 rounded-md px-2 text-[12px]',
+        'relative flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px]',
         'group/db hover:bg-bg-hover transition-colors',
       )}
     >
       <Database className="h-4 w-4 shrink-0 text-text-muted" strokeWidth={1.75} />
-      <span className="flex-1 truncate text-text-secondary">{t('user_menu.version_db')}</span>
-      <span className="text-text-secondary tabular-nums">{version}</span>
-      <span className="text-text-muted tabular-nums">{date}</span>
+      <div className="flex min-w-0 flex-1 flex-col leading-tight">
+        <div className="flex items-baseline gap-1.5 text-text-secondary tabular-nums">
+          <span className="truncate">{version}</span>
+          <span className="shrink-0 text-text-muted">{date}</span>
+        </div>
+        <span className="text-[10.5px] text-text-muted">
+          {t('user_menu.version_db')}
+        </span>
+      </div>
       <button
         type="button"
         onClick={(e) => {
@@ -234,7 +242,7 @@ function DbVersionRow({ version, date, loading, onRefresh }: DbVersionRowProps) 
         aria-label={t('user_menu.db_refresh_tooltip')}
         title={loading ? t('user_menu.db_checking') : t('user_menu.db_refresh_tooltip')}
         className={cn(
-          'flex h-5 w-5 shrink-0 items-center justify-center rounded',
+          'flex h-6 w-6 shrink-0 items-center justify-center rounded',
           'text-text-muted transition-colors',
           'hover:bg-bg-pressed hover:text-text-strong',
           'disabled:cursor-default disabled:opacity-100',
