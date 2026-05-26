@@ -79,34 +79,38 @@ jobs:
           path: ${{ steps.artifact.outputs.path }}
           retention-days: 30
 
-      - name: SCP to VPS (publish /win.exe)
-        if: ${{ env.VPS_SSH_KEY != '' }}
-        env:
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-        shell: bash
-        run: |
-          mkdir -p ~/.ssh
-          echo "$VPS_SSH_KEY" > ~/.ssh/vps_key
-          chmod 600 ~/.ssh/vps_key
-          ssh-keyscan -H 45.12.239.5 >> ~/.ssh/known_hosts 2>/dev/null
-          scp -i ~/.ssh/vps_key \
-            "${{ steps.artifact.outputs.path }}" \
-            root@45.12.239.5:/var/www/otl-releases/pyn-latest.exe.new
-          ssh -i ~/.ssh/vps_key root@45.12.239.5 \
-            "mv /var/www/otl-releases/pyn-latest.exe.new /var/www/otl-releases/pyn-latest.exe && ln -sf /var/www/otl-releases/pyn-latest.exe /var/www/otl-releases/win.exe"
-          rm -f ~/.ssh/vps_key
-          echo "Published: https://45-12-239-5.sslip.io/pyn-latest.exe (alias /win.exe, sha256=${{ steps.artifact.outputs.sha256 }})"
-
-      - name: Broadcast new version to server (D1 update)
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+      - name: Upload EXE to R2 bucket (otl-app-releases)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
-          # Обновляем app_version[desktop-pyn-win] чтобы клиенты увидели
-          # новую версию через `app_status` endpoint.
-          # TODO: добавить broadcast_app_version action в CF Worker когда
-          # понадобится отдельный scope (или переиспользовать существующий
-          # admin endpoint OTLHelper2).
-          echo "D1 broadcast step — заглушка. Версия ${{ steps.artifact.outputs.version }} опубликована на VPS."
+          # Реальный download flow: client → api.otlhelper.com/desktop/win/latest
+          # → CF Worker reads app_version[desktop-win].current_version
+          # → fetches R2 key desktop/win/pyn-${version}.exe → returns binary.
+          # SCP на VPS local disk (старый workflow) не нужен — download идёт
+          # через R2 не через nginx статику.
+          npm install -g wrangler@4
+          R2_KEY="desktop/win/pyn-${{ steps.artifact.outputs.version }}.exe"
+          npx wrangler r2 object put "otl-app-releases/$R2_KEY" \
+            --file="${{ steps.artifact.outputs.path }}" \
+            --remote
+          echo "R2 uploaded: otl-app-releases/$R2_KEY (sha256=${{ steps.artifact.outputs.sha256 }})"
+
+      - name: Update D1 app_version[desktop-win]
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          VERSION="${{ steps.artifact.outputs.version }}"
+          SHA="${{ steps.artifact.outputs.sha256 }}"
+          SQL="UPDATE app_version SET current_version='$VERSION', update_url='https://api.otlhelper.com/desktop/win/latest', binary_sha='$SHA', notes='Pyn $VERSION release via GitHub Actions', updated_by='gh-actions', updated_at=datetime('now') WHERE app_scope='desktop-win'"
+          npx wrangler d1 execute otl-db --remote --command="$SQL"
+          echo "D1 app_version[desktop-win] → current_version=$VERSION"
+          echo ""
+          echo "Released:"
+          echo "  Version: $VERSION"
+          echo "  SHA-256: $SHA"
+          echo "  Download URL: https://api.otlhelper.com/desktop/win/latest"
+          echo "  Clients with current_version < $VERSION will see update pill on next app_status call."
