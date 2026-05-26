@@ -187,26 +187,40 @@ export function inheritForNewMonth(
   };
 }
 
+/**
+ * §pyn-1.2.57 security: production-safe пустые defaults. Раньше тут жили 43
+ * захардкоженных цеха ЕВРАЗ-НТМК с warehouse-кодами + override-rules + имена
+ * approver/deputy — попадали в minified JS bundle EXE'шника, видны любому
+ * кто распакует app.asar без логина.
+ *
+ * Реальный starter state приходит из:
+ *   • server (scheduleGet → state_json с meta) — для любого месяца где хоть кто-то
+ *     уже что-то ввёл;
+ *   • inheritForNewMonth от latest prior month — для пустых;
+ *   • warehouses store (МОЛ-база, encrypted blob) — для shops/removed/shipping
+ *     в non-committed месяцах (derive on-the-fly).
+ *
+ * Это означает: при САМОМ ПЕРВОМ запуске Pyn в проде (server пустой, prior пустой)
+ * юзер видит пустые поля holidays/overrides/approver/deputy и заполняет их
+ * вручную. Один раз. Дальше все клиенты синхронятся через server.
+ *
+ * INITIAL_SHOPS оставлен в файле выше как dev-only fixture (вызывается только
+ * из тестов / dev tooling, не из runtime). Если он не используется в production
+ * code — будет tree-shaken vite'ом.
+ */
+const todayYear = new Date().getFullYear();
+const todayMonth = new Date().getMonth() + 1;
 export const INITIAL_SCHEDULE: ScheduleState = {
   meta: {
-    year: 2026,
-    month: 5,
-    holidays: [1, 2, 3, 4, 11, 29, 30, 31],
-    overrides: [
-      // D1 в xlsx: `7100, 7500, 7000, 7001, 7002, 1274 /7, 21`
-      { id: 'ovr_1', codes: ['7100', '7500', '7000', '7001', '7002', '1274'], days: [7, 21] },
-      { id: 'ovr_2', codes: ['8403'], days: [12] },
-      { id: 'ovr_3', codes: ['2311'], days: [21] },
-    ],
-    approver: { title: 'Начальник УПП', name: 'П.А. Харламцев' },
-    deputy:   { title: 'Заместитель начальника УПП (по логистике)', name: 'И. В. Калягин' },
+    year: todayYear,
+    month: todayMonth,
+    holidays: [],
+    overrides: [],
+    approver: { title: '', name: '' },
+    deputy:   { title: '', name: '' },
   },
-  shops: INITIAL_SHOPS,
-  // Row 77 листа `📊schedule` xlsx — список выведенных из эксплуатации
-  // складов. Справочный блок внизу графика.
-  removedWarehouses: parseWarehouseCell('0619  0628  0630  3401  3601  4101  7400  8100'),
-  // Row 78 — склады отгрузки ТМЦ (терминалы), отдельный служебный блок.
-  shippingWarehouses: parseWarehouseCell(
-    '824Ц  9002  9003  9006  9010  9012  9013  9023  9030  9036  9044  9050  9051  9054  9113  9508',
-  ),
+  shops: [],
+  removedWarehouses: [],
+  shippingWarehouses: [],
 };
+void INITIAL_SHOPS;  // dev-only fixture, ssh keep import for tests; tree-shaken in prod.
