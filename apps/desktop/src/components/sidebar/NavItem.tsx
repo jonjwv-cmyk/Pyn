@@ -10,6 +10,8 @@ interface NavItemProps {
   collapsed: boolean;
   badge?: number;
   onClick: () => void;
+  /** Текстовый пункт без иконки (Лента: Чаты/Новости) — текст виден и в collapsed. */
+  textOnly?: boolean;
 }
 
 /**
@@ -25,7 +27,7 @@ interface NavItemProps {
  * В collapsed mode компонент обёрнут в Radix Tooltip — при hover подпись
  * раздела справа от иконки, не перекрытая курсором.
  */
-export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick }: NavItemProps) {
+export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, textOnly = false }: NavItemProps) {
   const showBadge = badge !== undefined && badge > 0;
 
   const button = (
@@ -42,27 +44,34 @@ export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick }
       {/* Icon-box: justify-start — все элементы sidebar (mark, icon, avatar)
           выровнены по одной невидимой вертикальной линии слева, независимо
           от размера content'а. §pyn-1.2.54. */}
-      <span className="flex h-7 w-7 shrink-0 items-center justify-start">
-        <Icon
-          className={cn(
-            'h-[18px] w-[18px] transition-colors',
-            active ? 'text-accent-clay' : 'text-text-primary group-hover:text-text-strong',
-          )}
-          strokeWidth={1.75}
-        />
-      </span>
+      {!textOnly && (
+        <span className="flex h-7 w-7 shrink-0 items-center justify-start">
+          <Icon
+            className={cn(
+              'h-[18px] w-[18px] transition-colors',
+              active ? 'text-accent-clay' : 'text-text-primary group-hover:text-text-strong',
+            )}
+            strokeWidth={1.75}
+          />
+        </span>
+      )}
 
       {/* Badge inline — виден и в collapsed, и в expanded.
           В collapsed: сразу за иконкой.
           В expanded: после label, prijаt к правому краю (ml-auto). */}
-      {showBadge && collapsed && <Badge count={badge} />}
+      {showBadge && collapsed && !textOnly && <Badge count={badge} />}
 
       {/* Label + expanded badge — анимируются через max-width при collapse */}
       <span
         className={cn(
+          // Ширину лейбла гасим не max-width-анимацией (давала рывок: при
+          // max-w 200→0 первую половину ничего не двигалось, потом снап), а
+          // flex-1: доступная ширина сама плавно сжимается вместе с шириной
+          // aside (CSS width-transition) → лейбл клипается плавно. Иконка
+          // (shrink-0, justify-start) стоит на line-12. Гасим только opacity.
           'flex min-w-0 flex-1 items-center overflow-hidden',
-          'transition-[max-width,opacity] duration-200',
-          collapsed ? 'max-w-0 opacity-0' : 'max-w-[200px] opacity-100',
+          !textOnly && 'transition-opacity duration-200',
+          !textOnly && (collapsed ? 'opacity-0' : 'opacity-100'),
         )}
       >
         <span className="truncate text-[13px] font-normal tracking-[-0.005em]">{label}</span>
@@ -79,7 +88,7 @@ export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick }
       <Tooltip.Portal>
         <Tooltip.Content
           side="right"
-          sideOffset={12}
+          sideOffset={20}
           className="z-50 rounded-md bg-bg-deep px-2 py-1 text-[12px] text-text-strong shadow-lg"
         >
           {label}

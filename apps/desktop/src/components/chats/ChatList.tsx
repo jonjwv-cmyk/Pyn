@@ -28,14 +28,17 @@ export function ChatList({ conversations, activeId, onSelect }: ChatListProps) {
 
   return (
     <aside
-      className={cn(
-        'flex h-full shrink-0 flex-col bg-bg-surface',
-        'border-r border-border-subtle',
-      )}
+      className="flex h-full shrink-0 flex-col border-r border-border-subtle/40"
       style={{ width: CHAT_LIST_WIDTH }}
     >
-      <div className="drag-region h-12 shrink-0" />
-      <div className="mx-3 h-px shrink-0 bg-border-subtle" />
+      <div className="drag-region flex h-9 shrink-0 items-center px-4">
+        <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
+          {t('sidebar.nav_chats')}
+        </span>
+      </div>
+      {/* §design — линия выровнена по верхней кромке плитки переписки:
+          h-9 шапка (36) + mt-1 (4) = y=40, как pt-1-зазор WorkspaceCard. */}
+      <div className="mx-3 mt-1 h-px shrink-0 bg-border-subtle" />
 
       <Block
         title={t('chat_list.section_dispatchers')}

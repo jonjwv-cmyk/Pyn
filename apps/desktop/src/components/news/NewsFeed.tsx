@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { useTranslation } from 'react-i18next';
 import * as RadixDialog from '@radix-ui/react-dialog';
 import { Clock, Upload } from 'lucide-react';
+import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { DateDivider } from '@/components/ui/DateDivider';
 import { DayLabelPill } from '@/components/ui/DayLabelPill';
 import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
@@ -635,7 +636,7 @@ export function NewsFeed({
       // §pyn-1.2.54 — news-pattern-bg на ROOT (вместо bg-bg-primary) →
       // pattern continuous от topbar до bottom. Pinned panel и scroll
       // inherit единый фон без визуальных швов.
-      className="news-pattern-bg relative flex flex-1 flex-col"
+      className="relative flex flex-1 flex-col"
       {...(canPost ? dropProps : {})}
     >
       {canPost && dragging && (
@@ -656,7 +657,11 @@ export function NewsFeed({
           (bg-bg-surface), чтобы Win min/max/close controls не сливались
           с тёмным фоном feed'а — раньше ribbon под кнопками был bg-bg-primary
           и резко отличался от соседних панелей (Sidebar/ChatList). */}
-      <div className="drag-region flex h-12 shrink-0 items-center justify-end gap-1.5 border-b border-border-subtle bg-bg-surface px-3">
+      <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
+        <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
+          {t('sidebar.nav_news')}
+        </span>
+        <div className="flex-1" />
         {canPost && (
           <>
             <TopBarButton
@@ -671,7 +676,8 @@ export function NewsFeed({
         )}
       </div>
 
-      <div className="relative flex-1 overflow-hidden">
+      <WorkspaceCard>
+        <div className="news-pattern-bg relative flex-1 overflow-hidden">
         <div
           ref={scrollRef}
           onScroll={checkScroll}
@@ -821,6 +827,7 @@ export function NewsFeed({
           </div>
         )}
       </div>
+      </WorkspaceCard>
 
       <NewsPollDialog
         open={pollDialogOpen}
@@ -905,7 +912,7 @@ function TopBarButton({ label, onClick }: TopBarButtonProps) {
       onClick={onClick}
       className={cn(
         'no-drag-region flex h-7 items-center rounded-md px-2.5',
-        'text-[12.5px] font-medium text-text-secondary outline-none transition-colors',
+        'text-[12px] font-medium text-text-secondary outline-none transition-colors',
         'hover:bg-bg-hover hover:text-text-strong',
       )}
     >

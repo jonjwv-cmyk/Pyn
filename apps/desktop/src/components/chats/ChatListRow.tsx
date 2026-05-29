@@ -35,8 +35,10 @@ export function ChatListRow({ partner, active, onClick }: ChatListRowProps) {
       className={cn(
         'flex w-full items-center gap-2.5 rounded-md px-2 py-1.5',
         'text-left transition-colors',
+        // Активный (открытый) чат — clay-пилл (Pyn selection-стиль); при наведении
+        // на остальные — нейтральный hover-пилл.
         active
-          ? 'bg-bg-selected text-text-strong'
+          ? 'bg-accent-clay/[0.10] text-text-strong'
           : 'text-text-primary hover:bg-bg-hover hover:text-text-strong',
       )}
     >

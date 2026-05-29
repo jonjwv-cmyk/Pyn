@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
+import { Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { Warehouse } from '@pyn/core';
 import { sessionStore } from '@/lib/token-store';
+import { WorkspaceCard } from '@/components/WorkspaceCard';
 import {
   computeNaturalDays,
   computeRowDates,
@@ -99,11 +102,17 @@ function formatApproverDate(
   return `${monthName(d.month)} ${d.day}, ${d.year}`;
 }
 
-function formatWarehousesAsText(codes: WarehouseCode[]): string {
-  return [...codes]
+/**
+ * Сортирует коды складов (numeric, ru) и режет на строки ровно по `size` штук —
+ * для аккуратной сетки «Склады отгрузки» / «Склады удалены» (по 15 в строку).
+ */
+function chunkedWarehouseCodes(codes: WarehouseCode[], size: number): string[][] {
+  const sorted = [...codes]
     .sort((a, b) => a.code.localeCompare(b.code, 'ru', { numeric: true }))
-    .map((w) => w.code)
-    .join('  ');
+    .map((w) => w.code);
+  const rows: string[][] = [];
+  for (let i = 0; i < sorted.length; i += size) rows.push(sorted.slice(i, i + size));
+  return rows;
 }
 
 /** Дефолтные year/month — сегодняшние. Юзер потом меняет через MonthYearPicker. */
@@ -112,13 +121,78 @@ function todayYM(): { year: number; month: number } {
   return { year: now.getFullYear(), month: now.getMonth() + 1 };
 }
 
+/**
+ * Последний просмотренный (year, month) — module-level, переживает unmount
+ * ProbaScreen в рамках сессии. Без него возврат в График сбрасывал на текущий
+ * месяц (ProbaScreen unmount'ится при уходе в другой раздел). Сбрасывается на
+ * сегодняшний только при рестарте процесса.
+ */
+let lastViewedYM: { year: number; month: number } | null = null;
+
+/**
+ * Снимок графика на момент фиксации: цеха/склады в «несплит»-форме (одна row на
+ * (цех, день), warehouses без split'а по override — archived-ветка shops re-split'ит
+ * их по зафиксированным meta.overrides). Зеркалит derive-ветку shops useMemo, но
+ * без splitWarehousesByOverrides. Замораживает state, чтобы зафиксированный месяц
+ * не менялся вслед за последующими правками карточек складов в МОЛ.
+ */
+function buildFrozenSnapshot(warehouses: Warehouse[]): {
+  shops: ScheduleShop[];
+  shipping: WarehouseCode[];
+  removed: WarehouseCode[];
+} {
+  const dayOrder: Record<string, number> = { ПН: 0, ВТ: 1, СР: 2, ЧТ: 3, ПТ: 4, СБ: 5, ВС: 6 };
+  const scheduled = warehouses.filter((w) => w.in_schedule && w.delivery_day && !w.is_removed);
+  const byShop = new Map<string, Warehouse[]>();
+  for (const w of scheduled) {
+    const arr = byShop.get(w.shop_name) ?? [];
+    arr.push(w);
+    byShop.set(w.shop_name, arr);
+  }
+  const shops: ScheduleShop[] = [...byShop.keys()]
+    .sort((a, b) => a.localeCompare(b, 'ru'))
+    .map((name, i) => {
+      const byDay = new Map<string, Warehouse[]>();
+      for (const w of byShop.get(name)!) {
+        const arr = byDay.get(w.delivery_day!) ?? [];
+        arr.push(w);
+        byDay.set(w.delivery_day!, arr);
+      }
+      const rows: ScheduleShop['rows'] = [...byDay.entries()]
+        .sort(([a], [b]) => (dayOrder[a] ?? 99) - (dayOrder[b] ?? 99))
+        .map(([day, wsRaw]) => ({
+          id: `${name}__${day}`,
+          weekday: day as ScheduleShop['rows'][0]['weekday'],
+          warehouses: [...wsRaw]
+            .sort((a, b) => a.id.localeCompare(b.id, 'ru', { numeric: true }))
+            .map((w) => ({
+              code: w.id,
+              isKhp: w.cluster === 'КХП' ? true : undefined,
+              isVyezd: w.cluster === 'ВЫЕЗД' ? true : undefined,
+            })),
+        }));
+      return { id: `shop__${name}`, idx: i + 1, name, rows };
+    });
+  const shipping = warehouses
+    .filter((w) => w.is_shipping && !w.is_removed)
+    .map((w) => ({ code: w.id }));
+  const removed = warehouses.filter((w) => w.is_removed).map((w) => ({ code: w.id }));
+  return { shops, shipping, removed };
+}
+
 export function ProbaScreen() {
   const { t } = useTranslation();
 
   // ─── Year / month state (input для хука) ─────────────────────────────────
   // Lifted из state.meta наверх: хук получает (year, month) как параметры,
   // возвращает соответствующий ScheduleState. Меняя YM — переключаем месяц.
-  const [{ year: currentYear, month: currentMonth }, setYM] = useState(todayYM);
+  const [{ year: currentYear, month: currentMonth }, setYM] = useState(
+    () => lastViewedYM ?? todayYM(),
+  );
+  // Запоминаем последний просмотренный месяц на время сессии (см. lastViewedYM).
+  useEffect(() => {
+    lastViewedYM = { year: currentYear, month: currentMonth };
+  }, [currentYear, currentMonth]);
 
   // ─── Server-sync hook ────────────────────────────────────────────────────
   const sync = useScheduleSync(currentYear, currentMonth);
@@ -177,8 +251,15 @@ export function ProbaScreen() {
   // серверный committed=1 для real read-only enforcement (защита от patched
   // клиентов и от случайных PUT'ов из других сессий).
   const commitMonth = useCallback(() => {
+    // Замораживаем текущий derive'нутый снапшот складов в state — зафиксированный
+    // месяц рендерится из него (useArchived), не из живого warehouses store, и
+    // больше не меняется вслед за правками карточек складов в МОЛ.
+    const frozen = buildFrozenSnapshot(useWarehousesStore.getState().warehouses);
     setState((s) => ({
       ...s,
+      shops: frozen.shops,
+      shippingWarehouses: frozen.shipping,
+      removedWarehouses: frozen.removed,
       meta: {
         ...s.meta,
         commit: {
@@ -237,8 +318,15 @@ export function ProbaScreen() {
   // В этапе D добавится серверный committed=1 enforcement через
   // /schedule/commit endpoint + 403 month_committed на PUT.
   const isLocked = !!meta.commit;
-  /** Frozen snapshot используется только когда month committed. */
-  const useArchived = isLocked;
+  /**
+   * Frozen snapshot используется только когда month committed И снапшот реально
+   * непустой. Месяцы, зафиксированные до серверного freeze (этап D не доделан),
+   * имеют meta.commit, но пустой state.shops — для них fallback на derive из
+   * складов, иначе график рендерился бы пустым (баг «Апрель/Май пустые после
+   * фиксации»). Когда этап D начнёт сохранять frozen-снапшот — ветка станет
+   * настоящей заморозкой автоматически.
+   */
+  const useArchived = isLocked && state.shops.length > 0;
 
   // Derive cells/rows из store. Группировка: по shop_name → по delivery_day.
   // Исключаем is_removed=1 — такие склады уходят в «Склады удалены».
@@ -338,12 +426,23 @@ export function ProbaScreen() {
   );
   const removedWarehouses = useMemo<WarehouseCode[]>(
     () => {
-      if (useArchived) return state.removedWarehouses;
+      // «Склады удалены» показываем только в НЕзафиксированном месяце, и только для
+      // складов, удалённых не позже месяца графика (раньше они ещё работали) и бывших
+      // в графике — cluster+день сохраняются при удалении, без них склад в график не попадал.
+      if (isLocked) return [];
+      const graphMonthKey = `${meta.year}-${String(meta.month).padStart(2, '0')}`;
       return allWarehouses
-        .filter((w) => w.is_removed)
+        .filter(
+          (w) =>
+            w.is_removed === 1 &&
+            !!w.removed_month &&
+            w.removed_month <= graphMonthKey &&
+            !!w.cluster &&
+            !!w.delivery_day,
+        )
         .map((w) => ({ code: w.id }));
     },
-    [allWarehouses, useArchived, state.removedWarehouses],
+    [allWarehouses, isLocked, meta.year, meta.month],
   );
   /** Локализованное имя месяца по номеру 1..12 — t('common.month_N'). */
   const localizedMonth = useCallback(
@@ -428,6 +527,75 @@ export function ProbaScreen() {
   const approverDate =
     meta.approverDate ?? lastDayOfPreviousMonth(meta.year, meta.month);
 
+  // ── Поиск склада ──────────────────────────────────────────────────────────
+  // Юзер вводит код в тулбаре. Точное совпадение ищем в трёх местах:
+  //   1) строки цехов (`shops`) → скроллим цех в центр, подсвечиваем цех+чипы;
+  //   2) «Склады удалены» / «Склады отгрузки» (meta-чипы шапки) → скроллим лист
+  //      вверх (шапка залипающая) и подсвечиваем чип — видно, что склад там.
+  // Идём по derive'нутым массивам — работает и для archived-снапшота, и для live.
+  const [search, setSearch] = useState('');
+  const searchQuery = search.trim();
+  const searchTargetId = useMemo(() => {
+    if (!searchQuery) return null;
+    for (const shop of shops) {
+      for (const row of shop.rows) {
+        if (row.warehouses.some((w) => w.code === searchQuery)) {
+          return shop.id;
+        }
+      }
+    }
+    return null;
+  }, [searchQuery, shops]);
+
+  // Совпадение в meta-секциях (удалены / отгрузки) — склад не в графике, а в
+  // шапке. Только если не нашёлся в цехах (цех приоритетнее).
+  const searchMetaHit = useMemo(() => {
+    if (!searchQuery || searchTargetId) return false;
+    return (
+      removedWarehouses.some((w) => w.code === searchQuery) ||
+      shippingWarehouses.some((w) => w.code === searchQuery)
+    );
+  }, [searchQuery, searchTargetId, removedWarehouses, shippingWarehouses]);
+
+  // Скролл найденного цеха в центр. Из effect — при смене цели (ввод кода);
+  // вручную по Enter — чтобы вернуть в центр после того как юзер пролистал
+  // (срабатывает каждый раз, пока в поле введён найденный код).
+  const scrollToSearchTarget = useCallback(() => {
+    if (!searchTargetId) {
+      // Совпадение в meta (удалены/отгрузки) — шапка залипающая, поэтому просто
+      // прокручиваем лист к верху, чтобы подсвеченный чип шапки был в фокусе.
+      if (searchMetaHit) {
+        document
+          .querySelector<HTMLElement>('.proba-canvas')
+          ?.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+      return;
+    }
+    const target = [
+      ...document.querySelectorAll<HTMLElement>('[data-proba-shop]'),
+    ].find((el) => el.dataset.probaShop === searchTargetId);
+    if (!target) return;
+    const canvas = target.closest<HTMLElement>('.proba-canvas');
+    if (!canvas) return;
+    // Центр считаем по РАБОЧЕЙ области листа, не по окну приложения: верх =
+    // низ залипающей шапки (.proba-sticky), низ = низ канваса (плитки). Иначе
+    // цех встаёт под шапкой и выглядит смещённым вверх.
+    const canvasRect = canvas.getBoundingClientRect();
+    const sticky = canvas.querySelector<HTMLElement>('.proba-sticky');
+    const workTop = sticky
+      ? sticky.getBoundingClientRect().bottom
+      : canvasRect.top;
+    const workBottom = canvasRect.top + canvas.clientHeight;
+    const targetRect = target.getBoundingClientRect();
+    const targetCenter = targetRect.top + targetRect.height / 2;
+    const delta = targetCenter - (workTop + workBottom) / 2;
+    canvas.scrollTo({ top: canvas.scrollTop + delta, behavior: 'smooth' });
+  }, [searchTargetId, searchMetaHit]);
+
+  useEffect(() => {
+    scrollToSearchTarget();
+  }, [scrollToSearchTarget]);
+
   return (
     <main className="flex flex-1 flex-col overflow-hidden bg-bg-deep">
       <ProbaToolbar
@@ -442,177 +610,210 @@ export function ProbaScreen() {
         printLabel={t('schedule.print')}
         lockIdExceptions={lockIds.exceptions}
         lockIdCommit={lockIds.commit}
+        searchValue={search}
+        onSearchChange={setSearch}
+        onSearchSubmit={scrollToSearchTarget}
       />
 
-      <div className="proba-canvas flex-1 overflow-auto">
-        <div className="proba-sheet">
-          <div className="proba-sticky">
-          <header className="proba-header">
-            <div className="proba-header-top">
-              <div className="proba-brand">
-                <EvrazLogo className="proba-brand-logo" />
-                <span>ЕВРАЗ</span>
-              </div>
-              <MonthYearPicker
-                year={meta.year}
-                month={meta.month}
-                onChangeYear={changeYear}
-                onChangeMonth={changeMonth}
-                lockResourceId={lockIds.month}
-              >
-                <button
-                  type="button"
-                  className="proba-title proba-editable"
-                  title={t('proba.month_year_tip')}
-                >
-                  {t('schedule.title')} {monthName} {meta.year}
-                </button>
-              </MonthYearPicker>
-              <div className="proba-approver">
-                <p className="proba-approver-label">{t('schedule.approver_label')}</p>
-                <PersonEditor
-                  heading={t('proba.approver_label')}
-                  name={meta.approver.name}
-                  title={meta.approver.title}
-                  onChange={setApprover}
-                  lockResourceId={lockIds.approver}
+      <WorkspaceCard>
+        <div className="proba-canvas flex-1 overflow-auto">
+          <div className="proba-sheet">
+            <div className="proba-sticky">
+            <header className="proba-header">
+              <div className="proba-header-top">
+                <div className="proba-brand">
+                  <EvrazLogo className="proba-brand-logo" />
+                  <span>ЕВРАЗ</span>
+                </div>
+                <MonthYearPicker
+                  year={meta.year}
+                  month={meta.month}
+                  onChangeYear={changeYear}
+                  onChangeMonth={changeMonth}
+                  lockResourceId={lockIds.month}
                 >
                   <button
                     type="button"
-                    className="proba-approver-person proba-editable"
-                    title={t('proba.person_edit_title')}
+                    className="proba-title proba-editable"
+                    title={t('proba.month_year_tip')}
                   >
-                    <span className="proba-approver-title">{meta.approver.title}</span>
-                    <span className="proba-approver-name">{meta.approver.name}</span>
+                    {t('schedule.title')} {monthName} {meta.year}
                   </button>
-                </PersonEditor>
-                <div className="proba-approver-space" />
-                <div className="proba-approver-line" />
-                <DatePicker date={approverDate} onChange={setApproverDate} lockResourceId={lockIds.date}>
+                </MonthYearPicker>
+                <div className="proba-approver">
+                  <p className="proba-approver-label">{t('schedule.approver_label')}</p>
+                  <PersonEditor
+                    heading={t('proba.approver_label')}
+                    name={meta.approver.name}
+                    title={meta.approver.title}
+                    onChange={setApprover}
+                    lockResourceId={lockIds.approver}
+                    locked={isLocked}
+                  >
+                    <button
+                      type="button"
+                      className="proba-approver-person proba-editable"
+                      title={t('proba.person_edit_title')}
+                    >
+                      <span className="proba-approver-title">{meta.approver.title}</span>
+                      <span className="proba-approver-name">{meta.approver.name}</span>
+                    </button>
+                  </PersonEditor>
+                  <div className="proba-approver-space" />
+                  <div className="proba-approver-line" />
+                  <DatePicker date={approverDate} onChange={setApproverDate} lockResourceId={lockIds.date} locked={isLocked}>
+                    <button
+                      type="button"
+                      className="proba-approver-date proba-editable"
+                      title={t('proba.date_signing_tip')}
+                    >
+                      {formatApproverDate(approverDate, localizedMonth)}
+                    </button>
+                  </DatePicker>
+                </div>
+              </div>
+
+              <div className="proba-meta">
+                <HolidaysCalendar
+                  year={meta.year}
+                  month={meta.month}
+                  holidays={meta.holidays}
+                  onChange={setHolidays}
+                  lockResourceId={lockIds.holidays}
+                  locked={isLocked}
+                >
                   <button
                     type="button"
-                    className="proba-approver-date proba-editable"
-                    title={t('proba.date_signing_tip')}
+                    className="proba-meta-row proba-editable"
+                    title={t('proba.days_no_delivery_tip')}
                   >
-                    {formatApproverDate(approverDate, localizedMonth)}
+                    <span className="proba-meta-label">
+                      <span className="proba-meta-label-text">{t('proba.days_no_delivery')}</span>
+                      {meta.holidays.length > 0 && (
+                        <span className="proba-cluster-count">{meta.holidays.length}</span>
+                      )}
+                    </span>
+                    <span
+                      className={`proba-meta-value ${meta.holidays.length === 0 ? 'proba-meta-value--empty' : ''}`}
+                    >
+                      {meta.holidays.length > 0
+                        ? meta.holidays.join(', ')
+                        : t('proba.no_value_add')}
+                    </span>
                   </button>
-                </DatePicker>
-              </div>
-            </div>
+                </HolidaysCalendar>
 
-            <div className="proba-meta">
-              <HolidaysCalendar
-                year={meta.year}
-                month={meta.month}
-                holidays={meta.holidays}
-                onChange={setHolidays}
-                lockResourceId={lockIds.holidays}
-              >
-                <button
-                  type="button"
-                  className="proba-meta-row proba-editable"
-                  title={t('proba.days_no_delivery_tip')}
-                >
-                  <span className="proba-meta-label">
-                    {t('proba.days_no_delivery')}
-                  </span>
-                  <span
-                    className={`proba-meta-value ${meta.holidays.length === 0 ? 'proba-meta-value--empty' : ''}`}
-                  >
-                    {meta.holidays.length > 0
-                      ? meta.holidays.join(', ')
-                      : t('proba.no_value_add')}
-                  </span>
-                </button>
-              </HolidaysCalendar>
+                {/* read-only — управляется из МОЛ (is_removed flag на warehouse).
+                    Показываем только если список не пустой: иначе строка-«—»
+                    занимает место зря. Для архивных/зафиксированных snapshot'ов
+                    тоже подчиняется: пусто → нет смысла рендерить. */}
+                {removedWarehouses.length > 0 && (
+                  <div className="proba-meta-row proba-meta-row--readonly">
+                    <span className="proba-meta-label">
+                      <span className="proba-meta-label-text">{t('proba.removed_warehouses')}</span>
+                      <span className="proba-cluster-count">
+                        {removedWarehouses.length}
+                      </span>
+                    </span>
+                    <span className="proba-meta-value proba-meta-codes">
+                      {chunkedWarehouseCodes(removedWarehouses, 15).map((row, i) => (
+                        <span key={i} className="proba-meta-code-row">
+                          {row.map((code) => (
+                            <span
+                              key={code}
+                              className={`proba-meta-code${code === searchQuery ? ' proba-meta-code--search' : ''}`}
+                            >
+                              {code}
+                            </span>
+                          ))}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                )}
 
-              {/* read-only — управляется из МОЛ (is_removed flag на warehouse).
-                  Показываем только если список не пустой: иначе строка-«—»
-                  занимает место зря. Для архивных/зафиксированных snapshot'ов
-                  тоже подчиняется: пусто → нет смысла рендерить. */}
-              {removedWarehouses.length > 0 && (
+                {/* read-only — управляется из МОЛ (is_shipping flag на warehouse) */}
                 <div className="proba-meta-row proba-meta-row--readonly">
                   <span className="proba-meta-label">
-                    {t('proba.removed_warehouses')}
-                    <span className="proba-cluster-count">
-                      {removedWarehouses.length}
-                    </span>
+                    <span className="proba-meta-label-text">{t('proba.shipping_warehouses')}</span>
+                    {shippingWarehouses.length > 0 && (
+                      <span className="proba-cluster-count">
+                        {shippingWarehouses.length}
+                      </span>
+                    )}
                   </span>
-                  <span className="proba-meta-value">
-                    {formatWarehousesAsText(removedWarehouses)}
+                  <span
+                    className={`proba-meta-value ${shippingWarehouses.length === 0 ? 'proba-meta-value--empty' : 'proba-meta-codes'}`}
+                  >
+                    {shippingWarehouses.length > 0
+                      ? chunkedWarehouseCodes(shippingWarehouses, 15).map((row, i) => (
+                          <span key={i} className="proba-meta-code-row">
+                            {row.map((code) => (
+                              <span key={code} className="proba-meta-code">{code}</span>
+                            ))}
+                          </span>
+                        ))
+                      : t('proba.dash')}
                   </span>
                 </div>
-              )}
-
-              {/* read-only — управляется из МОЛ (is_shipping flag на warehouse) */}
-              <div className="proba-meta-row proba-meta-row--readonly">
-                <span className="proba-meta-label">
-                  {t('proba.shipping_warehouses')}
-                  {shippingWarehouses.length > 0 && (
-                    <span className="proba-cluster-count">
-                      {shippingWarehouses.length}
-                    </span>
-                  )}
-                </span>
-                <span
-                  className={`proba-meta-value ${shippingWarehouses.length === 0 ? 'proba-meta-value--empty' : ''}`}
-                >
-                  {shippingWarehouses.length > 0
-                    ? formatWarehousesAsText(shippingWarehouses)
-                    : t('proba.dash')}
-                </span>
               </div>
+
+            </header>
+
+            <TableHead counts={clusterCounts} />
             </div>
 
-          </header>
+            <main className="proba-shops">
+              <table className="proba-shops-table">
+                {/* <thead> в HTML <table> Chromium повторяет на каждой странице
+                    при печати автоматически. На экране весь thead скрыт через
+                    CSS, sticky-вариант шапки живёт в .proba-sticky. */}
+                <thead>
+                  <tr>
+                    <td className="proba-thead-print-num" />
+                    <td className="proba-thead-print-body">
+                      <div className="proba-thead-row">
+                        <span className="proba-thead-day">{t('proba.thead_day')}</span>
+                        <span className="proba-thead-date">{t('proba.thead_date')}</span>
+                        <span className="proba-thead-code">
+                          <span>{t('proba.thead_warehouse')}</span>
+                          <span className="proba-code proba-code--plain">
+                            {t('common.cluster_ntmk')}<span className="proba-cluster-count">{clusterCounts.ntmk}</span>
+                          </span>
+                          <span className="proba-code proba-code--vyezd">
+                            {t('common.cluster_vyezd')}<span className="proba-cluster-count">{clusterCounts.vyezd}</span>
+                          </span>
+                          <span className="proba-code proba-code--khp">
+                            {t('common.cluster_khp')}<span className="proba-cluster-count">{clusterCounts.khp}</span>
+                          </span>
+                          <span className="proba-cluster-total">
+                            · {clusterCounts.ntmk + clusterCounts.vyezd + clusterCounts.khp}
+                          </span>
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shops.map((shop) => (
+                    <ShopBlock
+                      key={shop.id}
+                      shop={shop}
+                      meta={meta}
+                      isSearchTarget={shop.id === searchTargetId}
+                      searchQuery={searchQuery}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </main>
 
-          <TableHead counts={clusterCounts} />
+            {meta.commit && <VerstkaLine commit={meta.commit} />}
+
+            <PreparedBy deputy={meta.deputy} onChange={setDeputy} lockResourceId={lockIds.deputy} locked={isLocked} />
           </div>
-
-          <main className="proba-shops">
-            <table className="proba-shops-table">
-              {/* <thead> в HTML <table> Chromium повторяет на каждой странице
-                  при печати автоматически. На экране весь thead скрыт через
-                  CSS, sticky-вариант шапки живёт в .proba-sticky. */}
-              <thead>
-                <tr>
-                  <td className="proba-thead-print-num" />
-                  <td className="proba-thead-print-body">
-                    <div className="proba-thead-row">
-                      <span className="proba-thead-day">{t('proba.thead_day')}</span>
-                      <span className="proba-thead-date">{t('proba.thead_date')}</span>
-                      <span className="proba-thead-code">
-                        <span>{t('proba.thead_warehouse')}</span>
-                        <span className="proba-code proba-code--plain">
-                          {t('common.cluster_ntmk')}<span className="proba-cluster-count">{clusterCounts.ntmk}</span>
-                        </span>
-                        <span className="proba-code proba-code--vyezd">
-                          {t('common.cluster_vyezd')}<span className="proba-cluster-count">{clusterCounts.vyezd}</span>
-                        </span>
-                        <span className="proba-code proba-code--khp">
-                          {t('common.cluster_khp')}<span className="proba-cluster-count">{clusterCounts.khp}</span>
-                        </span>
-                        <span className="proba-cluster-total">
-                          · {clusterCounts.ntmk + clusterCounts.vyezd + clusterCounts.khp}
-                        </span>
-                      </span>
-                    </div>
-                  </td>
-                </tr>
-              </thead>
-              <tbody>
-                {shops.map((shop) => (
-                  <ShopBlock key={shop.id} shop={shop} meta={meta} />
-                ))}
-              </tbody>
-            </table>
-          </main>
-
-          {meta.commit && <VerstkaLine commit={meta.commit} />}
-
-          <PreparedBy deputy={meta.deputy} onChange={setDeputy} lockResourceId={lockIds.deputy} />
         </div>
-      </div>
+      </WorkspaceCard>
 
       <ProbaStyles />
     </main>
@@ -633,6 +834,9 @@ function ProbaToolbar({
   printLabel,
   lockIdExceptions,
   lockIdCommit,
+  searchValue,
+  onSearchChange,
+  onSearchSubmit,
 }: {
   onCommit: () => void;
   isLocked: boolean;
@@ -645,13 +849,22 @@ function ProbaToolbar({
   printLabel: string;
   lockIdExceptions: string;
   lockIdCommit: string;
+  searchValue: string;
+  onSearchChange: (next: string) => void;
+  onSearchSubmit: () => void;
 }) {
   const { t } = useTranslation();
   return (
-    <header className="proba-chrome drag-region relative flex h-12 shrink-0 items-center gap-3 border-b border-border-subtle bg-bg-surface px-4 text-text-primary">
-      <span className="no-drag-region text-[14px] font-semibold tracking-[-0.005em] text-text-strong">
+    <header className="proba-chrome drag-region relative flex h-9 shrink-0 items-center gap-2 px-4 text-text-primary">
+      <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
         {t('sidebar.nav_schedule')}
       </span>
+
+      <ProbaSearchField
+        value={searchValue}
+        onChange={onSearchChange}
+        onSubmit={onSearchSubmit}
+      />
 
       <div className="flex-1" />
 
@@ -662,11 +875,11 @@ function ProbaToolbar({
         overrides={overrides}
         onChange={onChangeOverrides}
         lockResourceId={lockIdExceptions}
+        locked={isLocked}
       >
         <button
           type="button"
-          disabled={isLocked}
-          className="no-drag-region flex h-7 items-center gap-1 rounded px-2 text-[11.5px] font-medium text-text-muted outline-none transition-colors hover:bg-white/[0.06] hover:text-text-strong data-[state=open]:bg-white/[0.08] data-[state=open]:text-text-strong disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
+          className="no-drag-region flex h-7 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium text-text-secondary outline-none transition-colors hover:bg-bg-hover hover:text-text-strong data-[state=open]:bg-bg-hover data-[state=open]:text-text-strong"
           title={t('proba.exceptions_btn_tip')}
         >
           {t('proba.exceptions_btn')}
@@ -690,6 +903,71 @@ function ProbaToolbar({
 
       <PrintMenu year={year} month={month} printLabel={printLabel} />
     </header>
+  );
+}
+
+// ─── Поиск склада — поле в тулбаре графика ──────────────────────────────────
+
+/**
+ * Контролируемое поле поиска склада по коду. Значение и сброс живут в
+ * ProbaScreen (там же резолв цеха + scroll + подсветка) — поле остаётся
+ * «тупым». Esc очищает и снимает фокус, крестик — очищает.
+ */
+function ProbaSearchField({
+  value,
+  onChange,
+  onSubmit,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  onSubmit: () => void;
+}) {
+  const { t } = useTranslation();
+  // «В работе» = есть запрос → пилл получает clay-контур (selection-стиль Pyn),
+  // видно что поиск активен. Иконка тоже тинтится в clay.
+  const active = value.trim() !== '';
+  return (
+    <div className="no-drag-region relative flex h-7 items-center">
+      <Search
+        className={`pointer-events-none absolute left-2 h-3.5 w-3.5 transition-colors ${
+          active ? 'text-accent-clay/80' : 'text-text-muted/70'
+        }`}
+        strokeWidth={1.75}
+      />
+      <input
+        type="text"
+        value={value}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onSubmit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onChange('');
+            e.currentTarget.blur();
+          }
+        }}
+        placeholder={t('proba.search_warehouse')}
+        className={`h-7 w-[160px] rounded-md pl-7 pr-6 text-[12px] text-text-primary outline-none transition-[background-color,box-shadow] placeholder:text-text-muted/60 ${
+          active
+            ? 'bg-accent-clay/[0.08] ring-1 ring-accent-clay/55'
+            : 'bg-white/[0.04] hover:bg-white/[0.06] focus:bg-white/[0.07]'
+        }`}
+      />
+      {value && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          title={t('proba.search_clear')}
+          className="absolute right-1 flex h-4 w-4 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-white/[0.08] hover:text-text-strong"
+        >
+          <X className="h-3 w-3" strokeWidth={2} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -736,7 +1014,7 @@ function PrintMenu({
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="no-drag-region flex h-7 items-center rounded bg-accent-clay-bg px-2.5 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/20 data-[state=open]:bg-accent-clay/25"
+          className="no-drag-region flex h-7 items-center rounded-md bg-accent-clay-bg px-2.5 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/20 data-[state=open]:bg-accent-clay/25"
         >
           {printLabel}
         </button>
@@ -820,7 +1098,7 @@ function CommitButtonInner({
   if (isLocked) {
     return (
       <span
-        className="no-drag-region flex h-7 items-center rounded bg-accent-clay-bg px-2 text-[11.5px] font-medium text-accent-clay"
+        className="no-drag-region flex h-7 items-center rounded-md bg-accent-clay-bg px-2.5 text-[12px] font-medium text-accent-clay"
         title={t('proba.commit_locked_tip')}
       >
         {t('proba.committed_label')}
@@ -838,7 +1116,7 @@ function CommitButtonInner({
         <button
           type="button"
           disabled={!canCommit}
-          className="no-drag-region flex h-7 items-center rounded px-2 text-[11.5px] font-medium text-text-muted transition-colors hover:bg-white/[0.06] hover:text-text-strong data-[state=open]:bg-accent-clay-bg data-[state=open]:text-accent-clay disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
+          className="no-drag-region flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-strong data-[state=open]:bg-accent-clay-bg data-[state=open]:text-accent-clay disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
           title={tooltip}
         >
           {t('proba.commit_btn')}
@@ -956,9 +1234,13 @@ function TableHead({
 function ShopBlock({
   shop,
   meta,
+  isSearchTarget,
+  searchQuery,
 }: {
   shop: ScheduleShop;
   meta: ScheduleMeta;
+  isSearchTarget: boolean;
+  searchQuery: string;
 }) {
   const { t } = useTranslation();
   const rows = useMemo(() => {
@@ -982,7 +1264,10 @@ function ShopBlock({
   // На экране CSS override'ит display: tr→grid, td→block чтобы layout остался
   // идентичным прошлому grid-варианту.
   return (
-    <tr className="proba-shop">
+    <tr
+      className={`proba-shop${isSearchTarget ? ' proba-shop--search' : ''}`}
+      data-proba-shop={shop.id}
+    >
       <td className="proba-shop-num">{shop.idx}</td>
       <td className="proba-shop-body">
         <h2 className="proba-shop-name">{shop.name}</h2>
@@ -1000,7 +1285,15 @@ function ShopBlock({
                 <span className="proba-dates">{formatDates(dates)}</span>
                 <div className="proba-codes">
                   {row.warehouses.map((w, i) => (
-                    <WarehouseChip key={`${w.code}-${i}`} w={w} />
+                    <WarehouseChip
+                      key={`${w.code}-${i}`}
+                      w={w}
+                      highlight={
+                        isSearchTarget &&
+                        searchQuery !== '' &&
+                        w.code === searchQuery
+                      }
+                    />
                   ))}
                 </div>
               </div>
@@ -1014,7 +1307,13 @@ function ShopBlock({
 
 // ─── Warehouse chip — без префикс-глифов ────────────────────────────────────
 
-function WarehouseChip({ w }: { w: WarehouseCode }) {
+function WarehouseChip({
+  w,
+  highlight = false,
+}: {
+  w: WarehouseCode;
+  highlight?: boolean;
+}) {
   const { t } = useTranslation();
   const tone = w.isKhp ? 'khp' : w.isVyezd ? 'vyezd' : 'plain';
   const title = w.isKhp
@@ -1023,7 +1322,10 @@ function WarehouseChip({ w }: { w: WarehouseCode }) {
       ? `${t('common.cluster_vyezd')}: ${w.code}`
       : `${t('mol.warehouse')} ${w.code}`;
   return (
-    <span className={`proba-code proba-code--${tone}`} title={title}>
+    <span
+      className={`proba-code proba-code--${tone}${highlight ? ' proba-code--search' : ''}`}
+      title={title}
+    >
       {w.code}
     </span>
   );
@@ -1035,10 +1337,12 @@ function PreparedBy({
   deputy,
   onChange,
   lockResourceId,
+  locked = false,
 }: {
   deputy: { title: string; name: string };
   onChange: (next: { name: string; title: string }) => void;
   lockResourceId?: string;
+  locked?: boolean;
 }) {
   const { t } = useTranslation();
   // Inline signature line — паттерн из «Графика» (SignatureLine):
@@ -1058,6 +1362,7 @@ function PreparedBy({
         title={deputy.title}
         onChange={onChange}
         lockResourceId={lockResourceId}
+        locked={locked}
       >
         <button
           type="button"
@@ -1103,6 +1408,35 @@ function ProbaStyles() {
         font-feature-settings: 'tnum', 'ss01', 'cv11';
         min-height: 100%;
         box-sizing: border-box;
+      }
+
+      /* Screen-only: график светлее (canvas = surface, не deep #161611) +
+         компактная шапка. БЕЗ масштабирования — лист заполняет ширину канваса
+         в натуральном размере (как лента Новостей, единообразно по приложению).
+         Печать (A4) — в @media print, отдельно. */
+      @media screen {
+        .proba-canvas {
+          background: #1F1E1B;
+        }
+      }
+
+      /* Зафиксированный месяц: editable-триггеры некликабельны (popover не
+         открывается, см. LockableTrigger) — гасим haze и pointer-курсор,
+         оставляя hover для tooltip. MonthYearPicker НЕ помечается data-frozen,
+         поэтому навигация по месяцам остаётся живой. */
+      [data-frozen] {
+        cursor: default !important;
+      }
+      /* Зафиксировано: на hover — единообразная нейтральная подсветка на ВСЕХ
+         неизменяемых элементах (показывает «это элемент графика, но менять
+         нельзя») + tooltip. НЕ clay-haze редактирования (он намекал бы на edit).
+         MonthYearPicker без data-frozen → его обычный hover жив. */
+      [data-frozen]:hover {
+        background-color: rgba(234, 221, 216, 0.08) !important;
+        box-shadow: none !important;
+      }
+      .proba-editable[data-frozen]::before {
+        display: none !important;
       }
 
       /* Sticky-блок: шапка + meta-строки + table-head пинятся при скролле
@@ -1319,6 +1653,11 @@ function ProbaStyles() {
       .proba-meta-value--empty {
         color: #6C6A60;
         font-style: italic;
+      }
+      /* Чип кода склада (Склады отгрузки). Базовый inline-отступ — для печати;
+         на экране раскладкой управляет .proba-meta-codes (flex-сетка). */
+      .proba-meta-code {
+        margin-right: 2mm;
       }
 
       /* ── Editable pill — мягкое clay-свечение для редактируемых полей.
@@ -1561,18 +1900,20 @@ function ProbaStyles() {
         line-height: 1;
         height: 3.4mm;
       }
-      .proba-day--mon { background: rgba(217,119,87,0.38); }   /* ПН clay */
-      .proba-day--tue { background: rgba(125,192,97,0.36); }   /* ВТ green */
-      .proba-day--wed { background: rgba(120,150,210,0.36); }  /* СР blue */
-      .proba-day--thu { background: rgba(255,183,43,0.40); }   /* ЧТ amber */
-      .proba-day--fri { background: rgba(178,120,180,0.36); }  /* ПТ lilac */
-      .proba-day--sat { background: rgba(80,180,180,0.36); }   /* СБ teal */
-      .proba-day--sun { background: rgba(212,163,127,0.42); }  /* ВС kraft */
+      /* Экранные alphas подняты для насыщенности (были бледные 0.36–0.42).
+         Печать НЕ затронута — @media print задаёт свои сниженные значения. */
+      .proba-day--mon { background: rgba(217,119,87,0.55); }   /* ПН clay */
+      .proba-day--tue { background: rgba(125,192,97,0.52); }   /* ВТ green */
+      .proba-day--wed { background: rgba(120,150,210,0.52); }  /* СР blue */
+      .proba-day--thu { background: rgba(255,183,43,0.58); }   /* ЧТ amber */
+      .proba-day--fri { background: rgba(178,120,180,0.52); }  /* ПТ lilac */
+      .proba-day--sat { background: rgba(80,180,180,0.52); }   /* СБ teal */
+      .proba-day--sun { background: rgba(212,163,127,0.58); }  /* ВС kraft */
 
       .proba-dates {
         font-size: 7pt;
         font-weight: 500;
-        color: #B8B5A9;
+        color: #CFCDC6;
         font-variant-numeric: tabular-nums;
         letter-spacing: 0.04em;
         white-space: nowrap;
@@ -1622,6 +1963,116 @@ function ProbaStyles() {
         border: 0;
         color: #F5F4EF;
         padding: 0.3mm 1.3mm;
+      }
+
+      /* §design — ЭКРАННЫЕ override'ы размещены ПОСЛЕ всех базовых правил, чтобы
+         выигрывать по source-order на screen (раньше блок @media screen стоял ДО
+         базовых правил → они перекрывали его, изменения не применялись). Печать
+         (@media print ниже) — отдельная media, этими правилами НЕ затрагивается. */
+      @media screen {
+        /* Компактная шапка — убираем пустоту сверху, заголовок/Утверждаю выше,
+           полоски Дни/Склады сразу под заголовком. */
+        .proba-sheet { padding-top: 2mm; }
+        .proba-sticky { margin-top: -2mm; padding-top: 2mm; }
+        .proba-header-top { align-items: start; }
+        .proba-header { margin-bottom: 1.5mm; padding-bottom: 1mm; }
+        /* Верхушка «УТВЕРЖДАЮ» вровень с верхушкой «ГРАФИК ДОСТАВКИ»: заголовок
+           14pt в пилле (padding + бОльшая ascent-зона) садится чуть ниже, поэтому
+           сдвигаем блок approver вниз на эту же величину. */
+        .proba-approver { margin-top: 0.6mm; }
+        /* ЕВРАЗ (логотип + слово) на одну линию с «ГРАФИК ДОСТАВКИ»: у title
+           есть padding-top 0.4mm, у brand его нет → одинаковый 14pt cap-line
+           совпадёт, если подпереть brand вниз на ту же величину. Тогда ЕВРАЗ /
+           ГРАФИК / УТВЕРЖДАЮ выровнены по верхней линии. Значение — на глаз, ±. */
+        .proba-brand { margin-top: 0.4mm; }
+        /* Зазор НАД линией = место для живой подписи между ФИО и линией.
+           Иначе линия читается как разделитель, а не строка подписи.
+           Высота на глаз (как и остальные mm в шапке). */
+        .proba-approver-space { height: 7mm; }
+        .proba-meta { margin-top: 0.5mm; }
+        /* §3 Реструктур шапки (screen-only): убираем пустоту слева под
+           заголовком. .proba-header → 2-рядный grid, а .proba-header-top
+           растворяется (display:contents), его дети раскладываются по areas:
+           ЕВРАЗ+ГРАФИК сверху, УТВЕРЖДАЮ справа на оба ряда, Дни/Склады во
+           2-м ряду слева — заполняя пустоту. Печать (@media print) использует
+           обычный block + grid header-top, этими правилами НЕ затронута. */
+        .proba-header {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          grid-template-areas:
+            "brand title approver"
+            "meta  meta  approver";
+          column-gap: 4mm;
+          row-gap: 0;
+          align-items: start;
+        }
+        .proba-header-top { display: contents; }
+        .proba-brand { grid-area: brand; }
+        .proba-title { grid-area: title; }
+        .proba-approver { grid-area: approver; }
+        .proba-meta { grid-area: meta; }
+        /* Склады отгрузки / удалены — строки ровно по 15 кодов (chunk в render),
+           аккуратными колонками; приписка по центру при нескольких строках. */
+        .proba-meta-codes {
+          display: flex;
+          flex-direction: column;
+          gap: 0.8mm;
+        }
+        .proba-meta-code-row {
+          display: flex;
+          gap: 0 1mm;
+        }
+        .proba-meta-codes .proba-meta-code {
+          min-width: 8mm;
+          margin-right: 0;
+        }
+        .proba-meta-row--readonly { align-items: center; }
+        /* Полоски Дни/Склады — крупнее текст. */
+        /* Все 3 строки (Дни / Склады отгрузки / Склады удалены): счётчик │N
+           прижат к правому краю label (min-width общий) → счётчики и «│»
+           выстроены друг под другом единой вертикальной линией. */
+        .proba-meta-label { font-size: 7.5pt; display: flex; align-items: baseline; min-width: 42mm; }
+        /* Текст label фиксированной ширины → счётчик │N начинается на одном X
+           во всех строках (раньше right-align'ил весь «│N», но │8 и │17 разной
+           ширины → «│» съезжал на части месяцев). */
+        .proba-meta-label-text { min-width: 34mm; }
+        .proba-meta-value { font-size: 8pt; }
+        /* Заголовок таблицы (ДЕНЬ/ДАТА/СКЛАД) — в размер пиллов кластера. */
+        .proba-thead-day,
+        .proba-thead-date,
+        .proba-thead-code { font-size: 7pt; letter-spacing: 0.04em; }
+        /* ДАТА — по центру своей колонки (над датами), чтобы ДЕНЬ/ДАТА/СКЛАД
+           не сливались. */
+        .proba-thead-date { text-align: center; }
+        .proba-cluster-count { font-size: 8pt; }
+        .proba-cluster-total { font-size: 8pt; }
+        /* Цеха и склады крупнее и читаемее (печать — свои размеры в @media print). */
+        .proba-shop-name { font-size: 10pt; }
+        .proba-shop-num { font-size: 8pt; }
+        .proba-dates { font-size: 8.5pt; }
+        .proba-code { font-size: 8.5pt; height: 4.4mm; }
+        .proba-day { font-size: 7pt; height: 4.4mm; padding: 0.4mm 1mm; }
+
+        /* Поиск склада — подсветка найденного цеха и его чипов. Цех: мягкая
+           clay-заливка (как hover). Чип: резкий 1px clay-контур + рассеянное
+           свечение (selection-стиль Pyn). Только screen — печать не трогаем. */
+        .proba-shop,
+        .proba-code,
+        .proba-meta-code {
+          transition: background-color 0.18s ease, box-shadow 0.18s ease;
+        }
+        .proba-shop--search {
+          background-color: rgba(217, 119, 87, 0.07);
+          border-radius: 1.5mm;
+        }
+        .proba-code--search,
+        .proba-meta-code--search {
+          position: relative;
+          z-index: 1;
+          box-shadow:
+            0 0 0 1px rgba(217, 119, 87, 0.95),
+            0 0 5px 1px rgba(217, 119, 87, 0.30);
+        }
       }
 
       /* ── ПОДГОТОВИЛ — inline-строка как в Графике ────────────────────── */

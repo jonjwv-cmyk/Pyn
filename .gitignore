@@ -45,6 +45,17 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Credentials / handoffs — НИКОГДА не коммитить (CF/AWS/Google токены, SSH,
+# PAT). §2026-05-27: CF token утёк в HANDOFF_NEW_CHAT.md → GitHub Secret-
+# Scanning → CF auto-revoke. Эти паттерны не дадут повториться.
+*SECRET*
+*SECRETS*
+*HANDOFF*
+*CREDENTIALS*
+*.secrets
+secrets.*
+**/SECRETS.md
+
 # Logs
 *.log
 npm-debug.log*

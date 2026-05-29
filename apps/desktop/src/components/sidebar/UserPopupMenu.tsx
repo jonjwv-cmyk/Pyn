@@ -30,6 +30,14 @@ interface UserPopupMenuProps {
   /** Цвет toast'а — `'info'` muted-clay, `'error'` — danger. */
   dbToastKind?: 'info' | 'error';
   onRefreshDb: () => void;
+  /** Версия + дата базы Цеха (склады) — с сервера, как у МОЛ. */
+  warehouseDbVersion: string;
+  warehouseDbDate: string;
+  warehouseDbLoading?: boolean;
+  /** Status-сообщение под строкой базы Цеха (как dbToast у МОЛ). */
+  warehouseDbToast?: string | null;
+  warehouseDbToastKind?: 'info' | 'error';
+  onRefreshWarehouseDb: () => void;
   /** Открыть экран Settings (full-screen overlay). Виден всем — внутри
    *  Settings уже свой role-фильтр для подсекций. */
   onOpenSettings: () => void;
@@ -64,6 +72,12 @@ export function UserPopupMenu({
   dbToast = null,
   dbToastKind = 'info',
   onRefreshDb,
+  warehouseDbVersion,
+  warehouseDbDate,
+  warehouseDbLoading = false,
+  warehouseDbToast = null,
+  warehouseDbToastKind = 'info',
+  onRefreshWarehouseDb,
   onOpenSettings,
   onLogout,
   children,
@@ -127,6 +141,7 @@ export function UserPopupMenu({
           <VersionRow icon={Monitor} label={t('user_menu.version_desktop')} value={desktopVersion} />
           <VersionRow icon={Smartphone} label={t('user_menu.version_android')} value={androidVersion} />
           <DbVersionRow
+            label={t('user_menu.version_db_mol')}
             version={dbVersion}
             date={dbDate}
             loading={dbLoading}
@@ -141,6 +156,24 @@ export function UserPopupMenu({
               )}
             >
               {dbToast}
+            </div>
+          )}
+          <DbVersionRow
+            label={t('user_menu.version_db_warehouses')}
+            version={warehouseDbVersion}
+            date={warehouseDbDate}
+            loading={warehouseDbLoading}
+            onRefresh={onRefreshWarehouseDb}
+          />
+          {warehouseDbToast && (
+            <div
+              className={cn(
+                'px-2 pb-1.5 text-[11px] tabular-nums',
+                'animate-in fade-in-0 slide-in-from-top-0.5 duration-200',
+                warehouseDbToastKind === 'error' ? 'text-danger' : 'text-accent-clay',
+              )}
+            >
+              {warehouseDbToast}
             </div>
           )}
 
@@ -199,20 +232,22 @@ function VersionRow({ icon: Icon, label, value }: VersionRowProps) {
 }
 
 interface DbVersionRowProps {
+  /** Подпись базы: «База данных МОЛы» / «База данных Цеха». */
+  label: string;
   version: string;
   date: string;
-  loading: boolean;
-  onRefresh: () => void;
+  loading?: boolean;
+  /** Если не задан — кнопка обновления не показывается (база без серверного синка). */
+  onRefresh?: () => void;
 }
 
 /**
- * База данных — версия + дата сверху, подпись «База данных» снизу,
- * кнопка обновления справа. §pyn-1.2.22 — раньше всё в одну строку с
- * truncate label'ом «Б…»; теперь стек, label виден целиком.
+ * База данных — версия + дата сверху, подпись снизу, кнопка обновления справа.
  * Refresh не закрывает popup при клике (preventDefault). Во время loading
- * иконка крутится, нижняя полоса показывает прогресс indeterminate.
+ * иконка крутится, нижняя полоса показывает прогресс indeterminate. Кнопка
+ * обновления — только если передан onRefresh (Цеха пока без серверного синка).
  */
-function DbVersionRow({ version, date, loading, onRefresh }: DbVersionRowProps) {
+function DbVersionRow({ label, version, date, loading = false, onRefresh }: DbVersionRowProps) {
   const { t } = useTranslation();
   return (
     <div
@@ -227,32 +262,32 @@ function DbVersionRow({ version, date, loading, onRefresh }: DbVersionRowProps) 
           <span className="truncate">{version}</span>
           <span className="shrink-0 text-text-muted">{date}</span>
         </div>
-        <span className="text-[10.5px] text-text-muted">
-          {t('user_menu.version_db')}
-        </span>
+        <span className="text-[10.5px] text-text-muted">{label}</span>
       </div>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          if (!loading) onRefresh();
-        }}
-        disabled={loading}
-        aria-label={t('user_menu.db_refresh_tooltip')}
-        title={loading ? t('user_menu.db_checking') : t('user_menu.db_refresh_tooltip')}
-        className={cn(
-          'flex h-6 w-6 shrink-0 items-center justify-center rounded',
-          'text-text-muted transition-colors',
-          'hover:bg-bg-pressed hover:text-text-strong',
-          'disabled:cursor-default disabled:opacity-100',
-        )}
-      >
-        <RefreshCw
-          className={cn('h-3.5 w-3.5', loading && 'animate-spin text-accent-clay')}
-          strokeWidth={1.75}
-        />
-      </button>
+      {onRefresh && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!loading) onRefresh();
+          }}
+          disabled={loading}
+          aria-label={t('user_menu.db_refresh_tooltip')}
+          title={loading ? t('user_menu.db_checking') : t('user_menu.db_refresh_tooltip')}
+          className={cn(
+            'flex h-6 w-6 shrink-0 items-center justify-center rounded',
+            'text-text-muted transition-colors',
+            'hover:bg-bg-pressed hover:text-text-strong',
+            'disabled:cursor-default disabled:opacity-100',
+          )}
+        >
+          <RefreshCw
+            className={cn('h-3.5 w-3.5', loading && 'animate-spin text-accent-clay')}
+            strokeWidth={1.75}
+          />
+        </button>
+      )}
       {loading && (
         <div className="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 overflow-hidden rounded-full">
           <div className="mol-progress-bar h-full w-1/3 rounded-full bg-accent-clay" />

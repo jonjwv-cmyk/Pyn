@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
-  AlertCircle,
   Pencil,
   Phone,
   Plus,
@@ -12,34 +11,30 @@ import {
   getWarehouseState,
   type Warehouse,
   type WarehouseCluster,
+  type WarehousePatch,
   type WarehouseWeekday,
 } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import { formatWorkPhone, splitAndFormatWorkPhones } from '@/lib/mol-format';
-import { clusterLabel, weekdayShortLabel } from '@/lib/i18n-labels';
+import { clusterLabel, monthLabel, weekdayShortLabel } from '@/lib/i18n-labels';
+import { computeRowDates } from '@/lib/schedule/compute';
+import { monthKey, useScheduleMonthsMeta } from '@/lib/schedule/use-schedule-sync';
 import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
+import { LockedEditorContent } from '@/components/schedule/EditorLockedOverlay';
 import { useWarehousesStore } from '@/lib/warehouses-store';
+import { saveWarehouse } from '@/lib/warehouses-repo';
 import type { ContactActionRequest } from './ContactActionDialog';
 
-export interface NotFoundList {
-  warehouses: string[];
-  emails: string[];
-  names: string[];
-}
-
 interface WarehouseSidebarProps {
-  groups: Map<string, unknown>; // только ключи нужны
-  notFound: NotFoundList;
+  /** Склады для карточек справа: с МОЛами + пустые-но-существующие. */
+  warehouseIds: string[];
   onContactAction: (req: ContactActionRequest) => void;
 }
 
 const CLUSTERS: WarehouseCluster[] = ['НТМК', 'ВЫЕЗД', 'КХП'];
 const DAYS: WarehouseWeekday[] = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'];
 
-export function WarehouseSidebar({ groups, notFound, onContactAction }: WarehouseSidebarProps) {
-  const ids = [...groups.keys()];
-  const showNotFound =
-    notFound.warehouses.length + notFound.emails.length + notFound.names.length > 0;
+export function WarehouseSidebar({ warehouseIds, onContactAction }: WarehouseSidebarProps) {
   const scrollRef = useRef<HTMLElement>(null);
   const [showScrollDown, setShowScrollDown] = useState(false);
 
@@ -54,21 +49,17 @@ export function WarehouseSidebar({ groups, notFound, onContactAction }: Warehous
 
   useEffect(() => {
     checkScroll();
-  }, [ids.length, showNotFound]);
+  }, [warehouseIds.length]);
 
   return (
     <div className="relative flex w-[340px] shrink-0">
       <aside
         ref={scrollRef}
         onScroll={checkScroll}
-        className={cn(
-          'flex flex-1 flex-col overflow-y-auto border-l border-border-subtle',
-          'bg-bg-surface p-3',
-        )}
+        className="flex flex-1 flex-col overflow-y-auto p-3"
       >
         <div className="flex flex-col gap-2.5">
-          {showNotFound && <NotFoundCard notFound={notFound} />}
-          {ids.map((wid) => (
+          {warehouseIds.map((wid) => (
             <WarehouseCard
               key={wid}
               warehouseId={wid}
@@ -86,46 +77,9 @@ export function WarehouseSidebar({ groups, notFound, onContactAction }: Warehous
   );
 }
 
-function NotFoundCard({ notFound }: { notFound: NotFoundList }): JSX.Element {
-  const { t } = useTranslation();
-  return (
-    <div className={cn(
-      'rounded-lg border border-danger/40 bg-danger/[0.06] px-4 py-3',
-      'text-[12.5px] leading-snug',
-    )}>
-      <div className="flex items-center gap-2">
-        <AlertCircle className="h-4 w-4 shrink-0 text-danger" strokeWidth={1.75} />
-        <h3 className="text-[13.5px] font-semibold text-danger">{t('mol.not_found_title')}</h3>
-      </div>
-      <ul className="mt-2 space-y-1">
-        {notFound.warehouses.map((w) => (
-          <li key={`w-${w}`} className="flex items-baseline gap-2 text-text-secondary">
-            <span className="text-[10.5px] uppercase tracking-wider text-text-muted">
-              {t('mol.warehouse').toLowerCase()}
-            </span>
-            <span className="tabular-nums">{w}</span>
-          </li>
-        ))}
-        {notFound.emails.map((e) => (
-          <li key={`e-${e}`} className="flex items-baseline gap-2 text-text-secondary">
-            <span className="text-[10.5px] uppercase tracking-wider text-text-muted">email</span>
-            <span className="break-all" title={e}>{e}</span>
-          </li>
-        ))}
-        {notFound.names.map((n) => (
-          <li key={`n-${n}`} className="flex items-baseline gap-2 text-text-secondary">
-            <span className="text-[10.5px] uppercase tracking-wider text-text-muted">{t('mol.fio')}</span>
-            <span className="break-words" title={n}>{n}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 // ─── Warehouse card ─────────────────────────────────────────────────────────
 
-function WarehouseCard({
+export function WarehouseCard({
   warehouseId,
   onContactAction,
 }: {
@@ -223,7 +177,130 @@ function WarehouseCard({
 
       {/* Status pills */}
       <StatusPills warehouse={warehouse} />
+
+      {/* График доставки: 3 месяца (прошлый / текущий / следующий). */}
+      {warehouse.in_schedule === 1 && warehouse.delivery_day && warehouse.is_removed !== 1 && (
+        <ScheduleMonthsBlock warehouse={warehouse} weekday={warehouse.delivery_day} />
+      )}
     </article>
+  );
+}
+
+// ─── 3-month delivery schedule ───────────────────────────────────────────────
+
+/** prev / current / next месяц относительно сегодня. */
+function buildThreeMonths(): { year: number; month: number }[] {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m0 = now.getMonth(); // 0-based
+  return [-1, 0, 1].map((delta) => {
+    const idx = m0 + delta;
+    const year = y + Math.floor(idx / 12);
+    const month = ((idx % 12) + 12) % 12 + 1;
+    return { year, month };
+  });
+}
+
+/** Цвет дня: прошёл → серый; сегодня → зелёный; впереди → жёлтый. */
+function dayToneClass(
+  year: number, month: number, day: number,
+  todayY: number, todayM: number, todayD: number,
+): string {
+  const cmp = year !== todayY ? year - todayY
+    : month !== todayM ? month - todayM
+      : day - todayD;
+  if (cmp < 0) return 'bg-bg-hover text-text-muted';
+  if (cmp === 0) return 'bg-presence-online/20 text-presence-online';
+  return 'bg-amber-400/15 text-amber-400';
+}
+
+/** День недели склада в зафиксированном месяце (из frozen-цехов снапшота). */
+function frozenWeekday(
+  shops: ReadonlyArray<{ rows: ReadonlyArray<{ weekday: string; warehouses: ReadonlyArray<{ code: string }> }> }>,
+  code: string,
+): WarehouseWeekday | null {
+  const lc = code.toLowerCase();
+  for (const shop of shops) {
+    for (const row of shop.rows) {
+      if (row.warehouses.some((w) => w.code.toLowerCase() === lc)) {
+        return row.weekday as WarehouseWeekday;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Три строки графика доставки склада: прошлый / текущий / следующий месяц.
+ * Дни считаются из delivery_day склада + holidays/overrides месяца (с сервера,
+ * read-only через общий кэш). Прошедшие дни серые, сегодня зелёный, будущие
+ * жёлтые. Месяц без снапшота на сервере → «График не сформирован».
+ */
+function ScheduleMonthsBlock({
+  warehouse,
+  weekday,
+}: {
+  warehouse: Warehouse;
+  weekday: WarehouseWeekday;
+}) {
+  const { t } = useTranslation();
+  const months = useMemo(() => buildThreeMonths(), []);
+  const metaMap = useScheduleMonthsMeta(months);
+
+  const now = new Date();
+  const todayY = now.getFullYear();
+  const todayM = now.getMonth() + 1;
+  const todayD = now.getDate();
+
+  return (
+    <div className="mt-2.5 flex flex-col gap-1 border-t border-border-subtle/30 pt-2">
+      {months.map((m) => {
+        const meta = metaMap.get(monthKey(m.year, m.month));
+        // Если в (зафиксированном) месяце день недели склада отличался от текущего —
+        // берём исторический из снапшота и подписываем его рядом с днями.
+        const monthWeekday = (meta && frozenWeekday(meta.shops, warehouse.id)) || weekday;
+        const weekdayChanged = monthWeekday !== weekday;
+        // «Сформирован» = снапшот на сервере есть И выбраны нерабочие дни месяца
+        // (holidays — дни «не возим»). Пустой holidays → график не сформирован.
+        const days = meta && meta.exists && meta.holidays.length > 0
+          ? computeRowDates(m.year, m.month, monthWeekday, [{ code: warehouse.id }], meta.holidays, meta.overrides)
+          : null;
+        return (
+          <div key={`${m.year}-${m.month}`} className="flex items-baseline gap-2">
+            <span className="w-[68px] shrink-0 whitespace-nowrap text-[10.5px] font-medium capitalize text-text-muted">
+              {monthLabel(m.month, t)}
+            </span>
+            {days === null ? (
+              <span className="text-[10.5px] italic text-text-muted/70">
+                {t('mol_sidebar.schedule_not_formed')}
+              </span>
+            ) : days.length === 0 ? (
+              <span className="text-[11px] text-text-muted/70">—</span>
+            ) : (
+              <div className="flex flex-1 flex-wrap items-center gap-1">
+                {weekdayChanged && (
+                  <span className="flex h-5 items-center rounded-md bg-accent-clay/15 px-1.5 text-[9.5px] font-semibold uppercase tracking-wide text-accent-clay">
+                    {weekdayShortLabel(monthWeekday, t)}
+                  </span>
+                )}
+                {days.map((d) => (
+                  <span
+                    key={d}
+                    className={cn(
+                      'flex h-5 min-w-[20px] items-center justify-center rounded-md px-1',
+                      'text-[10.5px] font-medium tabular-nums',
+                      dayToneClass(m.year, m.month, d, todayY, todayM, todayD),
+                    )}
+                  >
+                    {d}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -299,6 +376,12 @@ function formatPhoneLive(raw: string): string {
   return formatWorkPhone(raw).replace(/ /g, '  ');
 }
 
+/** Текущий месяц YYYY-MM — для removed_month при ручном удалении. */
+function currentYearMonth(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
 function statusFromWarehouse(w: Warehouse): StatusOption {
   if (w.is_removed === 1) return 'removed';
   if (w.is_shipping === 1) return 'shipping';
@@ -308,7 +391,7 @@ function statusFromWarehouse(w: Warehouse): StatusOption {
 
 function EditDialog({ warehouse }: { warehouse: Warehouse }) {
   const { t } = useTranslation();
-  const updateFields = useWarehousesStore((s) => s.updateFields);
+  const [saving, setSaving] = useState(false);
 
   const initialPhones = useMemo(() => {
     const arr = (warehouse.work_phone ?? '')
@@ -366,28 +449,41 @@ function EditDialog({ warehouse }: { warehouse: Warehouse }) {
   //  - другие статусы — всегда
   const canSave = status !== 'delivery' || (cluster !== null && day !== null);
 
-  const save = () => {
-    if (!canSave) return;
+  const save = async () => {
+    if (!canSave || saving) return;
     const cleanPhones = phones
       .map((p) => p.trim())
       .filter((p) => p.length > 0);
-    const fields: Partial<Warehouse> = {
+    const patch: WarehousePatch = {
       work_phone: cleanPhones.length > 0 ? cleanPhones.join('\n') : null,
     };
     if (status === 'delivery') {
-      fields.in_schedule = 1; fields.is_shipping = 0; fields.is_removed = 0;
-      fields.cluster = cluster;
-      fields.delivery_day = day;
+      patch.in_schedule = 1; patch.is_shipping = 0; patch.is_removed = 0;
+      patch.cluster = cluster;
+      patch.delivery_day = day;
+      patch.removal_kind = null; patch.removed_month = null;
     } else if (status === 'shipping') {
-      fields.in_schedule = 0; fields.is_shipping = 1; fields.is_removed = 0;
-      fields.cluster = null; fields.delivery_day = null;
+      patch.in_schedule = 0; patch.is_shipping = 1; patch.is_removed = 0;
+      patch.cluster = null; patch.delivery_day = null;
+      patch.removal_kind = null; patch.removed_month = null;
     } else if (status === 'idle') {
-      fields.in_schedule = 0; fields.is_shipping = 0; fields.is_removed = 0;
+      patch.in_schedule = 0; patch.is_shipping = 0; patch.is_removed = 0;
+      patch.removal_kind = null; patch.removed_month = null;
     } else {
-      fields.in_schedule = 0; fields.is_shipping = 0; fields.is_removed = 1;
+      // Удалён вручную из карточки → 'manual' (авто-импорт его не снимет).
+      patch.in_schedule = 0; patch.is_shipping = 0; patch.is_removed = 1;
+      patch.removal_kind = 'manual';
+      patch.removed_month = currentYearMonth();
     }
-    updateFields(warehouse.id, fields);
-    setOpen(false);
+    setSaving(true);
+    try {
+      await saveWarehouse(warehouse.id, patch);
+      setOpen(false);
+    } catch {
+      // saveWarehouse уже откатил локально через refresh; оставляем диалог открытым.
+    } finally {
+      setSaving(false);
+    }
   };
 
   const statusOptions: { key: StatusOption; label: string }[] = [
@@ -419,6 +515,9 @@ function EditDialog({ warehouse }: { warehouse: Warehouse }) {
             {t('mol_sidebar.edit_btn')}
           </Dialog.Description>
 
+          {/* Пока карточку редактирует один — для других тело «занято» (overlay).
+              Замок переиспользует механизм графика (resource_id warehouse:<id>:edit). */}
+          <LockedEditorContent resourceId={`warehouse:${warehouse.id}:edit`} active={open}>
           {/* Status: 4 опции в одну строку */}
           <div className="mt-3">
             <span className="mb-1 block text-[9.5px] font-medium uppercase tracking-wider text-text-muted">
@@ -555,8 +654,8 @@ function EditDialog({ warehouse }: { warehouse: Warehouse }) {
             </Dialog.Close>
             <button
               type="button"
-              onClick={save}
-              disabled={!canSave}
+              onClick={() => void save()}
+              disabled={!canSave || saving}
               className={cn(
                 'h-7 rounded px-3 text-[11.5px] font-medium outline-none transition-colors',
                 canSave
@@ -566,6 +665,7 @@ function EditDialog({ warehouse }: { warehouse: Warehouse }) {
               title={canSave ? t('mol_sidebar.confirm_btn_tip_ok') : t('mol_sidebar.confirm_btn_tip_invalid')}
             >{t('mol_sidebar.confirm_btn')}</button>
           </div>
+          </LockedEditorContent>
 
           <Dialog.Close asChild>
             <button

@@ -101,7 +101,7 @@ export function ChatConversation({ partner, messages, onSend, onReact, onMarkRea
     // чат или нет. При выборе чата сообщения «приземляются» поверх того же
     // фона, без визуального flicker'a. Header переопределяет фон solid'ом.
     <main
-      className="relative flex flex-1 flex-col chat-pattern-bg"
+      className="relative flex flex-1 flex-col"
       {...(partner ? dropProps : {})}
     >
       {partner && dragging && (
@@ -121,9 +121,10 @@ export function ChatConversation({ partner, messages, onSend, onReact, onMarkRea
       {partner ? (
         <>
           <ChatHeader partner={partner} />
-          {/* relative wrapper для absolute-композера: messages list внутри
-              + composer как floating overlay снизу с backdrop-blur. */}
-          <div className="relative flex flex-1 flex-col overflow-hidden">
+          {/* §design — список + переписка теперь в ОДНОЙ карточке-подложке
+              (обёртка WorkspaceCard в App.tsx). Здесь только контент:
+              header выше + лента/композер на chat-pattern-bg. */}
+          <div className="chat-pattern-bg relative flex flex-1 flex-col overflow-hidden">
             <MessageList
               messages={messages}
               partnerId={partner.id}
@@ -144,11 +145,12 @@ export function ChatConversation({ partner, messages, onSend, onReact, onMarkRea
         </>
       ) : (
         <>
-          {/* §pyn-1.2.22 — пустое состояние без выбранного чата:
-              top-strip унифицирован bg-bg-surface (раньше прозрачно
-              на chat-pattern-bg → темнее sidebar'а). */}
-          <div className="drag-region h-12 shrink-0 border-b border-border-subtle bg-bg-surface" />
-          <EmptyState />
+          {/* §design — пустое состояние: h-9 прозрачная шапка + chat-pattern-bg
+              с подсказкой по центру (внутри общей карточки-подложки). */}
+          <div className="drag-region h-9 shrink-0" />
+          <div className="chat-pattern-bg relative flex flex-1 flex-col overflow-hidden">
+            <EmptyState />
+          </div>
         </>
       )}
     </main>
@@ -160,10 +162,9 @@ interface ChatHeaderProps {
 }
 
 /**
- * Компактный заголовок: drag-region + avatar (с presence-dot) + имя + статус.
- * Высота 48dp (h-12). Линия-разделитель — отдельный div h-px после strip'a
- * (а не border-b внутри h-12 box), чтобы её Y совпадал с inset-divider'ом
- * ChatList и NewsFeed. Унифицированная «линия заголовка» на y=48–49.
+ * Компактный заголовок диалога: drag-region + avatar (с presence-dot) + имя +
+ * статус. §design — h-9 прозрачная шапка на подложке (bg-deep), над
+ * WorkspaceCard'ом. Раньше была h-12 solid bg-surface + h-px divider.
  */
 function ChatHeader({ partner }: ChatHeaderProps) {
   const { t } = useTranslation();
@@ -177,44 +178,32 @@ function ChatHeader({ partner }: ChatHeaderProps) {
   const lastSeenLabel = useFormatYek(presenceInfo?.lastSeenAt);
 
   return (
-    <>
-      {/* Header — solid bg, перекрывает chat-pattern-bg main'а; иначе узор
-          просвечивал бы под аватаркой и именем контакта.
-          §pyn-1.2.22 — bg-bg-surface (был bg-bg-primary), чтобы titlebar-strip
-          с Win min/max/close controls был единого цвета с Sidebar/ChatList/
-          MOL/Tables. */}
-      <div
-        className={cn(
-          'drag-region flex h-12 shrink-0 items-center gap-2.5 border-b border-border-subtle bg-bg-surface px-4',
-        )}
-      >
-        <span className="relative shrink-0">
-          <Avatar
-            initials={partner.initials}
-            size={28}
-            login={partner.id}
-            avatarUrl={partner.avatarUrl}
-            avatarBlobKey={partner.avatarBlobKey}
-            avatarBlobNonce={partner.avatarBlobNonce}
-          />
-          <PresenceDot
-            state={presence}
-            size={9}
-            ringClass="ring-bg-primary"
-            className="absolute -bottom-0.5 -right-0.5"
-          />
+    <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
+      <span className="relative shrink-0">
+        <Avatar
+          initials={partner.initials}
+          size={28}
+          login={partner.id}
+          avatarUrl={partner.avatarUrl}
+          avatarBlobKey={partner.avatarBlobKey}
+          avatarBlobNonce={partner.avatarBlobNonce}
+        />
+        <PresenceDot
+          state={presence}
+          size={9}
+          ringClass="ring-bg-primary"
+          className="absolute -bottom-0.5 -right-0.5"
+        />
+      </span>
+      <span className="flex min-w-0 flex-col leading-tight">
+        <span className="truncate text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
+          {partner.name}
         </span>
-        <span className="flex min-w-0 flex-col leading-tight">
-          <span className="truncate text-[13.5px] font-semibold tracking-[-0.005em] text-text-strong">
-            {partner.name}
-          </span>
-          <span className="truncate text-[11px] text-text-muted">
-            {presenceText(presence, lastSeenLabel, t)}
-          </span>
+        <span className="truncate text-[11px] text-text-muted">
+          {presenceText(presence, lastSeenLabel, t)}
         </span>
-      </div>
-      <div className="h-px shrink-0 bg-border-subtle" />
-    </>
+      </span>
+    </div>
   );
 }
 

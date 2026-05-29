@@ -26,6 +26,8 @@ export interface UiState {
   activeChatId: string | null;
   /** Текст поиска МОЛ — восстанавливается между сессиями. */
   molQuery: string;
+  /** Активный лист раздела «База»: МОЛы или Склады. */
+  baseTab: 'mol' | 'warehouses';
   /** Scroll-position таблицы МОЛ (px от верха). */
   molScrollTop: number;
   /** Scroll-position ленты новостей. */
@@ -36,6 +38,9 @@ export interface UiState {
   activeTableFileId: string | null;
   /** Активная вкладка (rawName) в текущей Google-таблице. */
   activeTableTabName: string | null;
+  /** Запомненная вкладка по каждой таблице (fileId → rawName) — клик по
+   *  таблице возвращает на её последний лист, а не на первый. */
+  tableTabByFile: Record<string, string>;
   /** Свёрнут ли список таблиц в основном Sidebar. По умолчанию раскрыт. */
   tablesListCollapsed: boolean;
   /**
@@ -48,6 +53,7 @@ export interface UiState {
   setActiveSection: (id: string) => void;
   setActiveChatId: (id: string | null) => void;
   setMolQuery: (q: string) => void;
+  setBaseTab: (tab: 'mol' | 'warehouses') => void;
   setMolScrollTop: (top: number) => void;
   setNewsScrollTop: (top: number) => void;
   setChatScrollTop: (peer: string, top: number) => void;
@@ -66,17 +72,28 @@ const initializer: StateCreator<UiState> = (set) => ({
   chatScrollTopByPeer: {},
   activeTableFileId: null,
   activeTableTabName: null,
+  tableTabByFile: {},
   tablesListCollapsed: false,
   language: null,
+  baseTab: 'mol',
   setActiveSection: (id) => set({ activeSection: id }),
   setActiveChatId: (id) => set({ activeChatId: id }),
   setMolQuery: (q) => set({ molQuery: q }),
+  setBaseTab: (tab) => set({ baseTab: tab }),
   setMolScrollTop: (top) => set({ molScrollTop: top }),
   setNewsScrollTop: (top) => set({ newsScrollTop: top }),
   setChatScrollTop: (peer, top) =>
     set((prev) => ({ chatScrollTopByPeer: { ...prev.chatScrollTopByPeer, [peer]: top } })),
   setActiveTable: (fileId, tabName) =>
-    set({ activeTableFileId: fileId, activeTableTabName: tabName }),
+    set((prev) => ({
+      activeTableFileId: fileId,
+      activeTableTabName: tabName,
+      // Запоминаем лист для этой таблицы (возврат по клику в сайдбаре).
+      tableTabByFile:
+        fileId && tabName
+          ? { ...prev.tableTabByFile, [fileId]: tabName }
+          : prev.tableTabByFile,
+    })),
   setTablesListCollapsed: (v) => set({ tablesListCollapsed: v }),
   setLanguage: (lang) => set({ language: lang }),
   clear: () =>
@@ -89,7 +106,9 @@ const initializer: StateCreator<UiState> = (set) => ({
       chatScrollTopByPeer: {},
       activeTableFileId: null,
       activeTableTabName: null,
+      tableTabByFile: {},
       tablesListCollapsed: false,
+      baseTab: 'mol',
       // language НЕ сбрасываем при logout — он user preference, не session-bound.
     }),
 });

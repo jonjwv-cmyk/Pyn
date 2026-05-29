@@ -98,6 +98,12 @@ contextBridge.exposeInMainWorld('pyn', {
       return ipcRenderer.invoke('pyn:mol:fetch-snapshot', url, blobKeyB64, blobNonceB64);
     },
   },
+  /** Снэпшот складов («Цеха»-база) — тот же путь что mol.fetchSnapshot. */
+  warehouses: {
+    fetchSnapshot: function pynWarehousesFetchSnapshot(url, blobKeyB64, blobNonceB64) {
+      return ipcRenderer.invoke('pyn:warehouses:fetch-snapshot', url, blobKeyB64, blobNonceB64);
+    },
+  },
   /**
    * Encrypted cache (Zustand persist storage). Renderer пишет JSON-стрингу
    * по имени; main process encrypt'ит через safeStorage и кладёт в userData/cache/.

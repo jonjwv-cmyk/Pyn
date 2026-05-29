@@ -1,8 +1,7 @@
 -- Seed: 534 warehouse records from wf_warehouses xlsx (2026-05).
 -- 16 warehouses marked is_shipping=1 from Pyn INITIAL_SCHEDULE.shippingWarehouses.
 -- Run AFTER schema.sql. Idempotent via INSERT OR REPLACE.
-
-BEGIN TRANSACTION;
+-- No BEGIN/COMMIT wrapper: `wrangler d1 execute --remote` rejects transaction keywords (INSERT OR REPLACE is idempotent, safe to re-apply).
 
 INSERT OR REPLACE INTO warehouses (id, shop_name, shop_code, description, designation, keeper, work_phone, legacy_id, cluster, delivery_day, in_schedule, is_shipping, is_removed)
   VALUES ('2800', 'АВТОТРАНСПОРТНОЕ УПРАВЛЕНИЕ', '128', 'Промежуточный склад', 'АТЦ ГСМ транз.', 'АТЦ ГСМ', NULL, '028', NULL, NULL, 0, 0, 0);
@@ -1263,5 +1262,3 @@ INSERT OR REPLACE INTO warehouses (id, shop_name, shop_code, description, design
 49  17  32
 49  17  56
 49  88  30', '081П', 'КХП', 'ПН', 1, 0, 0);
-
-COMMIT;

@@ -3,6 +3,7 @@ import * as Popover from '@radix-ui/react-popover';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { LockedEditorContent } from '@/components/schedule/EditorLockedOverlay';
+import { LockableTrigger } from './LockableTrigger';
 import type { ScheduleApproverDate } from '@/lib/schedule/types';
 
 interface DatePickerProps {
@@ -12,6 +13,8 @@ interface DatePickerProps {
   children: React.ReactNode;
   /** Collaboration lock resource_id, e.g. 'schedule:2026-05:date'. */
   lockResourceId?: string;
+  /** true — месяц зафиксирован: пикер не открывается, на hover tooltip. */
+  locked?: boolean;
 }
 
 /**
@@ -19,7 +22,7 @@ interface DatePickerProps {
  * grid дней выбранного месяца. Patterns reused: clay-ring selection,
  * Linear hairline divider, ПН-первый календарь как у HolidaysCalendar.
  */
-export function DatePicker({ date, onChange, children, lockResourceId }: DatePickerProps) {
+export function DatePicker({ date, onChange, children, lockResourceId, locked = false }: DatePickerProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   // viewYear / viewMonth — навигация внутри picker'а, не коммитятся пока
@@ -95,8 +98,8 @@ export function DatePicker({ date, onChange, children, lockResourceId }: DatePic
   };
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>{children}</Popover.Trigger>
+    <Popover.Root open={locked ? false : open} onOpenChange={(o) => { if (!locked) setOpen(o); }}>
+      <LockableTrigger locked={locked}>{children}</LockableTrigger>
 
       <Popover.Portal>
         <Popover.Content

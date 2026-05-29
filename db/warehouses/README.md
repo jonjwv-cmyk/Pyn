@@ -59,65 +59,112 @@
 - Default `0`. Текущий список Pyn'а (`824Ц 9002 9003 ...`) можно перенести вручную после деплоя.
 
 **`is_removed`** — Склад выведен из эксплуатации / отсутствует в актуальной выгрузке.
-- Соответствует блоку «СКЛАДЫ УДАЛЕНЫ» в листе графика
-- **Авто-управление при следующем import'е xlsx:**
-  - Если `id` отсутствует в новой выгрузке → `is_removed = 1` (флаг поднимается, запись остаётся)
-  - Если `id` появился обратно → `is_removed = 0` (флаг снимается)
-- Запись НЕ удаляется физически — сохраняем historу.
+- Соответствует блоку «СКЛАДЫ УДАЛЕНЫ» в листе графика.
+- В UI пользователь видит просто статус «Удалено» (авто/ручное — скрытая деталь).
+- Запись НЕ удаляется физически — сохраняем историю.
+
+#### ⚠️ TODO — авто/ручное удаление + дата (СЕЙЧАС НЕ РЕАЛИЗОВАНО; всплывёт при постройке выгрузки/импорта складов)
+
+> Сейчас серверного слоя складов нет: store клиентский (localStorage + bundle-seed),
+> `is_removed` приходит из сида, мутации (`markRemoved` и т.п.) к UI не подключены.
+> Когда появится серверный импорт складов — заложить логику ниже (требование юзера).
+
+**Два источника удаления** (хранить внутренним полем; в UI НЕ показывать — там просто «Удалено»):
+- **Авто** — склада нет в новой выгрузке → `is_removed=1`, `removal_kind='auto'`.
+- **Ручное** — пользователь пометил из карточки → `is_removed=1`, `removal_kind='manual'`.
+
+**Снятие отметки:**
+- Авто: склад снова появился в выгрузке → `is_removed=0` (импорт снимает авто-метку).
+- Ручное: импорт НЕ трогает (даже если склад есть в выгрузке) → снимается ТОЛЬКО вручную.
+
+**Дата удаления `removed_month` (YYYY-MM)** — нужна для окна в графике:
+- Ставится в момент `is_removed=1` (и авто, и ручное); если уже стоит — НЕ перезаписывать.
+- При `is_removed=0` → очищать (NULL).
+- График, строка «СКЛАДЫ УДАЛЕНЫ» (НЕзафиксированные месяцы): показывать склад в окне
+  `M ∈ {R, R+1}` — месяц удаления R и следующий (= 2 месяца), потом исчезает.
+  Зафиксированные месяцы — строго из снапшота (не меняются).
+- Поиск склада в графике уже находит склад и в строке «удалены» (подсветка + скролл).
+
+**Колонки к добавлению:** `removed_month TEXT`, `removal_kind TEXT CHECK (removal_kind IN ('auto','manual'))`
+в `warehouses` + соответствующие поля в `Warehouse` type (`packages/core/src/types/warehouse.ts`).
 
 ## Файлы
 
 - `schema.sql` — CREATE TABLE + indexes + триггер `updated_at`
-- `seed.sql` — 534 INSERT'а, обёрнуты в transaction, idempotent (`INSERT OR REPLACE`)
+- `seed.sql` — 534 INSERT'а, idempotent (`INSERT OR REPLACE`); без обёртки transaction (D1 `--remote` не принимает BEGIN/COMMIT)
 - `data.json` — те же 534 записи в JSON (для инспекции / альтернативного импорта через Worker code)
 
 ## Применение к D1
 
+> Склады — отдельный **датасет** (таблица `warehouses` + `warehouses_meta`) внутри
+> общей боевой базы **`otl-db`** (тот же D1-инстанс, что МОЛ-база, график, юзеры).
+> «Две базы» (МОЛы и Цеха) живут в одном `otl-db` как независимые таблицы со
+> своими версиями/снэпшотами — отдельный D1 заводить не нужно.
+
 ```bash
 # Локальная разработка
-wrangler d1 execute pyn-base --local --file=db/warehouses/schema.sql
-wrangler d1 execute pyn-base --local --file=db/warehouses/seed.sql
+wrangler d1 execute otl-db --local --file=db/warehouses/schema.sql
+wrangler d1 execute otl-db --local --file=db/warehouses/seed.sql
 
 # Production (после code review)
-wrangler d1 execute pyn-base --remote --file=db/warehouses/schema.sql
-wrangler d1 execute pyn-base --remote --file=db/warehouses/seed.sql
+wrangler d1 execute otl-db --remote --file=db/warehouses/schema.sql
+wrangler d1 execute otl-db --remote --file=db/warehouses/seed.sql
 ```
 
-## Алгоритм апдейта из next-import (псевдокод)
+## Алгоритм апдейта из SAP-выгрузки (псевдокод)
+
+**Триггер:** внешний скрипт выгружает склады из SAP и пушит список к нам по цепочке
+прокси работодателя → ВПС → CF Worker (endpoint `warehouses_import`). Не кнопка в
+приложении и не cron-pull со стороны воркера.
+
+**Что чьё:** ключ совпадения — **номер склада** (`id`). Из выгрузки обновляем только
+«паспортные» поля: `shop_name`, `shop_code`, `description`, `designation`, `keeper`,
+`legacy_id`. А `cluster`, `delivery_day`, `in_schedule`, `is_shipping`, `work_phone` —
+**наши** данные (ведём вручную в карточке), импорт их НЕ трогает.
 
 ```ts
-async function importWarehousesFromXlsx(rows: WarehouseRow[]) {
-  const incomingIds = new Set(rows.map(r => r.id));
-  const existing = await db.query('SELECT id FROM warehouses');
-  const existingIds = new Set(existing.map(r => r.id));
+async function importWarehousesFromSap(rows: WarehouseRow[]) {
+  const incomingIds = new Set(rows.map((r) => r.id));
+  const existing = await db.query('SELECT id, is_removed, removal_kind FROM warehouses');
+  const byId = new Map(existing.map((r) => [r.id, r]));
 
-  // 1. Поднять is_removed для тех, кого нет в новой выгрузке
-  for (const id of existingIds) {
-    if (!incomingIds.has(id)) {
-      await db.run('UPDATE warehouses SET is_removed = 1 WHERE id = ?', id);
+  // 1. Склад пропал из выгрузки → авто-удаление. Ручное удаление НЕ трогаем.
+  for (const w of existing) {
+    if (!incomingIds.has(w.id) && w.removal_kind !== 'manual' && w.is_removed !== 1) {
+      await db.run(
+        `UPDATE warehouses SET is_removed = 1, removal_kind = 'auto', removed_month = ?
+           WHERE id = ?`,
+        currentMonth, w.id,
+      );
     }
   }
 
-  // 2. UPSERT входящих — снять is_removed если был
+  // 2. Склад есть в выгрузке: обновляем ТОЛЬКО паспортные поля.
   for (const r of rows) {
+    const cur = byId.get(r.id);
+    if (cur?.removal_kind === 'manual') continue;   // ручное удаление — не трогаем вообще
+    const unremove = cur?.removal_kind === 'auto';  // авто-удаление снять — склад вернулся
     await db.run(`
-      INSERT INTO warehouses (id, shop_name, shop_code, ...)
-        VALUES (?, ?, ?, ...)
+      INSERT INTO warehouses (id, shop_name, shop_code, description, designation, keeper, legacy_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
-        shop_name = excluded.shop_name,
-        shop_code = excluded.shop_code,
-        ...,
-        is_removed = 0
-    `, r.id, r.shop_name, r.shop_code, ...);
+        shop_name = excluded.shop_name, shop_code = excluded.shop_code,
+        description = excluded.description, designation = excluded.designation,
+        keeper = excluded.keeper, legacy_id = excluded.legacy_id
+        ${unremove ? `, is_removed = 0, removal_kind = NULL, removed_month = NULL` : ''}
+    `, r.id, r.shop_name, r.shop_code, r.description, r.designation, r.keeper, r.legacy_id);
   }
 
-  // 3. Bump version + broadcast WS
-  await bumpBaseVersion();
-  await broadcastWS('base_changed');
+  // 3. Bump версии + WS-рассылка (как МОЛ base_changed → warehouses_changed).
+  await bumpWarehousesMeta();
+  await broadcastWS('warehouses_changed');
 }
 ```
 
-Запись с `is_removed=1` остаётся в БД (history). Если склад вернулся — флаг снимается, запись обновляется новыми данными.
+Итог по удалению: **ручное** (`manual`) переживает любой импорт; **авто** (`auto`)
+снимается, как только номер снова появился в выгрузке; пропал из выгрузки → `auto` +
+`removed_month`. Запись с `is_removed=1` остаётся в БД (history), наши поля
+(кластер / день / статус / телефоны) сохраняются.
 
 ## Что дальше (roadmap)
 

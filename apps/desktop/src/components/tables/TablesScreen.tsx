@@ -32,6 +32,7 @@ import { getFvid, setFvid } from '@/lib/filter-fvid-cache';
 import { SHEETS_PRESENCE_SCRIPT, type PresenceMember } from './sheets-presence';
 import { SheetsLockOverlay } from './SheetsLockOverlay';
 import { SheetsPasswordPrompt } from './SheetsPasswordPrompt';
+import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { PynLoader } from '@/components/ui/PynLoader';
 import { SheetsConfirmPrompt } from './SheetsConfirmPrompt';
 
@@ -720,13 +721,8 @@ export function TablesScreen({
 
   return (
     <main className="flex flex-1 flex-col overflow-hidden">
-      <header
-        className={cn(
-          'drag-region relative flex h-12 shrink-0 items-center gap-2 border-b border-border-subtle px-3',
-          'bg-bg-surface',
-        )}
-      >
-        <span className="no-drag-region truncate text-[13.5px] font-semibold tracking-[-0.005em] text-text-strong">
+      <header className="drag-region relative flex h-9 shrink-0 items-center gap-2 px-4">
+        <span className="no-drag-region truncate text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
           {activeTab ? customTabName(activeTab.displayName || activeTab.rawName) : t('tables.title_default')}
         </span>
 
@@ -790,7 +786,7 @@ export function TablesScreen({
               disabled={!loggedIn}
               onClick={openPrintDialog}
               className={cn(
-                'flex h-7 items-center rounded-md px-2.5 text-[13px] font-medium',
+                'flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium',
                 'outline-none transition-colors',
                 !loggedIn
                   ? 'cursor-not-allowed text-text-muted opacity-60'
@@ -844,128 +840,130 @@ export function TablesScreen({
         )}
       </header>
 
-      <section className="relative flex flex-1 flex-col overflow-hidden bg-bg-deep">
-        {activatedFileIds.length === 0 && (
-          <EmptyHint
-            title={t('tables.empty_title')}
-            body={t('tables.empty_subtitle')}
-          />
-        )}
-        {activatedFileIds.map((fileId) => {
-          const file = files.find((f) => f.id === fileId);
-          if (!file) return null;
-          const isActive = fileId === activeFileId;
-          // Initial gid — первая видимая вкладка. Дальше переключение
-          // листов идёт императивно через executeJavaScript hash.
-          const initialTab = file.tabs.find((t) => !t.hidden);
-          const initialUrl = initialTab
-            ? `https://docs.google.com/spreadsheets/d/${file.id}/edit#gid=${initialTab.gid}`
-            : `https://docs.google.com/spreadsheets/d/${file.id}/edit`;
-          // §v1.2.14 — webview visibility управляется ИМПЕРАТИВНО через
-          // ref в onDidStartLoading/onDidStopLoading. React state binding
-          // создавал async gap: Google уже paint'нул UI ДО того как React
-          // успел re-render с visibility:hidden. Imperative style.visibility
-          // через DOM API применяется синхронно в том же tick'е.
-          return (
-            <webview
-              key={fileId}
-              ref={refCallback(fileId)}
-              src={initialUrl}
-              partition={SHEETS_PARTITION}
-              allowpopups
-              style={{
-                position: 'absolute',
-                inset: 0,
-                display: 'inline-flex',
-                width: '100%',
-                height: '100%',
-                pointerEvents: isActive ? 'auto' : 'none',
-                zIndex: isActive ? 2 : 1,
-                backgroundColor: '#161611',
-              }}
+      <WorkspaceCard>
+        <section className="relative flex flex-1 flex-col overflow-hidden bg-bg-deep">
+          {activatedFileIds.length === 0 && (
+            <EmptyHint
+              title={t('tables.empty_title')}
+              body={t('tables.empty_subtitle')}
             />
-          );
-        })}
-        {openPopover && (
-          // §v1.2.14 — overlay поверх webview когда Pyn-popover открыт.
-          // mousedown закрывает popover. Radix не получает outside-click из
-          // webview-document, поэтому ловим click в renderer слое сами.
-          <div
-            aria-hidden
-            className="absolute inset-0 z-30"
-            onMouseDown={() => setOpenPopover(null)}
-          />
-        )}
-        {files.length > 0 && (!activeFile || !readyFileIds.has(activeFile.id)) && (
-          // §v1.2.14 — Solid loader пока mask не инжектнулась при ПЕРВОЙ
-          // загрузке spreadsheet'a (или ручном reload). На subsequent
-          // navigations (возврат с /revisions, sheet switch) — silent
-          // reinject без loader'a, юзер не видит ничего лишнего.
-          //
-          // §pyn-1.2.50 — overlay активен также пока activeFile ещё не
-          // выбран (useEffect выбора default-table занимает один React tick).
-          // Без этого юзер видел raw Google UI «секунду» до того как loader
-          // успевал смонтироваться.
-          <div
-            className={cn(
-              'absolute inset-0 z-10 flex items-center justify-center',
-              'bg-bg-deep',
-            )}
-          >
-            {/* §pyn-1.2.54 — text "Загрузка таблицы…" покрупнее + inline
-                PynLoader sm рядом (полоски сходятся в логотип и расходятся
-                в маленьком невидимом квадрате 16×16). */}
-            <div className="flex items-center gap-2.5">
-              <span className="text-[15px] font-medium text-text-secondary">
-                {t('tables.loading_overlay')}
-              </span>
-              <PynLoader size="sm" />
-            </div>
-          </div>
-        )}
-        {activeLock &&
-          activeTab &&
-          activeLock.lockedTabRawNames.includes(activeTab.rawName) && (
-            <SheetsLockOverlay lock={activeLock} />
           )}
-        <SheetsPasswordPrompt
-          open={pendingPwAction !== null}
-          actionLabel={pendingPwAction?.label ?? ''}
-          onSubmit={(pw) => {
-            const a = pendingPwAction;
-            setPendingPwAction(null);
-            if (!a) return;
-            if (a.macroId) void runMacroAction(a, pw);
-            else void runScriptAction(a, pw);
-          }}
-          onCancel={() => setPendingPwAction(null)}
-        />
-        <SheetsConfirmPrompt
-          open={pendingConfirmAction !== null}
-          actionLabel={pendingConfirmAction?.label ?? ''}
-          onConfirm={() => {
-            const a = pendingConfirmAction;
-            setPendingConfirmAction(null);
-            if (!a) return;
-            if (a.macroId) void runMacroAction(a);
-            else void runScriptAction(a);
-          }}
-          onCancel={() => setPendingConfirmAction(null)}
-        />
-        {toast && (
-          <div
-            role="status"
-            aria-live="polite"
-            className={cn(
-              'pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2',
-              'rounded-full border border-border-default bg-bg-elevated/95 px-3.5 py-1.5',
-              'text-[12px] text-text-strong shadow-lg backdrop-blur-sm',
+          {activatedFileIds.map((fileId) => {
+            const file = files.find((f) => f.id === fileId);
+            if (!file) return null;
+            const isActive = fileId === activeFileId;
+            // Initial gid — первая видимая вкладка. Дальше переключение
+            // листов идёт императивно через executeJavaScript hash.
+            const initialTab = file.tabs.find((t) => !t.hidden);
+            const initialUrl = initialTab
+              ? `https://docs.google.com/spreadsheets/d/${file.id}/edit#gid=${initialTab.gid}`
+              : `https://docs.google.com/spreadsheets/d/${file.id}/edit`;
+            // §v1.2.14 — webview visibility управляется ИМПЕРАТИВНО через
+            // ref в onDidStartLoading/onDidStopLoading. React state binding
+            // создавал async gap: Google уже paint'нул UI ДО того как React
+            // успел re-render с visibility:hidden. Imperative style.visibility
+            // через DOM API применяется синхронно в том же tick'е.
+            return (
+              <webview
+                key={fileId}
+                ref={refCallback(fileId)}
+                src={initialUrl}
+                partition={SHEETS_PARTITION}
+                allowpopups
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'inline-flex',
+                  width: '100%',
+                  height: '100%',
+                  pointerEvents: isActive ? 'auto' : 'none',
+                  zIndex: isActive ? 2 : 1,
+                  backgroundColor: '#161611',
+                }}
+              />
+            );
+          })}
+          {openPopover && (
+            // §v1.2.14 — overlay поверх webview когда Pyn-popover открыт.
+            // mousedown закрывает popover. Radix не получает outside-click из
+            // webview-document, поэтому ловим click в renderer слое сами.
+            <div
+              aria-hidden
+              className="absolute inset-0 z-30"
+              onMouseDown={() => setOpenPopover(null)}
+            />
+          )}
+          {files.length > 0 && (!activeFile || !readyFileIds.has(activeFile.id)) && (
+            // §v1.2.14 — Solid loader пока mask не инжектнулась при ПЕРВОЙ
+            // загрузке spreadsheet'a (или ручном reload). На subsequent
+            // navigations (возврат с /revisions, sheet switch) — silent
+            // reinject без loader'a, юзер не видит ничего лишнего.
+            //
+            // §pyn-1.2.50 — overlay активен также пока activeFile ещё не
+            // выбран (useEffect выбора default-table занимает один React tick).
+            // Без этого юзер видел raw Google UI «секунду» до того как loader
+            // успевал смонтироваться.
+            <div
+              className={cn(
+                'absolute inset-0 z-10 flex items-center justify-center',
+                'bg-bg-deep',
+              )}
+            >
+              {/* §pyn-1.2.54 — text "Загрузка таблицы…" покрупнее + inline
+                  PynLoader sm рядом (полоски сходятся в логотип и расходятся
+                  в маленьком невидимом квадрате 16×16). */}
+              <div className="flex items-center gap-2.5">
+                <span className="text-[15px] font-medium text-text-secondary">
+                  {t('tables.loading_overlay')}
+                </span>
+                <PynLoader size="sm" />
+              </div>
+            </div>
+          )}
+          {activeLock &&
+            activeTab &&
+            activeLock.lockedTabRawNames.includes(activeTab.rawName) && (
+              <SheetsLockOverlay lock={activeLock} />
             )}
-          >
-            {toast}
-          </div>
-        )}
-      </section>
+          <SheetsPasswordPrompt
+            open={pendingPwAction !== null}
+            actionLabel={pendingPwAction?.label ?? ''}
+            onSubmit={(pw) => {
+              const a = pendingPwAction;
+              setPendingPwAction(null);
+              if (!a) return;
+              if (a.macroId) void runMacroAction(a, pw);
+              else void runScriptAction(a, pw);
+            }}
+            onCancel={() => setPendingPwAction(null)}
+          />
+          <SheetsConfirmPrompt
+            open={pendingConfirmAction !== null}
+            actionLabel={pendingConfirmAction?.label ?? ''}
+            onConfirm={() => {
+              const a = pendingConfirmAction;
+              setPendingConfirmAction(null);
+              if (!a) return;
+              if (a.macroId) void runMacroAction(a);
+              else void runScriptAction(a);
+            }}
+            onCancel={() => setPendingConfirmAction(null)}
+          />
+          {toast && (
+            <div
+              role="status"
+              aria-live="polite"
+              className={cn(
+                'pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2',
+                'rounded-full border border-border-default bg-bg-elevated/95 px-3.5 py-1.5',
+                'text-[12px] text-text-strong shadow-lg backdrop-blur-sm',
+              )}
+            >
+              {toast}
+            </div>
+          )}
+        </section>
+      </WorkspaceCard>
     </main>
   );
 }
@@ -1021,7 +1019,7 @@ function FilterDropdown({
           data-pyn-trigger="filter"
           disabled={disabled}
           className={cn(
-            'flex h-7 items-center rounded-md px-2.5 text-[13px] font-medium',
+            'flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium',
             'outline-none transition-colors',
             disabled
               ? 'cursor-not-allowed text-text-muted opacity-60'
@@ -1162,7 +1160,7 @@ function CheckDropdown({
           data-pyn-trigger="check"
           disabled={disabled}
           className={cn(
-            'flex h-7 items-center rounded-md px-2.5 text-[13px] font-medium',
+            'flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium',
             'outline-none transition-colors',
             disabled
               ? 'cursor-not-allowed text-text-muted opacity-60'
@@ -1260,7 +1258,7 @@ function ScriptsDropdown({
           data-pyn-trigger="scripts"
           disabled={disabled}
           className={cn(
-            'flex h-7 items-center rounded-md px-2.5 text-[13px] font-medium',
+            'flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium',
             'outline-none transition-colors',
             disabled
               ? 'cursor-not-allowed text-text-muted opacity-60'

@@ -3,6 +3,7 @@ import * as Popover from '@radix-ui/react-popover';
 import { Check } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { LockedEditorContent } from '@/components/schedule/EditorLockedOverlay';
+import { LockableTrigger } from './LockableTrigger';
 
 interface PersonEditorProps {
   /** Подпись поповера, e.g. «Утверждающий» или «Подготовил». */
@@ -15,6 +16,8 @@ interface PersonEditorProps {
   children: ReactNode;
   /** Collaboration lock resource_id, e.g. 'schedule:2026-05:approver'. */
   lockResourceId?: string;
+  /** true — месяц зафиксирован: редактор не открывается, на hover tooltip. */
+  locked?: boolean;
 }
 
 /**
@@ -34,6 +37,7 @@ export function PersonEditor({
   onChange,
   children,
   lockResourceId,
+  locked = false,
 }: PersonEditorProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -57,8 +61,8 @@ export function PersonEditor({
   };
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>{children}</Popover.Trigger>
+    <Popover.Root open={locked ? false : open} onOpenChange={(o) => { if (!locked) setOpen(o); }}>
+      <LockableTrigger locked={locked}>{children}</LockableTrigger>
       <Popover.Portal>
         <Popover.Content
           align="start"

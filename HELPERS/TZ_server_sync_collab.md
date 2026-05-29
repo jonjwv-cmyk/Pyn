@@ -427,7 +427,7 @@ interface ServerScheduleState {
 
 **Нужно** пред-сидить `base_update_status` (singleton row с `is_updating=0`).
 
-**Warehouse base** — отдельная задача (см. `db/warehouses/`), сидится через `wrangler d1 execute pyn-base --file=db/warehouses/seed.sql`.
+**Warehouse base** — отдельная задача (см. `db/warehouses/`), сидится через `wrangler d1 execute otl-db --file=db/warehouses/seed.sql` (таблица `warehouses` в общей боевой базе `otl-db`).
 
 ---
 

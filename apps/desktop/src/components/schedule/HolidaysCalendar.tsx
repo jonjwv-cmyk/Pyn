@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { Calendar } from 'lucide-react';
+import { Calendar, Check } from 'lucide-react';
 import { LockedEditorContent } from '@/components/schedule/EditorLockedOverlay';
+import { LockableTrigger } from '@/components/proba/LockableTrigger';
 import { MONTH_NAMES_RU } from '@/lib/schedule/compute';
 
 interface HolidaysCalendarProps {
@@ -17,6 +18,8 @@ interface HolidaysCalendarProps {
   children?: React.ReactNode;
   /** Collaboration lock resource_id, e.g. 'schedule:2026-05:holidays'. */
   lockResourceId?: string;
+  /** true — месяц зафиксирован: календарь не открывается, на hover tooltip. */
+  locked?: boolean;
 }
 
 /**
@@ -25,6 +28,11 @@ interface HolidaysCalendarProps {
  * Дизайн — Linear style: 7×6 grid дат текущего месяца, click toggle. ПН-первый,
  * выходные подсвечены отдельным оттенком. Сегодня (если попадает в месяц) —
  * outlined clay-ring. Toggle через клик: чёрный фон = «не возим».
+ *
+ * Правки draft'овые: клики меняют локальный черновик, в график применяются
+ * только по кнопке «Подтвердить» (как в ExceptionsEditor). Закрытие без
+ * подтверждения отбрасывает черновик — это убирает лавину пересчётов графика
+ * на каждый клик дня.
  */
 export function HolidaysCalendar({
   year,
@@ -33,10 +41,19 @@ export function HolidaysCalendar({
   onChange,
   children,
   lockResourceId,
+  locked = false,
 }: HolidaysCalendarProps) {
   const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<number[]>(holidays);
   const monthName = MONTH_NAMES_RU[month - 1];
-  const holidaysSet = useMemo(() => new Set(holidays), [holidays]);
+  const draftSet = useMemo(() => new Set(draft), [draft]);
+
+  // Ресинк черновика с внешними holidays при открытии поповера. Пока поповер
+  // открыт, holidays не меняются (onChange только по «Подтвердить»), поэтому
+  // черновик пользователя не затирается.
+  useEffect(() => {
+    if (open) setDraft(holidays);
+  }, [open, holidays]);
 
   // 6×7 grid начиная с первого ПН недели, в которой 1-е число.
   const cells = useMemo(() => {
@@ -69,16 +86,15 @@ export function HolidaysCalendar({
   }, [year, month]);
 
   const toggleDay = (day: number) => {
-    const next = new Set(holidaysSet);
-    if (next.has(day)) {
-      next.delete(day);
-    } else {
-      next.add(day);
-    }
-    onChange([...next].sort((a, b) => a - b));
+    setDraft((prev) => {
+      const next = new Set(prev);
+      if (next.has(day)) next.delete(day);
+      else next.add(day);
+      return [...next].sort((a, b) => a - b);
+    });
   };
 
-  const clearAll = () => onChange([]);
+  const clearAll = () => setDraft([]);
 
   const fillWeekends = () => {
     const weekends: number[] = [];
@@ -87,15 +103,25 @@ export function HolidaysCalendar({
       const dow = (new Date(year, month - 1, d).getDay() + 6) % 7;
       if (dow >= 5) weekends.push(d);
     }
-    // Объединяем с уже существующими — fill, не replace, чтобы не терять
+    // Объединяем с уже выбранными — fill, не replace, чтобы не терять
     // праздники-будни (1, 9 мая и т.д.).
-    const merged = new Set([...holidays, ...weekends]);
-    onChange([...merged].sort((a, b) => a - b));
+    setDraft((prev) => [...new Set([...prev, ...weekends])].sort((a, b) => a - b));
+  };
+
+  const dirty = useMemo(() => {
+    if (draft.length !== holidays.length) return true;
+    const committed = new Set(holidays);
+    return draft.some((d) => !committed.has(d));
+  }, [draft, holidays]);
+
+  const confirm = () => {
+    onChange([...draft].sort((a, b) => a - b));
+    setOpen(false);
   };
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
+    <Popover.Root open={locked ? false : open} onOpenChange={(o) => { if (!locked) setOpen(o); }}>
+      <LockableTrigger locked={locked}>
         {children ?? (
           <button
             type="button"
@@ -109,7 +135,7 @@ export function HolidaysCalendar({
             )}
           </button>
         )}
-      </Popover.Trigger>
+      </LockableTrigger>
 
       <Popover.Portal>
         <Popover.Content
@@ -123,7 +149,7 @@ export function HolidaysCalendar({
               Дни без доставки
             </div>
             <div className="text-[10px] tabular-nums text-text-muted">
-              {monthName} {year} · {holidays.length} {holidays.length === 1 ? 'день' : 'дн.'}
+              {monthName} {year} · {draft.length} {draft.length === 1 ? 'день' : 'дн.'}
             </div>
           </div>
 
@@ -142,7 +168,7 @@ export function HolidaysCalendar({
               if (c.day === null) {
                 return <div key={`empty_${i}`} className="h-7" />;
               }
-              const selected = holidaysSet.has(c.day);
+              const selected = draftSet.has(c.day);
               const isToday = todayDay === c.day;
               return (
                 <button
@@ -166,21 +192,32 @@ export function HolidaysCalendar({
           </div>
 
           {/* Footer actions */}
-          <div className="mt-3 flex items-center justify-between border-t border-white/[0.06] pt-2">
+          <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/[0.06] pt-2">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={fillWeekends}
+                className="text-[11px] text-text-muted transition-colors hover:text-text-primary"
+              >
+                + выходные
+              </button>
+              <button
+                type="button"
+                onClick={clearAll}
+                disabled={draft.length === 0}
+                className="text-[11px] text-text-muted transition-colors hover:text-accent-clay disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                Очистить
+              </button>
+            </div>
             <button
               type="button"
-              onClick={fillWeekends}
-              className="text-[11px] text-text-muted transition-colors hover:text-text-primary"
+              onClick={confirm}
+              disabled={!dirty}
+              className="flex h-7 items-center gap-1 rounded bg-accent-clay px-2.5 text-[11px] font-medium text-white outline-none transition-colors hover:bg-accent-clay-dim disabled:cursor-not-allowed disabled:opacity-30"
             >
-              + выходные
-            </button>
-            <button
-              type="button"
-              onClick={clearAll}
-              disabled={holidays.length === 0}
-              className="text-[11px] text-text-muted transition-colors hover:text-accent-clay disabled:cursor-not-allowed disabled:opacity-30"
-            >
-              Очистить
+              <Check className="h-3 w-3" strokeWidth={2.5} />
+              Подтвердить
             </button>
           </div>
           </LockedEditorContent>

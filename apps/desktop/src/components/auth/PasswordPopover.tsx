@@ -40,7 +40,10 @@ export function PasswordTrigger({ onClick, active }: PasswordTriggerProps): JSX.
       )}
     >
       <KeyRound className="mt-0.5 h-3 w-3 shrink-0" strokeWidth={1.75} />
-      <span>{t('login.switch_password')}</span>
+      <span className="flex flex-col leading-tight">
+        <span className="text-text-primary">{t('login.switch_password_l1')}</span>
+        <span className="text-[10.5px] text-text-muted">{t('login.switch_password_l2')}</span>
+      </span>
     </button>
   );
 }
@@ -116,8 +119,6 @@ export function PasswordPopover({
           'rounded-xl border border-border-default bg-bg-elevated p-4 shadow-2xl',
         )}
       >
-        <p className="text-[12px] text-text-muted">{t('login.subtitle_password')}</p>
-
         <div className="flex flex-col gap-2">
           <Field
             label={t('login.login_label')}

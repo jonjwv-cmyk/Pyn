@@ -1,19 +1,23 @@
 import { useTranslation } from 'react-i18next';
 import type { Role } from '@pyn/core';
 import {
+  NAV_FEED,
   NAV_SECTIONS,
-  NAV_SECTIONS_AFTER_TABLES,
-  NAV_SECTIONS_BEFORE_TABLES,
+  NAV_WORKSPACE_BEFORE_TABLES,
 } from '@/lib/nav-sections';
 import { cn } from '@/lib/cn';
 import { formatDbDate } from '@/lib/mol-format';
 import { refreshMolFromServer } from '@/lib/mol-repo';
+import { refreshWarehousesFromServer } from '@/lib/warehouses-repo';
+import { useWarehousesStore } from '@/lib/warehouses-store';
 import { useMolStore, usePresenceStore, useUiStateStore } from '@/lib/stores';
 import type { NavSection, NavSectionId } from '@/types/nav';
 import { ConnectivityIndicator } from './ConnectivityIndicator';
 import { SessionExpiryPill } from './SessionExpiryPill';
 import { SidebarHeader } from './SidebarHeader';
 import { NavItem } from './NavItem';
+import { NavGroupHeader } from './NavGroupHeader';
+import { BaseNavRow } from './BaseNavRow';
 import { BottomUserRow } from './BottomUserRow';
 import { TableNavItems } from './TableNavItems';
 import { TeamPill } from './TeamPill';
@@ -124,7 +128,11 @@ export function Sidebar({
   // mol-store, поэтому subscribe здесь и пасуем в UserPopupMenu пропсами.
   const molMeta = useMolStore((s) => s.meta);
   const molStatus = useMolStore((s) => s.status);
+  // Складская база («Цеха») — версия/дата/статус для строки «База данных Цеха».
+  const whMeta = useWarehousesStore((s) => s.meta);
+  const whStatus = useWarehousesStore((s) => s.status);
   const molOutcome = useMolStore((s) => s.lastRefreshOutcome);
+  const whOutcome = useWarehousesStore((s) => s.lastRefreshOutcome);
 
   // §pyn-1.2.42 — self-status из единого presenceStore (раньше был hardcoded
   // 'online'). Source of truth — server через heartbeat response → setOne.
@@ -135,6 +143,8 @@ export function Sidebar({
   // State выбранной таблицы/вкладки — persist'ится в ui-state-store, чтобы
   // и Sidebar (table-nav-items), и TablesScreen (webview) читали единый источник.
   const setActiveTable = useUiStateStore((s) => s.setActiveTable);
+  const baseTab = useUiStateStore((s) => s.baseTab);
+  const setBaseTab = useUiStateStore((s) => s.setBaseTab);
 
   // Сообщение под строкой «База данных» в попапе — отражает прогресс/итог
   // последней проверки. Loading в приоритете (идёт прямо сейчас).
@@ -148,14 +158,41 @@ export function Sidebar({
           : molOutcome === 'error'
             ? t('sidebar_extra.db_error')
             : null;
+  // То же сообщение под строкой базы «Цеха» (склады) — те же i18n-ключи.
+  const whToast: string | null =
+    whStatus === 'loading'
+      ? t('sidebar_extra.version_checking')
+      : whOutcome === 'up-to-date'
+        ? t('sidebar_extra.db_current')
+        : whOutcome === 'updated'
+          ? t('sidebar_extra.db_updated')
+          : whOutcome === 'error'
+            ? t('sidebar_extra.db_error')
+            : null;
   const collapsedWidth = computeCollapsedWidth(sections);
   const width = collapsed ? collapsedWidth : EXPANDED_WIDTH;
+
+  // Один пункт nav с учётом dynamic badge'а (merge из `sections`).
+  const renderNavItem = (section: NavSection, textOnly = false) => {
+    const merged = sections.find((s) => s.id === section.id) ?? section;
+    return (
+      <NavItem
+        key={merged.id}
+        icon={merged.icon}
+        label={merged.label}
+        active={merged.id === activeSection}
+        collapsed={collapsed}
+        badge={merged.badge}
+        onClick={() => onSectionClick(merged.id)}
+        textOnly={textOnly}
+      />
+    );
+  };
 
   return (
     <aside
       className={cn(
-        'flex h-full shrink-0 flex-col bg-bg-surface',
-        'border-r border-border-subtle',
+        'flex h-full shrink-0 flex-col bg-bg-deep',
         'transition-[width] duration-[220ms] ease-out',
       )}
       style={{ width }}
@@ -176,83 +213,10 @@ export function Sidebar({
 
       <div className="h-1 shrink-0" />
 
-      <nav className="flex flex-col gap-0.5 px-1.5">
-        {NAV_SECTIONS_BEFORE_TABLES.map((section) => {
-          const merged = sections.find((s) => s.id === section.id) ?? section;
-          return (
-            <NavItem
-              key={merged.id}
-              icon={merged.icon}
-              label={merged.label}
-              active={merged.id === activeSection}
-              collapsed={collapsed}
-              badge={merged.badge}
-              onClick={() => onSectionClick(merged.id)}
-            />
-          );
-        })}
-        {/* Google-таблицы — между Хранилище и МОЛы. Каждая таблица — свой
-            nav-item с hover-flyout справа со списком вкладок. */}
-        <TableNavItems
-          collapsed={collapsed}
-          activeSection={activeSection}
-          onPick={(sectionId, fileId, tabName) => {
-            setActiveTable(fileId, tabName);
-            onSectionClick(sectionId);
-          }}
-        />
-        {NAV_SECTIONS_AFTER_TABLES.map((section) => {
-          const merged = sections.find((s) => s.id === section.id) ?? section;
-          return (
-            <NavItem
-              key={merged.id}
-              icon={merged.icon}
-              label={merged.label}
-              active={merged.id === activeSection}
-              collapsed={collapsed}
-              badge={merged.badge}
-              onClick={() => onSectionClick(merged.id)}
-            />
-          );
-        })}
-      </nav>
-
-      {/* Flex spacer — придавливает user-row к низу */}
-      <div className="flex-1" />
-
-      {/* §pyn-1.2.43 — Team pill: другие admin/developer (без self) с presence.
-          Источник правды для статусов — usePresenceStore. Реактивно
-          обновляется при WS push presence_change. */}
-      {userLogin && <TeamPill myLogin={userLogin} myRole={userRole} collapsed={collapsed} />}
-
-      {/* Update pill — над SessionExpiryPill (юзер сначала видит апдейт,
-          потом критический countdown). §pyn-1.2.54 — рендерится и в collapsed
-          (компактный «Обновить» лейбл), чтобы не было layout-скачка при сворачивании. */}
-      {updatePill && (
-        <div className="px-1.5 pb-0.5">
-          <UpdateAvailablePill
-            stage={updatePill.stage}
-            bytes={updatePill.bytes}
-            total={updatePill.total}
-            collapsed={collapsed}
-            onClick={updatePill.onClick}
-          />
-        </div>
-      )}
-
-      {/* Session expiry pill — только когда продлений уже нет.
-          §pyn-1.2.54 — collapsed показывает компактный «OFF» + timer, без скачков. */}
-      <div className="px-1.5">
-        <SessionExpiryPill collapsed={collapsed} />
-      </div>
-
-      {/* Connectivity status — над user row, отдельной полоской */}
-      <div className="px-1.5">
-        <ConnectivityIndicator collapsed={collapsed} />
-      </div>
-
-      {/* Bottom user row — открывает popup-меню профиля */}
-      <div className="px-1.5 pb-1.5">
+      {/* §2026-05-29 — профиль + статус-пиллы перенесены НАВЕРХ (под сворачивание),
+          по запросу. Аватар сразу под кнопкой сворачивания, ниже — команда /
+          обновление / сессия / связь. (Раньше весь стек был внизу.) */}
+      <div className="px-1.5 pb-1">
         <UserPopupMenu
           username={username}
           desktopVersion={`v${window.pyn?.appVersion ?? '0.0.0'}`}
@@ -265,6 +229,14 @@ export function Sidebar({
           onOpenSettings={onOpenSettings}
           onRefreshDb={() => {
             void refreshMolFromServer({ force: true });
+          }}
+          warehouseDbVersion={whMeta ? `v${whMeta.version}` : '—'}
+          warehouseDbDate={whMeta ? formatDbDate(whMeta.updatedAt) : t('sidebar_extra.db_not_loaded')}
+          warehouseDbLoading={whStatus === 'loading'}
+          warehouseDbToast={whToast}
+          warehouseDbToastKind={whOutcome === 'error' ? 'error' : 'info'}
+          onRefreshWarehouseDb={() => {
+            void refreshWarehousesFromServer({ force: true });
           }}
           onLogout={onLogout}
         >
@@ -280,6 +252,61 @@ export function Sidebar({
           />
         </UserPopupMenu>
       </div>
+      {userLogin && <TeamPill myLogin={userLogin} myRole={userRole} collapsed={collapsed} />}
+      {updatePill && (
+        <div className="px-1.5 pb-0.5">
+          <UpdateAvailablePill
+            stage={updatePill.stage}
+            bytes={updatePill.bytes}
+            total={updatePill.total}
+            collapsed={collapsed}
+            onClick={updatePill.onClick}
+          />
+        </div>
+      )}
+      <div className="px-1.5">
+        <SessionExpiryPill collapsed={collapsed} />
+      </div>
+      <div className="px-1.5">
+        <ConnectivityIndicator collapsed={collapsed} />
+      </div>
+
+      <div className="h-2 shrink-0" />
+
+      <nav className="flex flex-col gap-0.5 px-1.5">
+        {/* Primary-группа без заголовка (Хранилище, График, Google-таблицы, МОЛ)
+            — основное не подписываем, как в Linear/Claude. */}
+        {NAV_WORKSPACE_BEFORE_TABLES.map((s) => renderNavItem(s))}
+        {/* Google-таблицы — внутри «Рабочее», между Хранилище/График и МОЛ.
+            Каждая таблица — свой nav-item с hover-flyout справа со вкладками. */}
+        <TableNavItems
+          collapsed={collapsed}
+          activeSection={activeSection}
+          onPick={(sectionId, fileId, tabName) => {
+            setActiveTable(fileId, tabName);
+            onSectionClick(sectionId);
+          }}
+        />
+        {/* «База» — пункт с hover-флайаутом листов (МОЛы / Склады), как у
+            Google-таблиц. Выбор листа → setBaseTab + переход в раздел. */}
+        <BaseNavRow
+          collapsed={collapsed}
+          active={activeSection === 'mol'}
+          baseTab={baseTab}
+          onPick={(t) => {
+            setBaseTab(t);
+            onSectionClick('mol');
+          }}
+        />
+
+        {/* Группа «Лента»: Чаты, Новости. */}
+        <NavGroupHeader label={t('sidebar.group_feed')} collapsed={collapsed} />
+        {NAV_FEED.map((s) => renderNavItem(s, true))}
+      </nav>
+
+      {/* Flex spacer — низ остаётся пустым: профиль + статус-пиллы перенесены
+          наверх (под сворачивание), по запросу 2026-05-29. */}
+      <div className="flex-1" />
     </aside>
   );
 }

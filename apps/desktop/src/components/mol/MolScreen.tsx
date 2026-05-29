@@ -1,5 +1,8 @@
 import { useMemo, useState } from 'react';
+import { WorkspaceCard } from '@/components/WorkspaceCard';
+import { cn } from '@/lib/cn';
 import { useMolStore, useUiStateStore } from '@/lib/stores';
+import { useWarehousesStore } from '@/lib/warehouses-store';
 import { sortMolRecords } from '@/lib/mol-format';
 import {
   dedupeMolByPerson,
@@ -7,13 +10,13 @@ import {
   matchesMolQuery,
   parseMolQuery,
   type MolRecord,
-  type ParsedMolQuery,
 } from '@pyn/core';
 import { ContactActionDialog, type ContactActionRequest } from './ContactActionDialog';
-import { MolComposer } from './MolComposer';
+import { MolEmptyView, type MolEmptyState } from './MolEmptyView';
 import { MolTable } from './MolTable';
 import { MolTopBar } from './MolTopBar';
-import { WarehouseSidebar, type NotFoundList } from './WarehouseSidebar';
+import { ShopsTab } from './ShopsTab';
+import { WarehouseSidebar } from './WarehouseSidebar';
 
 /**
  * Раздел «МОЛы» — поиск работников + закреплённых складов.
@@ -75,13 +78,6 @@ export function MolScreen() {
     return groups.size > 0 ? groups : null;
   }, [parsed.mode, sortedMatched]);
 
-  const notFound = useMemo<NotFoundList>(
-    () => buildNotFound(parsed, warehouseGroups, sortedMatched.length > 0),
-    [parsed, warehouseGroups, sortedMatched.length],
-  );
-
-  const showSidebar = warehouseGroups !== null || hasAnyNotFound(notFound);
-
   // Уникальные люди в базе — клиент дедупит локально через тот же ключ что и
   // dedupeMolByPerson (fio+mobile). Это «реальное» количество людей, в отличие
   // от records.length которое включает одного человека на N складах N раз.
@@ -90,70 +86,118 @@ export function MolScreen() {
   // максимально-точный clientUnique — это всегда верное живое значение.
   const uniquePeopleCount = useMemo(() => dedupeMolByPerson(records).length, [records]);
 
+  // Активный лист базы (МОЛы / Склады) — из ui-state-store, переключается из
+  // сайдбара (флайаут «База»). Счётчики складов/цехов — из warehouses-store;
+  // «сейчас» = активные (без is_removed).
+  const tab = useUiStateStore((s) => s.baseTab);
+  const warehouses = useWarehousesStore((s) => s.warehouses);
+  const { shopsCount, warehousesCount } = useMemo(() => {
+    const active = warehouses.filter((w) => !w.is_removed);
+    return {
+      shopsCount: new Set(active.map((w) => w.shop_name)).size,
+      warehousesCount: active.length,
+    };
+  }, [warehouses]);
+
+  // Case-insensitive индекс складов: id может содержать букву (824Т / 824T),
+  // юзер вводит код в любом регистре.
+  const byIdLower = useMemo(
+    () => new Map(warehouses.map((w) => [w.id.toLowerCase(), w] as const)),
+    [warehouses],
+  );
+
+  // §pyn — поиск сверяется с ДВУМЯ базами: МОЛы + склады. Warehouse-токены без
+  // МОЛов, которые ЕСТЬ в базе складов → показываем реальную карточку склада
+  // («На складе N нет МОЛов»). Токенов нет нигде → красный пилл «не найдено».
+  const emptyWarehouseIds = useMemo<string[]>(() => {
+    if (parsed.mode !== 'warehouse') return [];
+    const found = new Set(
+      warehouseGroups ? [...warehouseGroups.keys()].map((k) => k.toLowerCase()) : [],
+    );
+    const out: string[] = [];
+    for (const token of parsed.tokens) {
+      if (found.has(token.toLowerCase())) continue;
+      const w = byIdLower.get(token.toLowerCase());
+      if (w) out.push(w.id);
+    }
+    return out.sort(byWarehouseCode);
+  }, [parsed.mode, parsed.tokens, warehouseGroups, byIdLower]);
+
+  // Карточки справа = склады с МОЛами (groups) + пустые-но-существующие.
+  // Порядок — по коду склада (numeric), как нумерация в графике.
+  const sidebarWarehouseIds = useMemo<string[]>(
+    () => [...(warehouseGroups ? warehouseGroups.keys() : []), ...emptyWarehouseIds].sort(byWarehouseCode),
+    [warehouseGroups, emptyWarehouseIds],
+  );
+
+  // Правый сайдбар — только когда есть результаты-люди. Если МОЛов нет, но
+  // склад существует, его карточка показывается ПО ЦЕНТРУ (в MolEmptyView).
+  const rightSidebar = tableRecords.length > 0 && sidebarWarehouseIds.length > 0;
+
+  // Пустое состояние таблицы (когда в выдаче нет МОЛов).
+  const emptyState = useMemo<MolEmptyState>(() => {
+    if (parsed.mode === 'empty') return { kind: 'hero' };
+    if (emptyWarehouseIds.length > 0) return { kind: 'noMols', warehouseIds: emptyWarehouseIds };
+    return { kind: 'notFound', mode: parsed.mode };
+  }, [parsed.mode, emptyWarehouseIds]);
+
   return (
     <main className="flex flex-1 flex-col overflow-hidden">
       <MolTopBar
+        tab={tab}
         status={status}
         errorMessage={errorMessage}
         recordCount={uniquePeopleCount}
         previousCount={meta?.previous?.recordsCount ?? null}
+        shopsCount={shopsCount}
+        warehousesCount={warehousesCount}
+        query={query}
+        onQueryChange={setQuery}
       />
-      <div className="flex flex-1 overflow-hidden">
-        <section className="mol-pattern-bg relative flex min-w-0 flex-1 flex-col overflow-hidden">
-          {/* Table занимает весь section — composer absolute поверх; scroll
-              в MolTable имеет внутренний padding-bottom, чтобы последние
-              rows не теряли видимость под композером (но при этом
-              проходили за стеклом для blur-эффекта). */}
-          <MolTable
-            records={tableRecords}
-            parsed={parsed}
-            hasSidebar={showSidebar}
-            onContactAction={setActionRequest}
-            persistScrollKey={`mol:${parsed.raw || 'empty'}`}
-          />
-          <MolComposer value={query} onChange={setQuery} />
-        </section>
-        {showSidebar && (
-          <WarehouseSidebar
-            groups={warehouseGroups ?? new Map()}
-            notFound={notFound}
-            onContactAction={setActionRequest}
-          />
-        )}
-      </div>
+      {tab === 'mol' ? (
+        <WorkspaceCard>
+          <div className="flex flex-1 overflow-hidden">
+            <section
+              className={cn(
+                'relative flex min-w-0 flex-1 flex-col overflow-hidden',
+                // §design — паттерн-фон только на welcome-экране «Что ищем
+                // сегодня?»; в результатах поиска фон чистый (bg-surface).
+                parsed.mode === 'empty' && 'mol-pattern-bg',
+              )}
+            >
+              {/* Table занимает весь section — composer absolute поверх; scroll
+                  в MolTable имеет внутренний padding-bottom, чтобы последние
+                  rows не теряли видимость под композером. */}
+              {tableRecords.length > 0 ? (
+                <MolTable
+                  records={tableRecords}
+                  hasSidebar={rightSidebar}
+                  onContactAction={setActionRequest}
+                  persistScrollKey={`mol:${parsed.raw || 'empty'}`}
+                />
+              ) : (
+                <MolEmptyView state={emptyState} onContactAction={setActionRequest} />
+              )}
+            </section>
+            {rightSidebar && (
+              <WarehouseSidebar
+                warehouseIds={sidebarWarehouseIds}
+                onContactAction={setActionRequest}
+              />
+            )}
+          </div>
+        </WorkspaceCard>
+      ) : (
+        <WorkspaceCard>
+          <ShopsTab />
+        </WorkspaceCard>
+      )}
       <ContactActionDialog request={actionRequest} onClose={() => setActionRequest(null)} />
     </main>
   );
 }
 
-function hasAnyNotFound(nf: NotFoundList): boolean {
-  return nf.warehouses.length > 0 || nf.emails.length > 0 || nf.names.length > 0;
-}
-
-function buildNotFound(
-  parsed: ParsedMolQuery,
-  groups: Map<string, ReturnType<typeof groupByWarehouse> extends Map<string, infer V> ? V : never> | null,
-  hasResults: boolean,
-): NotFoundList {
-  const warehouses: string[] = [];
-  const emails: string[] = [];
-  const names: string[] = [];
-
-  if (parsed.mode === 'warehouse') {
-    // Неполные tokens (например `9` при `0609 9`) — всегда not-found.
-    if (parsed.invalidTokens) warehouses.push(...parsed.invalidTokens);
-    // Валидные tokens — проверяем, нашёлся ли хоть один record на этом складе.
-    const foundWids = new Set(groups ? [...groups.keys()] : []);
-    for (const token of parsed.tokens) {
-      if (!foundWids.has(token)) warehouses.push(token);
-    }
-  } else if (parsed.mode === 'email' && !hasResults && parsed.raw) {
-    // Карточку «не найдено» показываем ТОЛЬКО когда вообще ничего не нашли.
-    // Если хоть один совпавший email есть — не зашумляем sidebar.
-    emails.push(parsed.raw);
-  } else if (parsed.mode === 'name' && !hasResults && parsed.raw) {
-    names.push(parsed.raw);
-  }
-
-  return { warehouses, emails, names };
+/** Сортировка кодов складов как нумерация в графике: numeric locale-compare. */
+function byWarehouseCode(a: string, b: string): number {
+  return a.localeCompare(b, 'ru', { numeric: true });
 }

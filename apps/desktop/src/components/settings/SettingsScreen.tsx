@@ -26,14 +26,16 @@ interface SettingsScreenProps {
  * не рендерится; навигация только через внутренний SettingsSidebar +
  * back-кнопку в едином topbar'е.
  *
- * Layout:
- *   ┌─ SettingsTopBar h-12 на всю ширину окна ──────┐
- *   │ ← Назад │ Title │ … actions подсекции          │
- *   ├──────────────────┬─────────────────────────────┤
- *   │ SettingsSidebar  │ content body                │
- *   └──────────────────┴─────────────────────────────┘
+ * Layout (зеркало main shell — bg-deep rail + плавающая карточка):
+ *   ┌ rail bg-deep ─┬ gutter p-2 → card bg-surface (rounded) ─────┐
+ *   │ [traffic-lts] │ ┌ SettingsTopBar h-12: Title · actions ───┐ │
+ *   │ ← Назад       │ ├─────────────────────────────────────────┤ │
+ *   │ Пользователи  │ │ content body                            │ │
+ *   │ Язык …        │ └─────────────────────────────────────────┘ │
+ *   └───────────────┴──────────────────────────────────────────────┘
  *
- * Title + actions topbar'a меняются в зависимости от активной подсекции.
+ * Back-кнопка живёт в rail (над nav-пунктами). Title + actions topbar'a
+ * меняются в зависимости от активной подсекции.
  * State каждой панели lifted сюда через хук (`useUsersPanelState` и т.п.) —
  * это позволяет единому topbar'у отрисовывать controls конкретной панели.
  *
@@ -54,17 +56,17 @@ export function SettingsScreen({ myRole, myLogin, onBack }: SettingsScreenProps)
   const { title, actions, body } = pickSubSectionUi(sub, usersUi, t);
 
   return (
-    <main className="flex flex-1 flex-col">
-      <SettingsTopBar title={title} onBack={onBack}>
-        {actions}
-      </SettingsTopBar>
-      <div className="flex flex-1 overflow-hidden">
-        <SettingsSidebar myRole={myRole} activeId={sub} onSelect={setSub} />
-        <section className="flex flex-1 flex-col overflow-hidden bg-bg-surface">
-          {body}
-        </section>
+    <div className="flex h-full w-full bg-bg-deep">
+      <SettingsSidebar myRole={myRole} activeId={sub} onSelect={setSub} onBack={onBack} />
+      <div className="relative flex min-w-0 flex-1 p-2">
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border-subtle bg-bg-surface shadow-[0_2px_16px_rgba(0,0,0,0.35)]">
+          <SettingsTopBar title={title}>{actions}</SettingsTopBar>
+          <section className="flex flex-1 flex-col overflow-hidden bg-bg-surface">
+            {body}
+          </section>
+        </div>
       </div>
-    </main>
+    </div>
   );
 }
 

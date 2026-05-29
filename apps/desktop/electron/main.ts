@@ -11,6 +11,7 @@ import { setupPrintBridge } from './ipc/print-bridge';
 import { setupGoogleBridge } from './ipc/google-bridge';
 import { setupMacroBridge } from './ipc/macro-bridge';
 import { setupMolBridge } from './ipc/mol-bridge';
+import { setupWarehousesBridge } from './ipc/warehouses-bridge';
 import { setupTokenBridge } from './ipc/token-bridge';
 import { setupTrayBridge } from './ipc/tray-bridge';
 import { setupUpdateBridge } from './ipc/update-bridge';
@@ -326,6 +327,8 @@ app.whenReady().then(async () => {
   // отдать renderer'у plain JSON. Save/load базы — через pyn:cache:* (имя
   // 'mol-base').
   setupMolBridge();
+  // Снэпшот складов («Цеха»-база) — тот же механизм что МОЛ (R2 + AES + gunzip).
+  setupWarehousesBridge();
   setupGoogleBridge();
   // SAP-макросы: renderer получает VBS source через get_macro_bundle,
   // main process пишет на диск + spawn'ит cscript /B (Windows-only).

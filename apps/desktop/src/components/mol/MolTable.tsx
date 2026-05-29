@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
 import * as Dialog from '@radix-ui/react-dialog';
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, Copy as CopyIcon, Search, SlidersHorizontal, X } from 'lucide-react';
-import type { MolRecord, ParsedMolQuery } from '@pyn/core';
+import type { MolRecord } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import {
   formatMobilePhone,
@@ -16,7 +16,6 @@ import type { ContactActionRequest } from './ContactActionDialog';
 
 interface MolTableProps {
   records: MolRecord[];
-  parsed: ParsedMolQuery;
   hasSidebar: boolean;
   onContactAction: (req: ContactActionRequest) => void;
   persistScrollKey: string;
@@ -67,7 +66,6 @@ const COL_COUNT = 5;
 
 export function MolTable({
   records,
-  parsed,
   hasSidebar,
   onContactAction,
   persistScrollKey,
@@ -540,42 +538,13 @@ export function MolTable({
     return minC === 0 && maxC === COL_COUNT - 1;
   }, [selection, isFullSelection]);
 
-  if (parsed.mode === 'empty') {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className={cn(
-          'text-center text-[28px] font-semibold tracking-[-0.02em]',
-          'text-text-secondary/85',
-        )}>
-          {t('mol.search_hero')}
-        </p>
-      </div>
-    );
-  }
-
-  if (records.length === 0) {
-    const message =
-      parsed.mode === 'warehouse'
-        ? t('mol.warehouse_not_found')
-        : parsed.mode === 'phone'
-          ? t('mol.phone_not_found')
-          : parsed.mode === 'email'
-            ? t('mol.phone_not_found')
-            : t('mol.employee_not_found');
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-[12.5px] text-text-muted">{message}</p>
-      </div>
-    );
-  }
-
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden">
       <ScrollToBottomButton visible={showScrollDown} onClick={scrollToBottom} />
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="mol-scroll flex-1 overflow-y-auto pb-[64px]"
+        className="mol-scroll flex-1 overflow-y-auto pb-2"
       >
         <div ref={tableWrapperRef} className="relative">
         <table
@@ -919,9 +888,11 @@ function SelectionOverlay({
         height: rect.height,
         pointerEvents: 'none',
         zIndex: 5,
-        border: '1px solid rgb(217, 132, 87)',
-        borderRadius: 3,
-        boxShadow: '0 0 0 2px rgba(217, 132, 87, 0.12), 0 0 6px 0 rgba(217, 132, 87, 0.20)',
+        border: '1px solid rgba(217, 132, 87, 0.5)',
+        borderRadius: 4,
+        // §design — без заливки ячеек: тонкая рамка + рассеянное (feathered)
+        // внутреннее свечение по краям выделения, центр чистый.
+        boxShadow: 'inset 0 0 12px 1px rgba(217, 132, 87, 0.12), 0 0 3px 0 rgba(217, 132, 87, 0.10)',
       }}
     />
   );
@@ -972,21 +943,21 @@ function MolRow({
   setCellRef,
 }: RowProps): JSX.Element {
   const { t } = useTranslation();
-  const kind = molStatusKind(record.status);
   const mobile = formatMobilePhone(record.mobile);
   const workPhones = splitAndFormatWorkPhones(record.work);
 
-  const rowBg =
-    kind === 'ok'
-      ? 'bg-presence-online/[0.08] hover:bg-presence-online/[0.14]'
-      : kind === 'error'
-        ? 'bg-danger/[0.06] hover:bg-danger/[0.12]'
-        : index % 2 === 1
-          ? 'bg-bg-elevated/30 hover:bg-bg-hover'
-          : 'hover:bg-bg-hover';
-
-  const statusColor =
-    kind === 'ok' ? 'text-presence-online' : kind === 'error' ? 'text-danger' : 'text-text-muted';
+  // §design — список НЕ красим (ни зебры, ни заливки строк) — только тонкие
+  // divider'ы + hover. Семантику несёт цвет ТЕКСТА статуса: «Работает» —
+  // зелёный; «на больничном / в отпуске / уволен» (error) — красный;
+  // без статуса — amber «—».
+  const kind = molStatusKind(record.status);
+  const hasStatus = record.status.trim().length > 0;
+  const rowBg = 'hover:bg-bg-hover';
+  const statusColor = !hasStatus
+    ? 'text-amber-400'
+    : kind === 'error'
+      ? 'text-danger'
+      : 'text-presence-online';
 
   const callMobile = () =>
     onContactAction({
@@ -1445,7 +1416,6 @@ interface TdProps {
 
 function Td(props: TdProps): JSX.Element {
   const { children, className, style, tdRef, ...rest } = props;
-  const selected = rest['data-selected'] === '1';
   const nativeEdit = rest['data-native-edit'] === '1';
   return (
     <td
@@ -1457,7 +1427,6 @@ function Td(props: TdProps): JSX.Element {
         'border-b border-border-subtle/25 px-2 py-1.5 align-middle text-left',
         'cursor-default',
         nativeEdit && 'select-text cursor-text',
-        selected && 'bg-accent-clay/[0.08]',
         className,
       )}
     >

@@ -3,6 +3,7 @@ import * as Popover from '@radix-ui/react-popover';
 import { Check, Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { LockedEditorContent } from '@/components/schedule/EditorLockedOverlay';
+import { LockableTrigger } from './LockableTrigger';
 import { computeNaturalDays } from '@/lib/schedule/compute';
 import type { ScheduleOverrideRule } from '@/lib/schedule/types';
 import { useWarehousesStore } from '@/lib/warehouses-store';
@@ -22,6 +23,8 @@ interface ExceptionsEditorProps {
    * concurrent open другим юзером показывается overlay.
    */
   lockResourceId?: string;
+  /** true — месяц зафиксирован: редактор не открывается, на hover tooltip. */
+  locked?: boolean;
 }
 
 /**
@@ -129,6 +132,7 @@ export function ExceptionsEditor({
   onChange,
   children,
   lockResourceId,
+  locked = false,
 }: ExceptionsEditorProps) {
   const { t } = useTranslation();
   const warehouses = useWarehousesStore((s) => s.warehouses);
@@ -213,8 +217,8 @@ export function ExceptionsEditor({
   };
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>{children}</Popover.Trigger>
+    <Popover.Root open={locked ? false : open} onOpenChange={(o) => { if (!locked) setOpen(o); }}>
+      <LockableTrigger locked={locked}>{children}</LockableTrigger>
       <Popover.Portal>
         <Popover.Content
           align="end"

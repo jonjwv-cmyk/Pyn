@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AppWindow } from 'lucide-react';
 import { useStorageStore } from '@pyn/core';
+import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { Breadcrumb } from './Breadcrumb';
 import { FileList } from './FileList';
 import { StorageHome } from './StorageHome';
@@ -47,35 +48,40 @@ export function StorageScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (platformState.status === 'loading') {
-    return <div className="h-full w-full bg-bg-surface" />;
-  }
-
-  if (platformState.status === 'unsupported') {
-    return (
-      <div className="flex h-full w-full items-center justify-center bg-bg-surface">
-        <div className="text-center">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-bg-elevated">
-            <AppWindow className="h-8 w-8 text-text-muted opacity-50" strokeWidth={1.2} />
-          </div>
-          <h2 className="mt-6 text-xl font-semibold text-text-primary">
-            {t('storage.corp_pc_only_title')}
-          </h2>
-        </div>
-      </div>
-    );
-  }
-
-  const onRoot = currentPath === platformState.root || !currentPath;
+  const onRoot =
+    platformState.status === 'ready' &&
+    (currentPath === platformState.root || !currentPath);
 
   return (
-    <div className="flex h-full w-full flex-col bg-bg-surface">
-      <Breadcrumb root={platformState.root} currentPath={currentPath} />
-      {onRoot ? (
-        <StorageHome root={platformState.root} />
-      ) : (
-        <FileList currentPath={currentPath} />
-      )}
-    </div>
+    <main className="flex flex-1 flex-col overflow-hidden">
+      <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
+        <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
+          {t('sidebar.nav_storage')}
+        </span>
+      </div>
+      <WorkspaceCard>
+        {platformState.status === 'loading' ? null : platformState.status === 'unsupported' ? (
+          <div className="flex flex-1 items-center justify-center">
+            <div className="text-center">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-bg-elevated">
+                <AppWindow className="h-8 w-8 text-text-muted opacity-50" strokeWidth={1.2} />
+              </div>
+              <h2 className="mt-6 text-xl font-semibold text-text-primary">
+                {t('storage.corp_pc_only_title')}
+              </h2>
+            </div>
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <Breadcrumb root={platformState.root} currentPath={currentPath} />
+            {onRoot ? (
+              <StorageHome root={platformState.root} />
+            ) : (
+              <FileList currentPath={currentPath} />
+            )}
+          </div>
+        )}
+      </WorkspaceCard>
+    </main>
   );
 }

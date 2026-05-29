@@ -38,6 +38,7 @@ import { useWsEvent } from '@/lib/ws';
 import { inheritForNewMonth, INITIAL_SCHEDULE } from './data';
 import type {
   ScheduleMeta,
+  ScheduleOverrideRule,
   ScheduleShop,
   ScheduleState,
   WarehouseCode,
@@ -47,7 +48,7 @@ const SAVE_DEBOUNCE_MS = 500;
 const HISTORY_LIMIT = 50;
 
 /** Ключ кэша для пары (year, month). */
-function monthKey(year: number, month: number): string {
+export function monthKey(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, '0')}`;
 }
 
@@ -101,7 +102,11 @@ async function fetchMonthsList(forceRefresh = false): Promise<ScheduleMonthSumma
  */
 function localToServer(local: ScheduleState, committed: boolean): ScheduleStatePayload {
   const meta = local.meta;
-  if (committed) {
+  // Frozen-снапшот пишем когда месяц committed серверно ИЛИ имеет локальный
+  // meta.commit. Серверный commit-endpoint (этап D) пока не выставляет
+  // committed=1, поэтому freeze триггерим по meta.commit — иначе снапшот не
+  // сохранится и зафиксированный месяц приедет пустым.
+  if (committed || !!meta.commit) {
     return {
       meta,
       shopsFrozen: local.shops,
@@ -485,8 +490,9 @@ export function useScheduleSync(year: number, month: number): UseScheduleSyncRes
             ? (updater as (p: ScheduleState) => ScheduleState)(prev.state)
             : updater;
         if (nextState === prev.state) return prev;
-        if (prev.committed === 1) {
-          // Read-only — игнорируем mutation попытки.
+        if (prev.committed === 1 || prev.state.meta.commit) {
+          // Read-only — месяц зафиксирован (серверно committed=1 ИЛИ локально
+          // через meta.commit). Игнорируем любые mutation попытки.
           return prev;
         }
         pastRef.current.push(prev.state);
@@ -503,6 +509,8 @@ export function useScheduleSync(year: number, month: number): UseScheduleSyncRes
   );
 
   const undo = useCallback((): boolean => {
+    // Зафиксированный месяц неизменяем — undo не должен откатывать сам commit.
+    if (entryRef.current.state.meta.commit) return false;
     const prevState = pastRef.current.pop();
     if (!prevState) return false;
     setEntry((cur) => {
@@ -517,6 +525,7 @@ export function useScheduleSync(year: number, month: number): UseScheduleSyncRes
   }, [scheduleSave]);
 
   const redo = useCallback((): boolean => {
+    if (entryRef.current.state.meta.commit) return false;
     const nextState = futureRef.current.pop();
     if (!nextState) return false;
     setEntry((cur) => {
@@ -589,4 +598,94 @@ function makeEmptyEntry(year: number, month: number): MonthCacheEntry {
 export function resetScheduleCache(): void {
   monthCache.clear();
   monthsListCache = null;
+}
+
+// ── Read-only meta для нескольких месяцев (карточка склада в Базе) ──────────
+
+/** Holidays + overrides месяца для расчёта дат вне Proba (read-only). */
+export interface ScheduleMonthMeta {
+  /** На сервере есть снапшот этого месяца (график сформирован). */
+  exists: boolean;
+  /** Месяц зафиксирован. */
+  committed: boolean;
+  holidays: number[];
+  overrides: ScheduleOverrideRule[];
+  /** Зафиксированные цеха (committed-месяц) — для исторического дня недели склада. */
+  shops: ScheduleShop[];
+}
+
+/** In-flight дедуп GET'ов по month-key — N карточек не дают N запросов. */
+const inflightMetaGets = new Map<string, Promise<MonthCacheEntry | null>>();
+
+/**
+ * Загрузить снапшот месяца read-only. Переиспользует общий monthCache (если
+ * месяц уже открыт в Proba — без запроса). `null` = на сервере снапшота нет
+ * (график не сформирован). Version-0 / inherited-черновики НЕ считаются
+ * сформированными.
+ */
+async function loadMonthEntry(year: number, month: number): Promise<MonthCacheEntry | null> {
+  const key = monthKey(year, month);
+  const cached = monthCache.get(key);
+  if (cached && (cached.version > 0 || cached.committed === 1)) return cached;
+  const inflight = inflightMetaGets.get(key);
+  if (inflight) return inflight;
+  const p = (async () => {
+    try {
+      const snap = await scheduleGet(api, { year, month });
+      if (!snap.state || snap.version === 0) return null;
+      const entry = snapshotToEntry(snap);
+      monthCache.set(key, entry);
+      return entry;
+    } catch {
+      return null;
+    } finally {
+      inflightMetaGets.delete(key);
+    }
+  })();
+  inflightMetaGets.set(key, p);
+  return p;
+}
+
+/**
+ * Read-only мета нескольких месяцев (holidays + overrides) для расчёта дат
+ * доставки в карточке склада. Без save / undo / WS — просто GET + cache.
+ * Пустой `months` → ничего не грузит. Ключи результата — `monthKey()`.
+ */
+export function useScheduleMonthsMeta(
+  months: ReadonlyArray<{ year: number; month: number }>,
+): Map<string, ScheduleMonthMeta> {
+  const keys = months.map((m) => monthKey(m.year, m.month)).join('|');
+  const [map, setMap] = useState<Map<string, ScheduleMonthMeta>>(() => new Map());
+
+  useEffect(() => {
+    if (months.length === 0) {
+      setMap((prev) => (prev.size === 0 ? prev : new Map()));
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const next = new Map<string, ScheduleMonthMeta>();
+      await Promise.all(
+        months.map(async (m) => {
+          const entry = await loadMonthEntry(m.year, m.month);
+          next.set(monthKey(m.year, m.month), entry
+            ? {
+                exists: true,
+                committed: entry.committed === 1 || !!entry.state.meta.commit,
+                holidays: entry.state.meta.holidays,
+                overrides: entry.state.meta.overrides,
+                shops: entry.state.shops,
+              }
+            : { exists: false, committed: false, holidays: [], overrides: [], shops: [] });
+        }),
+      );
+      if (!cancelled) setMap(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keys]);
+
+  return map;
 }

@@ -47,6 +47,8 @@ export const WS_EVENT_TYPES = {
   TYPING_START: 'typing_start',
   TYPING_STOP: 'typing_stop',
   BASE_CHANGED: 'base_changed',
+  /** Изменилась база складов («Цеха») — правка карточки / импорт. Клиент refetch'ит. */
+  WAREHOUSES_CHANGED: 'warehouses_changed',
   DESKTOP_KICKED: 'desktop_kicked',
   /** Запущен скрипт/макрос на листе — блокируем UI для всех клиентов. */
   SHEET_LOCK_ACQUIRED: 'sheet_lock_acquired',
@@ -152,6 +154,13 @@ export interface BaseChangedEvent extends WsServerEvent {
   records_count?: number | null;
   previous_records_count?: number | null;
   diff_count?: number | null;
+}
+
+export interface WarehousesChangedEvent extends WsServerEvent {
+  type: 'warehouses_changed';
+  version?: string;
+  updated_by?: string;
+  updated_by_name?: string;
 }
 
 export interface DesktopKickedEvent extends WsServerEvent {

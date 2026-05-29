@@ -3,8 +3,10 @@ import i18next from 'i18next';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { Sidebar } from '@/components/sidebar';
 import { ChatConversation, ChatList } from '@/components/chats';
+import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { MolScreen } from '@/components/mol';
 import { initMol, refreshMolFromServer } from '@/lib/mol-repo';
+import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
 import { NewsFeed } from '@/components/news';
 import { ProbaScreen } from '@/components/proba';
 import { StorageScreen } from '@/components/storage';
@@ -53,6 +55,7 @@ import {
   useSheetsLockStore,
   type AppControlStateChangedEvent,
   type BaseChangedEvent,
+  type WarehousesChangedEvent,
   type NewMessageEvent,
   type Session,
   type SheetLockAcquiredEvent,
@@ -85,13 +88,19 @@ export function App() {
   type SplashStage = 'splash' | 'enter' | 'done';
   const [splashStage, setSplashStage] = useState<SplashStage>('splash');
   const [splashSession, setSplashSession] = useState(0);
+  // §2026-05-29 — hydrating объявлен ДО splash-эффектов: и замер иконки, и
+  // запуск анимации ждут окончания hydration (когда смонтируется LoginScreen
+  // с маркой), иначе на ПЕРВОМ запуске марка замеряется поздно и прыгает.
+  const [hydrating, setHydrating] = useState(true);
 
   // §pyn-1.2.54 — runtime measurement реальной позиции PynMarkIcon в DOM.
   // useLayoutEffect — синхронно после mount, ДО browser paint.
   // Зависит ОТ splashSession чтобы replay тоже триггерил замер.
   const [iconCenterY, setIconCenterY] = useState<number | null>(null);
   useLayoutEffect(() => {
-    if (session) return;
+    // §2026-05-29 — пока hydration не завершён, LoginScreen (а с ним и марка)
+    // ещё не в DOM — замер невозможен. Эффект перезапустится когда hydrating→false.
+    if (session || hydrating) return;
     const tryMeasure = (tag: string): boolean => {
       const icon = document.querySelector<HTMLElement>(
         '[data-pyn-login-mark]',
@@ -118,7 +127,7 @@ export function App() {
       if (!tryMeasure('rAF')) setTimeout(() => tryMeasure('100ms'), 100);
     });
     return () => cancelAnimationFrame(raf);
-  }, [session, splashSession]);
+  }, [session, splashSession, hydrating]);
   const splashTargetY =
     iconCenterY !== null ? iconCenterY - window.innerHeight / 2 : null;
 
@@ -130,6 +139,9 @@ export function App() {
     setSplashSession((s) => s + 1);
   }, []);
   useEffect(() => {
+    // §2026-05-29 — splash-таймеры стартуют только ПОСЛЕ hydration (LoginScreen
+    // смонтирован, иконка замерена) — иначе lift пойдёт с fallback и прыгнет.
+    if (hydrating) return;
     setSplashStage('splash');
     // §pyn-1.2.54 — тайминги:
     //   0–0.6s         → пустой тёмный экран
@@ -147,8 +159,7 @@ export function App() {
       clearTimeout(enterId);
       clearTimeout(doneId);
     };
-  }, [splashSession]);
-  const [hydrating, setHydrating] = useState(true);
+  }, [splashSession, hydrating]);
   const [collapsed, setCollapsed] = useState(false);
   // Update flow state machine вынесен в useUpdateFlow hook (см. lib/hooks/use-update-flow.ts).
   // Источник правды — sidebar pill (click drives transitions).
@@ -456,6 +467,8 @@ export function App() {
   useEffect(() => {
     if (!session) return;
     void initMol();
+    // Складская база («Цеха») — тот же паттерн: eager preload (кэш + сервер).
+    void initWarehouses();
   }, [session]);
   useWsEvent<BaseChangedEvent>('base_changed', (event) => {
     // §pyn-1.2.21 — server теперь шлёт counts → optimistic update мета
@@ -468,6 +481,10 @@ export function App() {
       });
     }
     void refreshMolFromServer({ force: true });
+  });
+  // Склады: админ/разработчик правит карточку → server broadcast → refetch у всех.
+  useWsEvent<WarehousesChangedEvent>('warehouses_changed', () => {
+    void refreshWarehousesFromServer({ force: true });
   });
 
   // desktop_kicked → wipe всё.
@@ -896,7 +913,7 @@ export function App() {
   return (
     <Tooltip.Provider delayDuration={200} skipDelayDuration={1500} disableHoverableContent>
       <SessionExpiryWatch />
-      <div className="relative flex h-full w-full bg-bg-surface">
+      <div className="relative flex h-full w-full bg-bg-deep">
         {/* §v1.2.14 — Main UI всегда mounted. Settings рендерится
             overlay'ем (см. ниже) — раньше Settings заменял main через
             conditional render, что unmount'ило TablesScreen и Chromium
@@ -934,63 +951,46 @@ export function App() {
               } : undefined}
             />
 
-            {activeSection === 'chats' ? null /* ← рендерится ниже always-mounted */ : activeSection === 'news' ? null /* ← рендерится ниже always-mounted */ : activeSection === 'mol' ? (
-              <MolScreen />
-            ) : activeSection === 'vault' ? (
-              <StorageScreen />
-            ) : activeSection === 'proba' ? (
-              <ProbaScreen />
-            ) : activeSection.startsWith('sheet:') ? null /* ← рендерится ниже always-mounted */ : (
-              <main className="flex flex-1 flex-col">
-                <div className="drag-region h-8 shrink-0" />
-                <div className="flex flex-1 items-center justify-center">
-                  <p className="text-sm text-text-muted">
-                    Раздел: <span className="text-text-strong">{activeSection}</span>
-                  </p>
-                </div>
-              </main>
-            )}
+            {/* §design — График вынесен из общей карточки: его тулбар живёт на
+                подложке (слой сайдбара), а контент — в собственном WorkspaceCard.
+                Пилот нового shell-паттерна (остальные экраны — следом). */}
+            {activeSection === 'proba' && <ProbaScreen />}
 
-            {/*
-              §v1.2.14 — TablesScreen ВСЕГДА mounted чтобы Chromium webview'ы
-              открытых таблиц жили как фоновые browser-tabs. Когда юзер уходит
-              в Чаты/Новости/МОЛы и возвращается — таблицы уже загружены,
-              мгновенный switch. Скрываем через `display: none` (CSS-уровень,
-              webContents Chromium остаётся жив, cookies/scroll/state не
-              теряются). До v1.2.14 был conditional render → unmount при
-              уходе → reload при возврате.
-            */}
+            {/* §design — МОЛ вынесен на подложку: MolTopBar (h-9 прозрачная) +
+                контент в WorkspaceCard. Conditional render — store держит
+                query+scrollTop, webview/blob-сохранения не требуется. */}
+            {activeSection === 'mol' && <MolScreen />}
+
+            {/* §design — Хранилище вынесено на подложку: h-9 шапка + контент
+                (Breadcrumb/Home/FileList) в WorkspaceCard. Conditional render —
+                storage-store держит currentPath между mount'ами. */}
+            {activeSection === 'vault' && <StorageScreen />}
+
+            {/* §design — Новости always-mounted, вынесены на подложку: шапка на
+                подложке + контент в WorkspaceCard (внутри NewsFeed). */}
             <div
               className="flex flex-1 flex-col"
-              style={{
-                display: activeSection.startsWith('sheet:') ? 'flex' : 'none',
-              }}
-            >
-              <TablesScreen
-                currentUserName={session.user.fullName || session.user.login}
-                currentUserLogin={session.user.login}
-              />
-            </div>
-
-            {/*
-              §2026-05-19 — NewsFeed always-mounted (тот же приём что у
-              TablesScreen). При возврате с другого раздела не было «прыжка»
-              скролла: компонент не unmount'ится, scroll-position сохраняется
-              в DOM Chromium'ом независимо от display:none. Restore-effect
-              через ResizeObserver больше не нужен (он и так уже отработал
-              при первом mount).
-            */}
-            <div
-              className="flex flex-1 flex-col"
-              style={{
-                display: activeSection === 'news' ? 'flex' : 'none',
-              }}
+              style={{ display: activeSection === 'news' ? 'flex' : 'none' }}
             >
               <NewsFeed
                 currentUserInitials={initials}
                 currentUserName={session.user.fullName || session.user.login}
                 currentUserLogin={session.user.login}
                 currentUserRole={session.role}
+              />
+            </div>
+
+            {/* §design — Таблицы always-mounted (webview pool как фоновые
+                browser-tabs), вынесены на подложку: h-9 шапка + webview-pool в
+                WorkspaceCard. display-toggle (не unmount) держит webContents
+                Chromium живыми — мгновенный switch при возврате. */}
+            <div
+              className="flex flex-1 flex-col"
+              style={{ display: activeSection.startsWith('sheet:') ? 'flex' : 'none' }}
+            >
+              <TablesScreen
+                currentUserName={session.user.fullName || session.user.login}
+                currentUserLogin={session.user.login}
               />
             </div>
 
@@ -1006,47 +1006,31 @@ export function App() {
               в этой сессии chat (типично <30); очищается на logout/wipe.
             */}
             <div
-              className="flex flex-1"
+              className="flex flex-1 flex-col"
               style={{
                 display: activeSection === 'chats' ? 'flex' : 'none',
               }}
             >
-              <ChatList
-                conversations={partners}
-                activeId={activeChatId}
-                onSelect={setActiveChatId}
-              />
-              <div className="relative flex flex-1 flex-col">
-                <div
-                  className="flex flex-1 flex-col"
-                  style={{
-                    display: activeChat ? 'none' : 'flex',
-                  }}
-                >
-                  <ChatConversation
-                    partner={null}
-                    messages={[]}
-                    onSend={(text, atts, replyToId) => {
-                      void handleSendMessage(text, atts, replyToId);
-                    }}
-                    onReact={handleChatReact}
-                    onMarkRead={handleChatMarkRead}
+              {/* §design — список (экспедиторы/клиенты) + переписка в ОДНОЙ
+                  карточке-подложке: список слева (прозрачный, с разделителем),
+                  переписка справа. Не отдельной полосой. */}
+              <WorkspaceCard>
+                <div className="flex min-h-0 flex-1">
+                  <ChatList
+                    conversations={partners}
+                    activeId={activeChatId}
+                    onSelect={setActiveChatId}
                   />
-                </div>
-                {Array.from(openedChatIds).map((peerId) => {
-                  const peer = partnersById.get(peerId);
-                  if (!peer) return null;
-                  const peerMessages = messagesByPeer[peerId] ?? [];
-                  const isActive = activeChatId === peerId;
-                  return (
+                  <div className="relative flex min-w-0 flex-1 flex-col">
                     <div
-                      key={peerId}
                       className="flex flex-1 flex-col"
-                      style={{ display: isActive ? 'flex' : 'none' }}
+                      style={{
+                        display: activeChat ? 'none' : 'flex',
+                      }}
                     >
                       <ChatConversation
-                        partner={peer}
-                        messages={peerMessages}
+                        partner={null}
+                        messages={[]}
                         onSend={(text, atts, replyToId) => {
                           void handleSendMessage(text, atts, replyToId);
                         }}
@@ -1054,9 +1038,32 @@ export function App() {
                         onMarkRead={handleChatMarkRead}
                       />
                     </div>
-                  );
-                })}
-              </div>
+                    {Array.from(openedChatIds).map((peerId) => {
+                      const peer = partnersById.get(peerId);
+                      if (!peer) return null;
+                      const peerMessages = messagesByPeer[peerId] ?? [];
+                      const isActive = activeChatId === peerId;
+                      return (
+                        <div
+                          key={peerId}
+                          className="flex flex-1 flex-col"
+                          style={{ display: isActive ? 'flex' : 'none' }}
+                        >
+                          <ChatConversation
+                            partner={peer}
+                            messages={peerMessages}
+                            onSend={(text, atts, replyToId) => {
+                              void handleSendMessage(text, atts, replyToId);
+                            }}
+                            onReact={handleChatReact}
+                            onMarkRead={handleChatMarkRead}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </WorkspaceCard>
             </div>
         </>
 
@@ -1065,7 +1072,7 @@ export function App() {
             (z-50 + inset-0 + bg-bg-surface), но main под ним сохраняет
             mounted state (TablesScreen webview'ы не пересоздаются). */}
         {showSettings && (
-          <div className="absolute inset-0 z-50 flex bg-bg-surface">
+          <div className="absolute inset-0 z-50 flex bg-bg-deep">
             <SettingsScreen
               myRole={session.role}
               myLogin={session.user.login}

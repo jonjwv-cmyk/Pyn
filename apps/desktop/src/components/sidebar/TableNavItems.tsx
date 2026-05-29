@@ -3,6 +3,7 @@ import * as HoverCard from '@radix-ui/react-hover-card';
 import { FileSpreadsheet } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
+import { useUiStateStore } from '@/lib/stores';
 import {
   customTabName,
   customTableName,
@@ -68,13 +69,21 @@ function TableNavRow({
   useTranslation();
   const sectionId = makeSheetNavId(file.id);
   const active = activeSection === sectionId;
+  // Запомненный лист именно ЭТОЙ таблицы (per-file) — чтобы клик по таблице
+  // возвращал туда, где были, независимо от текущего раздела и других таблиц.
+  const rememberedTab = useUiStateStore((s) => s.tableTabByFile[file.id]);
   const visibleTabs = file.tabs.filter((t) => !t.hidden);
   const displayName = customTableName(file.title);
   const shortName = customTableShortName(file.title);
 
-  const pickFirst = (): void => {
-    const first = visibleTabs[0];
-    if (first) onPick(sectionId, file.id, first.rawName);
+  // Клик по таблице → открываем её запомненный лист (если ещё существует),
+  // иначе первый. «Где были — туда и попадём».
+  const pickActive = (): void => {
+    const target =
+      rememberedTab && visibleTabs.some((t) => t.rawName === rememberedTab)
+        ? rememberedTab
+        : visibleTabs[0]?.rawName;
+    if (target) onPick(sectionId, file.id, target);
   };
 
   // Trigger — кастомная кнопка с forwardRef + явным forwarding всех
@@ -85,12 +94,12 @@ function TableNavRow({
     <HoverCard.Root openDelay={80} closeDelay={150}>
       <HoverCard.Trigger asChild>
         {collapsed ? (
-          <CollapsedTextPill label={shortName} active={active} onClick={pickFirst} />
+          <CollapsedTextPill label={shortName} active={active} onClick={pickActive} />
         ) : (
           <ExpandedTableTrigger
             label={displayName}
             active={active}
-            onClick={pickFirst}
+            onClick={pickActive}
           />
         )}
       </HoverCard.Trigger>
@@ -119,6 +128,7 @@ function TableNavRow({
               <TabRow
                 key={`${file.id}-${tab.rawName}`}
                 tab={tab}
+                active={tab.rawName === rememberedTab}
                 onPick={() => onPick(sectionId, file.id, tab.rawName)}
               />
             ))}
@@ -155,7 +165,7 @@ const ExpandedTableTrigger = React.forwardRef<HTMLButtonElement, TriggerProps>(
           className,
         )}
       >
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-start">
           <FileSpreadsheet
             className={cn(
               'h-[18px] w-[18px] transition-colors',
@@ -190,10 +200,11 @@ const CollapsedTextPill = React.forwardRef<HTMLButtonElement, TriggerProps>(
         title={label}
         className={cn(
           // §2026-05-19 — text-pill в collapsed sidebar выравниваем по
-          // левому краю (justify-start + pl-2.5), как в expanded sidebar.
-          // По центру выглядело криво для коротких/длинных лейблов
-          // ("WF" / "OTIF5") — теперь все начинаются с одной x-позиции.
-          'group flex h-9 w-full items-center justify-start rounded-md pl-2.5',
+          // левому краю (justify-start), как в expanded sidebar.
+          // §2026-05-29 — h-8 + px-1.5 (как NavItem/expanded-trigger): высота и
+          // x-позиция совпадают с развёрнутым видом → при сворачивании пункт не
+          // прыгает (ни по высоте, ни по горизонтали), только контент icon↔текст.
+          'group flex h-8 w-full items-center justify-start rounded-md px-1.5',
           'text-[11.5px] font-semibold tabular-nums outline-none',
           'transition-colors',
           active
@@ -208,7 +219,15 @@ const CollapsedTextPill = React.forwardRef<HTMLButtonElement, TriggerProps>(
   },
 );
 
-function TabRow({ tab, onPick }: { tab: TableTab; onPick: () => void }): JSX.Element {
+function TabRow({
+  tab,
+  active,
+  onPick,
+}: {
+  tab: TableTab;
+  active: boolean;
+  onPick: () => void;
+}): JSX.Element {
   const label = customTabName(tab.displayName || tab.rawName);
   return (
     <li>
@@ -217,8 +236,10 @@ function TabRow({ tab, onPick }: { tab: TableTab; onPick: () => void }): JSX.Ele
         onClick={onPick}
         className={cn(
           'flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[12.5px]',
-          'text-text-secondary outline-none transition-colors',
-          'hover:bg-bg-hover hover:text-text-strong',
+          'outline-none transition-colors',
+          active
+            ? 'bg-bg-hover text-text-strong'
+            : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
         )}
       >
         <span className="truncate">{label}</span>

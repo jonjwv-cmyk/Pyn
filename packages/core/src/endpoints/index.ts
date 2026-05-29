@@ -99,6 +99,18 @@ export {
   type MolRecord,
 } from './base';
 
+// Warehouses — справочник складов («Цеха»-база), server-sync как у МОЛ
+export {
+  warehousesVersion,
+  warehousesDownload,
+  warehousesDownloadUrl,
+  warehouseUpdate,
+  parseWarehousesSnapshotJson,
+  type WarehousesMeta,
+  type WarehousesDownloadInfo,
+  type WarehousePatch,
+} from './warehouses';
+
 // Chats
 export {
   getAdminMessages,
