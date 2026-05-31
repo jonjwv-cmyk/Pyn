@@ -1,6 +1,6 @@
 import * as React from 'react';
 import * as HoverCard from '@radix-ui/react-hover-card';
-import { FileSpreadsheet } from 'lucide-react';
+import { ClipboardList, FileSpreadsheet, Target, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import { useUiStateStore } from '@/lib/stores';
@@ -24,6 +24,22 @@ interface TableNavItemsProps {
   collapsed: boolean;
   activeSection: NavSectionId;
   onPick: (sectionId: NavSectionId, fileId: string, tabName: string) => void;
+}
+
+/**
+ * Иконки + цвет для часто используемых таблиц (по raw-title, uppercase) —
+ * чтобы выделить их в списке. Остальные таблицы — серый FileSpreadsheet.
+ *   • Workflow — работа с планом, заказы, недовозы → ClipboardList (синий).
+ *   • OTIF5 — метрика OTIF (On Time In Full) → Target (зелёный).
+ */
+const TABLE_ICONS: Record<string, { Icon: LucideIcon; color: string }> = {
+  WORKFLOW: { Icon: ClipboardList, color: 'text-sky-400' },
+  OTIF5: { Icon: Target, color: 'text-emerald-400' },
+};
+
+function tableIconFor(rawTitle: string): { Icon: LucideIcon; iconColor: string | null } {
+  const cfg = TABLE_ICONS[(rawTitle || '').toUpperCase()];
+  return cfg ? { Icon: cfg.Icon, iconColor: cfg.color } : { Icon: FileSpreadsheet, iconColor: null };
 }
 
 export function TableNavItems({ collapsed, activeSection, onPick }: TableNavItemsProps) {
@@ -75,6 +91,7 @@ function TableNavRow({
   const visibleTabs = file.tabs.filter((t) => !t.hidden);
   const displayName = customTableName(file.title);
   const shortName = customTableShortName(file.title);
+  const { Icon, iconColor } = tableIconFor(file.title);
 
   // Клик по таблице → открываем её запомненный лист (если ещё существует),
   // иначе первый. «Где были — туда и попадём».
@@ -94,12 +111,19 @@ function TableNavRow({
     <HoverCard.Root openDelay={80} closeDelay={150}>
       <HoverCard.Trigger asChild>
         {collapsed ? (
-          <CollapsedTextPill label={shortName} active={active} onClick={pickActive} />
+          <CollapsedTextPill
+            label={shortName}
+            active={active}
+            onClick={pickActive}
+            iconColor={iconColor}
+          />
         ) : (
           <ExpandedTableTrigger
             label={displayName}
             active={active}
             onClick={pickActive}
+            Icon={Icon}
+            iconColor={iconColor}
           />
         )}
       </HoverCard.Trigger>
@@ -150,8 +174,14 @@ type TriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   label: string;
 };
 
-const ExpandedTableTrigger = React.forwardRef<HTMLButtonElement, TriggerProps>(
-  function ExpandedTableTrigger({ active, label, className, ...rest }, ref) {
+type ExpandedTriggerProps = TriggerProps & {
+  Icon: LucideIcon;
+  /** Постоянный цвет иконки (highlight частых таблиц); null = серый дефолт. */
+  iconColor: string | null;
+};
+
+const ExpandedTableTrigger = React.forwardRef<HTMLButtonElement, ExpandedTriggerProps>(
+  function ExpandedTableTrigger({ active, label, Icon, iconColor, className, ...rest }, ref) {
     return (
       <button
         ref={ref}
@@ -166,12 +196,14 @@ const ExpandedTableTrigger = React.forwardRef<HTMLButtonElement, TriggerProps>(
         )}
       >
         <span className="flex h-7 w-7 shrink-0 items-center justify-start">
-          <FileSpreadsheet
+          <Icon
             className={cn(
               'h-[18px] w-[18px] transition-colors',
+              // Active — clay (единообразно с остальной навигацией). Inactive —
+              // постоянный highlight-цвет (если задан) либо серый дефолт.
               active
                 ? 'text-accent-clay'
-                : 'text-text-primary group-hover:text-text-strong',
+                : iconColor ?? 'text-text-primary group-hover:text-text-strong',
             )}
             strokeWidth={1.75}
           />
@@ -189,8 +221,11 @@ const ExpandedTableTrigger = React.forwardRef<HTMLButtonElement, TriggerProps>(
  * показываем короткое имя таблицы (`WF`, `OTIF`). Тоже forwardRef +
  * spread props — иначе Radix HoverCard не подхватит hover-events.
  */
-const CollapsedTextPill = React.forwardRef<HTMLButtonElement, TriggerProps>(
-  function CollapsedTextPill({ label, active, className, ...rest }, ref) {
+const CollapsedTextPill = React.forwardRef<
+  HTMLButtonElement,
+  TriggerProps & { iconColor: string | null }
+>(
+  function CollapsedTextPill({ label, active, iconColor, className, ...rest }, ref) {
     return (
       <button
         ref={ref}
@@ -207,9 +242,15 @@ const CollapsedTextPill = React.forwardRef<HTMLButtonElement, TriggerProps>(
           'group flex h-8 w-full items-center justify-start rounded-md px-1.5',
           'text-[11.5px] font-semibold tabular-nums outline-none',
           'transition-colors',
+          // Цвет имени = цвет иконки таблицы (бренд: WF синий, OTIF зелёный),
+          // т.к. в collapsed иконки нет — текст её «замещает». Active → clay +
+          // акцентная подсветка bg-bg-selected (как expanded и остальная навигация,
+          // НЕ серый bg-bg-hover). Без цвета (дефолтные таблицы) — серый + hover.
           active
-            ? 'bg-bg-hover text-text-strong'
-            : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+            ? 'bg-bg-selected text-accent-clay'
+            : iconColor
+              ? cn(iconColor, 'hover:bg-bg-hover')
+              : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
           className,
         )}
       >

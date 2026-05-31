@@ -97,9 +97,9 @@ export function ChatConversation({ partner, messages, onSend, onReact, onMarkRea
   );
 
   return (
-    // chat-pattern-bg раскинут на всю main-зону независимо от того, выбран
-    // чат или нет. При выборе чата сообщения «приземляются» поверх того же
-    // фона, без визуального flicker'a. Header переопределяет фон solid'ом.
+    // chat-pattern-bg на родительской карточке (App.tsx) — раскинут на весь
+    // чат-таб (список + переписка как одно окно). main прозрачный; сообщения
+    // «приземляются» поверх того же фона, без визуального flicker'a.
     <main
       className="relative flex flex-1 flex-col"
       {...(partner ? dropProps : {})}
@@ -121,10 +121,10 @@ export function ChatConversation({ partner, messages, onSend, onReact, onMarkRea
       {partner ? (
         <>
           <ChatHeader partner={partner} />
-          {/* §design — список + переписка теперь в ОДНОЙ карточке-подложке
-              (обёртка WorkspaceCard в App.tsx). Здесь только контент:
-              header выше + лента/композер на chat-pattern-bg. */}
-          <div className="chat-pattern-bg relative flex flex-1 flex-col overflow-hidden">
+          {/* §design — список + переписка в ОДНОЙ карточке (WorkspaceCard +
+              общий chat-pattern-bg в App.tsx). Здесь прозрачный контент:
+              header выше + лента/композер поверх общего фона. */}
+          <div className="relative flex flex-1 flex-col overflow-hidden">
             <MessageList
               messages={messages}
               partnerId={partner.id}
@@ -145,10 +145,10 @@ export function ChatConversation({ partner, messages, onSend, onReact, onMarkRea
         </>
       ) : (
         <>
-          {/* §design — пустое состояние: h-9 прозрачная шапка + chat-pattern-bg
-              с подсказкой по центру (внутри общей карточки-подложки). */}
+          {/* §design — пустое состояние: h-9 прозрачная шапка + прозрачная зона
+              с подсказкой по центру (фон — общий chat-pattern-bg карточки). */}
           <div className="drag-region h-9 shrink-0" />
-          <div className="chat-pattern-bg relative flex flex-1 flex-col overflow-hidden">
+          <div className="relative flex flex-1 flex-col overflow-hidden">
             <EmptyState />
           </div>
         </>
@@ -447,7 +447,7 @@ function MessageList({ messages, partnerId, onReact, onReply, onMarkRead }: Mess
   };
 
   return (
-    // chat-pattern-bg уже на main'е — здесь просто прозрачная scroll-зона.
+    // chat-pattern-bg на родительской карточке — здесь прозрачная scroll-зона.
     // pb-[80px] — компактный отступ под композер; последние bubbles мягко
     // уходят под glass-fade, не остаются висеть в пустоте.
     <div className="relative flex-1 overflow-hidden">
@@ -455,7 +455,7 @@ function MessageList({ messages, partnerId, onReact, onReply, onMarkRead }: Mess
         ref={scrollRef}
         onScroll={handleScroll}
         // §pyn-1.2.54 — pb-[60px] matches NewsFeed.
-        className="absolute inset-0 flex flex-col gap-1.5 overflow-y-auto px-4 pt-4 pb-[60px]"
+        className="absolute inset-0 flex flex-col items-center gap-1.5 overflow-y-auto px-4 pt-4 pb-[60px]"
       >
         {groups.map((g) => (
           // §2026-05-19 — per-group wrapper для sticky DateDivider.
@@ -463,11 +463,24 @@ function MessageList({ messages, partnerId, onReact, onReply, onMarkRead }: Mess
           // его группа в viewport, при подходе следующей группы её
           // divider "встаёт сверху", а текущий уезжает с группой вниз.
           // Telegram-style smooth swap (видео-референс юзера).
-          <div key={g.dayKey} className="flex flex-col gap-1.5">
+          // Отступы per-message (firstInGroup), не gap: подряд от одного
+          // отправителя жмутся, смена отправителя даёт больший зазор (Telegram).
+          <div key={g.dayKey} className="flex w-full max-w-[600px] flex-col">
             {g.label && <DateDivider label={g.label} />}
-            {g.items.map((m) => (
-              <ChatMessage key={m.id} message={m} onReact={onReact} onReply={onReply} onMarkRead={onMarkRead} />
-            ))}
+            {g.items.map((m, i) => {
+              const prev = i > 0 ? g.items[i - 1] : null;
+              const firstInGroup = !prev || prev.isOwn !== m.isOwn;
+              return (
+                <ChatMessage
+                  key={m.id}
+                  message={m}
+                  firstInGroup={firstInGroup}
+                  onReact={onReact}
+                  onReply={onReply}
+                  onMarkRead={onMarkRead}
+                />
+              );
+            })}
           </div>
         ))}
       </div>

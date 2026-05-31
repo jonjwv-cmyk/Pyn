@@ -74,13 +74,23 @@ export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, 
           !textOnly && (collapsed ? 'opacity-0' : 'opacity-100'),
         )}
       >
-        <span className="truncate text-[13px] font-normal tracking-[-0.005em]">{label}</span>
+        <span
+          className={cn(
+            'truncate text-[13px] font-normal tracking-[-0.005em]',
+            // textOnly (Лента: Чаты/Новости) — иконки нет, поэтому при выборе
+            // красим в clay сам текст (как иконка clay'ится у icon-пунктов).
+            textOnly && active && 'text-accent-clay',
+          )}
+        >
+          {label}
+        </span>
         {showBadge && <Badge count={badge} className="ml-auto shrink-0" />}
       </span>
     </button>
   );
 
-  if (!collapsed) return button;
+  // textOnly (Чаты/Новости) показывают подпись и в collapsed → тултип не нужен.
+  if (!collapsed || textOnly) return button;
 
   return (
     <Tooltip.Root>

@@ -67,6 +67,20 @@ function snapshot(): State {
 const MOL_KEYS = new Set(['MOL', 'MOLY', 'МОЛ', 'МОЛЫ']);
 
 /**
+ * Листы (tabs) файла WORKFLOW, которые скрываем из UI (флайаут сайдбара + выбор
+ * initial-tab) — «Склады» и «График ТМЦ». Их данные приходят в Pyn отдельными
+ * фичами (справочник складов / График через API), сами Google-листы юзеру не
+ * нужны. Client-side ground truth — легко поправить без серверного релиза.
+ * Матчим и rawName (📊SCHEDULE / WF_WAREHOUSES), и displayName (ГРАФИК ТМЦ / СКЛАДЫ).
+ */
+const HIDDEN_WORKFLOW_TABS = new Set([
+  'WF_WAREHOUSES',
+  'СКЛАДЫ',
+  '📊SCHEDULE',
+  'ГРАФИК ТМЦ',
+]);
+
+/**
  * Кастомные display-имена для таблиц. Server отдаёт raw title ("WORKFLOW",
  * "OTIF5"); UI показывает короткие/русские/title-case аналоги. Override map
  * ниже — клиент-side ground truth, легко поправить без серверного релиза.
@@ -210,9 +224,21 @@ async function fetchOnce(): Promise<void> {
       const cfg = await getSheetsClientConfig(api);
       const shape = cfg.raw as RegistryShape;
       const all = Array.isArray(shape.files) ? shape.files : [];
-      const filtered = all.filter(
-        (f) => !MOL_KEYS.has(String(f.title || '').toUpperCase()),
-      );
+      const filtered = all
+        .filter((f) => !MOL_KEYS.has(String(f.title || '').toUpperCase()))
+        .map((f) => {
+          if (String(f.title || '').toUpperCase() !== 'WORKFLOW') return f;
+          return {
+            ...f,
+            tabs: f.tabs.map((tab) => {
+              const raw = String(tab.rawName || '').trim().toUpperCase();
+              const disp = String(tab.displayName || '').trim().toUpperCase();
+              return HIDDEN_WORKFLOW_TABS.has(raw) || HIDDEN_WORKFLOW_TABS.has(disp)
+                ? { ...tab, hidden: true }
+                : tab;
+            }),
+          };
+        });
       state = { files: filtered, loading: false, error: null, loadedAt: Date.now() };
       retryAttempt = 0;
       nextRetryAt = 0;

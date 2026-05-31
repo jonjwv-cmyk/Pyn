@@ -127,6 +127,7 @@
     "logout": "Cerrar sesión"
   },
   "team_pill": {
+    "cell_label": "Equipo",
     "aria_open": "Equipo — {{count}} miembros",
     "online_suffix": "en línea",
     "popover_title": "Equipo · {{count}}",
@@ -208,6 +209,8 @@
     "search_placeholder": "Buscar…"
   },
   "news": {
+    "pinned_room": "Fija lo importante aquí",
+    "pinned_empty": "Nada fijado",
     "btn_poll": "Encuesta",
     "btn_scheduled": "Programados",
     "loading_feed": "Cargando el feed…",
@@ -231,6 +234,8 @@
     "schedule_failed": "No se pudo programar la publicación"
   },
   "pinned_pill": {
+    "drop_to_pin": "Suelta para fijar",
+    "jump_to_feed": "En el feed",
     "expand_aria": "Expandir",
     "collapse_aria": "Contraer",
     "important": "(importante)",
@@ -637,6 +642,20 @@
     "breadcrumb_dropdown_aria": "Ir a sección hermana",
     "format_am": "AM",
     "format_pm": "PM"
+  },
+  "shops": {
+    "removed_count": "Almacenes eliminados: {{n}} de {{total}}",
+    "no_data": "Sin datos",
+    "search_ph": "almacén · taller · teléfono",
+    "search_warehouse_ph": "Buscar almacén por número",
+    "search_shop_ph": "Buscar taller por nombre",
+    "status_scheduled": "En el plan",
+    "status_shipping": "Envío",
+    "status_removed": "Eliminado",
+    "status_idle": "Fuera del plan",
+    "warehouses_n": "almacenes: {{n}}",
+    "empty": "La base de talleres está vacía",
+    "nothing_found": "Nada encontrado"
   },
   "mol": {
     "fio": "Nombre completo",

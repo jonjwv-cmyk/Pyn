@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as RadixDialog from '@radix-ui/react-dialog';
 import { Clock, Upload } from 'lucide-react';
@@ -35,11 +35,15 @@ import { cn } from '@/lib/cn';
 import { NewsCard } from './NewsCard';
 import { NewsComposer, type NewsComposerHandle } from './NewsComposer';
 import { NewsPollDialog } from './NewsPollDialog';
-import { PinnedPill } from './PinnedPill';
+import { EmptyPinSlot, PinDropPreview, PinnedPill } from './PinnedPill';
 import { ScheduledListDialog } from './ScheduledListDialog';
 
 const NEWS_DRAFT_SCOPE = 'news';
 const SCHEDULED_TOAST_MS = 4000;
+// Лимит закреплённых (3 «слота» правой колонки). Зеркалит server-side
+// enforcement (handlers pin_message → pin_limit_reached) — клиент проверяет
+// ПЕРВЫМ, до оптимистичного pin'а, чтобы показать «лимит превышен» сразу.
+const MAX_PINNED = 3;
 
 interface NewsFeedProps {
   currentUserInitials: string;
@@ -66,6 +70,8 @@ export function NewsFeed({
   const { t, i18n } = useTranslation();
   // Permission: только admin/developer могут публиковать новости.
   const canPost = can(currentUserRole, 'news.post');
+  // Закреплять (в т.ч. drag-to-pin из ленты) — тоже admin/developer.
+  const canPin = can(currentUserRole, 'news.pin');
   const items = useNewsStore((s) => s.items);
   const lastFetchedAt = useNewsStore((s) => s.lastFetchedAt);
   const setItems = useNewsStore((s) => s.setItems);
@@ -76,6 +82,10 @@ export function NewsFeed({
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<NewsComposerHandle>(null);
   const [showScrollDown, setShowScrollDown] = useState(false);
+  // Drag-to-pin: подсветка правой колонки + id перетаскиваемой новости (для
+  // превью в целевом слоте, пока тащат из ленты).
+  const [pinDragActive, setPinDragActive] = useState(false);
+  const [draggingPinId, setDraggingPinId] = useState<number | null>(null);
   const [pollDialogOpen, setPollDialogOpen] = useState(false);
   const [scheduledDialogOpen, setScheduledDialogOpen] = useState(false);
   // Drag-and-drop: бросаем файлы в любую часть feed-area, composer прицепит.
@@ -210,44 +220,6 @@ export function NewsFeed({
 
   const pinned = useMemo(() => items.filter((i) => i.isPinned), [items]);
 
-  // §pyn-1.2.54 — измеряем реальную геометрию pinned-overlay через ResizeObserver,
-  // а не assume'им фиксированную высоту pill (она зависит от padding/border/expanded
-  // state, простые константы дают cumulative error при 2+ pills → divider за pill
-  // и blur не на середине нижнего). Из измеренной overlayHeight выводим:
-  // last pill bottom/middle, blur mask middle/end percent, divider sticky offset.
-  const PINNED_GAP = 6;
-  const PINNED_TOP_PAD = 12;
-  const PINNED_BOTTOM_PAD = 8;
-  const DIVIDER_GAP = 12;
-  const NO_PINNED_BLUR_H = 30;
-  const pinnedContentRef = useRef<HTMLDivElement>(null);
-  const [measuredOverlayH, setMeasuredOverlayH] = useState(0);
-  useLayoutEffect(() => {
-    if (pinned.length === 0) {
-      setMeasuredOverlayH(0);
-      return;
-    }
-    const el = pinnedContentRef.current;
-    if (!el) return;
-    const measure = (): void => setMeasuredOverlayH(el.offsetHeight);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [pinned.length]);
-  const pillAreaH = Math.max(0, measuredOverlayH - PINNED_TOP_PAD - PINNED_BOTTOM_PAD);
-  const totalGap = Math.max(0, pinned.length - 1) * PINNED_GAP;
-  const avgPillH = pinned.length > 0 ? Math.max(0, (pillAreaH - totalGap) / pinned.length) : 0;
-  const lastPillBottom = pinned.length > 0 ? PINNED_TOP_PAD + pinned.length * avgPillH + totalGap : 0;
-  const lastPillMiddle = pinned.length > 0 ? lastPillBottom - avgPillH / 2 : 0;
-  const pinnedBlurHeight = pinned.length > 0 ? lastPillBottom + 8 : 0;
-  const pinnedBlurMaskMidPct =
-    pinnedBlurHeight > 0 ? Math.round((lastPillMiddle / pinnedBlurHeight) * 100) : 0;
-  const pinnedBlurMaskEndPct =
-    pinnedBlurHeight > 0 ? Math.round((lastPillBottom / pinnedBlurHeight) * 100) : 0;
-  const blurFadeEnd = pinned.length > 0 ? lastPillBottom : NO_PINNED_BLUR_H;
-  const scrollPaddingTop = blurFadeEnd + DIVIDER_GAP;
-  const dividerTopOffset = blurFadeEnd + DIVIDER_GAP;
 
   // Группировка news-карточек по yek-дню для date-разделителей. Pinned
   // дублируются — они И сверху как pill, И в общем потоке (Telegram-style).
@@ -439,7 +411,12 @@ export function NewsFeed({
     if (!root) return;
     const target = root.querySelector<HTMLElement>(`[data-news-id="${newsId}"]`);
     if (!target) return;
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Скроллим ТОЛЬКО ленту (scrollRef), не через scrollIntoView — иначе браузер
+    // прокручивает внешние контейнеры/окно и весь layout (сайдбар) «плывёт».
+    const tRect = target.getBoundingClientRect();
+    const rRect = root.getBoundingClientRect();
+    const top = root.scrollTop + (tRect.top - rRect.top) - (root.clientHeight - tRect.height) / 2;
+    root.scrollTo({ top, behavior: 'smooth' });
     target.setAttribute('data-news-flash', '1');
     setTimeout(() => target.removeAttribute('data-news-flash'), 1600);
   }, []);
@@ -498,6 +475,13 @@ export function NewsFeed({
     const current = items.find((i) => i.id === newsId);
     if (!current) return;
     const willPin = !current.isPinned;
+    // §pyn — проверка ПЕРВОЙ, до действия. Если лимит уже исчерпан — показываем
+    // диалог сразу, без оптимистичного «закрепил → сбросил → показал ошибку».
+    // Server enforce'ит как backstop, но юзер не должен видеть флэш пина.
+    if (willPin && items.filter((i) => i.isPinned).length >= MAX_PINNED) {
+      showErrorDialog(t('news.pin_limit_reached'));
+      return;
+    }
     updateItem(newsId, { isPinned: willPin });
     const action = willPin ? pinMessage : unpinMessage;
 
@@ -540,6 +524,14 @@ export function NewsFeed({
         void refreshNews();
       }
     }
+  };
+
+  // Drag-to-pin: бросили карточку из ленты в правую колонку → закрепляем
+  // (если ещё не закреплена). Проверка лимита 3 — внутри handleTogglePin.
+  const handlePinDrop = (newsId: number) => {
+    const item = items.find((i) => i.id === newsId);
+    if (!item || item.isPinned) return;
+    void handleTogglePin(newsId);
   };
 
   const handleDelete = (newsId: number) => {
@@ -636,7 +628,7 @@ export function NewsFeed({
       // §pyn-1.2.54 — news-pattern-bg на ROOT (вместо bg-bg-primary) →
       // pattern continuous от topbar до bottom. Pinned panel и scroll
       // inherit единый фон без визуальных швов.
-      className="relative flex flex-1 flex-col"
+      className="relative flex min-h-0 flex-1 flex-col"
       {...(canPost ? dropProps : {})}
     >
       {canPost && dragging && (
@@ -677,19 +669,21 @@ export function NewsFeed({
       </div>
 
       <WorkspaceCard>
-        <div className="news-pattern-bg relative flex-1 overflow-hidden">
+        {/* p-4 — единое поле 16px по периметру (как на всех листах): лента и
+            закреплённые стоят ровно на этой линии. Фон-паттерн — во всю карточку. */}
+        <div className="news-pattern-bg relative flex min-h-0 flex-1 overflow-hidden p-4">
+        {/* ЛЕВО — лента новостей + строка ввода снизу. Внутренний flex-1 in-flow
+            контейнер даёт композеру (absolute bottom-0) надёжный якорь по высоте. */}
+        <div className="relative flex min-w-0 flex-1 flex-col">
+        <div className="relative min-h-0 flex-1">
         <div
           ref={scrollRef}
           onScroll={checkScroll}
           className="absolute inset-0 overflow-y-auto"
         >
-          {/* Padding-top — точно резервирует место под floating PinnedPill overlay
-              (см. константы выше: lastPillBottom + PINNED_BOTTOM_PAD).
-              pb-[60px] — отступ под floating composer. */}
-          <div
-            className="mx-auto flex max-w-[720px] flex-col gap-2.5 px-6 pb-[60px]"
-            style={{ paddingTop: `${scrollPaddingTop}px` }}
-          >
+          {/* pb-[60px] — отступ под floating composer; верх задаёт единая рамка
+              16px (p-4 родителя), своего pt у ленты нет — стоит ровно на линии. */}
+          <div className="mx-auto flex max-w-[720px] flex-col gap-2.5 px-6 pb-[60px]">
             {showInitialLoading && (
               <p className="py-8 text-center text-[12.5px] text-text-muted">
                 {t('news.loading_feed')}
@@ -713,9 +707,8 @@ export function NewsFeed({
               // промежуток 10px (same as between groups).
               <div key={`g-${g.dayKey}`} className="flex flex-col gap-2.5">
                 {g.label && (
-                  // §pyn-1.2.54 — sticky top offset под floating PinnedPill,
-                  // чтобы divider останавливался в clear-зоне ПОД blur'ом (crisp).
-                  <DateDivider label={g.label} topOffset={dividerTopOffset} />
+                  // Sticky date-divider у верха колонки (плавающего overlay больше нет).
+                  <DateDivider label={g.label} topOffset={12} />
                 )}
                 {g.items.map((item) => (
                   <div key={item.id} data-news-id={item.id} className="news-row">
@@ -728,6 +721,12 @@ export function NewsFeed({
                       onDelete={handleDelete}
                       onEdited={(id, newText) => updateItem(id, { text: newText })}
                       onMarkRead={handleNewsMarkRead}
+                      pinDraggable={canPin && !item.isPinned}
+                      onPinDragStart={(id) => setDraggingPinId(id)}
+                      onPinDragEnd={() => {
+                        setDraggingPinId(null);
+                        setPinDragActive(false);
+                      }}
                     />
                   </div>
                 ))}
@@ -736,58 +735,6 @@ export function NewsFeed({
           </div>
         </div>
 
-        {/* §pyn-1.2.54 — floating top overlay: либо PinnedPill (если есть
-            закреплённые) поверх scroll'а как floating-плашка, либо просто
-            top blur fade (mirror composer). Юзер: «сверху пиллы закреплённых
-            словно сверху ленты как строка ввода новости и далее красивый блюр
-            стекло чутка ниже пилла». */}
-        {pinned.length > 0 ? (
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-30">
-            {/* §pyn-1.2.54 — blur mask mirror composer (centered on last pill):
-                solid blur от topbar до СЕРЕДИНЫ последнего pill'a, fade через
-                нижнюю половину последнего pill, transparent ниже. DateDivider
-                на dividerTopOffset попадает в clear-зону → читается crisp. */}
-            <div
-              aria-hidden
-              className="absolute inset-x-0 top-0 backdrop-blur-xl"
-              style={{
-                height: `${pinnedBlurHeight}px`,
-                maskImage: `linear-gradient(to bottom, black ${pinnedBlurMaskMidPct}%, transparent ${pinnedBlurMaskEndPct}%)`,
-                WebkitMaskImage: `linear-gradient(to bottom, black ${pinnedBlurMaskMidPct}%, transparent ${pinnedBlurMaskEndPct}%)`,
-              }}
-            />
-            <div
-              ref={pinnedContentRef}
-              className="pointer-events-auto relative mx-auto flex max-w-[720px] flex-col gap-1.5 px-6 pb-2 pt-3"
-            >
-              {pinned.map((item) => (
-                <PinnedPill
-                  key={item.id}
-                  news={item}
-                  currentUserRole={currentUserRole}
-                  onReact={handleReact}
-                  onVote={handleVote}
-                  onTogglePin={handleTogglePin}
-                  onDelete={handleDelete}
-                  onEdited={(id, newText) => updateItem(id, { text: newText })}
-                  onJumpToNews={jumpToNews}
-                />
-              ))}
-            </div>
-          </div>
-        ) : (
-          /* §pyn-1.2.54 — без pinned: мелкий blur fade под topbar (NO_PINNED_BLUR_H).
-             Divider sticky ниже blur'a (см. dividerTopOffset) в чистой зоне. */
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 top-0 z-10 backdrop-blur-xl"
-            style={{
-              height: `${NO_PINNED_BLUR_H}px`,
-              maskImage: 'linear-gradient(to bottom, black 50%, transparent 100%)',
-              WebkitMaskImage: 'linear-gradient(to bottom, black 50%, transparent 100%)',
-            }}
-          />
-        )}
 
         {/* §2026-05-19 — DayLabelPill убран: DateDivider теперь sticky сам. */}
         <ScrollToBottomButton visible={showScrollDown} onClick={scrollToBottom} />
@@ -807,7 +754,9 @@ export function NewsFeed({
                 WebkitMaskImage: 'linear-gradient(to top, black 50%, transparent 100%)',
               }}
             />
-            <div className="relative pointer-events-auto mx-auto max-w-[720px]">
+            {/* px-2 + собственный px-4 у NewsComposer = 24px инсет, ровно как
+                px-6 у ленты и закреплённых пиллов — края совпадают в линию. */}
+            <div className="relative pointer-events-auto mx-auto max-w-[720px] px-2">
               {scheduledToast !== null && (
                 <div
                   role="status"
@@ -826,6 +775,73 @@ export function NewsFeed({
             </div>
           </div>
         )}
+        </div>
+        </div>
+        {/* ПРАВО — ровно 3 слота фикс-размера (по 1/3 высоты). Занятый слот —
+            карточка закреплённой новости (контент вписывается, лишнее обрезается);
+            свободный — подсвеченный блок со значком-пином. Без скролла.
+            Drag-to-pin: можно перетащить новость из ленты сюда → закрепится. */}
+        <aside
+          onDragOver={
+            canPin
+              ? (e) => {
+                  if (!e.dataTransfer.types.includes('application/x-pyn-news-id')) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'copy';
+                  if (!pinDragActive) setPinDragActive(true);
+                }
+              : undefined
+          }
+          onDragLeave={
+            canPin
+              ? (e) => {
+                  // Не сбрасываем при переходе на внутренние элементы колонки.
+                  if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                  setPinDragActive(false);
+                }
+              : undefined
+          }
+          onDrop={
+            canPin
+              ? (e) => {
+                  const raw = e.dataTransfer.getData('application/x-pyn-news-id');
+                  e.preventDefault();
+                  setPinDragActive(false);
+                  if (raw) handlePinDrop(Number(raw));
+                }
+              : undefined
+          }
+          className={cn(
+            'flex min-h-0 w-[360px] shrink-0 flex-col gap-2.5 rounded-xl pl-3 transition-shadow',
+            pinDragActive && 'ring-2 ring-inset ring-accent-clay/45',
+          )}
+        >
+          {Array.from({ length: MAX_PINNED }, (_, i) => {
+            const item = pinned[i];
+            if (item) {
+              return (
+                <PinnedPill
+                  key={item.id}
+                  news={item}
+                  currentUserRole={currentUserRole}
+                  onReact={handleReact}
+                  onVote={handleVote}
+                  onTogglePin={handleTogglePin}
+                  onDelete={handleDelete}
+                  onEdited={(id, newText) => updateItem(id, { text: newText })}
+                  onJumpToNews={jumpToNews}
+                />
+              );
+            }
+            // Первый свободный слот во время drag-to-pin → превью «упадёт сюда».
+            const draggingNews =
+              draggingPinId !== null ? items.find((n) => n.id === draggingPinId) : undefined;
+            if (pinDragActive && draggingNews && i === pinned.length) {
+              return <PinDropPreview key={`preview-${i}`} news={draggingNews} />;
+            }
+            return <EmptyPinSlot key={`empty-${i}`} />;
+          })}
+        </aside>
       </div>
       </WorkspaceCard>
 

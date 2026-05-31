@@ -127,6 +127,7 @@
     "logout": "Abmelden"
   },
   "team_pill": {
+    "cell_label": "Team",
     "aria_open": "Team — {{count}} Mitglieder",
     "online_suffix": "online",
     "popover_title": "Team · {{count}}",
@@ -208,6 +209,8 @@
     "search_placeholder": "Suchen…"
   },
   "news": {
+    "pinned_room": "Wichtiges hier anheften",
+    "pinned_empty": "Nichts angeheftet",
     "btn_poll": "Umfrage",
     "btn_scheduled": "Geplant",
     "loading_feed": "Lade Feed…",
@@ -231,6 +234,8 @@
     "schedule_failed": "Beitrag konnte nicht geplant werden"
   },
   "pinned_pill": {
+    "drop_to_pin": "Loslassen zum Anheften",
+    "jump_to_feed": "Im Feed",
     "expand_aria": "Aufklappen",
     "collapse_aria": "Einklappen",
     "important": "(wichtig)",
@@ -637,6 +642,20 @@
     "breadcrumb_dropdown_aria": "Zu Geschwisterbereich wechseln",
     "format_am": "AM",
     "format_pm": "PM"
+  },
+  "shops": {
+    "removed_count": "Lager entfernt: {{n}} von {{total}}",
+    "no_data": "Keine Daten",
+    "search_ph": "Lager · Werkstatt · Telefon",
+    "search_warehouse_ph": "Lager nach Nummer suchen",
+    "search_shop_ph": "Werkstatt nach Name suchen",
+    "status_scheduled": "Im Plan",
+    "status_shipping": "Versand",
+    "status_removed": "Entfernt",
+    "status_idle": "Nicht im Plan",
+    "warehouses_n": "Lager: {{n}}",
+    "empty": "Werkstatt-Datenbank ist leer",
+    "nothing_found": "Nichts gefunden"
   },
   "mol": {
     "fio": "Vollständiger Name",

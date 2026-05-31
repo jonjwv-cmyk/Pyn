@@ -13,7 +13,8 @@ interface ChatListRowProps {
 
 /**
  * Одна строка списка чатов: аватар (всегда с presence-точкой) + имя + последнее
- * сообщение + время + (опц.) счётчик непрочитанных. Active state — клай-tint.
+ * сообщение + время + (опц.) счётчик непрочитанных. Каждая строка — solid-
+ * карточка; выделенный чат — заливка clay (текст/бейдж инвертируются).
  *
  * Layout:
  *   [Avatar 32 + dot]  Имя ............... 12:34
@@ -33,13 +34,13 @@ export function ChatListRow({ partner, active, onClick }: ChatListRowProps) {
       type="button"
       onClick={onClick}
       className={cn(
-        'flex w-full items-center gap-2.5 rounded-md px-2 py-1.5',
+        'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5',
         'text-left transition-colors',
-        // Активный (открытый) чат — clay-пилл (Pyn selection-стиль); при наведении
-        // на остальные — нейтральный hover-пилл.
+        // Каждый контакт — solid-карточка (не прозрачная, паттерн не просвечивает).
+        // Выделенный чат — заливка clay (Telegram-style), остальные — тёмная карточка.
         active
-          ? 'bg-accent-clay/[0.10] text-text-strong'
-          : 'text-text-primary hover:bg-bg-hover hover:text-text-strong',
+          ? 'bg-accent-clay text-white'
+          : 'bg-bg-primary text-text-primary hover:bg-bg-elevated hover:text-text-strong',
       )}
     >
       <span className="relative shrink-0">
@@ -54,7 +55,7 @@ export function ChatListRow({ partner, active, onClick }: ChatListRowProps) {
         <PresenceDot
           state={presence}
           size={10}
-          ringClass="ring-bg-surface"
+          ringClass={active ? 'ring-accent-clay' : 'ring-bg-primary'}
           className="absolute -bottom-0.5 -right-0.5"
         />
       </span>
@@ -64,19 +65,20 @@ export function ChatListRow({ partner, active, onClick }: ChatListRowProps) {
           <span className="truncate text-[13px] font-medium tracking-[-0.005em]">
             {partner.name}
           </span>
-          <span className="ml-auto shrink-0 text-[11px] tabular-nums text-text-muted">
+          <span className={cn('ml-auto shrink-0 text-[11px] tabular-nums', active ? 'text-white/70' : 'text-text-muted')}>
             {lastMessageLabel}
           </span>
         </span>
         <span className="flex items-center gap-2">
-          <span className="truncate text-[12px] text-text-muted">
+          <span className={cn('truncate text-[12px]', active ? 'text-white/80' : 'text-text-muted')}>
             {partner.lastMessage}
           </span>
           {unread > 0 && (
             <span
               className={cn(
                 'ml-auto inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-pill',
-                'bg-accent-clay px-1.5 text-[11px] font-semibold tabular-nums leading-none text-white',
+                'px-1.5 text-[11px] font-semibold tabular-nums leading-none',
+                active ? 'bg-white text-accent-clay' : 'bg-accent-clay text-white',
               )}
             >
               {unread > 999 ? '999+' : unread}

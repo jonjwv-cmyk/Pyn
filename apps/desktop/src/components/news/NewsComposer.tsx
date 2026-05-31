@@ -239,7 +239,8 @@ function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
   };
 
   return (
-    <div className="pointer-events-none px-4 pb-3 pt-1">
+    // pb убран — пилл прижат к нижней линии рамки 16px (NewsFeed p-4), не висит выше.
+    <div className="pointer-events-none px-4 pt-1">
       <div
         className={cn(
           // pill БЕЗ backdrop-blur — он на parent layer (NewsFeed).

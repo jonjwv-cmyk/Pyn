@@ -28,22 +28,14 @@ export function PasswordTrigger({ onClick, active }: PasswordTriggerProps): JSX.
       type="button"
       onClick={onClick}
       className={cn(
-        // §pyn-1.2.54 — max-w-[140px] чтобы кнопка НЕ перекрывала PynMarkIcon
-        // в центре card (card 360px wide, icon 56px = 140px на каждую сторону
-        // до пересечения). items-start + mt-0.5 на icon → визуально align с
-        // первой строкой когда текст wraps. leading-tight + py-1 даёт
-        // auto-height до 2 строк без overflow.
-        'flex max-w-[140px] items-start gap-1.5 rounded-md px-2 py-1',
-        'text-left text-[11.5px] leading-tight text-text-muted outline-none transition-colors',
+        'flex items-center gap-1.5 rounded-md px-2 py-1',
+        'text-[11.5px] text-text-muted outline-none transition-colors',
         'hover:bg-bg-hover hover:text-text-primary',
         active && 'bg-bg-hover text-text-primary',
       )}
     >
-      <KeyRound className="mt-0.5 h-3 w-3 shrink-0" strokeWidth={1.75} />
-      <span className="flex flex-col leading-tight">
-        <span className="text-text-primary">{t('login.switch_password_l1')}</span>
-        <span className="text-[10.5px] text-text-muted">{t('login.switch_password_l2')}</span>
-      </span>
+      <KeyRound className="h-3 w-3 shrink-0" strokeWidth={1.75} />
+      <span className="text-text-primary">{t('login.switch_password_l1')}</span>
     </button>
   );
 }

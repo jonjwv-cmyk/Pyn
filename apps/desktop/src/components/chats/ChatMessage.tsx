@@ -8,6 +8,8 @@ import type { ChatMessageItem } from '@/types/chat';
 
 interface ChatMessageProps {
   message: ChatMessageItem;
+  /** Первое сообщение в блоке подряд-от-одного-отправителя → больший верхний отступ (Telegram-группировка). */
+  firstInGroup?: boolean;
   onReact?: (messageId: number, emoji: string) => void;
   /** Если задан — popup показывает кнопку «Ответить»; caller подымает state в композер. */
   onReply?: (message: ChatMessageItem) => void;
@@ -29,7 +31,7 @@ interface ChatMessageProps {
  *     убирает «раздутость» bubble под пустой реакционный chip.
  *   • Reply preview и attachment'ы — внутри bubble, над текстом.
  */
-export function ChatMessage({ message, onReact, onReply, onMarkRead }: ChatMessageProps) {
+export function ChatMessage({ message, firstInGroup = true, onReact, onReply, onMarkRead }: ChatMessageProps) {
   const { t } = useTranslation();
   const own = message.isOwn;
   const hasAttachments = (message.attachments?.length ?? 0) > 0;
@@ -114,6 +116,7 @@ export function ChatMessage({ message, onReact, onReply, onMarkRead }: ChatMessa
       ref={wrapperRef}
       className={cn(
         'group flex w-full items-end gap-1.5',
+        firstInGroup ? 'mt-2' : 'mt-0.5',
         own ? 'justify-end' : 'justify-start',
       )}
     >

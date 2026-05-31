@@ -212,7 +212,8 @@ function ChatComposer(
           WebkitMaskImage: 'linear-gradient(to top, black 50%, transparent 100%)',
         }}
       />
-      <div className="relative px-4 pb-3 pt-1">
+      {/* pb убран — пилл прижат к нижней линии рамки 16px, не висит выше. */}
+      <div className="relative px-4 pt-1">
         <div
           className={cn(
             // pill БЕЗ backdrop-blur — он на layer ниже.

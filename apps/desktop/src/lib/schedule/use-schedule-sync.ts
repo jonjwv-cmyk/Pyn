@@ -646,16 +646,80 @@ async function loadMonthEntry(year: number, month: number): Promise<MonthCacheEn
   return p;
 }
 
+/** MonthCacheEntry → read-only meta. */
+function entryToMeta(entry: MonthCacheEntry): ScheduleMonthMeta {
+  return {
+    exists: true,
+    committed: entry.committed === 1 || !!entry.state.meta.commit,
+    holidays: entry.state.meta.holidays,
+    overrides: entry.state.meta.overrides,
+    shops: entry.state.shops,
+  };
+}
+
+const NO_META: ScheduleMonthMeta = {
+  exists: false,
+  committed: false,
+  holidays: [],
+  overrides: [],
+  shops: [],
+};
+
+/**
+ * Синхронно собрать мету из уже прогретого monthCache — для initial render
+ * хука: тёплый кэш показывает дни графика сразу, без async pop-in. Месяцы,
+ * которых нет в кэше, просто отсутствуют в Map (догрузятся эффектом).
+ */
+function readCachedMonthsMeta(
+  months: ReadonlyArray<{ year: number; month: number }>,
+): Map<string, ScheduleMonthMeta> {
+  const out = new Map<string, ScheduleMonthMeta>();
+  for (const m of months) {
+    const cached = monthCache.get(monthKey(m.year, m.month));
+    if (cached && (cached.version > 0 || cached.committed === 1)) {
+      out.set(monthKey(m.year, m.month), entryToMeta(cached));
+    }
+  }
+  return out;
+}
+
+/** prev / current / next месяц — окно графика карточки склада. */
+export function currentThreeMonths(): { year: number; month: number }[] {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m0 = now.getMonth(); // 0-based
+  return [-1, 0, 1].map((delta) => {
+    const idx = m0 + delta;
+    const year = y + Math.floor(idx / 12);
+    const month = ((idx % 12) + 12) % 12 + 1;
+    return { year, month };
+  });
+}
+
+/**
+ * Прогреть monthCache метой prev/current/next месяцев, чтобы карточки склада в
+ * Базе показывали дни графика СРАЗУ (без async pop-in). Fire-and-forget; звать
+ * после login (рядом с initWarehouses). Dedup/cache — внутри loadMonthEntry.
+ */
+export function prefetchScheduleMonthsMeta(): void {
+  for (const m of currentThreeMonths()) {
+    void loadMonthEntry(m.year, m.month);
+  }
+}
+
 /**
  * Read-only мета нескольких месяцев (holidays + overrides) для расчёта дат
  * доставки в карточке склада. Без save / undo / WS — просто GET + cache.
- * Пустой `months` → ничего не грузит. Ключи результата — `monthKey()`.
+ * Initial state синхронно читается из monthCache → прогретые месяцы видны
+ * сразу. Пустой `months` → ничего не грузит. Ключи результата — `monthKey()`.
  */
 export function useScheduleMonthsMeta(
   months: ReadonlyArray<{ year: number; month: number }>,
 ): Map<string, ScheduleMonthMeta> {
   const keys = months.map((m) => monthKey(m.year, m.month)).join('|');
-  const [map, setMap] = useState<Map<string, ScheduleMonthMeta>>(() => new Map());
+  const [map, setMap] = useState<Map<string, ScheduleMonthMeta>>(() =>
+    readCachedMonthsMeta(months),
+  );
 
   useEffect(() => {
     if (months.length === 0) {
@@ -668,15 +732,7 @@ export function useScheduleMonthsMeta(
       await Promise.all(
         months.map(async (m) => {
           const entry = await loadMonthEntry(m.year, m.month);
-          next.set(monthKey(m.year, m.month), entry
-            ? {
-                exists: true,
-                committed: entry.committed === 1 || !!entry.state.meta.commit,
-                holidays: entry.state.meta.holidays,
-                overrides: entry.state.meta.overrides,
-                shops: entry.state.shops,
-              }
-            : { exists: false, committed: false, holidays: [], overrides: [], shops: [] });
+          next.set(monthKey(m.year, m.month), entry ? entryToMeta(entry) : NO_META);
         }),
       );
       if (!cancelled) setMap(next);

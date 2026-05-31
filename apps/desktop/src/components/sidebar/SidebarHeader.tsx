@@ -15,9 +15,11 @@ const WRAPPER_PADDING_X = 6;  // outer <div className="px-1.5"> в Sidebar.tsx
 const HEADER_PADDING_X = 4;   // px-1 = 4dp у самой шапки
 const BUTTON_GAP = 4;         // gap-1 = 4dp между кнопками
 const BUTTON_SIZE = 24;       // h-6 w-6 = 24dp
-// 6dp — тот же visible gap что у NavItem tooltip в collapsed (button right at
-// sidebar_width-6, sideOffset=12 → tooltip at sidebar_width+6).
-const TOOLTIP_GAP = 6;
+// Выравниваем тултипы шапки ровно по тултипам NavItem (Хранилище/График…):
+// NavItem-кнопка во всю ширину колонки (правый край на sidebar_width−6), её
+// tooltip `sideOffset=20` → tooltip на sidebar_width+14. Наша формула даёт
+// tooltip на sidebar_width+TOOLTIP_GAP, поэтому GAP = 14 (а не 6).
+const TOOLTIP_GAP = 14;
 
 /**
  * Top row sidebar — collapse-toggle + search.

@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from 'react';
 import { AlertCircle, Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
@@ -45,9 +46,8 @@ export function MolTopBar({
         {tab === 'mol' ? t('sidebar.nav_mol') : t('mol.tab_shops')}
       </span>
 
-      {tab === 'mol' ? (
-        <>
-          {recordCount > 0 && (
+      {tab === 'mol'
+        ? recordCount > 0 && (
             <>
               <span className="no-drag-region shrink-0 tabular-nums text-[12px] font-medium text-presence-online">
                 {recordCount.toLocaleString('ru-RU')}
@@ -74,26 +74,29 @@ export function MolTopBar({
                 </span>
               </span>
             </>
+          )
+        : (
+            <span className="no-drag-region flex items-center gap-1.5 text-[11.5px] tabular-nums text-text-muted">
+              {/* Цеха: кол-во (зелёным = актуально сейчас) + ранее (серым) + разница. */}
+              <span className="text-[12px] font-medium text-presence-online">{shopsCount.toLocaleString('ru-RU')}</span>
+              <span>{t('mol.previous', { count: '—' })}</span>
+              <span className="font-medium">(—)</span>
+              <span className="text-text-muted/50">·</span>
+              {/* Склады: подпись + кол-во (зелёным) + ранее (серым) + разница. */}
+              <span>{t('mol.stat_warehouses')}</span>
+              <span className="text-[12px] font-medium text-presence-online">{warehousesCount.toLocaleString('ru-RU')}</span>
+              <span>{t('mol.previous', { count: '—' })}</span>
+              <span className="font-medium">(—)</span>
+            </span>
           )}
-          <MolSearchField value={query} onChange={onQueryChange} />
-        </>
-      ) : (
-        <>
-          <span className="no-drag-region flex items-center gap-1.5 text-[11.5px] tabular-nums text-text-muted">
-            {/* Цеха: кол-во (зелёным = актуально сейчас) + ранее (серым) + разница. */}
-            <span className="text-[12px] font-medium text-presence-online">{shopsCount.toLocaleString('ru-RU')}</span>
-            <span>{t('mol.previous', { count: '—' })}</span>
-            <span className="font-medium">(—)</span>
-            <span className="text-text-muted/50">·</span>
-            {/* Склады: подпись + кол-во (зелёным) + ранее (серым) + разница. */}
-            <span>{t('mol.stat_warehouses')}</span>
-            <span className="text-[12px] font-medium text-presence-online">{warehousesCount.toLocaleString('ru-RU')}</span>
-            <span>{t('mol.previous', { count: '—' })}</span>
-            <span className="font-medium">(—)</span>
-          </span>
-          <div className="flex-1" />
-        </>
-      )}
+
+      {/* Единый поиск — на обеих вкладках, как у МОЛ. Плейсхолдер по вкладке. */}
+      <MolSearchField
+        value={query}
+        onChange={onQueryChange}
+        placeholder={tab === 'mol' ? t('mol.composer_placeholder') : t('shops.search_ph')}
+      />
+      <div className="flex-1" />
 
       {hasError && errorMessage && (
         <span className="no-drag-region flex shrink-0 items-center gap-1 text-[12px] text-danger">
@@ -108,19 +111,30 @@ export function MolTopBar({
 /**
  * Поле поиска МОЛ в шапке — зеркало ProbaSearchField графика: компактный
  * h-7 пилл, clay-контур + clay-иконка когда активно. Живой фильтр (onChange),
- * Esc — очистить. Растягивается на остаток ширины шапки.
+ * Esc — очистить. Ширина пилла — РОВНО по тексту (placeholder, либо значение
+ * если оно длиннее): плашка «обнимает» текст и сразу заканчивается, не
+ * растягиваясь на всю шапку. Замер через скрытый sizer-span (точная ширина
+ * проп. шрифта + кириллица), `+58px` — место под иконки поиска/очистки.
  */
 function MolSearchField({
   value,
   onChange,
+  placeholder,
 }: {
   value: string;
   onChange: (v: string) => void;
+  placeholder: string;
 }): JSX.Element {
   const { t } = useTranslation();
   const active = value.trim() !== '';
+  const sizerRef = useRef<HTMLSpanElement>(null);
+  const [textW, setTextW] = useState(0);
+  // useLayoutEffect — ширина выставляется ДО paint, без мелькания.
+  useLayoutEffect(() => {
+    if (sizerRef.current) setTextW(sizerRef.current.offsetWidth);
+  }, [value, placeholder]);
   return (
-    <div className="no-drag-region relative flex h-7 min-w-0 flex-1 items-center">
+    <div className="no-drag-region relative flex h-7 shrink-0 items-center">
       <Search
         className={cn(
           'pointer-events-none absolute left-2 h-3.5 w-3.5 transition-colors',
@@ -128,6 +142,15 @@ function MolSearchField({
         )}
         strokeWidth={1.75}
       />
+      {/* Невидимый sizer — мерит ширину текста (placeholder либо длинного value)
+          тем же шрифтом 12px, чтобы инпут был точно по тексту. */}
+      <span
+        ref={sizerRef}
+        aria-hidden
+        className="pointer-events-none invisible absolute whitespace-pre text-[12px]"
+      >
+        {value.length > placeholder.length ? value : placeholder}
+      </span>
       <input
         type="text"
         value={value}
@@ -141,9 +164,10 @@ function MolSearchField({
             e.currentTarget.blur();
           }
         }}
-        placeholder={t('mol.composer_placeholder')}
+        placeholder={placeholder}
+        style={{ width: textW + 58 }}
         className={cn(
-          'h-7 w-full min-w-0 rounded-md pl-7 pr-7 text-[12px] text-text-primary outline-none',
+          'h-7 rounded-md pl-7 pr-7 text-[12px] text-text-primary outline-none',
           'transition-[background-color,box-shadow] placeholder:text-text-muted/60',
           active
             ? 'bg-accent-clay/[0.08] ring-1 ring-accent-clay/55'

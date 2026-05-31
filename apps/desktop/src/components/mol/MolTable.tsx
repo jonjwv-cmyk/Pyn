@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
 import * as Dialog from '@radix-ui/react-dialog';
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, Copy as CopyIcon, Search, SlidersHorizontal, X } from 'lucide-react';
-import type { MolRecord } from '@pyn/core';
+import type { MolRecord, ParsedMolQuery } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import {
   formatMobilePhone,
@@ -19,6 +19,8 @@ interface MolTableProps {
   hasSidebar: boolean;
   onContactAction: (req: ContactActionRequest) => void;
   persistScrollKey: string;
+  /** Главный поиск (из MolTopBar) — для подсветки найденного в ячейках. */
+  searchQuery?: ParsedMolQuery;
 }
 
 /**
@@ -69,6 +71,7 @@ export function MolTable({
   hasSidebar,
   onContactAction,
   persistScrollKey,
+  searchQuery,
 }: MolTableProps) {
   const { t } = useTranslation();
   const tableRef = useRef<HTMLTableElement>(null);
@@ -646,6 +649,7 @@ export function MolTable({
                 key={`${r.remoteId}-${r.warehouseId}-${idx}`}
                 record={r}
                 index={idx}
+                search={searchQuery}
                 onContactAction={onContactAction}
                 onCellMouseDown={handleCellMouseDown}
                 onCellMouseEnter={handleCellMouseEnter}
@@ -914,6 +918,8 @@ interface SelectionBounds {
 interface RowProps {
   record: MolRecord;
   index: number;
+  /** Главный поиск — подсветка найденного значения «пиллом». */
+  search?: ParsedMolQuery;
   onContactAction: (req: ContactActionRequest) => void;
   onCellMouseDown: (r: number, c: number) => (ev: React.MouseEvent) => void;
   onCellMouseEnter: (r: number, c: number) => () => void;
@@ -930,6 +936,7 @@ interface RowProps {
 function MolRow({
   record,
   index,
+  search,
   onContactAction,
   onCellMouseDown,
   onCellMouseEnter,
@@ -945,6 +952,16 @@ function MolRow({
   const { t } = useTranslation();
   const mobile = formatMobilePhone(record.mobile);
   const workPhones = splitAndFormatWorkPhones(record.work);
+
+  // Подсветка найденного по режиму главного поиска: name → ФИО/должность/таб;
+  // phone → телефоны/таб (по цифрам); email → почта.
+  const mode = search?.mode;
+  const sq = search?.tokens[0] ?? '';
+  const nameQ = mode === 'name' ? sq : '';
+  const phoneQ = mode === 'phone' ? sq : '';
+  const emailQ = mode === 'email' ? sq : '';
+  const tabQ = mode === 'phone' ? phoneQ : nameQ;
+  const tabKind = mode === 'phone' ? 'digits' : 'text';
 
   // §design — список НЕ красим (ни зебры, ни заливки строк) — только тонкие
   // divider'ы + hover. Семантику несёт цвет ТЕКСТА статуса: «Работает» —
@@ -1016,11 +1033,11 @@ function MolRow({
 
       <Td tdRef={setCellRef(index, 1)} {...cellProps(1)}>
         <div className="whitespace-normal break-words text-[13px] font-medium leading-snug text-text-strong">
-          {record.fio || '—'}
+          <SearchMark text={record.fio || '—'} query={nameQ} />
         </div>
         {record.position && (
           <div className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-text-muted">
-            {record.position}
+            <SearchMark text={record.position} query={nameQ} />
           </div>
         )}
       </Td>
@@ -1034,7 +1051,7 @@ function MolRow({
                 onClick={callMobile}
                 className="text-left whitespace-nowrap text-text-strong hover:text-accent-clay"
               >
-                {mobile}
+                <SearchMark text={mobile} query={phoneQ} kind="digits" />
               </button>
             )}
             {workPhones.map((p, i) => (
@@ -1044,7 +1061,7 @@ function MolRow({
                 onClick={() => callWork(p)}
                 className="text-left whitespace-nowrap text-[11px] text-text-muted hover:text-accent-clay"
               >
-                {p}
+                <SearchMark text={p} query={phoneQ} kind="digits" />
               </button>
             ))}
           </div>
@@ -1060,7 +1077,7 @@ function MolRow({
             onClick={sendMail}
             className="block text-left break-all leading-snug text-accent-clay hover:underline"
           >
-            {record.mail}
+            <SearchMark text={record.mail} query={emailQ} />
           </button>
         ) : (
           <span className="text-text-muted">—</span>
@@ -1078,7 +1095,7 @@ function MolRow({
         </div>
         {record.tab && (
           <div className="mt-0.5 text-[10.5px] tabular-nums text-text-muted">
-            таб. {record.tab}
+            таб. <SearchMark text={record.tab} query={tabQ} kind={tabKind} />
           </div>
         )}
       </Td>
@@ -1500,4 +1517,58 @@ function copyTsv(tsv: string): void {
     try { document.execCommand('copy'); } catch (_) { /* noop */ }
     document.body.removeChild(ta);
   });
+}
+
+// ─── Подсветка найденного ──────────────────────────────────────────────────
+
+/** Диапазон совпадения: text — substring; digits — по цифрам сквозь формат. */
+function molSearchRange(text: string, query: string, kind: 'text' | 'digits'): [number, number] | null {
+  const q = query.trim();
+  if (!q || !text) return null;
+  if (kind === 'text') {
+    const idx = text.toLowerCase().indexOf(q.toLowerCase());
+    return idx === -1 ? null : [idx, idx + q.length];
+  }
+  const qd = q.replace(/\D/g, '');
+  if (!qd) return null;
+  const digitPos: number[] = [];
+  let digits = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charAt(i);
+    if (ch >= '0' && ch <= '9') {
+      digitPos.push(i);
+      digits += ch;
+    }
+  }
+  const di = digits.indexOf(qd);
+  if (di === -1) return null;
+  return [digitPos[di]!, digitPos[di + qd.length - 1]! + 1];
+}
+
+/**
+ * Подсветка найденного «пиллом» — clay-обводка 1px + мягкое свечение (как
+ * подсветка склада в графике, `.proba-code--search`). Подсвечивает совпавшую
+ * подстроку; для телефонов матч идёт по цифрам сквозь пробелы формата.
+ */
+function SearchMark({
+  text,
+  query,
+  kind = 'text',
+}: {
+  text: string;
+  query: string;
+  kind?: 'text' | 'digits';
+}): JSX.Element {
+  const range = query ? molSearchRange(text, query, kind) : null;
+  if (!range) return <>{text}</>;
+  const [s, e] = range;
+  return (
+    <>
+      {text.slice(0, s)}
+      <span className="rounded-[3px] bg-accent-clay/10 px-0.5 text-text-strong shadow-[0_0_0_1px_rgba(217,119,87,0.9),0_0_5px_1px_rgba(217,119,87,0.3)]">
+        {text.slice(s, e)}
+      </span>
+      {text.slice(e)}
+    </>
+  );
 }

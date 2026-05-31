@@ -18,7 +18,7 @@ import { cn } from '@/lib/cn';
 import { formatWorkPhone, splitAndFormatWorkPhones } from '@/lib/mol-format';
 import { clusterLabel, monthLabel, weekdayShortLabel } from '@/lib/i18n-labels';
 import { computeRowDates } from '@/lib/schedule/compute';
-import { monthKey, useScheduleMonthsMeta } from '@/lib/schedule/use-schedule-sync';
+import { currentThreeMonths, monthKey, useScheduleMonthsMeta } from '@/lib/schedule/use-schedule-sync';
 import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
 import { LockedEditorContent } from '@/components/schedule/EditorLockedOverlay';
 import { useWarehousesStore } from '@/lib/warehouses-store';
@@ -56,7 +56,9 @@ export function WarehouseSidebar({ warehouseIds, onContactAction }: WarehouseSid
       <aside
         ref={scrollRef}
         onScroll={checkScroll}
-        className="flex flex-1 flex-col overflow-y-auto p-3"
+        // pl-3 — только внутренний зазор от таблицы; верх/право/низ задаёт единая
+        // рамка 16px родителя (p-4), карточки стоят ровно на этой линии.
+        className="flex flex-1 flex-col overflow-y-auto pl-3"
       >
         <div className="flex flex-col gap-2.5">
           {warehouseIds.map((wid) => (
@@ -188,21 +190,8 @@ export function WarehouseCard({
 
 // ─── 3-month delivery schedule ───────────────────────────────────────────────
 
-/** prev / current / next месяц относительно сегодня. */
-function buildThreeMonths(): { year: number; month: number }[] {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m0 = now.getMonth(); // 0-based
-  return [-1, 0, 1].map((delta) => {
-    const idx = m0 + delta;
-    const year = y + Math.floor(idx / 12);
-    const month = ((idx % 12) + 12) % 12 + 1;
-    return { year, month };
-  });
-}
-
 /** Цвет дня: прошёл → серый; сегодня → зелёный; впереди → жёлтый. */
-function dayToneClass(
+export function dayToneClass(
   year: number, month: number, day: number,
   todayY: number, todayM: number, todayD: number,
 ): string {
@@ -215,7 +204,7 @@ function dayToneClass(
 }
 
 /** День недели склада в зафиксированном месяце (из frozen-цехов снапшота). */
-function frozenWeekday(
+export function frozenWeekday(
   shops: ReadonlyArray<{ rows: ReadonlyArray<{ weekday: string; warehouses: ReadonlyArray<{ code: string }> }> }>,
   code: string,
 ): WarehouseWeekday | null {
@@ -244,7 +233,7 @@ function ScheduleMonthsBlock({
   weekday: WarehouseWeekday;
 }) {
   const { t } = useTranslation();
-  const months = useMemo(() => buildThreeMonths(), []);
+  const months = useMemo(() => currentThreeMonths(), []);
   const metaMap = useScheduleMonthsMeta(months);
 
   const now = new Date();
@@ -389,7 +378,7 @@ function statusFromWarehouse(w: Warehouse): StatusOption {
   return 'idle';
 }
 
-function EditDialog({ warehouse }: { warehouse: Warehouse }) {
+export function EditDialog({ warehouse }: { warehouse: Warehouse }) {
   const { t } = useTranslation();
   const [saving, setSaving] = useState(false);
 
@@ -507,7 +496,7 @@ function EditDialog({ warehouse }: { warehouse: Warehouse }) {
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-bg-deep/70 backdrop-blur-[2px]" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[340px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-default bg-bg-elevated p-3.5 shadow-2xl outline-none">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[400px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-default bg-bg-elevated p-3.5 shadow-2xl outline-none">
           <Dialog.Title className="text-[13px] font-semibold text-text-strong">
             {t('mol.warehouse')} {warehouse.id}
           </Dialog.Title>
@@ -532,7 +521,7 @@ function EditDialog({ warehouse }: { warehouse: Warehouse }) {
                     type="button"
                     onClick={() => tryChangeStatus(opt.key)}
                     className={cn(
-                      'h-7 rounded text-[10.5px] font-semibold outline-none transition-colors',
+                      'h-7 whitespace-nowrap rounded text-[10.5px] font-semibold outline-none transition-colors',
                       active
                         ? 'bg-accent-clay-bg text-accent-clay ring-1 ring-inset ring-accent-clay/40'
                         : 'bg-white/[0.04] text-text-primary hover:bg-white/[0.08] hover:text-text-strong',
@@ -575,7 +564,7 @@ function EditDialog({ warehouse }: { warehouse: Warehouse }) {
                     type="button"
                     onClick={() => setCluster((cur) => (cur === c ? null : c))}
                     className={cn(
-                      'h-7 rounded text-[11px] font-semibold outline-none transition-colors',
+                      'h-7 whitespace-nowrap rounded text-[11px] font-semibold outline-none transition-colors',
                       cluster === c
                         ? 'bg-accent-clay-bg text-accent-clay ring-1 ring-inset ring-accent-clay/40'
                         : 'bg-white/[0.04] text-text-primary hover:bg-white/[0.08] hover:text-text-strong',

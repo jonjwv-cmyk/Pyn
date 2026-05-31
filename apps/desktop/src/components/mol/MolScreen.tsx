@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { cn } from '@/lib/cn';
 import { useMolStore, useUiStateStore } from '@/lib/stores';
@@ -45,6 +45,10 @@ export function MolScreen() {
   const query = useUiStateStore((s) => s.molQuery);
   const setQuery = useUiStateStore((s) => s.setMolQuery);
   const [actionRequest, setActionRequest] = useState<ContactActionRequest | null>(null);
+  // Поиск по вкладке «Цеха» — отдельный от МОЛ-запроса (склад · цех · телефон).
+  // Персистентный (как molQuery) — возврат на Цеха сохраняет последний запрос.
+  const shopsQuery = useUiStateStore((s) => s.shopsQuery);
+  const setShopsQuery = useUiStateStore((s) => s.setShopsQuery);
 
   // §v1.2.14 — initMol() и useWsEvent('base_changed') переехали в App.tsx.
   // §pyn-1.2.27 — inline-фильтр «Уточнить по найденному» удалён: per-column
@@ -90,6 +94,14 @@ export function MolScreen() {
   // сайдбара (флайаут «База»). Счётчики складов/цехов — из warehouses-store;
   // «сейчас» = активные (без is_removed).
   const tab = useUiStateStore((s) => s.baseTab);
+  // Цеха — тяжёлый лист (расчёт графика по всем складам). Чтобы возврат был
+  // мгновенным (как Новости/Таблицы), монтируем его лениво при первом заходе и
+  // дальше держим в DOM с display-toggle — пересоздания и пересчёта больше нет,
+  // scroll сохраняется браузером. МОЛы лёгкие при пустом запросе — mounted всегда.
+  const [shopsEverOpened, setShopsEverOpened] = useState(() => tab === 'warehouses');
+  useEffect(() => {
+    if (tab === 'warehouses') setShopsEverOpened(true);
+  }, [tab]);
   const warehouses = useWarehousesStore((s) => s.warehouses);
   const { shopsCount, warehousesCount } = useMemo(() => {
     const active = warehouses.filter((w) => !w.is_removed);
@@ -151,12 +163,19 @@ export function MolScreen() {
         previousCount={meta?.previous?.recordsCount ?? null}
         shopsCount={shopsCount}
         warehousesCount={warehousesCount}
-        query={query}
-        onQueryChange={setQuery}
+        query={tab === 'mol' ? query : shopsQuery}
+        onQueryChange={tab === 'mol' ? setQuery : setShopsQuery}
       />
-      {tab === 'mol' ? (
+      {/* МОЛы — always-mounted, display-toggle (мгновенный возврат, scroll в DOM). */}
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        style={{ display: tab === 'mol' ? 'flex' : 'none' }}
+      >
         <WorkspaceCard>
-          <div className="flex flex-1 overflow-hidden">
+          {/* p-4 — единое поле 16px по периметру (как на всех листах): таблица
+              и правый сайдбар стоят ровно на этой линии. Внутренний зазор между
+              таблицей и сайдбаром даёт pl у сайдбара (не края подложки). */}
+          <div className="flex flex-1 overflow-hidden p-4">
             <section
               className={cn(
                 'relative flex min-w-0 flex-1 flex-col overflow-hidden',
@@ -174,6 +193,7 @@ export function MolScreen() {
                   hasSidebar={rightSidebar}
                   onContactAction={setActionRequest}
                   persistScrollKey={`mol:${parsed.raw || 'empty'}`}
+                  searchQuery={parsed}
                 />
               ) : (
                 <MolEmptyView state={emptyState} onContactAction={setActionRequest} />
@@ -187,10 +207,19 @@ export function MolScreen() {
             )}
           </div>
         </WorkspaceCard>
-      ) : (
-        <WorkspaceCard>
-          <ShopsTab />
-        </WorkspaceCard>
+      </div>
+
+      {/* Цеха — lazy-mount при первом заходе, дальше остаётся в DOM (display-
+          toggle). Тяжёлый расчёт графика происходит один раз; возврат мгновенный. */}
+      {shopsEverOpened && (
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          style={{ display: tab === 'warehouses' ? 'flex' : 'none' }}
+        >
+          <WorkspaceCard>
+            <ShopsTab query={shopsQuery} onContactAction={setActionRequest} />
+          </WorkspaceCard>
+        </div>
       )}
       <ContactActionDialog request={actionRequest} onClose={() => setActionRequest(null)} />
     </main>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import i18next from 'i18next';
+import { useTranslation } from 'react-i18next';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { Sidebar } from '@/components/sidebar';
 import { ChatConversation, ChatList } from '@/components/chats';
@@ -7,6 +8,7 @@ import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { MolScreen } from '@/components/mol';
 import { initMol, refreshMolFromServer } from '@/lib/mol-repo';
 import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
+import { prefetchScheduleMonthsMeta } from '@/lib/schedule/use-schedule-sync';
 import { NewsFeed } from '@/components/news';
 import { ProbaScreen } from '@/components/proba';
 import { StorageScreen } from '@/components/storage';
@@ -94,39 +96,43 @@ export function App() {
   const [hydrating, setHydrating] = useState(true);
 
   // §pyn-1.2.54 — runtime measurement реальной позиции PynMarkIcon в DOM.
-  // useLayoutEffect — синхронно после mount, ДО browser paint.
-  // Зависит ОТ splashSession чтобы replay тоже триггерил замер.
+  // §2026-05-30 — ПОЛЛИНГ всего окна до lift (фикс прыжка на холодном старте).
+  // Карточка LoginScreen дорастает уже ПОСЛЕ mount (QR-панель/контент), и
+  // иконка уезжает: ранний замер ловил transient (≈200), стабильная позиция
+  // ≈186 → splash-mark приземлялась на 200, реальная иконка на 186 → прыжок.
+  // НЕ останавливаемся на «двух совпавших» — начальное плато (200) держится
+  // дольше интервала, и ранний стоп фиксировал бы transient. Сэмплируем каждые
+  // 120ms всё окно до cap'а и обновляем target при каждом ИЗМЕНЕНИИ; последнее
+  // изменение (после догрузки карточки) и есть стабильная позиция. Все апдейты
+  // происходят ДО lift (mount + 2.3s) — translateY ещё 0 — поэтому невизуальны.
   const [iconCenterY, setIconCenterY] = useState<number | null>(null);
   useLayoutEffect(() => {
-    // §2026-05-29 — пока hydration не завершён, LoginScreen (а с ним и марка)
-    // ещё не в DOM — замер невозможен. Эффект перезапустится когда hydrating→false.
+    // Пока hydration не завершён, LoginScreen (и марка) ещё не в DOM.
     if (session || hydrating) return;
-    const tryMeasure = (tag: string): boolean => {
-      const icon = document.querySelector<HTMLElement>(
-        '[data-pyn-login-mark]',
-      );
-      if (!icon) {
-        window.pyn?.debugLog?.('splash:measure', `[${tag}] icon NOT FOUND`);
-        return false;
+    let cancelled = false;
+    let prev: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+    const CAP_MS = 1900; // успеть до lift (mount + 2.3s) с запасом
+    const sample = (): void => {
+      if (cancelled) return;
+      const icon = document.querySelector<HTMLElement>('[data-pyn-login-mark]');
+      const rect = icon?.getBoundingClientRect();
+      const cy =
+        rect && rect.height > 0 ? Math.round(rect.top + rect.height / 2) : null;
+      const elapsed = Date.now() - startedAt;
+      if (cy !== null && cy !== prev) {
+        setIconCenterY(cy);
+        window.pyn?.debugLog?.('splash:measure', `cy=${cy} t=${elapsed}`);
+        prev = cy;
       }
-      const rect = icon.getBoundingClientRect();
-      if (rect.height === 0) {
-        window.pyn?.debugLog?.('splash:measure', `[${tag}] zero rect`);
-        return false;
-      }
-      const cy = Math.round(rect.top + rect.height / 2);
-      window.pyn?.debugLog?.(
-        'splash:measure',
-        `[${tag}] iconCenterY=${cy}`,
-      );
-      setIconCenterY(cy);
-      return true;
+      if (elapsed < CAP_MS) timer = setTimeout(sample, 120);
     };
-    if (tryMeasure('sync')) return;
-    const raf = requestAnimationFrame(() => {
-      if (!tryMeasure('rAF')) setTimeout(() => tryMeasure('100ms'), 100);
-    });
-    return () => cancelAnimationFrame(raf);
+    sample();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [session, splashSession, hydrating]);
   const splashTargetY =
     iconCenterY !== null ? iconCenterY - window.innerHeight / 2 : null;
@@ -142,6 +148,8 @@ export function App() {
     // §2026-05-29 — splash-таймеры стартуют только ПОСЛЕ hydration (LoginScreen
     // смонтирован, иконка замерена) — иначе lift пойдёт с fallback и прыгнет.
     if (hydrating) return;
+    // §diag — фиксируем каждый запуск таймеров (повторный запуск = причина double-lift).
+    window.pyn?.debugLog?.('splash:timers', `run #${splashSession} @${Date.now()}`);
     setSplashStage('splash');
     // §pyn-1.2.54 — тайминги:
     //   0–0.6s         → пустой тёмный экран
@@ -160,6 +168,11 @@ export function App() {
       clearTimeout(doneId);
     };
   }, [splashSession, hydrating]);
+  // §diag — лог каждого перехода splashStage: на холодном старте увидим, если
+  // 'splash' появляется дважды (повторный lift). Снять после фикса.
+  useEffect(() => {
+    window.pyn?.debugLog?.('splash:stage', `${splashStage} @${Date.now()}`);
+  }, [splashStage]);
   const [collapsed, setCollapsed] = useState(false);
   // Update flow state machine вынесен в useUpdateFlow hook (см. lib/hooks/use-update-flow.ts).
   // Источник правды — sidebar pill (click drives transitions).
@@ -469,6 +482,9 @@ export function App() {
     void initMol();
     // Складская база («Цеха») — тот же паттерн: eager preload (кэш + сервер).
     void initWarehouses();
+    // Прогреваем мету графика (prev/current/next) — карточки склада показывают
+    // дни доставки сразу, без async pop-in при первом открытии Базы.
+    prefetchScheduleMonthsMeta();
   }, [session]);
   useWsEvent<BaseChangedEvent>('base_changed', (event) => {
     // §pyn-1.2.21 — server теперь шлёт counts → optimistic update мета
@@ -957,9 +973,15 @@ export function App() {
             {activeSection === 'proba' && <ProbaScreen />}
 
             {/* §design — МОЛ вынесен на подложку: MolTopBar (h-9 прозрачная) +
-                контент в WorkspaceCard. Conditional render — store держит
-                query+scrollTop, webview/blob-сохранения не требуется. */}
-            {activeSection === 'mol' && <MolScreen />}
+                контент в WorkspaceCard. Always-mounted (display-toggle) как
+                Новости/Таблицы — тяжёлый лист «Цеха» не пересоздаётся при
+                возврате в раздел: мгновенный switch, scroll/состояние в DOM. */}
+            <div
+              className="flex min-h-0 flex-1 flex-col"
+              style={{ display: activeSection === 'mol' ? 'flex' : 'none' }}
+            >
+              <MolScreen />
+            </div>
 
             {/* §design — Хранилище вынесено на подложку: h-9 шапка + контент
                 (Breadcrumb/Home/FileList) в WorkspaceCard. Conditional render —
@@ -969,7 +991,7 @@ export function App() {
             {/* §design — Новости always-mounted, вынесены на подложку: шапка на
                 подложке + контент в WorkspaceCard (внутри NewsFeed). */}
             <div
-              className="flex flex-1 flex-col"
+              className="flex min-h-0 flex-1 flex-col"
               style={{ display: activeSection === 'news' ? 'flex' : 'none' }}
             >
               <NewsFeed
@@ -1011,11 +1033,18 @@ export function App() {
                 display: activeSection === 'chats' ? 'flex' : 'none',
               }}
             >
-              {/* §design — список (экспедиторы/клиенты) + переписка в ОДНОЙ
-                  карточке-подложке: список слева (прозрачный, с разделителем),
-                  переписка справа. Не отдельной полосой. */}
+              {/* §design — h-9 шапка на подложке (как у остальных экранов: МОЛ/
+                  Новости/...), чтобы WorkspaceCard начинался на той же высоте и
+                  подложка была одного размера во всех разделах. */}
+              <ChatsScreenHeader />
+              {/* §design — список + переписка как ОДНО окно: общий chat-pattern-bg
+                  фон на всю карточку, слева прозрачный список, справа переписка.
+                  Без разделительной полосы между ними. */}
               <WorkspaceCard>
-                <div className="flex min-h-0 flex-1">
+                {/* p-4 — единое поле 16px по периметру (как на всех листах):
+                    список + переписка стоят ровно на этой линии. Фон-паттерн —
+                    во всю карточку. */}
+                <div className="chat-pattern-bg flex min-h-0 flex-1 p-4">
                   <ChatList
                     conversations={partners}
                     activeId={activeChatId}
@@ -1093,4 +1122,20 @@ export function App() {
     </Tooltip.Provider>
   );
 
+}
+
+/**
+ * h-9 шапка раздела Чаты на подложке (drag-region) — зеркало шапок других
+ * экранов (МОЛ/Новости/Хранилище). Нужна, чтобы WorkspaceCard начинался на
+ * одной высоте во всех разделах и подложка была одного размера.
+ */
+function ChatsScreenHeader(): JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <header className="drag-region flex h-9 shrink-0 items-center px-4">
+      <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
+        {t('sidebar.nav_chats')}
+      </span>
+    </header>
+  );
 }

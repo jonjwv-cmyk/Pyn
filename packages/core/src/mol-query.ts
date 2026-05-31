@@ -92,6 +92,16 @@ export function parseMolQuery(input: string): ParsedMolQuery {
       }
       const valid = Array.from(new Set(splitTokens.filter((t) => WAREHOUSE_TOKEN.test(t))));
       const invalid = Array.from(new Set(splitTokens.filter((t) => !WAREHOUSE_TOKEN.test(t))));
+      // §pyn — нет ни одного валидного 4-значного склада, но всего цифр > 4
+      // (например рабочий телефон «49 71 95», набранный с пробелами) → это
+      // телефон, не склад. Безопасно: эти входы в warehouse-mode и так ничего
+      // не находили (нет valid-токенов).
+      if (valid.length === 0 && allDigitsOnly) {
+        const allDigits = raw.replace(/\D/g, '');
+        if (allDigits.length > 4) {
+          return { mode: 'phone', raw, tokens: [allDigits] };
+        }
+      }
       return {
         mode: 'warehouse',
         raw,

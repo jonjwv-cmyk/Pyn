@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -8,7 +8,6 @@ import { WorkspaceCard } from '@/components/WorkspaceCard';
 import {
   computeNaturalDays,
   computeRowDates,
-  formatDates,
   splitWarehousesByOverrides,
 } from '@/lib/schedule/compute';
 import { migrateScheduleLocalStorageToServer } from '@/lib/schedule/migrate-localstorage';
@@ -616,7 +615,7 @@ export function ProbaScreen() {
       />
 
       <WorkspaceCard>
-        <div className="proba-canvas flex-1 overflow-auto">
+        <div className="proba-canvas flex-1 overflow-y-auto overflow-x-hidden">
           <div className="proba-sheet">
             <div className="proba-sticky">
             <header className="proba-header">
@@ -1257,6 +1256,15 @@ function ShopBlock({
     }));
   }, [shop.rows, meta]);
 
+  // Подсветка «сегодня»: число месяца, если на листе показан ТЕКУЩИЙ месяц/год
+  // (иначе «сегодня» к чужому месяцу не относится → -1, не подсветится).
+  // Чисто экранная (CSS .proba-date--today в @media screen), в печать не идёт.
+  const now = new Date();
+  const todayDay =
+    meta.year === now.getFullYear() && meta.month === now.getMonth() + 1
+      ? now.getDate()
+      : -1;
+
   // Read-only: список складов и состав цехов теперь полностью derive'ится из
   // warehouses store. Юзер меняет состав через МОЛ, не через график.
   //
@@ -1282,7 +1290,16 @@ function ShopBlock({
                 >
                   {weekdayShortLabel(row.weekday, t)}
                 </span>
-                <span className="proba-dates">{formatDates(dates)}</span>
+                <span className="proba-dates">
+                  {dates.map((d, di) => (
+                    <Fragment key={d}>
+                      {di > 0 ? ', ' : ''}
+                      <span className={d === todayDay ? 'proba-date--today' : undefined}>
+                        {d}
+                      </span>
+                    </Fragment>
+                  ))}
+                </span>
                 <div className="proba-codes">
                   {row.warehouses.map((w, i) => (
                     <WarehouseChip
@@ -1410,12 +1427,15 @@ function ProbaStyles() {
         box-sizing: border-box;
       }
 
-      /* Screen-only: график светлее (canvas = surface, не deep #161611) +
-         компактная шапка. БЕЗ масштабирования — лист заполняет ширину канваса
-         в натуральном размере (как лента Новостей, единообразно по приложению).
-         Печать (A4) — в @media print, отдельно. */
+      /* Screen-only: прокручиваемая рабочая область графика (.proba-canvas)
+         отступает на 16px от окантовки карточки со ВСЕХ сторон — единая линия
+         поля как на всех листах. Содержимое, в т.ч. при прокрутке, заканчивается
+         на расстоянии от края. Поле того же тона (#1F1E1B, невидимое), видимая
+         окантовка = граница карточки. БЕЗ масштабирования. Печать (A4) —
+         @media print отдельно (margin на экране не применяется). */
       @media screen {
         .proba-canvas {
+          margin: 16px;
           background: #1F1E1B;
         }
       }
@@ -1970,21 +1990,24 @@ function ProbaStyles() {
          базовых правил → они перекрывали его, изменения не применялись). Печать
          (@media print ниже) — отдельная media, этими правилами НЕ затрагивается. */
       @media screen {
-        /* Компактная шапка — убираем пустоту сверху, заголовок/Утверждаю выше,
-           полоски Дни/Склады сразу под заголовком. */
-        .proba-sheet { padding-top: 2mm; }
-        .proba-sticky { margin-top: -2mm; padding-top: 2mm; }
+        /* §screen — содержимое прижато к ЕДИНОЙ рамке 16px (это margin .proba-
+           canvas), без «бумажных» полей 14мм: у листа нет внутреннего паддинга,
+           а sticky-шапка без расширяющих негативных margin'ов и без своего
+           паддинга → логотип/текст/строки/УТВЕРЖДАЮ стоят ровно по рамке со всех
+           сторон. Печать (@media print) использует поля 10/14мм — НЕ затронута. */
+        .proba-sheet { padding: 0; }
+        .proba-sticky { margin: 0; padding: 0 0 1mm; }
         .proba-header-top { align-items: start; }
         .proba-header { margin-bottom: 1.5mm; padding-bottom: 1mm; }
         /* Верхушка «УТВЕРЖДАЮ» вровень с верхушкой «ГРАФИК ДОСТАВКИ»: заголовок
            14pt в пилле (padding + бОльшая ascent-зона) садится чуть ниже, поэтому
            сдвигаем блок approver вниз на эту же величину. */
         .proba-approver { margin-top: 0.6mm; }
-        /* ЕВРАЗ (логотип + слово) на одну линию с «ГРАФИК ДОСТАВКИ»: у title
-           есть padding-top 0.4mm, у brand его нет → одинаковый 14pt cap-line
-           совпадёт, если подпереть brand вниз на ту же величину. Тогда ЕВРАЗ /
-           ГРАФИК / УТВЕРЖДАЮ выровнены по верхней линии. Значение — на глаз, ±. */
-        .proba-brand { margin-top: 0.4mm; }
+        /* ЕВРАЗ (логотип + слово) на одной линии с «ГРАФИК ДОСТАВКИ»
+           АВТОМАТИЧЕСКИ — по baseline (align-self у brand/title ниже), без
+           ручного подпора margin'ом. Оба 18px → базовые линии совпадают сами;
+           логотип масштабируется от кегля (height:0.72em) и встаёт от baseline
+           до cap-line, подгоняясь под высоту заголовка. */
         /* Зазор НАД линией = место для живой подписи между ФИО и линией.
            Иначе линия читается как разделитель, а не строка подписи.
            Высота на глаз (как и остальные mm в шапке). */
@@ -2007,8 +2030,16 @@ function ProbaStyles() {
           align-items: start;
         }
         .proba-header-top { display: contents; }
-        .proba-brand { grid-area: brand; }
-        .proba-title { grid-area: title; }
+        /* align-items:baseline (override center из базы) → внутри brand слово и
+           логотип на общей baseline; align-self:baseline → эта baseline
+           совпадает с baseline заголовка (две grid-ячейки одного ряда). */
+        .proba-brand { grid-area: brand; align-items: baseline; align-self: baseline; }
+        .proba-title { grid-area: title; align-self: baseline; }
+        /* Логотип ЕВРАЗ крупнее под кегль заголовка: 3-полосник с зазорами
+           оптически легче сплошных букв, поэтому base height:0.72em читается
+           мельче слова. Поднимаем до cap-line с запасом. Только экран; печать
+           сохраняет inline 0.72em. !important перекрывает inline-style SVG. */
+        .proba-brand-logo { height: 0.92em !important; align-self: baseline; }
         .proba-approver { grid-area: approver; }
         .proba-meta { grid-area: meta; }
         /* Склады отгрузки / удалены — строки ровно по 15 кодов (chunk в render),
@@ -2018,40 +2049,104 @@ function ProbaStyles() {
           flex-direction: column;
           gap: 0.8mm;
         }
+        /* flex-wrap → коды переносятся в пределах доступной ширины: узкое окно
+           не вызывает горизонтальную прокрутку листа. Чанк ≤15 из render
+           остаётся логической «строкой», просто допереносится при нехватке
+           места; метка/счётчик центрируются против всех получившихся строк
+           (--readonly align-items:center). */
         .proba-meta-code-row {
           display: flex;
-          gap: 0 1mm;
+          flex-wrap: wrap;
+          gap: 0.8mm 1mm;
         }
         .proba-meta-codes .proba-meta-code {
           min-width: 8mm;
           margin-right: 0;
         }
         .proba-meta-row--readonly { align-items: center; }
-        /* Полоски Дни/Склады — крупнее текст. */
-        /* Все 3 строки (Дни / Склады отгрузки / Склады удалены): счётчик │N
-           прижат к правому краю label (min-width общий) → счётчики и «│»
-           выстроены друг под другом единой вертикальной линией. */
-        .proba-meta-label { font-size: 7.5pt; display: flex; align-items: baseline; min-width: 42mm; }
-        /* Текст label фиксированной ширины → счётчик │N начинается на одном X
-           во всех строках (раньше right-align'ил весь «│N», но │8 и │17 разной
-           ширины → «│» съезжал на части месяцев). */
-        .proba-meta-label-text { min-width: 34mm; }
-        .proba-meta-value { font-size: 8pt; }
-        /* Заголовок таблицы (ДЕНЬ/ДАТА/СКЛАД) — в размер пиллов кластера. */
+        /* §screen-типографика (px; печать в @media print — свои pt). РОВНО три
+           размера, межстрочный в норме 1.3–1.5:
+             • Заголовок 18px / 24 — ЕВРАЗ/ГРАФИК;
+             • Контент   14px / 20 — цеха, склады-коды, даты, значения полосок;
+             • Подпись   12px / 16 — нумерация, метки, дни, счётчики, шапка,
+                                     УТВЕРЖДАЮ, ПОДГОТОВИЛ, Зафиксировано.
+           Иерархию внутри размера — весом и цветом, не кеглем. */
+        /* — Заголовок 18px / 24 — */
+        .proba-brand,
+        .proba-title { font-size: 18px; line-height: 24px; }
+        /* — Подпись 12px / 16 — */
+        /* §meta — метки Дни/Склады прижаты к ЛЕВОЙ линии листа (как ЕВРАЗ и
+           номера цехов); базовый left-padding строки даёт сдвиг — гасим его. */
+        .proba-meta-row { padding-left: 0; }
+        .proba-meta-label { font-size: 12px; line-height: 16px; display: flex; align-items: baseline; min-width: 50mm; }
+        /* Текст label фикс. ширины → разделитель │N, счётчик и колонка значений
+           стартуют на одном X во ВСЕХ строках. Ширина с запасом над самой длинной
+           меткой «ДНИ БЕЗ ДОСТАВКИ» (у коротких меток получается ровный отступ
+           до │ — это нормальная колоночная раскладка). */
+        .proba-meta-label-text { min-width: 40mm; }
         .proba-thead-day,
         .proba-thead-date,
-        .proba-thead-code { font-size: 7pt; letter-spacing: 0.04em; }
-        /* ДАТА — по центру своей колонки (над датами), чтобы ДЕНЬ/ДАТА/СКЛАД
-           не сливались. */
+        .proba-thead-code { font-size: 12px; line-height: 16px; letter-spacing: 0.04em; }
+        /* ДАТА — по центру своей колонки (над датами). */
         .proba-thead-date { text-align: center; }
-        .proba-cluster-count { font-size: 8pt; }
-        .proba-cluster-total { font-size: 8pt; }
-        /* Цеха и склады крупнее и читаемее (печать — свои размеры в @media print). */
-        .proba-shop-name { font-size: 10pt; }
-        .proba-shop-num { font-size: 8pt; }
-        .proba-dates { font-size: 8.5pt; }
-        .proba-code { font-size: 8.5pt; height: 4.4mm; }
-        .proba-day { font-size: 7pt; height: 4.4mm; padding: 0.4mm 1mm; }
+        .proba-cluster-count,
+        .proba-cluster-total { font-size: 12px; }
+        .proba-shop-num { font-size: 12px; line-height: 16px; }
+        .proba-day { font-size: 12px; height: 5mm; padding: 0.4mm 1.2mm; }
+        /* — Контент 14px / 20 (пиллы дней/кодов — высотой, без line-height) — */
+        .proba-meta-value { font-size: 14px; line-height: 20px; }
+        .proba-shop-name { font-size: 14px; line-height: 20px; }
+        .proba-dates { font-size: 14px; line-height: 20px; }
+        /* §сегодня — заметная подсветка числа-дня, совпавшего с СЕГОДНЯШНЕЙ датой
+           (только если на листе показан текущий месяц/год; см. todayDay в
+           ShopBlock — там же guard по месяцу). Насыщенная clay-пилюля + резкий 1px
+           контур + мягкое свечение (selection-стиль Pyn) — хорошо видно среди дат.
+           Чисто экранная: в @media print правила нет → в печать НЕ идёт. */
+        .proba-date--today {
+          background: rgba(217, 119, 87, 0.55);
+          color: #FFFFFF;
+          font-weight: 700;
+          border-radius: 4px;
+          padding: 0 5px;
+          box-shadow:
+            0 0 0 1px rgba(217, 119, 87, 0.95),
+            0 0 6px 1px rgba(217, 119, 87, 0.40);
+        }
+        .proba-code { font-size: 14px; height: 5.2mm; }
+
+        /* §выравнивание левого края (screen): нумерация цеха и шапка таблицы
+           прижаты к той же левой линии, что ЕВРАЗ/ГРАФИК и полоски Дни/Склады
+           (убираем доп. левый отступ shop/thead). Номер цеха — по левому краю
+           (1 и 10 начинаются на одной линии); колонки День/Дата/Склад остаются
+           под своей шапкой. */
+        .proba-shop { padding-left: 0; }
+        .proba-thead { padding-left: 0; }
+        .proba-shop-num { text-align: left; }
+        /* §коды складов — от одной линии под «СКЛАД». Колонка ДАТА фиксированной
+           ширины (а не minmax auto, которая плясала по строкам → коды шли
+           «шахматами»). thead и строки используют одни и те же колонки, поэтому
+           коды во ВСЕХ строках начинаются на одном X; если дат больше — общая
+           линия сдвигается вправо разом, а не по одной строке. */
+        .proba-row,
+        .proba-thead-row { grid-template-columns: 7mm 30mm 1fr; }
+        /* §УТВЕРЖДАЮ — правое выравнивание сохранено; шрифт в «Подписи» 12px/16,
+           имя выделено весом, не кеглем. */
+        .proba-approver,
+        .proba-approver-label,
+        .proba-approver-title,
+        .proba-approver-name,
+        .proba-approver-date { font-size: 12px; line-height: 16px; }
+        /* §низ листа — ПОДГОТОВИЛ-футер + строка «Зафиксировано» в «Подписи»
+           12px/16 (иерархия весом/цветом, НЕ кеглем). Печать — свои размеры в
+           @media print. Дочерние селекторы (label/name/title) намеренно
+           специфичнее: их базовые pt-правила стоят ПОСЛЕ этого блока, и без
+           повышенной специфичности перебивали бы 12px по source-order. */
+        .proba-verstka,
+        .proba-prepared,
+        .proba-row--empty,
+        .proba-prepared .proba-prepared-label,
+        .proba-prepared .proba-prepared-name,
+        .proba-prepared .proba-prepared-title { font-size: 12px; line-height: 16px; }
 
         /* Поиск склада — подсветка найденного цеха и его чипов. Цех: мягкая
            clay-заливка (как hover). Чип: резкий 1px clay-контур + рассеянное

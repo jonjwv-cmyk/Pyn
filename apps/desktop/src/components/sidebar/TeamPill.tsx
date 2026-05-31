@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Users } from 'lucide-react';
 import * as Popover from '@radix-ui/react-popover';
 import { useTranslation } from 'react-i18next';
 import { Avatar } from '@/components/ui/Avatar';
 import { PresenceDot } from '@/components/ui/PresenceDot';
 import { cn } from '@/lib/cn';
 import { useFormatYek } from '@/lib/hooks/use-format-yek';
+import { formatBandwidth, formatRtt, useConnectivity } from '@/lib/use-connectivity';
 import { usePresenceStore, useUsersStore } from '@/lib/stores';
 import type { Role, UserSummary } from '@pyn/core';
 
@@ -16,30 +16,36 @@ interface TeamPillProps {
 }
 
 /**
- * §pyn-1.2.43 — Team pill в нижней части Sidebar.
+ * Объединённый пилл «сеть + команда» в нижней части Sidebar (заменил отдельные
+ * ConnectivityIndicator + TeamPill).
  *
- * Показывает других admin/developer (без меня) — кто из коллег сейчас работает
- * в Pyn. Компактный pill с overlapping avatars + click → popover со списком
- * (имя + presence dot + last_seen).
+ * Две ячейки: слева сеть (мс / скорость, без слова «Онлайн»), справа команда
+ * («Команда» / N из M онлайн). Click → popover-список участников (аватар + имя +
+ * presence/last_seen). Свёрнуто — 3 строки: мс / скорость / «Команда N/N». Без
+ * рамки и без анимированного mark'а (по запросу — «не крутить, без обводки»).
  *
- * Источник presence — единый `usePresenceStore` (обновляется через WS push
- * presence_change + heartbeat response + getUsers fetch). Status для self
- * исключён, поэтому конкуренции с BottomUserRow нет.
- *
- * Фильтр: admins + developer, исключая текущего юзера. Если список пуст
- * (один админ в системе) — pill не рендерится.
- *
- * В collapsed-режиме показываем только counter без аватаров; popover работает
- * на click (анchor — counter).
+ * Источник presence — единый `usePresenceStore`; сеть — `useConnectivity`
+ * (RTT через WS-ping, bandwidth — browser estimate). Фильтр команды: admin +
+ * developer без текущего юзера.
  */
-export function TeamPill({ myLogin, myRole, collapsed }: TeamPillProps): JSX.Element | null {
+export function TeamPill({ myLogin, myRole, collapsed }: TeamPillProps): JSX.Element {
   const { t } = useTranslation();
   const users = useUsersStore((s) => s.users);
 
   // §pyn-1.2.43 — Source of truth presence: usePresenceStore.byLogin.
   // Selector возвращает stable Map-like объект (Zustand shallow compares).
-  // Если меняется один login — re-render только если он в нашем фильтре.
   const presenceByLogin = usePresenceStore((s) => s.byLogin);
+
+  // Сеть — левая ячейка пилла (мс + скорость), без слова «Онлайн».
+  const { online, downlinkMbps, rttMs } = useConnectivity();
+  const speed = formatBandwidth(downlinkMbps);
+  const rtt = online ? formatRtt(rttMs) : null;
+  const rttColor =
+    rttMs === null || rttMs < 100
+      ? 'text-text-muted'
+      : rttMs < 300
+        ? 'text-amber-400'
+        : 'text-danger';
 
   const teammates = useMemo(() => {
     const filtered = users
@@ -91,66 +97,59 @@ export function TeamPill({ myLogin, myRole, collapsed }: TeamPillProps): JSX.Ele
           <button
             type="button"
             className={cn(
-              // §pyn-1.2.54 — pl-[5px] компенсирует border (1px) чтобы content
-              // (mark, avatar stack) был на той же визуальной линии что и
-              // avatar/Online text/nav icons (aside + 12px).
-              // h-10 — единая высота с Update/Session/Connectivity, не скачет.
-              'group flex h-10 w-full items-center gap-2 rounded-md py-1 pl-[5px] pr-2',
-              'border border-border-subtle bg-bg-elevated text-text-secondary',
-              'outline-none transition-colors',
-              'hover:border-border-default hover:text-text-strong',
-              'data-[state=open]:border-border-default data-[state=open]:text-text-strong',
+              // px-1.5 (6) + внешний wrapper px-1.5 (6) = content на линии 12,
+              // как остальные элементы sidebar. Без border/обводки и без
+              // анимированного mark'а (по запросу). h-10 — единая высота.
+              'group flex h-10 w-full items-center rounded-md text-text-secondary',
+              'bg-bg-elevated outline-none transition-colors',
+              'hover:bg-bg-hover hover:text-text-strong',
+              'data-[state=open]:bg-bg-hover data-[state=open]:text-text-strong',
+              collapsed
+                ? 'flex-col items-start justify-center gap-0 px-1.5 py-0.5'
+                : 'gap-2 px-1.5 py-1',
             )}
             aria-label={t('team_pill.aria_open', { count: teammates.length })}
           >
-            {/* §pyn-1.2.54 — collapsed: Pyn-mark логотип (вместо серой
-                Users-иконки) + counter «N/M». Expanded: avatar stack +
-                «N в сети» подпись. */}
             {collapsed ? (
               <>
-                {/* §pyn-1.2.54 — Animated Pyn-mark в icon-box (28×28, justify-start)
-                    чтобы выровнять mark с другими элементами sidebar (NavItem
-                    icons, BottomUserRow avatar) по одной невидимой линии слева.
-                    -ml-[4px] компенсирует встроенный offset stem-полоски внутри
-                    team-mark CSS (left: 15.625% от 24px = 3.75px) — без этого
-                    самая левая полоска визуально смещена на 4px от линии 12. */}
-                <span className="-ml-[4px] flex h-7 w-7 shrink-0 items-center justify-start">
-                  <div className="team-mark" aria-hidden>
-                    <div className="team-mark-stem" />
-                    <div className="team-mark-top-bow" />
-                    <div className="team-mark-mid-bow" />
-                  </div>
-                </span>
-                {!isEmpty && (
-                  <span className="text-[10.5px] font-medium tabular-nums leading-none text-text-secondary">
-                    {onlineCount}/{teammates.length}
-                  </span>
-                )}
-              </>
-            ) : isEmpty ? (
-              <>
+                {/* Свёрнуто — 3 строки: мс (1), скорость (2), Команда N/N (3). */}
                 <span
                   className={cn(
-                    'flex h-[22px] w-[22px] shrink-0 items-center justify-center',
-                    'rounded-full bg-bg-hover text-text-muted',
+                    'whitespace-nowrap text-[9px] leading-[11px] tabular-nums',
+                    online ? rttColor : 'text-danger',
                   )}
                 >
-                  <Users className="h-3 w-3" strokeWidth={1.75} />
+                  {rtt ?? '—'}
                 </span>
-                <span className="ml-auto flex shrink-0 items-baseline gap-1 text-[11.5px]">
-                  <span className="text-text-muted">{t('team_pill.empty_label')}</span>
+                <span
+                  className={cn(
+                    'whitespace-nowrap text-[9px] leading-[11px] tabular-nums',
+                    online ? 'text-text-muted' : 'text-danger',
+                  )}
+                >
+                  {speed ?? '—'}
+                </span>
+                <span className="whitespace-nowrap text-[9px] leading-[11px] tabular-nums text-text-muted">
+                  {t('team_pill.cell_label')} {onlineCount}/{teammates.length}
                 </span>
               </>
             ) : (
               <>
-                <AvatarStack
-                  users={teammates}
-                  presenceByLogin={presenceByLogin}
-                  max={4}
-                />
-                <span className="ml-auto flex shrink-0 items-baseline gap-1 text-[11.5px]">
-                  <span className="font-medium tabular-nums text-text-strong">{onlineCount}</span>
-                  <span className="text-text-muted">{t('team_pill.online_suffix')}</span>
+                {/* Левая ячейка — сеть: мс / скорость (без слова «Онлайн»). */}
+                <span className="flex flex-col justify-center leading-tight tabular-nums">
+                  <span className={cn('text-[11px]', online ? rttColor : 'text-danger')}>
+                    {rtt ?? '—'}
+                  </span>
+                  <span className={cn('text-[10px]', online ? 'text-text-muted' : 'text-danger')}>
+                    {speed ?? '—'}
+                  </span>
+                </span>
+                {/* Правая ячейка — команда: «Команда» / N из M онлайн. */}
+                <span className="ml-auto flex flex-col items-end justify-center border-l border-border-subtle/30 pl-2.5 leading-tight">
+                  <span className="text-[10px] text-text-muted">{t('team_pill.cell_label')}</span>
+                  <span className="text-[11.5px] font-medium tabular-nums text-text-strong">
+                    {onlineCount}/{teammates.length}
+                  </span>
                 </span>
               </>
             )}
@@ -196,58 +195,6 @@ function presenceRank(status: string | undefined): number {
   if (status === 'online') return 0;
   if (status === 'away') return 1;
   return 2;
-}
-
-interface AvatarStackProps {
-  users: UserSummary[];
-  presenceByLogin: Record<string, { status: string; lastSeenAt: string } | undefined>;
-  max: number;
-}
-
-function AvatarStack({ users, presenceByLogin, max }: AvatarStackProps): JSX.Element {
-  const visible = users.slice(0, max);
-  const overflow = users.length - visible.length;
-  return (
-    <div className="flex shrink-0 items-center">
-      {visible.map((u, idx) => (
-        <span
-          key={u.login}
-          className="relative inline-block"
-          style={{ marginLeft: idx === 0 ? 0 : -8, zIndex: visible.length - idx }}
-        >
-          <Avatar
-            initials={u.initials}
-            size={22}
-            login={u.login}
-            avatarUrl={u.avatarUrl}
-            avatarBlobKey={u.avatarBlobKey ?? undefined}
-            avatarBlobNonce={u.avatarBlobNonce ?? undefined}
-            className="ring-2 ring-bg-elevated"
-          />
-          <PresenceDot
-            state={
-              (presenceByLogin[u.login]?.status as 'online' | 'away' | 'offline') ?? 'offline'
-            }
-            size={7}
-            ringClass="ring-bg-elevated"
-            className="absolute -bottom-0.5 -right-0.5"
-          />
-        </span>
-      ))}
-      {overflow > 0 && (
-        <span
-          className={cn(
-            'relative inline-flex h-[22px] min-w-[22px] items-center justify-center',
-            'rounded-full bg-bg-hover px-1.5 text-[10px] font-medium text-text-secondary',
-            'ring-2 ring-bg-elevated',
-          )}
-          style={{ marginLeft: -8, zIndex: 0 }}
-        >
-          +{overflow}
-        </span>
-      )}
-    </div>
-  );
 }
 
 interface TeamRowProps {

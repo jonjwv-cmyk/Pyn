@@ -127,6 +127,7 @@
     "logout": "Sign out"
   },
   "team_pill": {
+    "cell_label": "Team",
     "aria_open": "Team — {{count}} members",
     "online_suffix": "online",
     "popover_title": "Team · {{count}}",
@@ -208,6 +209,8 @@
     "search_placeholder": "Search…"
   },
   "news": {
+    "pinned_room": "Pin important posts here",
+    "pinned_empty": "Nothing pinned",
     "btn_poll": "Poll",
     "btn_scheduled": "Scheduled",
     "loading_feed": "Loading feed…",
@@ -231,6 +234,8 @@
     "schedule_failed": "Couldn't schedule the post"
   },
   "pinned_pill": {
+    "drop_to_pin": "Release to pin",
+    "jump_to_feed": "In feed",
     "expand_aria": "Expand",
     "collapse_aria": "Collapse",
     "important": "(important)",
@@ -637,6 +642,20 @@
     "breadcrumb_dropdown_aria": "Go to sibling section",
     "format_am": "AM",
     "format_pm": "PM"
+  },
+  "shops": {
+    "removed_count": "Warehouses removed {{n}} of {{total}}",
+    "no_data": "No data",
+    "search_ph": "warehouse · shop · phone",
+    "search_warehouse_ph": "Find warehouse by number",
+    "search_shop_ph": "Find shop by name",
+    "status_scheduled": "Scheduled",
+    "status_shipping": "Shipping",
+    "status_removed": "Removed",
+    "status_idle": "Not scheduled",
+    "warehouses_n": "warehouses: {{n}}",
+    "empty": "Shops database is empty",
+    "nothing_found": "Nothing found"
   },
   "mol": {
     "fio": "Full name",

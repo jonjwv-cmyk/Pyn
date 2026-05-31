@@ -127,6 +127,7 @@
     "logout": "Вийти"
   },
   "team_pill": {
+    "cell_label": "Команда",
     "aria_open": "Команда — {{count}} учасників",
     "online_suffix": "у мережі",
     "popover_title": "Команда · {{count}}",
@@ -208,6 +209,8 @@
     "search_placeholder": "Пошук…"
   },
   "news": {
+    "pinned_room": "Закріплюйте важливе тут",
+    "pinned_empty": "Немає закріплених",
     "btn_poll": "Опитування",
     "btn_scheduled": "Заплановані",
     "loading_feed": "Завантаження стрічки…",
@@ -231,6 +234,8 @@
     "schedule_failed": "Не вдалося запланувати пост"
   },
   "pinned_pill": {
+    "drop_to_pin": "Відпустіть, щоб закріпити",
+    "jump_to_feed": "У стрічці",
     "expand_aria": "Розгорнути",
     "collapse_aria": "Згорнути",
     "important": "(важливо)",
@@ -637,6 +642,20 @@
     "breadcrumb_dropdown_aria": "Перейти до сусіднього розділу",
     "format_am": "AM",
     "format_pm": "PM"
+  },
+  "shops": {
+    "removed_count": "Склади видалені {{n}} з {{total}}",
+    "no_data": "Немає даних",
+    "search_ph": "склад · цех · телефон",
+    "search_warehouse_ph": "Пошук складу за номером",
+    "search_shop_ph": "Пошук цеху за назвою",
+    "status_scheduled": "У графіку",
+    "status_shipping": "Відвантаження",
+    "status_removed": "Видалений",
+    "status_idle": "Не в графіку",
+    "warehouses_n": "складів: {{n}}",
+    "empty": "База цехів порожня",
+    "nothing_found": "Нічого не знайдено"
   },
   "mol": {
     "fio": "ПІБ",

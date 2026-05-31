@@ -57,11 +57,13 @@ export function NewsPollVoting({ poll, onVote }: NewsPollVotingProps) {
         })}
       </div>
 
-      <p className="text-[11px] text-text-muted">
-        {voted
-          ? t('news_polls_voting.voted_count', { n: total, word: t(`news_polls_voting.${pluralVotesKey(total)}`) })
-          : t('news_polls_voting.voting_open_hint')}
-      </p>
+      {/* После голосования счётчик «Проголосовало N голосов» убран (по запросу —
+          статистика смотрится через меню «⋯»). До голосования — хинт. */}
+      {!voted && (
+        <p className="text-[11px] text-text-muted">
+          {t('news_polls_voting.voting_open_hint')}
+        </p>
+      )}
 
       <ConfirmDialog
         open={pendingOptionId !== null}
@@ -159,16 +161,3 @@ function ResultBar({ text, pct, votes, isMyVote }: ResultBarProps) {
   );
 }
 
-/**
- * Slavic plural-rule key для votes. RU/UK дают три формы (one/few/many);
- * EN/ES/DE в JSON используют те же ключи с идентичным переводом, поэтому
- * результат корректен и без plural-rules плагина i18next.
- */
-function pluralVotesKey(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod100 >= 11 && mod100 <= 14) return 'votes_many';
-  if (mod10 === 1) return 'votes_one';
-  if (mod10 >= 2 && mod10 <= 4) return 'votes_few';
-  return 'votes_many';
-}

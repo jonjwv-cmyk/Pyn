@@ -149,6 +149,7 @@
     "search": "Поиск"
   },
   "team_pill": {
+    "cell_label": "Команда",
     "aria_open": "Команда — {{count}} участников",
     "online_suffix": "в сети",
     "popover_title": "Команда · {{count}}",
@@ -220,6 +221,8 @@
     "search_placeholder": "Поиск…"
   },
   "news": {
+    "pinned_room": "Закрепляйте важное здесь",
+    "pinned_empty": "Нет закреплённых",
     "btn_poll": "Опрос",
     "btn_scheduled": "Запланированные",
     "loading_feed": "Загрузка ленты…",
@@ -243,6 +246,8 @@
     "schedule_failed": "Не удалось запланировать пост"
   },
   "pinned_pill": {
+    "drop_to_pin": "Отпустите, чтобы закрепить",
+    "jump_to_feed": "В ленте",
     "expand_aria": "Развернуть",
     "collapse_aria": "Свернуть",
     "important": "(важно)",
@@ -649,6 +654,20 @@
       "empty": "Нет недавно открытых файлов"
     }
   },
+  "shops": {
+    "removed_count": "Склады удалены {{n}} из {{total}}",
+    "no_data": "Нет данных",
+    "search_ph": "склад · цех · телефон",
+    "search_warehouse_ph": "Поиск склада по номеру",
+    "search_shop_ph": "Поиск цеха по названию",
+    "status_scheduled": "В графике",
+    "status_shipping": "Отгрузка",
+    "status_removed": "Удалён",
+    "status_idle": "Нет в графике",
+    "warehouses_n": "складов: {{n}}",
+    "empty": "База цехов пуста",
+    "nothing_found": "Ничего не найдено"
+  },
   "mol": {
     "fio": "ФИО",
     "phones": "Телефоны",
@@ -769,7 +788,7 @@
     "field_keeper": "Кладовщик",
     "field_legacy_id": "Склад до",
     "field_code": "Код",
-    "status_idle": "Не в графике",
+    "status_idle": "Нет в графике",
     "status_delivery": "В графике",
     "status_shipping": "Отгрузка",
     "status_removed": "Удалён",

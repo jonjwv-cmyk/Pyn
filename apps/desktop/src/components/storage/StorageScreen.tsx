@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AppWindow } from 'lucide-react';
 import { useStorageStore } from '@pyn/core';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { Breadcrumb } from './Breadcrumb';
@@ -61,18 +60,17 @@ export function StorageScreen() {
       </div>
       <WorkspaceCard>
         {platformState.status === 'loading' ? null : platformState.status === 'unsupported' ? (
-          <div className="flex flex-1 items-center justify-center">
-            <div className="text-center">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-bg-elevated">
-                <AppWindow className="h-8 w-8 text-text-muted opacity-50" strokeWidth={1.2} />
-              </div>
-              <h2 className="mt-6 text-xl font-semibold text-text-primary">
-                {t('storage.corp_pc_only_title')}
-              </h2>
-            </div>
+          // Фон и центрирование — как пустое состояние МОЛ (mol-pattern-bg +
+          // крупный центрированный текст), без иконки.
+          <div className="mol-pattern-bg flex flex-1 items-center justify-center p-6">
+            <p className="max-w-[440px] text-center text-[22px] font-semibold tracking-[-0.015em] text-text-secondary/85">
+              {t('storage.corp_pc_only_title')}
+            </p>
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col">
+          // p-4 — единое поле 16px по периметру (как на всех листах): проводник
+          // (хлебные крошки + список) отступает от окантовки карточки на эту линию.
+          <div className="flex min-h-0 flex-1 flex-col p-4">
             <Breadcrumb root={platformState.root} currentPath={currentPath} />
             {onRoot ? (
               <StorageHome root={platformState.root} />

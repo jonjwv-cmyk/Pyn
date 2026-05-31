@@ -28,18 +28,9 @@ export function ChatList({ conversations, activeId, onSelect }: ChatListProps) {
 
   return (
     <aside
-      className="flex h-full shrink-0 flex-col border-r border-border-subtle/40"
+      className="flex h-full shrink-0 flex-col"
       style={{ width: CHAT_LIST_WIDTH }}
     >
-      <div className="drag-region flex h-9 shrink-0 items-center px-4">
-        <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
-          {t('sidebar.nav_chats')}
-        </span>
-      </div>
-      {/* §design — линия выровнена по верхней кромке плитки переписки:
-          h-9 шапка (36) + mt-1 (4) = y=40, как pt-1-зазор WorkspaceCard. */}
-      <div className="mx-3 mt-1 h-px shrink-0 bg-border-subtle" />
-
       <Block
         title={t('chat_list.section_dispatchers')}
         items={users}
@@ -47,8 +38,6 @@ export function ChatList({ conversations, activeId, onSelect }: ChatListProps) {
         onSelect={onSelect}
         emptyHint={t('chat_list.empty')}
       />
-
-      <div className="mx-3 h-px shrink-0 bg-border-subtle" />
 
       <Block
         title={t('chat_list.section_clients')}
@@ -75,7 +64,7 @@ function Block({ title, items, activeId, onSelect, emptyHint }: BlockProps) {
       <div
         className={cn(
           'shrink-0 px-3 pb-1.5 pt-3',
-          'text-[11px] font-medium uppercase tracking-[0.06em] text-text-muted',
+          'text-[11px] font-medium text-text-muted/70',
         )}
       >
         {title}
@@ -85,7 +74,7 @@ function Block({ title, items, activeId, onSelect, emptyHint }: BlockProps) {
           {items.length === 0 ? (
             <p className="px-3 py-2 text-[11.5px] text-text-muted/70">{emptyHint}</p>
           ) : (
-            <div className="flex flex-col gap-px px-1.5 pb-2">
+            <div className="flex flex-col gap-1 px-1.5 pb-2">
               {items.map((item) => (
                 <ChatListRow
                   key={item.id}

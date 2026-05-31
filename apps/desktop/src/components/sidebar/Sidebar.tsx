@@ -12,7 +12,6 @@ import { refreshWarehousesFromServer } from '@/lib/warehouses-repo';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { useMolStore, usePresenceStore, useUiStateStore } from '@/lib/stores';
 import type { NavSection, NavSectionId } from '@/types/nav';
-import { ConnectivityIndicator } from './ConnectivityIndicator';
 import { SessionExpiryPill } from './SessionExpiryPill';
 import { SidebarHeader } from './SidebarHeader';
 import { NavItem } from './NavItem';
@@ -266,9 +265,6 @@ export function Sidebar({
       )}
       <div className="px-1.5">
         <SessionExpiryPill collapsed={collapsed} />
-      </div>
-      <div className="px-1.5">
-        <ConnectivityIndicator collapsed={collapsed} />
       </div>
 
       <div className="h-2 shrink-0" />

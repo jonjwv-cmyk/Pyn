@@ -26,10 +26,16 @@ export interface UiState {
   activeChatId: string | null;
   /** Текст поиска МОЛ — восстанавливается между сессиями. */
   molQuery: string;
+  /** Текст поиска вкладки «Цеха» (склад · цех · телефон). */
+  shopsQuery: string;
   /** Активный лист раздела «База»: МОЛы или Склады. */
   baseTab: 'mol' | 'warehouses';
   /** Scroll-position таблицы МОЛ (px от верха). */
   molScrollTop: number;
+  /** Scroll-position вкладки «Цеха» (лента карточек, px от верха). */
+  shopsScrollTop: number;
+  /** Scroll-position правого списка цехов (нумерованный TOC). */
+  shopsListScrollTop: number;
   /** Scroll-position ленты новостей. */
   newsScrollTop: number;
   /** Scroll-position в каждом чате (key = login партнёра). */
@@ -53,8 +59,11 @@ export interface UiState {
   setActiveSection: (id: string) => void;
   setActiveChatId: (id: string | null) => void;
   setMolQuery: (q: string) => void;
+  setShopsQuery: (q: string) => void;
   setBaseTab: (tab: 'mol' | 'warehouses') => void;
   setMolScrollTop: (top: number) => void;
+  setShopsScrollTop: (top: number) => void;
+  setShopsListScrollTop: (top: number) => void;
   setNewsScrollTop: (top: number) => void;
   setChatScrollTop: (peer: string, top: number) => void;
   setActiveTable: (fileId: string | null, tabName: string | null) => void;
@@ -67,7 +76,10 @@ const initializer: StateCreator<UiState> = (set) => ({
   activeSection: 'news',
   activeChatId: null,
   molQuery: '',
+  shopsQuery: '',
   molScrollTop: 0,
+  shopsScrollTop: 0,
+  shopsListScrollTop: 0,
   newsScrollTop: 0,
   chatScrollTopByPeer: {},
   activeTableFileId: null,
@@ -79,8 +91,11 @@ const initializer: StateCreator<UiState> = (set) => ({
   setActiveSection: (id) => set({ activeSection: id }),
   setActiveChatId: (id) => set({ activeChatId: id }),
   setMolQuery: (q) => set({ molQuery: q }),
+  setShopsQuery: (q) => set({ shopsQuery: q }),
   setBaseTab: (tab) => set({ baseTab: tab }),
   setMolScrollTop: (top) => set({ molScrollTop: top }),
+  setShopsScrollTop: (top) => set({ shopsScrollTop: top }),
+  setShopsListScrollTop: (top) => set({ shopsListScrollTop: top }),
   setNewsScrollTop: (top) => set({ newsScrollTop: top }),
   setChatScrollTop: (peer, top) =>
     set((prev) => ({ chatScrollTopByPeer: { ...prev.chatScrollTopByPeer, [peer]: top } })),
@@ -101,7 +116,10 @@ const initializer: StateCreator<UiState> = (set) => ({
       activeSection: 'news',
       activeChatId: null,
       molQuery: '',
+      shopsQuery: '',
       molScrollTop: 0,
+      shopsScrollTop: 0,
+      shopsListScrollTop: 0,
       newsScrollTop: 0,
       chatScrollTopByPeer: {},
       activeTableFileId: null,

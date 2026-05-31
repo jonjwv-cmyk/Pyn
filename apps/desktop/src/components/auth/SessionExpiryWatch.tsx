@@ -81,14 +81,29 @@ export function SessionExpiryWatch() {
     }
   }, [setSharedInfo]);
 
+  // Latest remaining в ref — adaptive-delay читает свежее значение БЕЗ участия
+  // remainingMs в deps poll-эффекта (см. критичный коммент ниже).
+  const remainingRef = useRef<number>(Number.MAX_SAFE_INTEGER);
+  useEffect(() => {
+    remainingRef.current = info?.remainingMs ?? Number.MAX_SAFE_INTEGER;
+  }, [info?.remainingMs]);
+
   // §pyn-1.2.46 — adaptive polling: 5 мин если сессия далека от expiry,
   // 30s когда близко (< 30 мин). Снижает жор CF в 10× для typical 4-8h
   // сессий — 12 req/час вместо 120 пока сессия не приблизилась к концу.
+  //
+  // §pyn — КРИТИЧНО: эффект НЕ зависит от info?.remainingMs. Раньше зависел —
+  // и каждый успешный poll менял remainingMs (время тикает) → эффект
+  // перезапускался → немедленно бил refreshInfo заново → плотный цикл вызовов
+  // me_session_info (раз в RTT вместо раз в 30с/5мин). Это (а) жгло CF-бюджет
+  // и (б) ловило server anti-replay (`replay_detected`) на наложении соседних
+  // запросов → приложение мигало splash'ем/входом. Теперь: один вызов на mount,
+  // далее самопланирующийся таймер, delay читается из remainingRef. Перекрытий нет.
   useEffect(() => {
     void refreshInfo();
     let timerId: ReturnType<typeof setTimeout> | null = null;
     const schedule = (): void => {
-      const remaining = info?.remainingMs ?? Number.MAX_SAFE_INTEGER;
+      const remaining = remainingRef.current;
       const nextDelay = remaining <= POLL_NEAR_WINDOW_MS ? POLL_NEAR_MS : POLL_FAR_MS;
       timerId = setTimeout(async () => {
         await refreshInfo();
@@ -99,8 +114,7 @@ export function SessionExpiryWatch() {
     return () => {
       if (timerId) clearTimeout(timerId);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshInfo, info?.remainingMs]);
+  }, [refreshInfo]);
 
   // PC-сессия может быть явно помечена is_pc=true, либо derived из
   // sessionKind. Server иногда отдаёт только session_kind="pc_qr"/"pc_password"

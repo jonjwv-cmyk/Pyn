@@ -36,6 +36,11 @@ interface NewsCardProps {
   onEdited?: (newsId: number, newText: string) => void;
   /** §pyn-1.2.37 — intersection-observer mark-read для непрочитанных новостей. */
   onMarkRead?: (newsId: number) => void;
+  /** §pyn — карточку можно перетащить в правую колонку для закрепления. */
+  pinDraggable?: boolean;
+  /** Drag-to-pin начался/закончился — для превью в целевом слоте. */
+  onPinDragStart?: (newsId: number) => void;
+  onPinDragEnd?: () => void;
 }
 
 // Реакции 1:1 с server validation (`@pyn/core/reactions.ts::ALLOWED_REACTIONS`).
@@ -61,12 +66,18 @@ export function NewsCard({
   onDelete,
   onEdited,
   onMarkRead,
+  pinDraggable,
+  onPinDragStart,
+  onPinDragEnd,
 }: NewsCardProps) {
   const { t } = useTranslation();
   const [statsOpen, setStatsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   // §pyn-1.2.27 — reactive формат вместо застрявшего createdAtLabel из репо.
   const dateLabel = useFormatYek(news.createdAt);
+  // Кастомный drag-image для drag-to-pin — аккуратный маленький «призрак»
+  // (вместо снимка всей карточки с фоном и острыми краями).
+  const dragGhostRef = useRef<HTMLDivElement>(null);
 
   // §pyn-1.2.37 — IO mark-read: непрочитанная новость, попавшая в viewport (50%),
   // помечается прочитанной. App.tsx-like dedup делает NewsFeed через своё ref.
@@ -94,6 +105,20 @@ export function NewsCard({
   return (
     <article
       ref={wrapperRef}
+      draggable={pinDraggable || undefined}
+      onDragStart={
+        pinDraggable
+          ? (e) => {
+              e.dataTransfer.setData('application/x-pyn-news-id', String(news.id));
+              e.dataTransfer.effectAllowed = 'copy';
+              if (dragGhostRef.current) {
+                e.dataTransfer.setDragImage(dragGhostRef.current, 18, 18);
+              }
+              onPinDragStart?.(news.id);
+            }
+          : undefined
+      }
+      onDragEnd={pinDraggable ? () => onPinDragEnd?.() : undefined}
       className={cn(
         'group/news flex flex-col gap-3 rounded-xl border bg-bg-elevated px-4 py-3.5',
         news.isPinned
@@ -158,6 +183,32 @@ export function NewsCard({
         createdAt={news.createdAt}
         onEdited={(newText) => onEdited?.(news.id, newText)}
       />
+
+      {/* Off-screen «призрак» для drag-image: компактный rounded-пилл с автором
+          (а не снимок всей карточки). Рендерится только когда карточку можно
+          тащить в закрепление. */}
+      {pinDraggable && (
+        <div
+          ref={dragGhostRef}
+          aria-hidden
+          className={cn(
+            'pointer-events-none fixed left-[-9999px] top-0 flex w-[230px] items-center gap-2.5',
+            'rounded-xl border border-accent-clay-bg/70 bg-bg-elevated px-3 py-2.5 ring-1 ring-accent-clay-bg/40',
+          )}
+        >
+          <Avatar
+            initials={news.senderInitials}
+            size={22}
+            login={news.senderLogin}
+            avatarUrl={news.senderAvatarUrl}
+            avatarBlobKey={news.senderAvatarBlobKey}
+            avatarBlobNonce={news.senderAvatarBlobNonce}
+          />
+          <span className="truncate text-[12.5px] font-medium text-text-strong">
+            {news.senderName}
+          </span>
+        </div>
+      )}
     </article>
   );
 }
@@ -334,7 +385,7 @@ interface ReactionsRowProps {
   onToggle: (emoji: string) => void;
 }
 
-function ReactionsRow({
+export function ReactionsRow({
   messageId,
   reactions,
   myReactions,
