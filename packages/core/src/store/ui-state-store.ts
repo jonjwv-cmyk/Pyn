@@ -55,6 +55,12 @@ export interface UiState {
    * Язык — сохраняется явный выбор.
    */
   language: string | null;
+  /**
+   * Выбранный шрифт всего приложения (id из desktop app-font: 'inter' |
+   * 'roboto-flex' | 'arimo'). Default 'inter'. Применяется глобально через
+   * CSS-переменную `--app-font`. User preference, не сбрасывается на logout.
+   */
+  appFont: string;
 
   setActiveSection: (id: string) => void;
   setActiveChatId: (id: string | null) => void;
@@ -69,6 +75,7 @@ export interface UiState {
   setActiveTable: (fileId: string | null, tabName: string | null) => void;
   setTablesListCollapsed: (v: boolean) => void;
   setLanguage: (lang: string | null) => void;
+  setAppFont: (font: string) => void;
   clear: () => void;
 }
 
@@ -87,6 +94,7 @@ const initializer: StateCreator<UiState> = (set) => ({
   tableTabByFile: {},
   tablesListCollapsed: false,
   language: null,
+  appFont: 'inter',
   baseTab: 'mol',
   setActiveSection: (id) => set({ activeSection: id }),
   setActiveChatId: (id) => set({ activeChatId: id }),
@@ -111,6 +119,7 @@ const initializer: StateCreator<UiState> = (set) => ({
     })),
   setTablesListCollapsed: (v) => set({ tablesListCollapsed: v }),
   setLanguage: (lang) => set({ language: lang }),
+  setAppFont: (font) => set({ appFont: font }),
   clear: () =>
     set({
       activeSection: 'news',

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { Search, X } from 'lucide-react';
+import { Check, Download, Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Warehouse } from '@pyn/core';
 import { sessionStore } from '@/lib/token-store';
@@ -606,7 +606,7 @@ export function ProbaScreen() {
         holidays={meta.holidays}
         overrides={meta.overrides}
         onChangeOverrides={setOverrides}
-        printLabel={t('schedule.print')}
+        downloadLabel={t('schedule.download')}
         lockIdExceptions={lockIds.exceptions}
         lockIdCommit={lockIds.commit}
         searchValue={search}
@@ -830,7 +830,7 @@ function ProbaToolbar({
   holidays,
   overrides,
   onChangeOverrides,
-  printLabel,
+  downloadLabel,
   lockIdExceptions,
   lockIdCommit,
   searchValue,
@@ -845,7 +845,7 @@ function ProbaToolbar({
   holidays: number[];
   overrides: ScheduleOverrideRule[];
   onChangeOverrides: (overrides: ScheduleOverrideRule[]) => void;
-  printLabel: string;
+  downloadLabel: string;
   lockIdExceptions: string;
   lockIdCommit: string;
   searchValue: string;
@@ -900,7 +900,7 @@ function ProbaToolbar({
 
       <div className="h-4 w-px bg-white/[0.08]" />
 
-      <PrintMenu year={year} month={month} printLabel={printLabel} />
+      <DownloadButton year={year} month={month} label={downloadLabel} />
     </header>
   );
 }
@@ -970,82 +970,49 @@ function ProbaSearchField({
   );
 }
 
-// ─── PrintMenu — popover «Печать ▸ Печать | Сохранить PDF» ──────────────────
+// ─── DownloadButton — скачивание PDF Графика сразу в «Загрузки» ──────────────
 
-function PrintMenu({
+function DownloadButton({
   year,
   month,
-  printLabel,
+  label,
 }: {
   year: number;
   month: number;
-  printLabel: string;
+  label: string;
 }) {
   const { t } = useTranslation();
+  const [done, setDone] = useState(false);
   const monthName = t(`common.month_${month}`);
-  // Имя файла не локализуем — это идентификатор файла, который видят
-  // юзеры в Finder/Explorer и потом ищут по нему. Держим русским как
-  // канонический формат «графика доставки ТМЦ» (бренд + предметная область).
+  // Имя файла русское — идентификатор документа в Finder/Explorer.
   const defaultFileName = `График доставки ТМЦ ${monthName} ${year}`;
 
-  const callPrintDialog = async () => {
-    // Печать через дефолтный системный PDF-вьюер: генерим тот же PDF,
-    // открываем в Preview/Adobe, юзер жмёт Cmd+P. Файл удаляется автоматом
-    // через 2 минуты. Так визуал гарантированно идентичен Save-PDF.
-    if (window.pyn?.print?.dialog) {
-      await window.pyn.print.dialog(defaultFileName);
-    } else {
-      window.print();
-    }
-  };
-
-  const callSavePdf = async () => {
+  const handleDownload = async (): Promise<void> => {
     if (window.pyn?.print?.savePdf) {
-      await window.pyn.print.savePdf(defaultFileName);
+      const res = await window.pyn.print.savePdf(defaultFileName);
+      // Короткое подтверждение галочкой (без отдельного i18n-ключа).
+      if (res?.ok) {
+        setDone(true);
+        window.setTimeout(() => setDone(false), 1800);
+      }
     } else {
-      // Web-fallback: тот же системный print dialog (юзер выберет «Save as PDF»).
       window.print();
     }
   };
 
   return (
-    <Popover.Root>
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          className="no-drag-region flex h-7 items-center rounded-md bg-accent-clay-bg px-2.5 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/20 data-[state=open]:bg-accent-clay/25"
-        >
-          {printLabel}
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          align="end"
-          sideOffset={6}
-          className="z-50 w-[220px] overflow-hidden rounded-lg border border-white/[0.08] bg-bg-elevated p-1 text-text-primary shadow-2xl outline-none"
-        >
-          <Popover.Close asChild>
-            <button
-              type="button"
-              onClick={callPrintDialog}
-              className="flex w-full items-center rounded px-2 py-1.5 text-left text-[12px] text-text-primary outline-none transition-colors hover:bg-white/[0.06] hover:text-text-strong"
-            >
-              {t('proba.print_menu_print')}
-            </button>
-          </Popover.Close>
-          <Popover.Close asChild>
-            <button
-              type="button"
-              onClick={callSavePdf}
-              className="flex w-full items-center rounded px-2 py-1.5 text-left text-[12px] text-text-primary outline-none transition-colors hover:bg-white/[0.06] hover:text-text-strong"
-            >
-              {t('proba.print_menu_save_pdf')}
-            </button>
-          </Popover.Close>
-          <Popover.Arrow className="fill-bg-elevated" />
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+    <button
+      type="button"
+      onClick={() => void handleDownload()}
+      className="no-drag-region flex h-7 items-center gap-1.5 rounded-md bg-accent-clay-bg px-2.5 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/20"
+    >
+      {done ? (
+        <Check className="h-3.5 w-3.5" strokeWidth={2.25} />
+      ) : (
+        <Download className="h-3.5 w-3.5" strokeWidth={1.75} />
+      )}
+      {label}
+    </button>
   );
 }
 
@@ -1418,7 +1385,9 @@ function ProbaStyles() {
         background: #1F1E1B;
         color: #E5E5E2;
         padding: 10mm 14mm 14mm;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+        /* §шрифт — лист Графика наследует выбранный в Настройках шрифт
+           (--app-font) → и экран, и PDF используют его же, одинаково Win/Mac. */
+        font-family: var(--app-font);
         font-size: 7.5pt;
         line-height: 1.35;
         font-feature-settings: 'tnum', 'ss01', 'cv11';
@@ -2034,13 +2003,26 @@ function ProbaStyles() {
            совпадает с baseline заголовка (две grid-ячейки одного ряда). */
         .proba-brand { grid-area: brand; align-items: baseline; align-self: baseline; }
         .proba-title { grid-area: title; align-self: baseline; }
-        /* Логотип ЕВРАЗ крупнее под кегль заголовка: 3-полосник с зазорами
-           оптически легче сплошных букв, поэтому base height:0.72em читается
-           мельче слова. Поднимаем до cap-line с запасом. Только экран; печать
-           сохраняет inline 0.72em. !important перекрывает inline-style SVG. */
-        .proba-brand-logo { height: 0.92em !important; align-self: baseline; }
+        /* Логотип ЕВРАЗ ровно по буквам: height:1cap = cap-height текущего
+           шрифта → низ полосок на baseline (align-self), верх — на cap-line
+           заголовка. Пропорционально и АВТОМАТИЧЕСКИ под любой шрифт/локаль
+           (раньше был фикс 0.92em — торчал выше букв). Только экран; печать
+           сохраняет inline 0.72em. !important перекрывает inline-style SVG.
+           Fallback (если 1cap не поддержан) → inline 0.72em ≈ cap-height. */
+        .proba-brand-logo { height: 1cap !important; align-self: baseline; }
         .proba-approver { grid-area: approver; }
-        .proba-meta { grid-area: meta; }
+        .proba-meta {
+          grid-area: meta;
+          /* §meta-align — единая колоночная сетка [метка | счётчик | значение]
+             на ВСЕ строки через subgrid: ширина колонки метки = самая длинная
+             метка среди строк (любой локали) → разделители-счётчики «│N» и
+             колонка значений сами встают на один X. Без фикс-мм, авто, на любой
+             будущей локали. */
+          display: grid;
+          grid-template-columns: auto max-content 1fr;
+          column-gap: 2.5mm;
+          row-gap: 0.3mm;
+        }
         /* Склады отгрузки / удалены — строки ровно по 15 кодов (chunk в render),
            аккуратными колонками; приписка по центру при нескольких строках. */
         .proba-meta-codes {
@@ -2075,14 +2057,28 @@ function ProbaStyles() {
         .proba-title { font-size: 18px; line-height: 24px; }
         /* — Подпись 12px / 16 — */
         /* §meta — метки Дни/Склады прижаты к ЛЕВОЙ линии листа (как ЕВРАЗ и
-           номера цехов); базовый left-padding строки даёт сдвиг — гасим его. */
-        .proba-meta-row { padding-left: 0; }
-        .proba-meta-label { font-size: 12px; line-height: 16px; display: flex; align-items: baseline; min-width: 50mm; }
-        /* Текст label фикс. ширины → разделитель │N, счётчик и колонка значений
-           стартуют на одном X во ВСЕХ строках. Ширина с запасом над самой длинной
-           меткой «ДНИ БЕЗ ДОСТАВКИ» (у коротких меток получается ровный отступ
-           до │ — это нормальная колоночная раскладка). */
-        .proba-meta-label-text { min-width: 40mm; }
+           номера цехов); базовый left-padding строки даёт сдвиг — гасим его.
+           Строка раскрывает родительские колонки через subgrid: метка занимает
+           col 1-2 (текст+счётчик), значение — col 3. */
+        .proba-meta-row {
+          padding-left: 0;
+          display: grid;
+          grid-template-columns: subgrid;
+          grid-column: 1 / -1;
+        }
+        /* Метка — вложенный subgrid на col 1-2: текст в col 1 (ширина = самая
+           длинная метка любой локали), счётчик-разделитель «│N» в col 2 (ширина
+           = самый широкий счётчик) → во ВСЕХ строках │ и значения на одном X. */
+        .proba-meta-label {
+          font-size: 12px; line-height: 16px;
+          display: grid;
+          grid-template-columns: subgrid;
+          grid-column: 1 / 3;
+          align-items: baseline;
+          min-width: 0;
+        }
+        .proba-meta-label-text { grid-column: 1; min-width: 0; }
+        .proba-meta-label .proba-cluster-count { grid-column: 2; margin-left: 0; }
         .proba-thead-day,
         .proba-thead-date,
         .proba-thead-code { font-size: 12px; line-height: 16px; letter-spacing: 0.04em; }
@@ -2093,7 +2089,7 @@ function ProbaStyles() {
         .proba-shop-num { font-size: 12px; line-height: 16px; }
         .proba-day { font-size: 12px; height: 5mm; padding: 0.4mm 1.2mm; }
         /* — Контент 14px / 20 (пиллы дней/кодов — высотой, без line-height) — */
-        .proba-meta-value { font-size: 14px; line-height: 20px; }
+        .proba-meta-value { grid-column: 3; font-size: 14px; line-height: 20px; }
         .proba-shop-name { font-size: 14px; line-height: 20px; }
         .proba-dates { font-size: 14px; line-height: 20px; }
         /* §сегодня — заметная подсветка числа-дня, совпавшего с СЕГОДНЯШНЕЙ датой
@@ -2271,6 +2267,23 @@ function ProbaStyles() {
         .proba-chrome {
           display: none !important;
         }
+        /* §рамка — «парящая» карточка WorkspaceCard (border + скругление + тень
+           + bg) в печать НЕ идёт: PDF = чистый белый лист, текст с полями 1см
+           (поля даёт printToPDF). Это div'ы main>div (внешний gutter) и
+           main>div>div (карточка с border). proba-canvas/sheet — отдельно ниже. */
+        main > div,
+        main > div > div {
+          border: 0 !important;
+          border-radius: 0 !important;
+          box-shadow: none !important;
+          background: white !important;
+          overflow: visible !important;
+          padding: 0 !important;
+          margin: 0 !important;
+          width: 100% !important;
+          min-height: 0 !important;
+          display: block !important;
+        }
         .proba-canvas {
           padding: 0 !important;
           background: white !important;
@@ -2446,36 +2459,45 @@ function ProbaStyles() {
           border-bottom: 0.4pt solid rgba(0,0,0,0.22) !important;
         }
 
-        /* ── Компрессия для влезания в 2 листа ─────────────────────────── */
+        /* ── Компрессия: цель ~1.5 листа (а не 2 полных) ───────────────────
+           Режем вертикальные зазоры/паддинги и чуть-чуть кегль строк. Если
+           надо плотнее/свободнее — крутить значения здесь. */
         .proba-shop {
-          padding: 0.9mm 2mm !important;
+          padding: 0.5mm 2mm !important;
         }
         .proba-shop-name {
-          margin-bottom: 0.5mm !important;
+          margin-bottom: 0.3mm !important;
+          font-size: 7pt !important;
         }
         .proba-shop-rows {
-          gap: 0.4mm !important;
+          gap: 0.25mm !important;
+        }
+        .proba-day {
+          height: 3mm !important;
+        }
+        .proba-code {
+          height: 3mm !important;
         }
         .proba-header {
-          padding-bottom: 1.5mm !important;
-          margin-bottom: 2mm !important;
+          padding-bottom: 1mm !important;
+          margin-bottom: 1.2mm !important;
         }
         .proba-meta {
-          margin-top: 1.5mm !important;
-          gap: 0.2mm !important;
+          margin-top: 1mm !important;
+          gap: 0.15mm !important;
         }
         .proba-meta-row {
-          padding: 0.3mm 1mm !important;
-          min-height: 3.6mm !important;
+          padding: 0.2mm 1mm !important;
+          min-height: 3mm !important;
         }
         .proba-thead {
           margin-bottom: 0.3mm !important;
           /* horizontal padding match shop print (2mm) — колонки выровнены */
-          padding: 0 2mm 0.6mm !important;
+          padding: 0 2mm 0.5mm !important;
         }
         .proba-prepared {
-          margin-top: 4mm !important;
-          padding-top: 6mm !important;
+          margin-top: 3mm !important;
+          padding-top: 4mm !important;
         }
 
         /* Day-pills и chip backgrounds для PDF перебиты выше в light-theme
@@ -2502,6 +2524,15 @@ function ProbaStyles() {
         .proba-shop[data-state="open"] {
           background: transparent !important;
           box-shadow: none !important;
+        }
+
+        /* §ч/б — весь ТЕКСТ листа в PDF чёрный (чёткая печать, без серого).
+           Цвет сохраняют только фоны day-pills / Выезда / статус-чипов (это
+           background, не color) и логотип ЕВРАЗ (SVG fill, не CSS color).
+           Правило последнее в @media print → перебивает все серые color-правила. */
+        .proba-sheet,
+        .proba-sheet * {
+          color: #1A1815 !important;
         }
       }
     `}</style>

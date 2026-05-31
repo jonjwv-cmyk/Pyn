@@ -44,7 +44,9 @@ export default {
         'presence-offline':  '#E57373',
       },
       fontFamily: {
-        sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI Variable', 'Segoe UI', 'system-ui', 'sans-serif'],
+        // font-sans = выбранный в Настройках шрифт (CSS-переменная --app-font,
+        // см. app-font.ts), системный стек — fallback пока шрифт не применён.
+        sans: ['var(--app-font)', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI Variable', 'Segoe UI', 'system-ui', 'sans-serif'],
       },
       borderRadius: {
         'pill': '999px',

@@ -10,6 +10,7 @@ import { SettingsTopBar } from './SettingsTopBar';
 import { GoogleAccountPanel } from './GoogleAccountPanel';
 import { AppControlPanel } from './AppControlPanel';
 import { LanguagePanel } from './LanguagePanel';
+import { FontPanel } from './FontPanel';
 import { useUsersPanelState } from './users/use-users-panel-state';
 
 interface SettingsScreenProps {
@@ -91,10 +92,12 @@ function pickSubSectionUi(
         body: <LanguagePanel />,
       };
     case 'appearance':
+      // Оформление: пока единственная настройка — выбор шрифта (FontPanel).
+      // Позже сюда добавятся тема и пр. — секциями внутри той же панели.
       return {
         title: t('settings_sidebar.appearance'),
         actions: null,
-        body: <PlaceholderBody hint={t('settings_placeholder.appearance')} />,
+        body: <FontPanel />,
       };
     case 'google':
       return {

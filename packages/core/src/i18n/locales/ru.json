@@ -98,7 +98,7 @@
     "reset_title": "Сбросить к исходному графику из файла",
     "removed_warehouses": "Склады удалены",
     "removed_warehouse_tip": "Склад выведен из эксплуатации — доставку не оформлять",
-    "print": "Печать / PDF"
+    "download": "Скачать"
   },
   "connectivity": {
     "online": "Онлайн",
@@ -438,6 +438,7 @@
   "settings_sidebar": {
     "users": "Пользователи",
     "language": "Язык",
+    "font": "Шрифт",
     "appearance": "Оформление",
     "google": "Google",
     "app_control": "Управление",

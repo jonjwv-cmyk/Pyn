@@ -86,7 +86,7 @@
     "reset_title": "Restablecer al calendario original del archivo",
     "removed_warehouses": "Almacenes retirados",
     "removed_warehouse_tip": "Almacén dado de baja — no programar entregas",
-    "print": "Imprimir / PDF"
+    "download": "Descargar"
   },
   "connectivity": {
     "online": "En línea",
@@ -426,6 +426,7 @@
   "settings_sidebar": {
     "users": "Usuarios",
     "language": "Idioma",
+    "font": "Fuente",
     "appearance": "Apariencia",
     "google": "Google",
     "app_control": "Control",

@@ -86,7 +86,7 @@
     "reset_title": "Reset to original schedule from file",
     "removed_warehouses": "Removed warehouses",
     "removed_warehouse_tip": "Decommissioned warehouse — do not place deliveries",
-    "print": "Print / PDF"
+    "download": "Download"
   },
   "connectivity": {
     "online": "Online",
@@ -426,6 +426,7 @@
   "settings_sidebar": {
     "users": "Users",
     "language": "Language",
+    "font": "Font",
     "appearance": "Appearance",
     "google": "Google",
     "app_control": "Controls",

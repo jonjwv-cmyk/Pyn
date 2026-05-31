@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import { writeFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -78,8 +79,8 @@ function targetWindow(): BrowserWindow | null {
   return all[0] ?? null;
 }
 
-/** Параметры printToPDF — единый источник правды для save+print.
- *  Поля 0.4" ≈ 10mm. */
+/** Параметры printToPDF — единый источник правды.
+ *  Поля 0.3937" = 10mm = ровно 1 см со всех сторон. */
 const PDF_OPTIONS = {
   pageSize: 'A4' as const,
   landscape: false,
@@ -87,10 +88,10 @@ const PDF_OPTIONS = {
   displayHeaderFooter: false,
   margins: {
     marginType: 'custom' as const,
-    top: 0.4,
-    bottom: 0.4,
-    left: 0.4,
-    right: 0.4,
+    top: 0.3937,
+    bottom: 0.3937,
+    left: 0.3937,
+    right: 0.3937,
   },
 };
 
@@ -213,6 +214,17 @@ async function withTransparentRoot<T>(
  *  с запасом хватит чтобы выбрать принтер и отправить на печать. */
 const PRINT_TMP_TTL_MS = 120_000;
 
+/** Уникальный путь в папке (без перезаписи): «name.pdf», «name (1).pdf», … */
+function uniquePdfPath(dir: string, base: string): string {
+  let candidate = path.join(dir, `${base}.pdf`);
+  let i = 1;
+  while (existsSync(candidate)) {
+    candidate = path.join(dir, `${base} (${i}).pdf`);
+    i += 1;
+  }
+  return candidate;
+}
+
 /** Schedule удаления tmp-файла через TTL. */
 function schedulePrintCleanup(filePath: string): void {
   setTimeout(async () => {
@@ -320,39 +332,30 @@ export function setupPrintBridge(): void {
   });
 
   /**
-   * Сохранить контент текущего окна как PDF. Открываем saveDialog с suggested
-   * filename, генерируем PDF через webContents.printToPDF, пишем на диск.
+   * Скачать график как PDF — СРАЗУ в системную папку «Загрузки» (без диалога,
+   * стандартное поведение «скачать»). Имя уникализируем, чтобы не перезаписать
+   * существующий файл. withTransparentRoot снимает тёмный фон на время генерации.
    *
-   * @param defaultName — suggestion для filename (без .pdf, ext добавляется
-   *                     автоматом). Renderer передаёт «График Май 2026» etc.
+   * @param defaultName — имя файла без .pdf. Renderer передаёт «График … Май 2026».
    */
   ipcMain.handle(
     'pyn:print:save-pdf',
     async (
       _evt,
       defaultName?: string,
-    ): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; path?: string; error?: string }> => {
       const win = targetWindow();
       if (!win || win.isDestroyed()) {
         return { ok: false, error: 'no_window' };
       }
       const safeName = (defaultName || 'document').replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
       try {
-        const saveRes = await dialog.showSaveDialog(win, {
-          title: 'Сохранить PDF',
-          defaultPath: `${safeName}.pdf`,
-          filters: [{ name: 'PDF', extensions: ['pdf'] }],
-        });
-        if (saveRes.canceled || !saveRes.filePath) {
-          return { ok: false, canceled: true };
-        }
-        // Используем общие PDF_OPTIONS — те же что в print:dialog.
-        // withTransparentRoot снимает dark bg с html/body на время генерации.
+        const filePath = uniquePdfPath(app.getPath('downloads'), safeName);
         const pdfBuf = await withTransparentRoot(win, () =>
           win.webContents.printToPDF(PDF_OPTIONS),
         );
-        await writeFile(saveRes.filePath, pdfBuf);
-        return { ok: true, path: saveRes.filePath };
+        await writeFile(filePath, pdfBuf);
+        return { ok: true, path: filePath };
       } catch (err) {
         return {
           ok: false,

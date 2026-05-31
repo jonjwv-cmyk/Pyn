@@ -86,7 +86,7 @@
     "reset_title": "Повернути до початкового графіка з файлу",
     "removed_warehouses": "Склади виведені",
     "removed_warehouse_tip": "Склад виведено з експлуатації — доставку не оформлювати",
-    "print": "Друк / PDF"
+    "download": "Завантажити"
   },
   "connectivity": {
     "online": "Онлайн",
@@ -426,6 +426,7 @@
   "settings_sidebar": {
     "users": "Користувачі",
     "language": "Мова",
+    "font": "Шрифт",
     "appearance": "Оформлення",
     "google": "Google",
     "app_control": "Керування",

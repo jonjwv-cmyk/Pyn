@@ -23,6 +23,7 @@ import { sessionStore } from '@/lib/token-store';
 import { useWsEvent } from '@/lib/ws';
 import { useChatsStore, useMolStore, useNewsStore, useOutboxStore, usePresenceStore, useSessionInfoStore, useStatsStore, useUiStateStore, useUsersStore } from '@/lib/stores';
 import { initDeviceId } from '@/lib/device';
+import { applyAppFont } from '@/lib/app-font';
 import { computeInitials } from '@/lib/initials';
 import { wireToChatMessage, wireToChatPartnerFromMessage } from '@/lib/repositories/chats-repo';
 import { extractPresenceFromChatWires } from '@/lib/repositories/presence-fill';
@@ -193,6 +194,14 @@ export function App() {
   const setActiveSection = useUiStateStore((s) => s.setActiveSection);
   const activeChatId = useUiStateStore((s) => s.activeChatId);
   const setActiveChatId = useUiStateStore((s) => s.setActiveChatId);
+
+  // §шрифт — применяем выбранный шрифт глобально через CSS-переменную --app-font.
+  // appFont персистится в ui-state-store; на старте = persisted (или 'inter'),
+  // после hydration селектор обновится → эффект переставит переменную.
+  const appFont = useUiStateStore((s) => s.appFont);
+  useEffect(() => {
+    applyAppFont(appFont);
+  }, [appFont]);
   // §pyn-1.2.54 — openedChatIds: per-peer persistent DOM tree (Tables-style).
   // Каждый chat юзер хоть раз кликнул — остаётся mounted с display-toggle до
   // logout / restart. При inter-chat switch DOM tree уже-открытого peer'a

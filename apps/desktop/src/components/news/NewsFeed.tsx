@@ -679,7 +679,10 @@ export function NewsFeed({
         <div
           ref={scrollRef}
           onScroll={checkScroll}
-          className="absolute inset-0 overflow-y-auto"
+          // scrollbar-gutter both-edges: 10px скролл-полоса (index.css) резервируется
+          // симметрично с двух сторон → лента центрируется по той же оси, что и
+          // плавающий композер (он во всю ширину без скролла) → края совпадают.
+          className="absolute inset-0 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
         >
           {/* pb-[60px] — отступ под floating composer; верх задаёт единая рамка
               16px (p-4 родителя), своего pt у ленты нет — стоит ровно на линии. */}

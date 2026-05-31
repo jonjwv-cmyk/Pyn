@@ -3,6 +3,15 @@
 @tailwind utilities;
 
 /*
+ * Шрифт всего приложения. Tailwind `font-sans` = `var(--app-font)`; переключатель
+ * Настройки→Шрифт двигает эту переменную (см. app-font.ts) → меняется ВЕЗДЕ.
+ * Дефолт — Inter (до применения JS/persisted значения), чтобы не было флэша.
+ */
+:root {
+  --app-font: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+}
+
+/*
  * §2026-05-19 — глобально перебиваем Tailwind utility `cursor-not-allowed`.
  * Юзер: на Windows (особенно) круг-перечёркнутый при hover на disabled
  * выглядит «страшно», на Mac тоже терпимо но не нужно. Disabled-состояние
@@ -28,7 +37,11 @@
        иначе в PDF (printToPDF) этот dark bg через canvas propagation
        заполняет @page margin area и создаёт тёмную рамку вокруг листа.
        Visual на экране не меняется — обёртка в App уже даёт bg-bg-surface. */
-    @apply h-full w-full text-text-primary font-sans antialiased;
+    @apply h-full w-full text-text-primary antialiased;
+    /* Шрифт всего приложения — напрямую через --app-font (переключатель
+       Настройки→Оформление двигает её). Явно, а не через Tailwind font-sans:
+       так смена шрифта надёжно применяется ко всему по наследованию. */
+    font-family: var(--app-font);
   }
 
   body {

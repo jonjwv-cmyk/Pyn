@@ -1,4 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { Factory, Phone } from 'lucide-react';
 import {
@@ -28,6 +37,13 @@ type WarehouseState = ReturnType<typeof getWarehouseState>;
 
 const CLUSTER_ORDER: WarehouseCluster[] = ['НТМК', 'ВЫЕЗД', 'КХП'];
 const DAY_ORDER: WarehouseWeekday[] = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'];
+
+/** Вертикальный зазор между карточками (Tailwind gap-3 = 12px). */
+const CARD_GAP = 12;
+/** Короче этого числа цехов виртуализация не нужна — рендерим всё. */
+const WINDOW_THRESHOLD = 24;
+/** Оценка высоты неизмеренной карточки (px) — fallback до первого замера. */
+const EST_CARD_H = 260;
 
 interface ClusterGroup {
   cluster: WarehouseCluster;
@@ -326,19 +342,120 @@ export function ShopsTab({ query, onContactAction }: ShopsTabProps) {
   // сверху). Пустой / цех / телефон — обычный список сверху.
   const centered = parsed.mode === 'warehouse';
 
-  const cards = filteredShops.map((shop) => (
-    <ShopCard
-      key={shop.name}
-      name={shop.name}
-      rows={shop.rows}
-      all={shop.all}
-      idx={shopOrder.get(shop.name) ?? 0}
-      months={months}
-      metaMap={metaMap}
-      query={query}
-      onContactAction={onContactAction}
-    />
-  ));
+  // ── Оконная виртуализация ленты ──────────────────────────────────────────
+  // Сайдбар анимирует ширину 220ms → контент рефлоутится каждый кадр. Чтобы
+  // пересчитывались только видимые карточки (а не все ~55), держим в DOM «окно»
+  // (видимое + буфер сверху/снизу), остальные — заглушки точной высоты. Слот-
+  // обёртка обычная (не контейнит/не клипает) → sticky-шапка и докующийся низ
+  // целы (canonical-рамка). Высоты меряем у отрисованных карточек и кэшируем —
+  // заглушка занимает ровно столько же, поэтому замена карточка↔заглушка не
+  // двигает раскладку и позицию скролла.
+  const heightsRef = useRef<number[]>([]);
+  const reportHeight = useCallback((i: number, h: number) => {
+    heightsRef.current[i] = h;
+  }, []);
+  // null = рендерим всё (короткий/отфильтрованный список или до первого расчёта).
+  const [windowRange, setWindowRange] = useState<{ start: number; end: number } | null>(null);
+  const useWindowing = !centered && filteredShops.length > WINDOW_THRESHOLD;
+
+  // Сброс кэша высот + окна при смене состава списка (индексы → другие цеха).
+  // Делаем в рендере через ref-страж, а НЕ в эффекте: layout-эффект слота
+  // (ребёнок) отрабатывает раньше эффекта родителя, поэтому сброс из эффекта
+  // затёр бы только что измеренные высоты.
+  const listSig = `${filteredShops.length}|${query}`;
+  const listSigRef = useRef(listSig);
+  if (listSigRef.current !== listSig) {
+    listSigRef.current = listSig;
+    heightsRef.current = [];
+    setWindowRange(null);
+  }
+
+  const recomputeWindow = useCallback(() => {
+    const root = feedScroll.ref.current;
+    if (!root || !useWindowing) {
+      setWindowRange(null);
+      return;
+    }
+    const n = filteredShops.length;
+    const scrollTop = root.scrollTop;
+    const vh = root.clientHeight;
+    const buffer = vh * 2; // видимое + ~2 экрана сверху/снизу (плавная подгрузка)
+    const top = scrollTop - buffer;
+    const bottom = scrollTop + vh + buffer;
+    const heights = heightsRef.current;
+    let y = 0;
+    let start = -1;
+    let end = n - 1;
+    for (let i = 0; i < n; i++) {
+      const h = heights[i] || EST_CARD_H;
+      if (start === -1 && y + h >= top) start = i;
+      if (y > bottom) {
+        end = i - 1;
+        break;
+      }
+      y += h + CARD_GAP;
+    }
+    if (start === -1) start = 0;
+    if (end < start) end = start;
+    setWindowRange((prev) =>
+      prev && prev.start === start && prev.end === end ? prev : { start, end },
+    );
+  }, [useWindowing, filteredShops.length, feedScroll.ref]);
+
+  // Активируем окно после первого полного рендера (высоты уже измерены слотами
+  // в useLayoutEffect). Restore скролла затем сам шлёт scroll-событие → окно
+  // пересчитается под сохранённую позицию.
+  useEffect(() => {
+    if (!useWindowing) {
+      setWindowRange(null);
+      return;
+    }
+    const id = requestAnimationFrame(recomputeWindow);
+    return () => cancelAnimationFrame(id);
+  }, [useWindowing, recomputeWindow]);
+
+  // rAF-throttle пересчёта окна на скролле (поверх persist-throttle feedScroll).
+  const winRafRef = useRef<number | null>(null);
+  const handleFeedScroll = (): void => {
+    feedScroll.onScroll();
+    if (winRafRef.current != null) return;
+    winRafRef.current = requestAnimationFrame(() => {
+      winRafRef.current = null;
+      recomputeWindow();
+    });
+  };
+  useEffect(
+    () => () => {
+      if (winRafRef.current != null) cancelAnimationFrame(winRafRef.current);
+    },
+    [],
+  );
+
+  const cards = filteredShops.map((shop, i) => {
+    const visible =
+      !useWindowing || !windowRange || (i >= windowRange.start && i <= windowRange.end);
+    return (
+      <ShopSlot
+        key={shop.name}
+        index={i}
+        shopId={shop.name}
+        visible={visible}
+        height={heightsRef.current[i]}
+        reportHeight={reportHeight}
+      >
+        <ShopCard
+          name={shop.name}
+          rows={shop.rows}
+          all={shop.all}
+          idx={shopOrder.get(shop.name) ?? 0}
+          months={months}
+          metaMap={metaMap}
+          query={query}
+          onContactAction={onContactAction}
+        />
+      </ShopSlot>
+    );
+  });
 
   // Прыжок ленты к выбранному цеху (как клик по закреплённой новости): плавный
   // скролл к карточке цеха, заголовок чуть ниже верха ленты.
@@ -361,7 +478,7 @@ export function ShopsTab({ query, onContactAction }: ShopsTabProps) {
     // паттерн — во всю карточку (на root); обложка/sticky-шапка не тронуты.
     <div className="mol-pattern-bg flex min-h-0 flex-1 overflow-hidden pb-4">
       {/* ЛЕВО — лента карточек цехов (смещена влево, как новости). */}
-      <div ref={feedScroll.ref} onScroll={feedScroll.onScroll} className="min-w-0 flex-1 overflow-y-auto">
+      <div ref={feedScroll.ref} onScroll={handleFeedScroll} className="min-w-0 flex-1 overflow-y-auto">
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
             <Factory className="h-9 w-9 text-text-muted/25" strokeWidth={1.2} />
@@ -436,6 +553,58 @@ export function ShopsTab({ query, onContactAction }: ShopsTabProps) {
   );
 }
 
+/**
+ * Слот-обёртка карточки цеха для оконной виртуализации. Видимый слот рендерит
+ * карточку и меряет её высоту (ResizeObserver) → кэш в родителе. Невидимый —
+ * заглушка ровно той же высоты, чтобы раскладка и позиция скролла не дёргались.
+ * Обычный блок (без contain/overflow) → sticky-шапка и докующийся низ работают
+ * относительно ленты так же, как без обёртки. data-shop-id здесь (а не на
+ * article) → есть в DOM и у заглушки, поэтому jumpToShop находит цель вне окна.
+ */
+function ShopSlot({
+  index,
+  shopId,
+  visible,
+  height,
+  reportHeight,
+  children,
+}: {
+  index: number;
+  shopId: string;
+  visible: boolean;
+  height: number | undefined;
+  reportHeight: (index: number, height: number) => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  // Меряем высоту, пока слот видим (карточка в DOM). ResizeObserver ловит и
+  // изменение от анимации сайдбара (меняется ширина → может измениться высота).
+  useLayoutEffect(() => {
+    if (!visible) return;
+    const el = ref.current;
+    if (!el) return;
+    const measure = (): void => {
+      const h = el.offsetHeight;
+      if (h > 0) reportHeight(index, h);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [visible, index, reportHeight]);
+
+  return (
+    <div
+      ref={ref}
+      data-shop-id={shopId}
+      className="shrink-0"
+      style={visible ? undefined : { height: height && height > 0 ? height : EST_CARD_H }}
+    >
+      {visible ? children : null}
+    </div>
+  );
+}
+
 function ShopCard({
   name,
   rows,
@@ -481,7 +650,9 @@ function ShopCard({
   }, []);
 
   return (
-    <article data-shop-id={name}>
+    // data-shop-id перенесён на слот-обёртку (ShopSlot) — он есть в DOM и для
+    // заглушек, поэтому jumpToShop находит цель даже когда карточка вне окна.
+    <article>
       {/* Sticky-шапка остаётся на месте (top-4). Скругление верха + верхняя/
           боковые рамки — на шапке (линии загибаются в скругление). Снизу рамки/
           тени нет — clay-заливка плавно гаснет в фон (to-transparent). Строки и

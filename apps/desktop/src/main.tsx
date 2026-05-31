@@ -4,6 +4,7 @@ import { App } from './App';
 import { TrayMenu } from './components/system/TrayMenu';
 import { initI18n } from './lib/i18n';
 import './index.css';
+import './lib/fonts';
 
 // StrictMode намеренно НЕ подключаем: его dev-only double-mount триггерит
 // двойные useEffect'ы → server возвращает `replay_detected` на дублирующий

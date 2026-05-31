@@ -86,7 +86,7 @@
     "reset_title": "Zurück zum ursprünglichen Lieferplan aus der Datei",
     "removed_warehouses": "Entfernte Lager",
     "removed_warehouse_tip": "Lager stillgelegt — keine Lieferungen anfragen",
-    "print": "Drucken / PDF"
+    "download": "Herunterladen"
   },
   "connectivity": {
     "online": "Online",
@@ -426,6 +426,7 @@
   "settings_sidebar": {
     "users": "Benutzer",
     "language": "Sprache",
+    "font": "Schrift",
     "appearance": "Darstellung",
     "google": "Google",
     "app_control": "Steuerung",
