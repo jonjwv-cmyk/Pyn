@@ -2526,13 +2526,90 @@ function ProbaStyles() {
           box-shadow: none !important;
         }
 
-        /* §ч/б — весь ТЕКСТ листа в PDF чёрный (чёткая печать, без серого).
-           Цвет сохраняют только фоны day-pills / Выезда / статус-чипов (это
-           background, не color) и логотип ЕВРАЗ (SVG fill, не CSS color).
-           Правило последнее в @media print → перебивает все серые color-правила. */
+        /* §print-mirror — раскладку PDF подтягиваем под ЭКРАН (юзер: «нет повтора
+           нашей таблицы; у нас заголовок выше компактнее, всё по левому краю»).
+           Зеркалим @media screen-реструктур, но в pt/A4: компактная 2-рядная
+           шапка (ЕВРАЗ+ГРАФИК сверху, Дни/Склады слева снизу — без пустоты,
+           УТВЕРЖДАЮ справа как на экране), subgrid-выравнивание meta в колонки,
+           склады по 15 в строку с корректным переносом. */
+        .proba-header {
+          display: grid !important;
+          grid-template-columns: auto minmax(0, 1fr) auto !important;
+          grid-template-areas:
+            "brand title approver"
+            "meta meta approver" !important;
+          column-gap: 4mm !important;
+          row-gap: 0 !important;
+          align-items: start !important;
+        }
+        .proba-header-top { display: contents !important; }
+        .proba-brand {
+          grid-area: brand !important;
+          align-items: baseline !important;
+          align-self: baseline !important;
+        }
+        .proba-title { grid-area: title !important; align-self: baseline !important; }
+        .proba-approver { grid-area: approver !important; }
+        .proba-meta {
+          grid-area: meta !important;
+          display: grid !important;
+          grid-template-columns: auto max-content 1fr !important;
+          column-gap: 2.5mm !important;
+          row-gap: 0.3mm !important;
+          margin-top: 0.6mm !important;
+        }
+        .proba-meta-row {
+          padding-left: 0 !important;
+          display: grid !important;
+          grid-template-columns: subgrid !important;
+          grid-column: 1 / -1 !important;
+        }
+        .proba-meta-label {
+          display: grid !important;
+          grid-template-columns: subgrid !important;
+          grid-column: 1 / 3 !important;
+          align-items: baseline !important;
+          min-width: 0 !important;
+        }
+        .proba-meta-label-text { grid-column: 1 !important; min-width: 0 !important; }
+        .proba-meta-label .proba-cluster-count { grid-column: 2 !important; margin-left: 0 !important; }
+        .proba-meta-value { grid-column: 3 !important; }
+        .proba-meta-codes {
+          display: flex !important;
+          flex-direction: column !important;
+          gap: 0.7mm !important;
+        }
+        .proba-meta-code-row {
+          display: flex !important;
+          flex-wrap: wrap !important;
+          gap: 0.6mm 1mm !important;
+        }
+        .proba-meta-codes .proba-meta-code { margin-right: 0 !important; }
+        .proba-meta-row--readonly { align-items: center !important; }
+
+        /* §print-align — левый край В ОДНУ ЛИНИЮ (как на экране): нумерация цеха
+           по ЛЕВОМУ краю (1 и 10 стартуют с одной линии, вровень с ЕВРАЗ/Дни/
+           Склады), а не right-aligned «лесенкой». Фикс-ширина колонки ДАТА
+           (7mm 30mm 1fr вместо minmax-auto) → коды всех строк на одном X, без
+           «шахмат». Зеркалит §выравнивание из @media screen. */
+        .proba-shop-num {
+          text-align: left !important;
+          padding-left: 0 !important;
+        }
+        .proba-row,
+        .proba-thead-row {
+          grid-template-columns: 7mm 30mm 1fr !important;
+        }
+
+        /* §ч/б — весь ТЕКСТ листа в PDF ЧИСТО ЧЁРНЫЙ #000 (не тёплый #1A1815:
+           он на мелком кегле + Win-растеризации читался серым и отличался от
+           Mac). Pure black → максимально чётко и идентично Win/Mac. Цвет
+           сохраняют только фоны day-pills / Выезда / статус-чипов (background,
+           не color) и логотип ЕВРАЗ (SVG fill). Правило последнее в @media print
+           → перебивает все серые color-правила выше. */
         .proba-sheet,
         .proba-sheet * {
-          color: #1A1815 !important;
+          color: #000000 !important;
         }
       }
     `}</style>
