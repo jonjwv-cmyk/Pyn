@@ -44,7 +44,9 @@ export function setupMolBridge(): void {
       }
 
       const finalUrl = resolveMediaUrl(url, getProxyState());
-      const resp = await electronSession.defaultSession.fetch(finalUrl);
+      // §pyn-1.2.61 — cache:'no-store': снапшот кэшируется в нашем cache-store,
+      // HTTP-кэш Chromium на холодном старте даёт net::ERR_CACHE_READ_FAILURE.
+      const resp = await electronSession.defaultSession.fetch(finalUrl, { cache: 'no-store' });
       if (!resp.ok) {
         throw new Error(`snapshot_fetch_${resp.status}`);
       }

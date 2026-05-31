@@ -24,11 +24,28 @@ export function setupBlobBridge(): void {
       throw new Error('invalid_blob_url');
     }
     const finalUrl = resolveMediaUrl(url, getProxyState());
-    const resp = await electronSession.defaultSession.fetch(finalUrl);
-    if (!resp.ok) {
-      throw new Error(`blob_fetch_${resp.status}`);
+    // §pyn-1.2.61 — `cache:'no-store'` + retry. На холодном старте (особенно
+    // Win) Chromium HTTP-кэш может быть не готов/залочен (после нечистого
+    // выхода/self-update) → `net::ERR_CACHE_READ_FAILURE`, из-за чего аватарки
+    // и картинки чата не грузились до полного рестарта. Блобы content-addressed
+    // и кэшируются в renderer'е per-session — HTTP-кэш тут не нужен. Retry
+    // добивает любые транзиентные сбои первых запросов через корп-прокси.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resp = await electronSession.defaultSession.fetch(finalUrl, { cache: 'no-store' });
+        if (!resp.ok) {
+          // HTTP-статус (4xx/5xx) — не транзиент, не ретраим.
+          throw new Error(`blob_fetch_${resp.status}`);
+        }
+        const buffer = await resp.arrayBuffer();
+        return new Uint8Array(buffer);
+      } catch (err) {
+        lastErr = err;
+        if (err instanceof Error && err.message.startsWith('blob_fetch_')) break;
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+      }
     }
-    const buffer = await resp.arrayBuffer();
-    return new Uint8Array(buffer);
+    throw lastErr instanceof Error ? lastErr : new Error('blob_fetch_failed');
   });
 }
