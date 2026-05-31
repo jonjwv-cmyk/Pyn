@@ -1163,30 +1163,29 @@ function CommitButtonInner({
 
 // ─── Formatting commit timestamp в Yekaterinburg (UTC+5) ────────────────────
 
-function formatCommitYekaterinburg(iso: string): string {
+function formatCommitYekaterinburg(iso: string, locale: string): string {
   const d = new Date(iso);
-  const tz = 'Asia/Yekaterinburg';
-  // Месяц русский с capitalize, день numeric, год полный, время 12h am/pm
-  const month = d.toLocaleString('ru-RU', { month: 'long', timeZone: tz });
-  const monthCap = month.charAt(0).toUpperCase() + month.slice(1);
-  const day = d.toLocaleString('en-US', { day: 'numeric', timeZone: tz });
-  const year = d.toLocaleString('en-US', { year: 'numeric', timeZone: tz });
-  const time = d.toLocaleString('en-US', {
+  // Локализованная дата + время в TZ Екатеринбурга (UTC+5) по ТЕКУЩЕМУ языку
+  // приложения (i18n.language: ru/en/de/es/uk) — порядок полей и 12h/24h берёт
+  // сам locale. Раньше было захардкожено: ru-месяц + en-US структура (не
+  // реагировало на смену языка).
+  return d.toLocaleString(locale || 'ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-    hour12: true,
-    timeZone: tz,
+    timeZone: 'Asia/Yekaterinburg',
   });
-  return `${monthCap} ${day}, ${year} ${time}`;
 }
 
 // ─── Verstka line — subtle авторский label слева над bold line ──────────────
 
 function VerstkaLine({ commit }: { commit: ScheduleCommit }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   return (
     <div className="proba-verstka">
-      {t('proba.commit_signed_prefix')}: {commit.author} · {formatCommitYekaterinburg(commit.committedAt)}
+      {t('proba.commit_signed_prefix')}: {commit.author} · {formatCommitYekaterinburg(commit.committedAt, i18n.language)}
     </div>
   );
 }

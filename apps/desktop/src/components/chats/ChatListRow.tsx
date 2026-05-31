@@ -37,9 +37,11 @@ export function ChatListRow({ partner, active, onClick }: ChatListRowProps) {
         'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5',
         'text-left transition-colors',
         // Каждый контакт — solid-карточка (не прозрачная, паттерн не просвечивает).
-        // Выделенный чат — заливка clay (Telegram-style), остальные — тёмная карточка.
+        // Выделенный чат — лёгкая clay-подложка (subtle, как выделение в сайдбаре):
+        // сплошной clay-тинт фона строки (#46352D ≈ clay 18% над bg-primary), текст
+        // НЕ инвертируется — имя ярче (text-strong), остальное в обычной палитре.
         active
-          ? 'bg-accent-clay text-white'
+          ? 'bg-[#46352D] text-text-strong'
           : 'bg-bg-primary text-text-primary hover:bg-bg-elevated hover:text-text-strong',
       )}
     >
@@ -55,7 +57,7 @@ export function ChatListRow({ partner, active, onClick }: ChatListRowProps) {
         <PresenceDot
           state={presence}
           size={10}
-          ringClass={active ? 'ring-accent-clay' : 'ring-bg-primary'}
+          ringClass={active ? 'ring-[#46352D]' : 'ring-bg-primary'}
           className="absolute -bottom-0.5 -right-0.5"
         />
       </span>
@@ -65,12 +67,12 @@ export function ChatListRow({ partner, active, onClick }: ChatListRowProps) {
           <span className="truncate text-[13px] font-medium tracking-[-0.005em]">
             {partner.name}
           </span>
-          <span className={cn('ml-auto shrink-0 text-[11px] tabular-nums', active ? 'text-white/70' : 'text-text-muted')}>
+          <span className="ml-auto shrink-0 text-[11px] tabular-nums text-text-muted">
             {lastMessageLabel}
           </span>
         </span>
         <span className="flex items-center gap-2">
-          <span className={cn('truncate text-[12px]', active ? 'text-white/80' : 'text-text-muted')}>
+          <span className="truncate text-[12px] text-text-muted">
             {partner.lastMessage}
           </span>
           {unread > 0 && (
@@ -78,7 +80,8 @@ export function ChatListRow({ partner, active, onClick }: ChatListRowProps) {
               className={cn(
                 'ml-auto inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-pill',
                 'px-1.5 text-[11px] font-semibold tabular-nums leading-none',
-                active ? 'bg-white text-accent-clay' : 'bg-accent-clay text-white',
+                // Бейдж непрочитанных — всегда clay-пилюля (без инверсии в active).
+                'bg-accent-clay text-white',
               )}
             >
               {unread > 999 ? '999+' : unread}

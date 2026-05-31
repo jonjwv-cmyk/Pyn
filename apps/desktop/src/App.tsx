@@ -662,8 +662,15 @@ export function App() {
     if (!session) return;
     const myLogin = session.user.login;
     void refreshConversations();
+    // §fix — в админ-инбоксе переписка ВСЕГДА идентифицируется юзером (не-
+    // админом), независимо от того, какой админ отправил:
+    //   user→admins (receiver='admins') → peer = отправитель (юзер);
+    //   admin→user  (receiver=<user>)   → peer = получатель (юзер).
+    // Раньше для чужого ответа (sender = ДРУГОЙ админ) peer вычислялся как
+    // sender=админ ≠ activeChatId(юзер) → открытая переписка у второго админа
+    // не перезагружалась, его ответ не появлялся в реальном времени.
     const relevantPeer =
-      event.sender_login === myLogin ? event.receiver_login : event.sender_login;
+      event.receiver_login === 'admins' ? event.sender_login : event.receiver_login;
     if (activeChatId && relevantPeer === activeChatId) {
       getAdminChat(api, { userLogin: activeChatId, limit: 200 })
         .then((wire) => {

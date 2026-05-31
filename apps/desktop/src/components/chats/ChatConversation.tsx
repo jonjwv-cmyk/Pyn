@@ -1,10 +1,8 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Avatar } from '@/components/ui/Avatar';
 import { DateDivider } from '@/components/ui/DateDivider';
 import { DayLabelPill } from '@/components/ui/DayLabelPill';
-import { PresenceDot } from '@/components/ui/PresenceDot';
 import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -162,9 +160,10 @@ interface ChatHeaderProps {
 }
 
 /**
- * Компактный заголовок диалога: drag-region + avatar (с presence-dot) + имя +
- * статус. §design — h-9 прозрачная шапка на подложке (bg-deep), над
- * WorkspaceCard'ом. Раньше была h-12 solid bg-surface + h-px divider.
+ * Компактный заголовок диалога: drag-region + имя + статус (БЕЗ аватара).
+ * Статус-строка видна только когда контакт не в сети (offline → «был(а)
+ * <время>», away → «отошёл»); онлайн → только имя. §design — h-9 прозрачная
+ * шапка на подложке (bg-deep), над WorkspaceCard'ом.
  */
 function ChatHeader({ partner }: ChatHeaderProps) {
   const { t } = useTranslation();
@@ -178,30 +177,18 @@ function ChatHeader({ partner }: ChatHeaderProps) {
   const lastSeenLabel = useFormatYek(presenceInfo?.lastSeenAt);
 
   return (
-    <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
-      <span className="relative shrink-0">
-        <Avatar
-          initials={partner.initials}
-          size={28}
-          login={partner.id}
-          avatarUrl={partner.avatarUrl}
-          avatarBlobKey={partner.avatarBlobKey}
-          avatarBlobNonce={partner.avatarBlobNonce}
-        />
-        <PresenceDot
-          state={presence}
-          size={9}
-          ringClass="ring-bg-primary"
-          className="absolute -bottom-0.5 -right-0.5"
-        />
-      </span>
+    <div className="drag-region flex h-9 shrink-0 items-center px-4">
       <span className="flex min-w-0 flex-col leading-tight">
         <span className="truncate text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
           {partner.name}
         </span>
-        <span className="truncate text-[11px] text-text-muted">
-          {presenceText(presence, lastSeenLabel, t)}
-        </span>
+        {/* Статус-строка только когда контакт НЕ в сети: offline → «был(а)
+            <дата/время>», away → «отошёл». Онлайн → только имя (без строки). */}
+        {presence !== 'online' && (
+          <span className="truncate text-[11px] text-text-muted">
+            {presenceText(presence, lastSeenLabel, t)}
+          </span>
+        )}
       </span>
     </div>
   );

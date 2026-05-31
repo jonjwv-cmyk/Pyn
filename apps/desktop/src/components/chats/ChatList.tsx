@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 import type { ChatPartner } from '@/types/chat';
@@ -23,8 +24,17 @@ const CHAT_LIST_WIDTH = 280;
  */
 export function ChatList({ conversations, activeId, onSelect }: ChatListProps) {
   const { t } = useTranslation();
-  const users = conversations.filter((c) => c.type === 'user');
-  const clients = conversations.filter((c) => c.type === 'client');
+  // Порядок внутри секции: открытый чат закреплён сверху, затем непрочитанные,
+  // затем остальные по свежести (см. sortConversations). Re-sort при смене
+  // активного → контакт, в чьём чате сидим, всегда вверху своей секции.
+  const users = useMemo(
+    () => sortConversations(conversations.filter((c) => c.type === 'user'), activeId),
+    [conversations, activeId],
+  );
+  const clients = useMemo(
+    () => sortConversations(conversations.filter((c) => c.type === 'client'), activeId),
+    [conversations, activeId],
+  );
 
   return (
     <aside
@@ -86,8 +96,37 @@ function Block({ title, items, activeId, onSelect, emptyHint }: BlockProps) {
             </div>
           )}
         </div>
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-4 bg-gradient-to-b from-bg-surface to-transparent" />
       </div>
     </div>
   );
+}
+
+/** Свежесть из raw server timestamp `lastMessageAt`. Формат может быть epoch
+ *  (число-строкой) или ISO — пробуем Number, затем Date.parse; важна не
+ *  абсолютная величина, а согласованный порядок. */
+function recencyKey(s: string): number {
+  if (!s) return 0;
+  const n = Number(s);
+  if (Number.isFinite(n)) return n;
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Порядок контактов внутри секции:
+ *   1) открытый (активный) чат — закреплён сверху;
+ *   2) непрочитанные — сразу под закреплённым;
+ *   3) остальные — по свежести последнего сообщения (новые выше).
+ * Копия массива (не мутируем вход), стабильна для равных ключей.
+ */
+function sortConversations(items: ChatPartner[], activeId: string | null): ChatPartner[] {
+  return [...items].sort((a, b) => {
+    const aActive = a.id === activeId;
+    const bActive = b.id === activeId;
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    const aUnread = (a.unreadCount ?? 0) > 0;
+    const bUnread = (b.unreadCount ?? 0) > 0;
+    if (aUnread !== bUnread) return aUnread ? -1 : 1;
+    return recencyKey(b.lastMessageAt) - recencyKey(a.lastMessageAt);
+  });
 }
