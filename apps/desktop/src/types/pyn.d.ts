@@ -76,6 +76,13 @@ declare global {
         logout: () => Promise<{ loggedIn: boolean; email: string | null }>;
       };
       /**
+       * Google-bridge: передать {url,ticket} из get_client_config в main для
+       * применения PAC к partition Google-таблиц (если обнаружен корп-прокси).
+       */
+      bridge: {
+        configure: (url: string, ticket: string) => Promise<void>;
+      };
+      /**
        * SAP-macro VBS runner (Windows only). Возвращает TSV-строку которую
        * нужно отправить серверу через `submitMacroData`.
        */

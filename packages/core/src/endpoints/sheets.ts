@@ -229,6 +229,43 @@ export async function checkSheetActionStatus(
   };
 }
 
+// ── get_sheet_stats (кнопка «Проверка») ────────────────────────────────────
+
+export interface SheetStatsResult {
+  rows?: string[];
+  matched?: number;
+  total?: number;
+  mode?: 'no_sheets' | 'no_supply' | 'all_ok' | 'missing';
+  /** Apps Script вернул «не изменилось» (version-poll) — клиент держит старое. */
+  unchanged?: boolean;
+  /** Текущая версия данных (для следующего version-poll). */
+  v?: string;
+}
+
+interface SheetStatsWire {
+  ok: boolean;
+  stats?: SheetStatsResult;
+  error?: string;
+}
+
+/**
+ * `get_sheet_stats` — серверный прокси кнопки «Проверка». CF сам фетчит
+ * `statsUrl` (по file_id из registry) — раньше это делал клиент напрямую на
+ * `script.google.com`, что режется корп-прокси EVRAZ. Version-poll: передаём
+ * последнюю `v`, Apps Script отдаёт `{unchanged:true}` если данные не менялись.
+ */
+export async function getSheetStats(
+  client: ApiClient,
+  fileId: string,
+  v?: string,
+): Promise<SheetStatsResult> {
+  const wire = await client.call<SheetStatsWire>('get_sheet_stats', {
+    file_id: fileId,
+    v: v ?? '',
+  });
+  return wire.stats ?? {};
+}
+
 /**
  * §pyn-1.2.20 — `release_sheet_lock` — явный release маски после polling.
  * Server broadcastит `sheet_lock_released` → все клиенты в room снимают

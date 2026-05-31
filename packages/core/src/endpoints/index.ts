@@ -160,6 +160,7 @@ export {
   submitMacroData,
   searchSapDoc,
   getSheetsClientConfig,
+  getSheetStats,
   type SheetSummary,
   type SheetTab,
   type SheetSnapshot,
@@ -167,6 +168,7 @@ export {
   type MacroBundle,
   type SapDocHit,
   type SheetsClientConfig,
+  type SheetStatsResult,
 } from './sheets';
 
 // Storage activity (§pyn-1.2.53) — кто последний открывал файл/папку

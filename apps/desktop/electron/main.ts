@@ -9,6 +9,7 @@ import { setupCacheBridge } from './ipc/cache-bridge';
 import { setupFsBridge } from './ipc/fs-bridge';
 import { setupPrintBridge } from './ipc/print-bridge';
 import { setupGoogleBridge } from './ipc/google-bridge';
+import { setupBridgeBridge } from './ipc/bridge-bridge';
 import { setupMacroBridge } from './ipc/macro-bridge';
 import { setupMolBridge } from './ipc/mol-bridge';
 import { setupWarehousesBridge } from './ipc/warehouses-bridge';
@@ -330,6 +331,9 @@ app.whenReady().then(async () => {
   // Снэпшот складов («Цеха»-база) — тот же механизм что МОЛ (R2 + AES + gunzip).
   setupWarehousesBridge();
   setupGoogleBridge();
+  // Google-bridge: PAC + локальный туннель webview Google-таблиц через VPS-релей
+  // (применяется только при обнаруженном корп-прокси, по config.bridge из CF).
+  setupBridgeBridge();
   // SAP-макросы: renderer получает VBS source через get_macro_bundle,
   // main process пишет на диск + spawn'ит cscript /B (Windows-only).
   setupMacroBridge();

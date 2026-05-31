@@ -208,6 +208,8 @@ export function customActionLabel(rawLabel: string, t?: TFunction): string {
 
 interface RegistryShape {
   files?: TableFile[];
+  /** §bridge — VPS-релей для обхода корп-прокси к Google (только если CF выдал). */
+  bridge?: { url?: string; ticket?: string };
 }
 
 let inFlight: Promise<void> | null = null;
@@ -242,6 +244,13 @@ async function fetchOnce(): Promise<void> {
       state = { files: filtered, loading: false, error: null, loadedAt: Date.now() };
       retryAttempt = 0;
       nextRetryAt = 0;
+      // §bridge — если CF выдал bridge-конфиг, передаём в main (он сам решит,
+      // включать ли мост — только при корп-прокси). Webview Google-таблиц
+      // тогда поедет через VPS-релей вместо прямого (заблокированного) docs.google.com.
+      const bridge = shape.bridge;
+      if (bridge?.url && bridge?.ticket) {
+        void window.pyn?.bridge?.configure?.(bridge.url, bridge.ticket)?.catch?.(() => undefined);
+      }
     } catch (err) {
       state = {
         ...state,

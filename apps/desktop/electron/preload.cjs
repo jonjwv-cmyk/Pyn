@@ -138,6 +138,15 @@ contextBridge.exposeInMainWorld('pyn', {
     },
   },
   /**
+   * Google-bridge: renderer после get_client_config отдаёт {url,ticket} в main,
+   * тот применяет PAC к partition Google-таблиц (если есть корп-прокси).
+   */
+  bridge: {
+    configure: function pynBridgeConfigure(url, ticket) {
+      return ipcRenderer.invoke('pyn:bridge:configure', String(url || ''), String(ticket || ''));
+    },
+  },
+  /**
    * SAP-макрос: пишем VBS на диск (без BOM), spawn'им cscript /B,
    * читаем TSV-output, удаляем VBS и TSV. Windows-only — на Mac возвращает
    * `{ ok: false, error: 'platform_not_supported' }`.

@@ -5,6 +5,7 @@ import { Chrome, RefreshCcw } from 'lucide-react';
 import {
   checkSheetActionStatus,
   getMacroBundle,
+  getSheetStats,
   releaseSheetLock,
   runScript,
   submitMacroData,
@@ -775,7 +776,7 @@ export function TablesScreen({
                       return curr === 'check' ? null : curr;
                     })
                   }
-                  url={activeFile.statsUrl}
+                  fileId={activeFile.id}
                 />
               </div>
             )}
@@ -1093,12 +1094,12 @@ function CheckDropdown({
   disabled,
   open,
   onOpenChange,
-  url,
+  fileId,
 }: {
   disabled: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  url: string;
+  fileId: string;
 }): JSX.Element {
   const { t } = useTranslation();
   const [payload, setPayload] = useState<CheckPayload | null>(null);
@@ -1112,15 +1113,9 @@ function CheckDropdown({
     const tick = async (): Promise<void> => {
       if (cancelled) return;
       try {
-        const sep = url.indexOf('?') >= 0 ? '&' : '?';
-        const fullUrl = versionRef.current
-          ? url + sep + 'v=' + encodeURIComponent(versionRef.current)
-          : url;
-        const resp = await fetch(fullUrl, { cache: 'no-store' });
-        const json = (await resp.json()) as Partial<CheckPayload> & {
-          unchanged?: boolean;
-          v?: string;
-        };
+        // §bridge — через CF (get_sheet_stats), не прямой fetch на script.google.com
+        // (тот режется корп-прокси). Version-poll сохранён.
+        const json = await getSheetStats(api, fileId, versionRef.current || undefined);
         if (cancelled) return;
         if (json.unchanged !== true) {
           if (typeof json.v === 'string') versionRef.current = json.v;
@@ -1144,7 +1139,7 @@ function CheckDropdown({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [open, url]);
+  }, [open, fileId]);
 
   const hasSupply = payload !== null
     && payload.mode !== 'no_supply'
