@@ -217,6 +217,13 @@ let inFlight: Promise<void> | null = null;
 let nextRetryAt = 0;
 let retryAttempt = 0;
 
+// §bridge — мост настраивается один раз (reload webview'ов), а пропуск (ticket,
+// живёт 24ч) освежается раз в 6ч повторным get_client_config — без перезапуска
+// и без reload открытых таблиц.
+let bridgeConfiguredOnce = false;
+let bridgeRefreshTimer: ReturnType<typeof setInterval> | null = null;
+const BRIDGE_TICKET_REFRESH_MS = 6 * 60 * 60 * 1000;
+
 async function fetchOnce(): Promise<void> {
   if (inFlight) return inFlight;
   state = { ...state, loading: true, error: null };
@@ -251,9 +258,19 @@ async function fetchOnce(): Promise<void> {
       if (bridge?.url && bridge?.ticket) {
         void window.pyn?.bridge?.configure?.(bridge.url, bridge.ticket)
           ?.then?.((applied) => {
-            // Мост реально включён (корп-прокси) → перезагрузить webview'ы Таблиц,
-            // т.к. они могли стартануть до применения PAC и упасть на chrome-error.
-            if (applied) window.dispatchEvent(new Event('pyn:bridge-ready'));
+            if (!applied) return;
+            // Первое включение (корп-прокси) → перезагрузить webview'ы Таблиц
+            // (могли стартануть до PAC и упасть на chrome-error). На последующих
+            // refresh'ах НЕ дёргаем reload — иначе мигали бы открытые таблицы.
+            if (!bridgeConfiguredOnce) {
+              bridgeConfiguredOnce = true;
+              window.dispatchEvent(new Event('pyn:bridge-ready'));
+            }
+            // Пропуск живёт 24ч — освежаем раз в 6ч повторным get_client_config
+            // + configure (main обновит ticket без перезапуска и без reload).
+            if (!bridgeRefreshTimer) {
+              bridgeRefreshTimer = setInterval(() => void fetchOnce(), BRIDGE_TICKET_REFRESH_MS);
+            }
           })
           ?.catch?.(() => undefined);
       }
@@ -308,5 +325,10 @@ export function clearTablesRegistry(): void {
   state = { files: [], loading: false, error: null, loadedAt: 0 };
   retryAttempt = 0;
   nextRetryAt = 0;
+  if (bridgeRefreshTimer) {
+    clearInterval(bridgeRefreshTimer);
+    bridgeRefreshTimer = null;
+  }
+  bridgeConfiguredOnce = false;
   emit();
 }

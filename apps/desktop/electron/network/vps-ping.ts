@@ -1,5 +1,7 @@
 import { BrowserWindow, session } from 'electron';
 import { emitRtt } from '../ws/ws-client';
+import { resolveMediaUrl } from './media-url';
+import { getProxyState } from '../ipc/api-bridge';
 
 /**
  * Periodic RTT-замер до VPS. Бьёт в nginx-only endpoint `/__ping` (см.
@@ -43,7 +45,12 @@ async function tick(): Promise<void> {
   const abortId = setTimeout(() => ctrl.abort(), PING_TIMEOUT_MS);
   const startedAt = Date.now();
   try {
-    const res = await session.defaultSession.fetch(VPS_PING_URL, {
+    // §pyn-1.2.62 — proxy-aware: на корп-сети api.otlhelper.com резолвится корп-
+    // DNS'ом на Cloudflare (не наш VPS) и /__ping там нет → стабильный fail
+    // индикатора. resolveMediaUrl переписывает на sslip.io в proxy-режиме (там
+    // nginx сам отдаёт /__ping). Дома — без изменений (host-resolver → VPS).
+    const pingUrl = resolveMediaUrl(VPS_PING_URL, getProxyState());
+    const res = await session.defaultSession.fetch(pingUrl, {
       method: 'GET',
       signal: ctrl.signal,
       headers: { 'Cache-Control': 'no-store' },
