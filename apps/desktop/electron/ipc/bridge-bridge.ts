@@ -7,8 +7,8 @@ import { configureBridge } from '../network/bridge';
  * Google-таблиц (только если обнаружен корп-прокси). См. `network/bridge`.
  */
 export function setupBridgeBridge(): void {
-  ipcMain.handle('pyn:bridge:configure', async (_evt, url: unknown, ticket: unknown): Promise<void> => {
-    if (typeof url !== 'string' || typeof ticket !== 'string') return;
-    await configureBridge(url, ticket);
+  ipcMain.handle('pyn:bridge:configure', async (_evt, url: unknown, ticket: unknown): Promise<boolean> => {
+    if (typeof url !== 'string' || typeof ticket !== 'string') return false;
+    return configureBridge(url, ticket);
   });
 }

@@ -61,6 +61,7 @@ type TWebview = HTMLElement & {
   executeJavaScript?: (code: string) => Promise<unknown>;
   getURL?: () => string;
   reload?: () => void;
+  loadURL?: (url: string) => void;
   openDevTools?: (opts?: { mode?: string }) => void;
   addEventListener: (e: string, cb: (...args: unknown[]) => void) => void;
   removeEventListener: (e: string, cb: (...args: unknown[]) => void) => void;
@@ -319,6 +320,31 @@ export function TablesScreen({
     window.addEventListener('pyn:google-login-success', handler);
     return () => window.removeEventListener('pyn:google-login-success', handler);
   }, []);
+
+  // §bridge — после включения моста (корп-прокси) перезагружаем webview'ы через
+  // loadURL: они могли стартануть до применения PAC и застрять на chrome-error
+  // (reload() там бесполезен — перезагрузил бы сам chrome-error, а не таблицу).
+  useEffect(() => {
+    const handler = (): void => {
+      readyRef.current.clear();
+      setReadyFileIds(new Set());
+      for (const f of files) {
+        const view = webviewRefs.current.get(f.id);
+        if (!view?.loadURL) continue;
+        const initialTab = f.tabs.find((tab) => !tab.hidden);
+        const u = initialTab
+          ? `https://docs.google.com/spreadsheets/d/${f.id}/edit#gid=${initialTab.gid}`
+          : `https://docs.google.com/spreadsheets/d/${f.id}/edit`;
+        try {
+          view.loadURL(u);
+        } catch {
+          /* webview ещё не attached — пропускаем */
+        }
+      }
+    };
+    window.addEventListener('pyn:bridge-ready', handler);
+    return () => window.removeEventListener('pyn:bridge-ready', handler);
+  }, [files]);
 
   // Presence-тикер — на active webview каждые 5 сек.
   useEffect(() => {

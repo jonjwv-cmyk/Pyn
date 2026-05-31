@@ -80,7 +80,8 @@ declare global {
        * применения PAC к partition Google-таблиц (если обнаружен корп-прокси).
        */
       bridge: {
-        configure: (url: string, ticket: string) => Promise<void>;
+        /** Возвращает true если мост реально включён (есть корп-прокси). */
+        configure: (url: string, ticket: string) => Promise<boolean>;
       };
       /**
        * SAP-macro VBS runner (Windows only). Возвращает TSV-строку которую

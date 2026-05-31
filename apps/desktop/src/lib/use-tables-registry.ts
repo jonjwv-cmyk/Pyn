@@ -249,7 +249,13 @@ async function fetchOnce(): Promise<void> {
       // тогда поедет через VPS-релей вместо прямого (заблокированного) docs.google.com.
       const bridge = shape.bridge;
       if (bridge?.url && bridge?.ticket) {
-        void window.pyn?.bridge?.configure?.(bridge.url, bridge.ticket)?.catch?.(() => undefined);
+        void window.pyn?.bridge?.configure?.(bridge.url, bridge.ticket)
+          ?.then?.((applied) => {
+            // Мост реально включён (корп-прокси) → перезагрузить webview'ы Таблиц,
+            // т.к. они могли стартануть до применения PAC и упасть на chrome-error.
+            if (applied) window.dispatchEvent(new Event('pyn:bridge-ready'));
+          })
+          ?.catch?.(() => undefined);
       }
     } catch (err) {
       state = {
