@@ -1,44 +1,41 @@
-import { PanelLeft, Search } from 'lucide-react';
+import { PanelLeft } from 'lucide-react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
+import { AiNavButton } from './AiNavButton';
 
 interface SidebarHeaderProps {
   collapsed: boolean;
   sidebarWidth: number;
+  showAi: boolean;
   onToggleCollapsed: () => void;
-  onSearchClick: () => void;
+  onAiClick: () => void;
 }
 
 // Layout constants — должны совпадать с CSS classes ниже + outer wrapper.
 const WRAPPER_PADDING_X = 6;  // outer <div className="px-1.5"> в Sidebar.tsx
 const HEADER_PADDING_X = 4;   // px-1 = 4dp у самой шапки
-const BUTTON_GAP = 4;         // gap-1 = 4dp между кнопками
 const BUTTON_SIZE = 24;       // h-6 w-6 = 24dp
-// Выравниваем тултипы шапки ровно по тултипам NavItem (Хранилище/График…):
-// NavItem-кнопка во всю ширину колонки (правый край на sidebar_width−6), её
-// tooltip `sideOffset=20` → tooltip на sidebar_width+14. Наша формула даёт
-// tooltip на sidebar_width+TOOLTIP_GAP, поэтому GAP = 14 (а не 6).
+// Выравниваем тултип шапки ровно по тултипам NavItem (Хранилище/График…).
 const TOOLTIP_GAP = 14;
 
 /**
- * Top row sidebar — collapse-toggle + search.
+ * Top row sidebar — кнопка сворачивания/разворачивания.
  *
- * Кнопки маленькие (24×24). Tooltips располагаются **за правым краем
- * sidebar** (одинаково с NavItem-tooltip'ами в collapsed mode) — это
- * унифицированный паттерн всего sidebar. Offset вычисляется динамически:
+ * Tooltip располагается **за правым краем sidebar** (как у NavItem-tooltip'ов
+ * в collapsed mode). Offset вычисляется динамически:
  *
  *   sideOffset = sidebarWidth − buttonRightX + TOOLTIP_GAP
  */
 export function SidebarHeader({
   collapsed,
   sidebarWidth,
+  showAi,
   onToggleCollapsed,
-  onSearchClick,
+  onAiClick,
 }: SidebarHeaderProps) {
   const { t } = useTranslation();
   const firstButtonRightX = WRAPPER_PADDING_X + HEADER_PADDING_X + BUTTON_SIZE;
-  const secondButtonRightX = firstButtonRightX + BUTTON_GAP + BUTTON_SIZE;
 
   return (
     <div className="flex h-8 items-center gap-1 px-1">
@@ -48,12 +45,7 @@ export function SidebarHeader({
         tooltipSideOffset={sidebarWidth - firstButtonRightX + TOOLTIP_GAP}
         onClick={onToggleCollapsed}
       />
-      <IconButton
-        icon={Search}
-        tooltip={t('sidebar_extra.search')}
-        tooltipSideOffset={sidebarWidth - secondButtonRightX + TOOLTIP_GAP}
-        onClick={onSearchClick}
-      />
+      {showAi && <AiNavButton collapsed={collapsed} onClick={onAiClick} />}
     </div>
   );
 }

@@ -51,6 +51,25 @@ export default {
       borderRadius: {
         'pill': '999px',
       },
+      keyframes: {
+        shimmer: {
+          '0%': { backgroundPosition: '200% 0' },
+          '100%': { backgroundPosition: '-200% 0' },
+        },
+        // Хаотичный mesh-градиент внутри AI-пилюли: несколько цветных источников
+        // (из центра, боков, углов) плавно блуждают по всей площади — каждый слой
+        // двигается своим путём (анимируем background-position по 5 слоям).
+        mesh: {
+          '0%, 100%': { backgroundPosition: '15% 20%, 85% 18%, 45% 85%, 92% 72%, 22% 78%' },
+          '25%': { backgroundPosition: '50% 55%, 60% 45%, 18% 48%, 72% 28%, 58% 35%' },
+          '50%': { backgroundPosition: '80% 32%, 22% 72%, 82% 22%, 30% 82%, 40% 55%' },
+          '75%': { backgroundPosition: '34% 76%, 70% 60%, 55% 38%, 58% 50%, 76% 64%' },
+        },
+      },
+      animation: {
+        shimmer: 'shimmer 1.8s linear infinite',
+        mesh: 'mesh 15s ease-in-out infinite',
+      },
     },
   },
   plugins: [],

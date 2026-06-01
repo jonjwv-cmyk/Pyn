@@ -3,6 +3,8 @@ import i18next from 'i18next';
 import { useTranslation } from 'react-i18next';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { Sidebar } from '@/components/sidebar';
+import { AiAssistantPanel } from '@/components/ai/AiAssistantPanel';
+import { useAiStore } from '@/lib/ai-store';
 import { ChatConversation, ChatList } from '@/components/chats';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { MolScreen } from '@/components/mol';
@@ -962,10 +964,9 @@ export function App() {
               userAvatarBlobKey={session.user.avatarBlobKey}
               userAvatarBlobNonce={session.user.avatarBlobNonce}
               badges={sidebarBadges}
+              showAi={isAdminLike(session.role)}
               onToggleCollapsed={() => setCollapsed((v) => !v)}
-              onSearchClick={() => {
-                /* TODO: search overlay */
-              }}
+              onAiClick={() => useAiStore.getState().setOpen(true)}
               onSectionClick={setActiveSection}
               onOpenSettings={() => setShowSettings(true)}
               onLogout={() => {
@@ -1124,6 +1125,14 @@ export function App() {
               onBack={() => setShowSettings(false)}
             />
           </div>
+        )}
+
+        {/* ИИ-помощник — общий чат в правом нижнем углу (admin/developer). */}
+        {isAdminLike(session.role) && (
+          <AiAssistantPanel
+            myLogin={session.user.login}
+            myName={session.user.fullName || session.user.login}
+          />
         )}
 
         {updateInfo && (

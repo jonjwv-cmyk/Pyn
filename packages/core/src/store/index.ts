@@ -82,7 +82,7 @@ export { useStorageStore } from './storage-store';
 // AppLockState и AppLockScope экспортируются через endpoints/app-lock —
 // тут не реэкспортируем чтобы не было дубликатов в re-export цепочке index.ts.
 
-export { createJSONStorage, type StateStorage, type PersistStorage } from 'zustand/middleware';
+export { createJSONStorage, persist, type StateStorage, type PersistStorage } from 'zustand/middleware';
 
 // Re-export raw zustand для downstream-пакетов (desktop / mobile) которые
 // делают свои inline-store'ы (например `useWarehousesStore` в desktop) и

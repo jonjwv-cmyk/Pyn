@@ -44,8 +44,9 @@ interface SidebarProps {
    * badge из NAV_SECTIONS (обычно 0).
    */
   badges?: Partial<Record<NavSectionId, number>>;
+  showAi: boolean;
   onToggleCollapsed: () => void;
-  onSearchClick: () => void;
+  onAiClick: () => void;
   onSectionClick: (id: NavSectionId) => void;
   /** Клик «Настройки» в попап-меню профиля — открывает Settings overlay. */
   onOpenSettings: () => void;
@@ -109,8 +110,9 @@ export function Sidebar({
   userAvatarBlobKey,
   userAvatarBlobNonce,
   badges,
+  showAi,
   onToggleCollapsed,
-  onSearchClick,
+  onAiClick,
   onSectionClick,
   onOpenSettings,
   onLogout,
@@ -205,8 +207,9 @@ export function Sidebar({
         <SidebarHeader
           collapsed={collapsed}
           sidebarWidth={width}
+          showAi={showAi}
           onToggleCollapsed={onToggleCollapsed}
-          onSearchClick={onSearchClick}
+          onAiClick={onAiClick}
         />
       </div>
 

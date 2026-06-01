@@ -23,6 +23,11 @@
  *   4. **Diagnostic** — глобальная `window.__pynSheetsInspect()` возвращает
  *      список кандидатов на «меню»/«лист» в DOM. Pyn-renderer её дёргает
  *      и показывает в toast (без необходимости открывать DevTools).
+ *   5. **Строка формул** (поле имени + fx + поле формулы) — прячем НАТИВНО
+ *      через «Вид → Показать → Строка формул» (как menubar, НЕ CSS): grid
+ *      пересчитывается без пустого зазора, выбор Google запоминает между
+ *      перезагрузками. Guardian возвращает скрытие, если Google восстановил
+ *      панель после reload/смены листа. Остаётся только панель инструментов.
  */
 
 export const SHEETS_MASK_STYLE_ID = 'pyn-sheets-mask';
@@ -70,6 +75,19 @@ body.pyn-menu-extracting [class*="menubar"] {
 .docs-grid-bar-show-all-tabs-button,
 .docs-sheet-show-all-tabs-button,
 .waffle-sheet-list-toggle { display: none !important; }
+
+/* Кнопки прокрутки листов влево/вправо и их полоса (.docs-sheet-button-bar).
+   На холодной первой загрузке Google показывает их, пока не «уляжется»
+   раскладка вкладок, и они залипают до первого переключения листа. Прячем
+   сразу (вкладки Google и так скрыты — навигация по листам через пилюли Pyn). */
+.docs-sheet-button-bar,
+.docs-sheet-left-button,
+.docs-sheet-right-button { display: none !important; }
+
+/* Кнопка «Поиск по меню» (лупа слева от Отменить/Повторить). Стабильный id
+   омнибокса Google — прячем сразу, без шанса мигнуть. JS-фолбэк по подписи
+   («поиск»+«меню») — в shouldHide, на случай если Google переименует id. */
+#docs-omnibox-toolbar { display: none !important; }
 `;
 
 export function buildSheetsMaskScript(): string {
@@ -126,6 +144,13 @@ export function buildSheetsMaskScript(): string {
         }
         function shouldHide(el) {
           var t = textOf(el);
+          // Кнопка «Поиск в меню» (лупа слева от Отменить/Повторить) — у Pyn
+          // своя навигация по таблице, нативный поиск по меню не нужен.
+          // Подпись: «Поиск в меню» (RU) / «Search the menus» (EN).
+          if (t.indexOf('search the menus') !== -1 ||
+              (t.indexOf('поиск') !== -1 && t.indexOf('меню') !== -1)) {
+            return true;
+          }
           var isSheet = hasAny(t, T.sheet);
           var isMenu = hasAny(t, T.menu);
           // Стрелка «Свернуть/Развернуть меню» — прячем после успешного
@@ -223,6 +248,22 @@ export function buildSheetsMaskScript(): string {
           return mb.offsetWidth > 0 && mb.offsetHeight > 0;
         }
 
+        /** Видна ли строка формул Google (поле имени + fx + ввод формулы).
+         *  Селекторы избыточны нарочно — Google использует разные поколения
+         *  id/классов. Используется ТОЛЬКО для идемпотентности (понять, нужно
+         *  ли дёргать нативный тумблер). Само скрытие — через меню, не CSS. */
+        function isFormulaBarVisible() {
+          var nodes = document.querySelectorAll(
+            '#t-formula-bar-input,#t-name-box,#docs-formula-bar,' +
+            '.docs-formula-bar,.waffle-name-box'
+          );
+          for (var i = 0; i < nodes.length; i++) {
+            var r = nodes[i].getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) return true;
+          }
+          return false;
+        }
+
         function fireKeyboardShortcut() {
           // Ctrl+Shift+F — стандартный shortcut Google Sheets для compact-mode.
           var target = document.activeElement || document.body;
@@ -304,20 +345,31 @@ export function buildSheetsMaskScript(): string {
             // отрабатывает без visible menu, но если юзер случайно открыл
             // menu — пусть закроет сам).
             if (visibleMenus().length > 0) return;
-            if (!isMenubarVisible()) return;
-            guardianRunning = true;
-            try {
-              var btn = findCollapseBtn();
-              if (btn) {
-                clickDeeply(btn);
-              } else {
-                fireKeyboardShortcut();
+            // 1) Menubar свернулся обратно (history nav / hash / reload) —
+            //    сворачиваем нативно. Приоритет над строкой формул.
+            if (isMenubarVisible()) {
+              guardianRunning = true;
+              try {
+                var btn = findCollapseBtn();
+                if (btn) {
+                  clickDeeply(btn);
+                } else {
+                  fireKeyboardShortcut();
+                }
+                markHideables();
+              } catch (_) {
+                // ignore
+              } finally {
+                guardianRunning = false;
               }
-              markHideables();
-            } catch (_) {
-              // ignore
-            } finally {
-              guardianRunning = false;
+              return;
+            }
+            // 2) Menubar свёрнут — проверяем строку формул. Google
+            //    восстанавливает её после reload/смены листа — прячем снова.
+            if (isFormulaBarVisible()) {
+              guardianRunning = true;
+              var done = function () { guardianRunning = false; };
+              tryHideFormulaBar().then(done, done);
             }
           }, 1000);
         }
@@ -356,6 +408,57 @@ export function buildSheetsMaskScript(): string {
         markBottomBarSiblings();
         setTimeout(markBottomBarSiblings, 500);
         setTimeout(markBottomBarSiblings, 1500);
+
+        // DIAG (временно): структура нижней панели на холодной загрузке —
+        // прицелить точные селекторы кнопок прокрутки/разделителя для
+        // мгновенного скрытия. Удалить после нахождения цели.
+        console.log('[pyn:sheets-mask] injected build=bottombar-1');
+        function pynDiagBottomBar() {
+          try {
+            var firstTab = document.querySelector('.docs-sheet-tab');
+            var info = { tabFound: !!firstTab, barCls: null, kids: [], scroll: [] };
+            if (firstTab && firstTab.parentElement &&
+                firstTab.parentElement.parentElement) {
+              var bottomBar = firstTab.parentElement.parentElement;
+              info.barCls = (bottomBar.className || '').toString().slice(0, 60);
+              for (var i = 0; i < bottomBar.children.length; i++) {
+                var c = bottomBar.children[i];
+                info.kids.push({
+                  tag: c.tagName,
+                  cls: (c.className || '').toString().slice(0, 60),
+                  al: c.getAttribute('aria-label'),
+                  txt: (c.textContent || '').trim().slice(0, 18),
+                  hid: c.hasAttribute('data-pyn-hide'),
+                  w: Math.round(c.getBoundingClientRect().width),
+                });
+              }
+            }
+            var all = document.querySelectorAll('[aria-label],[data-tooltip]');
+            for (var j = 0; j < all.length && info.scroll.length < 6; j++) {
+              var e = all[j];
+              var t = ((e.getAttribute('aria-label') || '') + ' ' +
+                (e.getAttribute('data-tooltip') || '')).toLowerCase();
+              if (t.indexOf('прокру') !== -1 || t.indexOf('scroll') !== -1 ||
+                  t.indexOf('влево') !== -1 || t.indexOf('вправо') !== -1 ||
+                  t.indexOf('предыдущ') !== -1 || t.indexOf('следующ') !== -1) {
+                var par = e.parentElement;
+                info.scroll.push({
+                  tag: e.tagName,
+                  cls: (e.className || '').toString().slice(0, 60),
+                  al: e.getAttribute('aria-label'),
+                  hid: e.hasAttribute('data-pyn-hide'),
+                  w: Math.round(e.getBoundingClientRect().width),
+                  par: par ? (par.className || '').toString().slice(0, 50) : null,
+                });
+              }
+            }
+            console.log('[pyn:sheets-mask] DIAG bottombar ' + JSON.stringify(info));
+          } catch (err) {
+            console.warn('[pyn:sheets-mask] DIAG bb err ' + err);
+          }
+        }
+        setTimeout(pynDiagBottomBar, 1200);
+        setTimeout(pynDiagBottomBar, 3500);
 
         /**
          * Глобальная функция switch-листа. Google не хранит gid в DOM tab'ов
@@ -672,6 +775,72 @@ export function buildSheetsMaskScript(): string {
               endExtracting();
             },
           };
+        }
+
+        /**
+         * Прячем строку формул Google (поле имени + fx + поле формулы) НАТИВНО
+         * через «Вид → Показать → Строка формул». CSS display:none тут не
+         * годится: grid Google позиционируется с вычисленным top-офсетом и от
+         * CSS-скрытия НЕ пересчитывается → останется пустой зазор (та же
+         * причина, по которой menubar сворачиваем нативной кнопкой, а не
+         * стилями). Нативный тумблер пересчитывает раскладку и Google запоминает
+         * выбор между перезагрузками. Идемпотентно: тумблер — toggle, поэтому
+         * дёргаем только когда панель РЕАЛЬНО видна (иначе показали бы обратно).
+         * Если подписи меню не совпали несколько раз подряд — сдаёмся, чтобы
+         * guardian не мигал menubar'ом каждую секунду.
+         */
+        var formulaBarFails = 0;
+        var formulaBarGaveUp = false;
+        async function tryHideFormulaBar() {
+          if (formulaBarGaveUp) return;
+          if (!isFormulaBarVisible()) return;
+          // Структура меню и подпись пункта у Google варьируются: «Вид →
+          // Показать → Строка формул» либо «… → Панель формул», иногда без
+          // подменю «Показать»; в англ. локали «View → Show → Formula bar».
+          // Поэтому навигируем к подменю и ищем пункт по подстроке, не
+          // завязываясь на точную подпись. ВАЖНО: соседний пункт «Формулы»
+          // (показ формул в ячейках) тоже содержит «формул» — исключаем его.
+          var NAV_PATHS = [
+            ['Вид', 'Показать'],
+            ['Вид'],
+            ['View', 'Show'],
+            ['View'],
+          ];
+          function isFormulaBarItem(label) {
+            var lab = label.toLowerCase();
+            var matches = lab.indexOf('формул') !== -1 ||
+              lab.indexOf('formula') !== -1;
+            var isFormulasToggle = lab.indexOf('формулы') !== -1 ||
+              lab.indexOf('formulas') !== -1;
+            return matches && !isFormulasToggle;
+          }
+          for (var p = 0; p < NAV_PATHS.length; p++) {
+            if (!isFormulaBarVisible()) return;
+            var nav = await _navigatePath(NAV_PATHS[p]);
+            if (!nav) continue;
+            var items = collectItems(nav.currentMenu);
+            var leaf = null;
+            for (var i = 0; i < items.length; i++) {
+              if (isFormulaBarItem(items[i].label)) {
+                leaf = items[i].el;
+                break;
+              }
+            }
+            if (leaf) clickDeeply(leaf);
+            nav.cleanup();
+            if (leaf) {
+              formulaBarFails = 0;
+              console.log('[pyn:sheets-mask] formula bar toggled via ' +
+                JSON.stringify(NAV_PATHS[p]));
+              return;
+            }
+          }
+          formulaBarFails++;
+          if (formulaBarFails >= 5) {
+            formulaBarGaveUp = true;
+            console.warn('[pyn:sheets-mask] formula bar hide gave up ' +
+              '(menu labels not matched?)');
+          }
         }
 
         window.__pynExtractMenu = async function (path) {
