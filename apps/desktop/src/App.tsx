@@ -643,7 +643,14 @@ export function App() {
       sendHeartbeat(state);
     };
     const onFocus = () => setState('foreground');
-    const onBlur = () => setState('background');
+    const onBlur = () => {
+      // Фокус ушёл в НАШ встроенный <webview> (раздел «Таблицы») — приложение
+      // всё ещё активно, это НЕ background. Настоящий уход (другое приложение /
+      // minimize / tray) ловит main-process `pyn:visibility` (mainWindow blur),
+      // который при фокусе на webview не срабатывает (окно ОС не теряет фокус).
+      if (document.activeElement?.tagName === 'WEBVIEW') return;
+      setState('background');
+    };
     window.addEventListener('focus', onFocus);
     window.addEventListener('blur', onBlur);
     // §pyn-1.2.41 — native BrowserWindow events через IPC. Точнее чем

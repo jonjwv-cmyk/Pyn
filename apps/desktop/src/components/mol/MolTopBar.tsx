@@ -129,9 +129,22 @@ function MolSearchField({
   const active = value.trim() !== '';
   const sizerRef = useRef<HTMLSpanElement>(null);
   const [textW, setTextW] = useState(0);
-  // useLayoutEffect — ширина выставляется ДО paint, без мелькания.
+  // Ширину берём из offsetWidth скрытого sizer'а. Раздел МОЛ всегда смонтирован
+  // и переключается через display:none (App.tsx) → при ПЕРВОМ маунте (вкладка
+  // скрыта) offsetWidth = 0, пилюля схлопывается в иконку и без re-measure такой
+  // и остаётся (помогал лишь «прыжок по вкладкам»). ResizeObserver ловит переход
+  // 0→N в момент, когда вкладка становится видимой, и переизмеряет сам.
   useLayoutEffect(() => {
-    if (sizerRef.current) setTextW(sizerRef.current.offsetWidth);
+    const el = sizerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = el.offsetWidth;
+      if (w > 0) setTextW(w); // не сбрасываем в 0, когда вкладка прячется
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [value, placeholder]);
   return (
     <div className="no-drag-region relative flex h-7 shrink-0 items-center">

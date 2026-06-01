@@ -113,13 +113,22 @@ async function withTransparentRoot<T>(
 ): Promise<T> {
   const prevBg = win.getBackgroundColor();
   win.setBackgroundColor('#ffffff');
-  // §скрыть «мелькание» — на время генерации (print-эмуляция меняет ВИДИМУЮ
-  // страницу в светлый print-режим) накрываем окно непрозрачной дочерней
-  // заглушкой. В PDF она НЕ попадает: printToPDF снимает только webContents
-  // основного окна, а это отдельное окно.
+  // §незаметная генерация — на время печати окно мутируется в светлый print-
+  // режим (эмуляция media + strip фоновых классов). Чтобы юзер НЕ видел этой
+  // вспышки/прыжка, накрываем окно дочерним окном со СНИМКОМ текущего экрана:
+  // визуально ничего не меняется, а под снимком спокойно идёт printToPDF.
+  // Снимок в PDF не попадает — printToPDF снимает только webContents основного
+  // окна, а это отдельное окно. Снимок берём ДО мутаций (нормальный вид экрана).
   let cover: BrowserWindow | null = null;
   try {
     const b = win.getBounds();
+    let snapUrl = '';
+    try {
+      const shot = await win.webContents.capturePage();
+      snapUrl = shot.isEmpty() ? '' : shot.toDataURL();
+    } catch {
+      snapUrl = '';
+    }
     cover = new BrowserWindow({
       parent: win, frame: false, resizable: false, movable: false,
       minimizable: false, maximizable: false, fullscreenable: false,
@@ -128,14 +137,22 @@ async function withTransparentRoot<T>(
       backgroundColor: '#1F1E1B',
     });
     cover.setIgnoreMouseEvents(true);
-    void cover.loadURL(
+    await cover.loadURL(
       'data:text/html;charset=utf-8,' +
-        encodeURIComponent(
-          '<body style="margin:0;height:100vh;display:flex;align-items:center;' +
-            'justify-content:center;background:#1F1E1B;color:#A6A39B;' +
-            'font:13px -apple-system,Segoe UI Variable,Segoe UI,sans-serif">Сохранение PDF…</body>',
-        ),
+        encodeURIComponent('<body style="margin:0;overflow:hidden;background:#1F1E1B"></body>'),
     );
+    if (snapUrl) {
+      // Вставляем снимок и ЖДЁМ его отрисовки до показа окна — без пустого кадра.
+      await cover.webContents.executeJavaScript(
+        'new Promise((res) => {' +
+          '  const i = document.createElement("img");' +
+          '  i.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill";' +
+          '  i.onload = () => res(true); i.onerror = () => res(false);' +
+          '  i.src = ' + JSON.stringify(snapUrl) + ';' +
+          '  document.body.appendChild(i);' +
+          '});',
+      );
+    }
     cover.showInactive();
   } catch {
     cover = null;

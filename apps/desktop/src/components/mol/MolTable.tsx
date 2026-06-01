@@ -75,6 +75,22 @@ export function MolTable({
 }: MolTableProps) {
   const { t } = useTranslation();
   const tableRef = useRef<HTMLTableElement>(null);
+  // §copy-fix — фокусируемый контейнер сетки. mousedown по ячейке делает
+  // preventDefault (чтобы не было нативного text-select), из-за чего фокус
+  // оставался на поле поиска → Cmd+C считался «в инпуте» и копирование молча
+  // не срабатывало. Явно фокусируем сетку при выделении → activeElement = div.
+  const gridRef = useRef<HTMLDivElement>(null);
+  // §copy-flash — после успешного копирования на ~1.4с делаем рамку выделения
+  // пунктирной = визуальное подтверждение «скопировано».
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashCopied = useCallback(() => {
+    setCopied(true);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 1400);
+  }, []);
+  // Чистка таймера на unmount (сброс при смене выделения — ниже, после selection).
+  useEffect(() => () => { if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current); }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
   const molScrollTop = useUiStateStore((s) => s.molScrollTop);
   const setMolScrollTop = useUiStateStore((s) => s.setMolScrollTop);
@@ -377,12 +393,12 @@ export function MolTable({
           includePosition: false, includeTab: false,
         });
         if (!tsv) return;
-        copyTsv(tsv);
+        void copyTsv(tsv).then((ok) => { if (ok) flashCopied(); });
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [visibleRecords, selection, nativeEditCell]);
+  }, [visibleRecords, selection, nativeEditCell, flashCopied]);
 
   const handleCellMouseDown = useCallback((r: number, c: number) => (ev: React.MouseEvent) => {
     const target = ev.target as HTMLElement;
@@ -390,6 +406,7 @@ export function MolTable({
     if (nativeEditCell && nativeEditCell.r === r && nativeEditCell.c === c) return;
     if (ev.button !== 0) return;
     ev.preventDefault();
+    gridRef.current?.focus({ preventScroll: true });
     setNativeEditCell(null);
     window.getSelection()?.removeAllRanges();
     if (ev.shiftKey && selection) {
@@ -428,6 +445,7 @@ export function MolTable({
   const handleColumnSelectMouseDown = useCallback((c: number) => (ev: React.MouseEvent) => {
     if (ev.button !== 0) return;
     ev.preventDefault();
+    gridRef.current?.focus({ preventScroll: true });
     setNativeEditCell(null);
     window.getSelection()?.removeAllRanges();
     if (ev.shiftKey && selection) {
@@ -461,6 +479,7 @@ export function MolTable({
   const handleRowSelectMouseDown = useCallback((r: number) => (ev: React.MouseEvent) => {
     if (ev.button !== 0) return;
     ev.preventDefault();
+    gridRef.current?.focus({ preventScroll: true });
     setNativeEditCell(null);
     window.getSelection()?.removeAllRanges();
     if (ev.shiftKey && selection) {
@@ -500,6 +519,9 @@ export function MolTable({
       maxC: Math.max(selection.sc, selection.ec),
     };
   }, [selection]);
+
+  // §copy-flash — подтверждение «скопировано» сбрасываем при смене выделения.
+  useEffect(() => { setCopied(false); }, [selection]);
 
   const isCellSelected = useCallback((r: number, c: number): boolean => {
     if (!selectionBounds) return false;
@@ -542,7 +564,7 @@ export function MolTable({
   }, [selection, isFullSelection]);
 
   return (
-    <div className="relative flex flex-1 flex-col overflow-hidden">
+    <div ref={gridRef} tabIndex={-1} className="relative flex flex-1 flex-col overflow-hidden outline-none">
       <ScrollToBottomButton visible={showScrollDown} onClick={scrollToBottom} />
       <div
         ref={scrollRef}
@@ -671,6 +693,7 @@ export function MolTable({
             cellRefs={cellRefs}
             bounds={selectionBounds}
             visibleRecordsCount={visibleRecords.length}
+            copied={copied}
           />
         )}
         </div>
@@ -689,7 +712,7 @@ export function MolTable({
               includePosition,
               includeTab,
             });
-            if (tsv) copyTsv(tsv);
+            if (tsv) void copyTsv(tsv).then((ok) => { if (ok) flashCopied(); });
             setCopyDialog(null);
           }}
         />
@@ -845,11 +868,14 @@ function SelectionOverlay({
   cellRefs,
   bounds,
   visibleRecordsCount: _visibleRecordsCount,
+  copied = false,
 }: {
   wrapperRef: React.RefObject<HTMLDivElement>;
   cellRefs: React.MutableRefObject<Map<string, HTMLTableCellElement>>;
   bounds: SelectionBounds;
   visibleRecordsCount: number;
+  /** true сразу после копирования → пунктирная рамка = «скопировано». */
+  copied?: boolean;
 }): JSX.Element | null {
   const [rect, setRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
 
@@ -892,11 +918,16 @@ function SelectionOverlay({
         height: rect.height,
         pointerEvents: 'none',
         zIndex: 5,
-        border: '1px solid rgba(217, 132, 87, 0.5)',
+        // §copy-flash — после копирования рамка становится пунктирной и ярче.
+        border: copied
+          ? '1px dashed rgba(217, 132, 87, 0.95)'
+          : '1px solid rgba(217, 132, 87, 0.5)',
         borderRadius: 4,
         // §design — без заливки ячеек: тонкая рамка + рассеянное (feathered)
         // внутреннее свечение по краям выделения, центр чистый.
-        boxShadow: 'inset 0 0 12px 1px rgba(217, 132, 87, 0.12), 0 0 3px 0 rgba(217, 132, 87, 0.10)',
+        boxShadow: copied
+          ? 'inset 0 0 12px 1px rgba(217, 132, 87, 0.20), 0 0 4px 0 rgba(217, 132, 87, 0.18)'
+          : 'inset 0 0 12px 1px rgba(217, 132, 87, 0.12), 0 0 3px 0 rgba(217, 132, 87, 0.10)',
       }}
     />
   );
@@ -1508,15 +1539,20 @@ function cellTextFor(rec: MolRecord, col: number, rowIdx: number, opts: CopyOpts
   }
 }
 
-function copyTsv(tsv: string): void {
-  void navigator.clipboard?.writeText?.(tsv).catch(() => {
+async function copyTsv(tsv: string): Promise<boolean> {
+  try {
+    await navigator.clipboard?.writeText?.(tsv);
+    return true;
+  } catch {
     const ta = document.createElement('textarea');
     ta.value = tsv;
     document.body.appendChild(ta);
     ta.select();
-    try { document.execCommand('copy'); } catch (_) { /* noop */ }
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { /* noop */ }
     document.body.removeChild(ta);
-  });
+    return ok;
+  }
 }
 
 // ─── Подсветка найденного ──────────────────────────────────────────────────

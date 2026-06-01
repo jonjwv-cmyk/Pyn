@@ -73,9 +73,13 @@ export function TeamPill({ myLogin, myRole, collapsed }: TeamPillProps): JSX.Ele
   // §pyn-1.2.43 — TeamPill отображается ВСЕГДА (даже когда teammates.length===0).
   // Юзер сказал «администраторы разработчики показываются всегда а не когда
   // есть». Пустое состояние с placeholder вместо аватаров.
-  const onlineCount = teammates.filter(
-    (u) => presenceByLogin[u.login]?.status === 'online',
-  ).length;
+  // §presence — «активны» = онлайн (зелёный) ИЛИ paused/away (жёлтый). Не идут
+  // в счёт только offline (красный) и те, у кого нет presence-данных. Юзер:
+  // жёлтый администратор должен считаться (1/4), а не выпадать (0/4).
+  const onlineCount = teammates.filter((u) => {
+    const s = presenceByLogin[u.login]?.status;
+    return s === 'online' || s === 'away';
+  }).length;
   const isEmpty = teammates.length === 0;
 
   // §pyn-1.2.54 — controlled state + window blur listener (mirror UserPopupMenu).

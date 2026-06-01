@@ -731,8 +731,9 @@ export function ProbaScreen() {
                   </div>
                 )}
 
-                {/* read-only — управляется из МОЛ (is_shipping flag на warehouse) */}
-                <div className="proba-meta-row proba-meta-row--readonly">
+                {/* read-only — управляется из МОЛ (is_shipping flag на warehouse).
+                    Склады отгрузки — только на экране, в печать НЕ идут (@media print скрывает). */}
+                <div className="proba-meta-row proba-meta-row--readonly proba-meta-row--shipping">
                   <span className="proba-meta-label">
                     <span className="proba-meta-label-text">{t('proba.shipping_warehouses')}</span>
                     {shippingWarehouses.length > 0 && (
@@ -2573,7 +2574,10 @@ function ProbaStyles() {
         }
         .proba-meta-label-text { grid-column: 1 !important; min-width: 0 !important; }
         .proba-meta-label .proba-cluster-count { grid-column: 2 !important; margin-left: 0 !important; }
-        .proba-meta-value { grid-column: 3 !important; }
+        /* §print — отодвигаем список значений от счётчика (≈ ширина 2-3 цифр /
+           одного кода): иначе на печати «дни без доставки» / «склады удалены»
+           вплотную к счётчику и сливаются. */
+        .proba-meta-value { grid-column: 3 !important; padding-left: 3mm !important; }
         .proba-meta-codes {
           display: flex !important;
           flex-direction: column !important;
@@ -2586,6 +2590,8 @@ function ProbaStyles() {
         }
         .proba-meta-codes .proba-meta-code { margin-right: 0 !important; }
         .proba-meta-row--readonly { align-items: center !important; }
+        /* §print — «Склады отгрузки» в печать НЕ включаем (юзер): только на экране. */
+        .proba-meta-row--shipping { display: none !important; }
 
         /* §print-align — левый край В ОДНУ ЛИНИЮ (как на экране): нумерация цеха
            по ЛЕВОМУ краю (1 и 10 стартуют с одной линии, вровень с ЕВРАЗ/Дни/
@@ -2638,7 +2644,15 @@ function ProbaStyles() {
           padding: 0.3mm 1.2mm !important;
         }
         .proba-code--khp {
-          border: 1.6pt solid #000 !important;
+          /* Жирную рамку КХП даём НЕ толстым border'ом, а тонким border (как
+             plain → одинаковая внутренняя высота чипа) + outline снаружи.
+             Раньше border:1.6pt при box-sizing:border-box съедал ~1.1мм из 3мм
+             высоты → текст (~2.4мм) не помещался и наползал на рамку, а высота
+             КХП ≠ plain → коды «не ровно по высоте». outline не влияет на размер
+             бокса, повторяет border-radius (Chromium) и надёжно печатается. */
+          border: 0.4pt solid #000 !important;
+          outline: 1.2pt solid #000 !important;
+          outline-offset: 0 !important;
           background: transparent !important;
           color: #000 !important;
           padding: 0.3mm 1.2mm !important;
