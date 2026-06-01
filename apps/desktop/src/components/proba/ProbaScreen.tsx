@@ -2626,14 +2626,28 @@ function ProbaStyles() {
           font-weight: 600 !important;
         }
 
-        /* §рамки кодов — ОДИНАКОВЫЕ для всех кластеров (КХП не толще НТМК) и
-           тёмные. Раньше КХП 0.8pt + bold, plain 0.2pt → «лесенка толщин». */
-        .proba-code--plain,
-        .proba-code--khp,
-        .proba-code--vyezd {
-          border: 0.5pt solid rgba(0,0,0,0.5) !important;
+        /* §коды складов в печати — кластеры различаем РАМКОЙ/ЗАЛИВКОЙ (тёмные,
+           ровные внутри класса):
+           • НТМК/прочие — тонкая тёмная рамка;
+           • КХП — ЖИРНАЯ заметная рамка (как пилл КХП в шапке);
+           • Выезд — тёмно-серый ЗАЛИВНОЙ пилл без рамки, белый текст. */
+        .proba-code--plain {
+          border: 0.4pt solid rgba(0,0,0,0.5) !important;
           background: transparent !important;
+          color: #000 !important;
           padding: 0.3mm 1.2mm !important;
+        }
+        .proba-code--khp {
+          border: 1pt solid #000 !important;
+          background: transparent !important;
+          color: #000 !important;
+          padding: 0.3mm 1.2mm !important;
+        }
+        .proba-code--vyezd {
+          border: 0 !important;
+          background: #3F3F3F !important;
+          color: #ffffff !important;
+          padding: 0.3mm 1.4mm !important;
         }
 
         /* §склады отгрузки/удалены — единый перенос: все коды текут одной

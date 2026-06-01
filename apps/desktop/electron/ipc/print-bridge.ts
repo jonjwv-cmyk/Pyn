@@ -113,6 +113,33 @@ async function withTransparentRoot<T>(
 ): Promise<T> {
   const prevBg = win.getBackgroundColor();
   win.setBackgroundColor('#ffffff');
+  // §скрыть «мелькание» — на время генерации (print-эмуляция меняет ВИДИМУЮ
+  // страницу в светлый print-режим) накрываем окно непрозрачной дочерней
+  // заглушкой. В PDF она НЕ попадает: printToPDF снимает только webContents
+  // основного окна, а это отдельное окно.
+  let cover: BrowserWindow | null = null;
+  try {
+    const b = win.getBounds();
+    cover = new BrowserWindow({
+      parent: win, frame: false, resizable: false, movable: false,
+      minimizable: false, maximizable: false, fullscreenable: false,
+      skipTaskbar: true, hasShadow: false, show: false,
+      x: b.x, y: b.y, width: b.width, height: b.height,
+      backgroundColor: '#1F1E1B',
+    });
+    cover.setIgnoreMouseEvents(true);
+    void cover.loadURL(
+      'data:text/html;charset=utf-8,' +
+        encodeURIComponent(
+          '<body style="margin:0;height:100vh;display:flex;align-items:center;' +
+            'justify-content:center;background:#1F1E1B;color:#A6A39B;' +
+            'font:13px -apple-system,Segoe UI Variable,Segoe UI,sans-serif">Сохранение PDF…</body>',
+        ),
+    );
+    cover.showInactive();
+  } catch {
+    cover = null;
+  }
   // ⚠️ Electron printToPDF по умолчанию рендерит media=screen, поэтому блок
   // `@media print` (бумажная light-палитра: белый фон + ТЁМНЫЙ текст #1A1815)
   // в PDF НЕ применялся — текст графика уходил в PDF светло-серым (dark-theme
@@ -235,6 +262,15 @@ async function withTransparentRoot<T>(
     } catch {
       /* ignore */
     }
+    // Заглушку убираем ПОСЛЕДНЕЙ, с небольшой задержкой (>200ms 2-го restore) —
+    // чтобы экран успел вернуться в обычный вид ПОД ней, без обратного мелькания.
+    setTimeout(() => {
+      try {
+        if (cover && !cover.isDestroyed()) cover.close();
+      } catch {
+        /* ignore */
+      }
+    }, 280);
   }
 }
 
