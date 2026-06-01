@@ -2638,7 +2638,7 @@ function ProbaStyles() {
           padding: 0.3mm 1.2mm !important;
         }
         .proba-code--khp {
-          border: 1pt solid #000 !important;
+          border: 1.6pt solid #000 !important;
           background: transparent !important;
           color: #000 !important;
           padding: 0.3mm 1.2mm !important;
@@ -2648,6 +2648,11 @@ function ProbaStyles() {
           background: #3F3F3F !important;
           color: #ffffff !important;
           padding: 0.3mm 1.4mm !important;
+        }
+        /* Счётчик внутри тёмного пилла Выезд — белый (иначе catch-all #000 →
+           чёрный на тёмно-сером = не видно). Его border-left = currentColor → тоже белый. */
+        .proba-code--vyezd .proba-cluster-count {
+          color: #ffffff !important;
         }
 
         /* §склады отгрузки/удалены — единый перенос: все коды текут одной
