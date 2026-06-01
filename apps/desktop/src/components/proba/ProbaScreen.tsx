@@ -2611,6 +2611,42 @@ function ProbaStyles() {
         .proba-sheet * {
           color: #000000 !important;
         }
+
+        /* §насыщенность — мелкий тонкий текст (даты, коды, шапка таблицы,
+           метки, нумерация, УТВЕРЖДАЮ/ПОДГОТОВИЛ) при #000 + weight 500 на
+           Win-растеризации читался СЕРЫМ. Поднимаем вес → чёрный насыщенный
+           как названия цехов. */
+        .proba-meta-label, .proba-meta-value, .proba-meta-code,
+        .proba-thead-day, .proba-thead-date, .proba-thead-code,
+        .proba-dates, .proba-shop-num, .proba-code,
+        .proba-cluster-count, .proba-cluster-total,
+        .proba-approver, .proba-approver-label, .proba-approver-title, .proba-approver-name,
+        .proba-prepared-label, .proba-prepared-title, .proba-prepared-name,
+        .proba-verstka {
+          font-weight: 600 !important;
+        }
+
+        /* §рамки кодов — ОДИНАКОВЫЕ для всех кластеров (КХП не толще НТМК) и
+           тёмные. Раньше КХП 0.8pt + bold, plain 0.2pt → «лесенка толщин». */
+        .proba-code--plain,
+        .proba-code--khp,
+        .proba-code--vyezd {
+          border: 0.5pt solid rgba(0,0,0,0.5) !important;
+          background: transparent !important;
+          padding: 0.3mm 1.2mm !important;
+        }
+
+        /* §склады отгрузки/удалены — единый перенос: все коды текут одной
+           wrap-строкой (без сиротливых строк по 1 коду). Чанки-«ряды» из
+           render распускаем в общий поток (display:contents). */
+        .proba-meta-codes {
+          flex-direction: row !important;
+          flex-wrap: wrap !important;
+          gap: 0.7mm 1mm !important;
+        }
+        .proba-meta-code-row {
+          display: contents !important;
+        }
       }
     `}</style>
   );
