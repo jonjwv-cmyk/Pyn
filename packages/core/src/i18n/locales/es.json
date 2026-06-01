@@ -644,6 +644,19 @@
     "format_am": "AM",
     "format_pm": "PM"
   },
+  "ai": {
+    "remaining": "Quedan {{n}}",
+    "remaining_pct": "Quedan {{p}}%",
+    "limit_reset": "El límite se restablece en {{h}} h {{m}} min",
+    "switch_simple": "¿Cambiar a un modelo más simple?",
+    "simple_mode": "Modo simple",
+    "yes": "Sí",
+    "no": "No",
+    "empty": "¿Qué buscas?",
+    "ask": "Preguntar…",
+    "help": "¿Qué puedo hacer?",
+    "help_body": "Pregunta con palabras sencillas, aunque sea aproximado. Qué puedo hacer:\n• Vehículos — teléfono del conductor, matrícula por número de garaje, horas y salidas\n• Pedidos — si existe un pedido, su contenido por posiciones, en qué etapa está\n• Almacenes — teléfono, almacenero, día y clúster de entrega\n• Responsables (MOL) — quién responde por un almacén, búsqueda por nombre o legajo, plazos vencidos\n• Calendario — cuándo se entrega a un almacén, día de la semana de una fecha, si un almacén o taller está en el calendario"
+  },
   "shops": {
     "mols_n": "Custodios: {{n}}",
     "mols_of_warehouse": "Custodios del almacén",

@@ -644,6 +644,19 @@
     "format_am": "AM",
     "format_pm": "PM"
   },
+  "ai": {
+    "remaining": "Verbleibend {{n}}",
+    "remaining_pct": "Verbleibend {{p}}%",
+    "limit_reset": "Limit erneuert sich in {{h}} Std. {{m}} Min.",
+    "switch_simple": "Zum einfacheren Modell wechseln?",
+    "simple_mode": "Einfacher Modus",
+    "yes": "Ja",
+    "no": "Nein",
+    "empty": "Was suchst du?",
+    "ask": "Fragen…",
+    "help": "Was kann ich?",
+    "help_body": "Frag mit einfachen Worten, auch ungefähr. Was ich kann:\n• Fahrzeuge — Telefon des Fahrers, Kennzeichen per Garagennummer, Arbeitsstunden und Fahrten\n• Bestellungen — ob eine Bestellung existiert, ihre Positionen, in welcher Phase\n• Lager — Telefon, Lagerist, Liefertag und Cluster\n• Verantwortliche (MOL) — wer für ein Lager zuständig ist, Suche nach Name oder Personalnummer, abgelaufene Fristen\n• Plan — wann ein Lager beliefert wird, Wochentag eines Datums, ob ein Lager oder Werk im Plan ist"
+  },
   "shops": {
     "mols_n": "Verantwortliche: {{n}}",
     "mols_of_warehouse": "Lagerverantwortliche",

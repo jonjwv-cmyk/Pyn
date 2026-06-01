@@ -9,8 +9,8 @@ interface AiNavButtonProps {
 }
 
 /**
- * Кнопка ИИ-помощника в шапке сайдбара: иконка + текст «AI Helper» (в
- * свёрнутом — «AI», иконка меньше, чтобы вписалось; при наведении — тултип).
+ * Кнопка ИИ-помощника в шапке сайдбара: иконка + текст «AI Gemini» (в
+ * свёрнутом — «Gemini», иконка меньше, чтобы вписалось; при наведении — тултип).
  * Подсвечивается, пока окно помощника открыто. Гейт admin/developer — выше.
  */
 export function AiNavButton({ collapsed, onClick }: AiNavButtonProps) {
@@ -20,7 +20,7 @@ export function AiNavButton({ collapsed, onClick }: AiNavButtonProps) {
     <button
       type="button"
       onClick={onClick}
-      aria-label="AI Helper"
+      aria-label="AI Gemini"
       className={cn(
         'group flex h-7 min-w-0 flex-1 items-center gap-1 rounded-md px-1',
         'text-text-primary transition-colors',
@@ -47,7 +47,7 @@ export function AiNavButton({ collapsed, onClick }: AiNavButtonProps) {
             'transition-colors',
             collapsed ? 'h-4 w-4' : 'h-[18px] w-[18px]',
             active
-              ? 'drop-shadow-[0_0_3px_rgba(217,119,87,0.6)]'
+              ? 'drop-shadow-[0_0_5px_rgba(217,119,87,0.95)]'
               : 'text-accent-clay/85 group-hover:text-accent-clay',
           )}
           style={active ? { stroke: 'url(#pyn-ai-grad)' } : undefined}
@@ -55,7 +55,7 @@ export function AiNavButton({ collapsed, onClick }: AiNavButtonProps) {
         />
       </span>
       <span className="truncate text-[13px] font-normal tracking-[-0.005em]">
-        {collapsed ? 'AI' : 'AI Helper'}
+        {collapsed ? 'Gemini' : 'AI Gemini'}
       </span>
     </button>
   );
@@ -71,7 +71,7 @@ export function AiNavButton({ collapsed, onClick }: AiNavButtonProps) {
           sideOffset={20}
           className="z-50 rounded-md bg-bg-deep px-2 py-1 text-[12px] text-text-strong shadow-lg"
         >
-          AI Helper
+          AI Gemini
           <Tooltip.Arrow className="fill-bg-deep" />
         </Tooltip.Content>
       </Tooltip.Portal>

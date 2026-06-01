@@ -644,6 +644,19 @@
     "format_am": "AM",
     "format_pm": "PM"
   },
+  "ai": {
+    "remaining": "Remaining {{n}}",
+    "remaining_pct": "Remaining {{p}}%",
+    "limit_reset": "Limit resets in {{h}}h {{m}}m",
+    "switch_simple": "Switch to a simpler model?",
+    "simple_mode": "Simple mode",
+    "yes": "Yes",
+    "no": "No",
+    "empty": "What are you looking for?",
+    "ask": "Ask…",
+    "help": "What can I do?",
+    "help_body": "Ask in plain words, even roughly. What I can do:\n• Vehicles — driver's phone, plate by garage number, work hours and trips\n• Orders — whether an order exists, its items, what stage it's at\n• Warehouses — phone, keeper, delivery day and cluster\n• Custodians (MOL) — who's responsible for a warehouse, search by name or ID, expired terms\n• Schedule — when a warehouse is served, weekday of a date, whether a warehouse or shop is scheduled"
+  },
   "shops": {
     "mols_n": "Custodians: {{n}}",
     "mols_of_warehouse": "Warehouse custodians",
