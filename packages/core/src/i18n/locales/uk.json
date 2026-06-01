@@ -645,6 +645,9 @@
     "format_pm": "PM"
   },
   "shops": {
+    "mols_n": "МВО: {{n}}",
+    "mols_of_warehouse": "МВО складу",
+    "mols_short": "МВО",
     "removed_count": "Склади видалені {{n}} з {{total}}",
     "no_data": "Немає даних",
     "search_ph": "склад · цех · телефон",
@@ -660,7 +663,7 @@
   },
   "mol": {
     "fio": "ПІБ",
-    "phones": "Телефони",
+    "phones": "Телефон",
     "status": "Статус",
     "warehouse": "Склад",
     "keeper": "Комірник",
@@ -713,6 +716,7 @@
       "title": "Включити в копіювання?",
       "include_position": "Посада",
       "include_tab": "Табельний номер",
+      "include_warehouse": "Термін «до дати»",
       "copy": "Скопіювати"
     }
   },

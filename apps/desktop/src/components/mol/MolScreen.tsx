@@ -8,12 +8,13 @@ import {
   dedupeMolByPerson,
   groupByWarehouse,
   matchesMolQuery,
+  molPersonKey,
   parseMolQuery,
   type MolRecord,
 } from '@pyn/core';
 import { ContactActionDialog, type ContactActionRequest } from './ContactActionDialog';
 import { MolEmptyView, type MolEmptyState } from './MolEmptyView';
-import { MolTable } from './MolTable';
+import { MolTable, type MolTableRow } from './MolTable';
 import { MolTopBar } from './MolTopBar';
 import { ShopsTab } from './ShopsTab';
 import { WarehouseSidebar } from './WarehouseSidebar';
@@ -65,13 +66,23 @@ export function MolScreen() {
 
   // §pyn-1.2.54 — dedupe по табельному применяется во ВСЕХ режимах поиска
   // (включая warehouse). Юзер: если один человек числится на N складах,
-  // в таблице показываем 1 строку. Сводка по складам остаётся в sidebar
-  // через warehouseGroups, использующий sortedMatched (без dedupe).
-  const dedupedRecords = useMemo<MolRecord[]>(() => {
-    return dedupeMolByPerson(sortedMatched).map((d) => d.record);
-  }, [sortedMatched]);
-
-  const tableRecords = dedupedRecords;
+  // в таблице показываем 1 строку.
+  //
+  // ВСЕ люди базы (дедуп) + их ПОЛНЫЙ список складов — для колонки «Склад»: при
+  // поиске ПО складу выдача содержит только этот склад, а показать надо ВСЕ
+  // склады МОЛа. Берём из полной базы по molPersonKey, а не из выдачи поиска.
+  const allPeople = useMemo(() => dedupeMolByPerson(records), [records]);
+  const allWarehousesByPerson = useMemo(() => {
+    const m = new Map<string, Array<{ code: string; until: string }>>();
+    for (const d of allPeople) m.set(molPersonKey(d.record), d.warehouses);
+    return m;
+  }, [allPeople]);
+  const tableRecords = useMemo<MolTableRow[]>(() => {
+    return dedupeMolByPerson(sortedMatched).map((d) => ({
+      ...d.record,
+      warehouses: allWarehousesByPerson.get(molPersonKey(d.record)) ?? d.warehouses,
+    }));
+  }, [sortedMatched, allWarehousesByPerson]);
 
   // Sidebar формируем из ВСЕХ matched (без dedupe) — иначе пропадут другие
   // склады человека. Один и тот же человек на складах 0609, 0610, 0611 даст
@@ -88,7 +99,7 @@ export function MolScreen() {
   // Server тоже считает unique и пишет в `meta.recordsCount` начиная с deploy
   // 2026-05-17; до этого meta.recordsCount = total. Поэтому всегда берём
   // максимально-точный clientUnique — это всегда верное живое значение.
-  const uniquePeopleCount = useMemo(() => dedupeMolByPerson(records).length, [records]);
+  const uniquePeopleCount = allPeople.length;
 
   // Активный лист базы (МОЛы / Склады) — из ui-state-store, переключается из
   // сайдбара (флайаут «База»). Счётчики складов/цехов — из warehouses-store;

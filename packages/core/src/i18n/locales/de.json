@@ -645,6 +645,9 @@
     "format_pm": "PM"
   },
   "shops": {
+    "mols_n": "Verantwortliche: {{n}}",
+    "mols_of_warehouse": "Lagerverantwortliche",
+    "mols_short": "Verantwortliche",
     "removed_count": "Lager entfernt: {{n}} von {{total}}",
     "no_data": "Keine Daten",
     "search_ph": "Lager · Werkstatt · Telefon",
@@ -660,7 +663,7 @@
   },
   "mol": {
     "fio": "Vollständiger Name",
-    "phones": "Telefone",
+    "phones": "Telefon",
     "status": "Status",
     "warehouse": "Lager",
     "keeper": "Verantwortlicher",
@@ -713,6 +716,7 @@
       "title": "In Kopie einschließen?",
       "include_position": "Position",
       "include_tab": "Personalnummer",
+      "include_warehouse": "«Bis»-Datum",
       "copy": "Kopieren"
     }
   },

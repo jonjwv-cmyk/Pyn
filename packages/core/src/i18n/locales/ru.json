@@ -656,6 +656,9 @@
     }
   },
   "shops": {
+    "mols_n": "МОЛов: {{n}}",
+    "mols_of_warehouse": "МОЛы склада",
+    "mols_short": "МОЛы",
     "removed_count": "Склады удалены {{n}} из {{total}}",
     "no_data": "Нет данных",
     "search_ph": "склад · цех · телефон",
@@ -671,7 +674,7 @@
   },
   "mol": {
     "fio": "ФИО",
-    "phones": "Телефоны",
+    "phones": "Телефон",
     "status": "Статус",
     "warehouse": "Склад",
     "keeper": "Кладовщик",
@@ -724,6 +727,7 @@
       "title": "Включить в копирование?",
       "include_position": "Должность",
       "include_tab": "Табельный номер",
+      "include_warehouse": "Срок «по дату»",
       "copy": "Скопировать"
     }
   },

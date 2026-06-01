@@ -228,29 +228,36 @@ export interface DedupedMolRecord {
   duplicateCount: number;
   /** warehouseId всех вхождений (для сводки «числится на: 0609, 9013, ...»). */
   warehouseIds: string[];
+  /** Все склады человека с датой «по» (для колонки «Склад»): code='МОЛ' = маркер
+   *  без конкретного склада; until='' = без срока. Порядок — как в источнике. */
+  warehouses: Array<{ code: string; until: string }>;
+}
+
+/** Канонический ключ человека (как в dedupeMolByPerson): табельный, иначе fio+mobile.
+ *  Стабилен между разными выдачами поиска → позволяет сопоставить человека из
+ *  выдачи с его ПОЛНОЙ записью в базе (для «все склады МОЛа», а не только из поиска). */
+export function molPersonKey(r: MolRecord): string {
+  const tab = r.tab.trim();
+  return tab.length > 0 ? `tab:${tab}` : `nm:${r.fio.trim().toLowerCase()}|${r.mobile.trim()}`;
 }
 
 export function dedupeMolByPerson(records: MolRecord[]): DedupedMolRecord[] {
-  const byKey = new Map<string, { record: MolRecord; wids: string[] }>();
+  const byKey = new Map<string, { record: MolRecord; warehouses: Array<{ code: string; until: string }> }>();
   const order: string[] = [];
   for (const r of records) {
-    // §pyn-1.2.22 — unique key = табельный номер (юзер: «уникальный МОЛ
-    // это именно табельный номер. если в гугл таблице изменится телефон
-    // почта или даже фамилия а табельный сохранится тогда это ничего не
-    // значит»). Fallback на fio+mobile только если tab пустой (защита от
-    // legacy записей без табельного).
-    const tab = r.tab.trim();
-    const key = tab.length > 0
-      ? `tab:${tab}`
-      : `nm:${r.fio.trim().toLowerCase()}|${r.mobile.trim()}`;
+    // §pyn-1.2.22 — unique key = табельный (см. molPersonKey). Fallback на
+    // fio+mobile только если tab пустой (legacy записи без табельного).
+    const key = molPersonKey(r);
+    const wid = r.warehouseId.trim();
+    const until = r.warehouseUntil.trim();
     const existing = byKey.get(key);
     if (existing) {
-      const wid = r.warehouseId.trim();
-      if (wid && !existing.wids.includes(wid)) existing.wids.push(wid);
+      if (wid && !existing.warehouses.some((w) => w.code === wid)) {
+        existing.warehouses.push({ code: wid, until });
+      }
       continue;
     }
-    const wid = r.warehouseId.trim();
-    byKey.set(key, { record: r, wids: wid ? [wid] : [] });
+    byKey.set(key, { record: r, warehouses: wid ? [{ code: wid, until }] : [] });
     order.push(key);
   }
   return order.map((k) => {
@@ -258,8 +265,9 @@ export function dedupeMolByPerson(records: MolRecord[]): DedupedMolRecord[] {
     if (!v) throw new Error('dedupeMolByPerson: missing key');
     return {
       record: v.record,
-      duplicateCount: v.wids.length || 1,
-      warehouseIds: v.wids,
+      duplicateCount: v.warehouses.length || 1,
+      warehouseIds: v.warehouses.map((w) => w.code),
+      warehouses: v.warehouses,
     };
   });
 }

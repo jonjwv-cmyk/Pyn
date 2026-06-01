@@ -79,6 +79,60 @@ export function formatDbDate(raw: string | null | undefined): string {
   return `${m[3]}.${m[2]}.${m[1]}`;
 }
 
+const RU_MONTHS_GENITIVE = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+] as const;
+
+/**
+ * Дата «по какое число включительно» из колонки «склад» (формат источника
+ * `DD.MM.YYYY`, напр. `01.07.2026`) → человекочитаемо «1 июля 2026». Если строка
+ * не распознана как дата — возвращаем как есть (graceful, не теряем данные).
+ */
+export function formatMolUntil(raw: string): string {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(s);
+  if (!m) return s;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return s;
+  return `${day} ${RU_MONTHS_GENITIVE[month - 1]} ${m[3]}`;
+}
+
+/**
+ * Статус срока «по» относительно СЕГОДНЯ (для цвета пилюли в колонке «Склад»):
+ *   • 'expired' — дедлайн уже прошёл (раньше сегодня) → красный;
+ *   • 'soon'    — осталось ≤2 дней, т.е. окно [дедлайн−2 … дедлайн] (3 дня
+ *                 включая сам дедлайн: для «по 23» это 21/22/23) → жёлтый;
+ *   • 'ok'      — до срока ещё >2 дней (или дата не распознана) → обычная подсветка.
+ * Сравнение по календарным дням (полночь), дедлайн включителен.
+ */
+export function molUntilStatus(until: string): 'expired' | 'soon' | 'ok' {
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec((until || '').trim());
+  if (!m) return 'ok';
+  const deadline = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  deadline.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const daysLeft = Math.round((deadline.getTime() - today.getTime()) / 86_400_000);
+  if (daysLeft < 0) return 'expired';
+  if (daysLeft <= 2) return 'soon';
+  return 'ok';
+}
+
+/**
+ * Tailwind-классы пилюли срока «по» по статусу `molUntilStatus` (нужен `ring-1`
+ * на самом элементе). Единый источник для колонки «Склад» в таблице МОЛ и для
+ * поп-овера МОЛ на складе во вкладке «Цеха»: просрочено — красный, ≤2 дней —
+ * жёлтый, обычный — фирменный clay.
+ */
+export const MOL_UNTIL_PILL_CLASS: Record<'expired' | 'soon' | 'ok', string> = {
+  expired: 'bg-danger/[0.16] text-danger ring-danger/45',
+  soon: 'bg-presence-away/[0.18] text-presence-away ring-presence-away/50',
+  ok: 'bg-accent-clay/[0.14] text-accent-clay ring-accent-clay/40',
+};
+
 /**
  * Несколько work-телефонов в одной строке («49-02-82, 7-14-15» → ['49 02 82',
  * '7 14 15']). Каждый прогоняется через `formatWorkPhone` (strip city +

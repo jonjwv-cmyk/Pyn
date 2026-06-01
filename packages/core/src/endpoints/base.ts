@@ -70,6 +70,9 @@ export interface MolRecord {
   warehouseDesc: string;
   warehouseMark: string;
   warehouseKeeper: string;
+  /** «По какое число включительно» человек отвечает за ЭТОТ склад (источник —
+   *  колонка «склад» в wf_custodians, формат DD.MM.YYYY). '' если без срока. */
+  warehouseUntil: string;
   warehouseWorkPhones: string;
   fio: string;
   status: string;
@@ -121,6 +124,7 @@ interface MolRecordWire {
   warehouse_desc?: string;
   warehouse_mark?: string;
   warehouse_keeper?: string;
+  warehouse_until?: string;
   warehouse_work_phones?: string;
   fio?: string;
   status?: string;
@@ -229,6 +233,7 @@ function wireToMolRecord(wire: MolRecordWire): MolRecord {
     warehouseDesc: wire.warehouse_desc ?? '',
     warehouseMark: wire.warehouse_mark ?? '',
     warehouseKeeper: wire.warehouse_keeper ?? '',
+    warehouseUntil: wire.warehouse_until ?? '',
     warehouseWorkPhones: wire.warehouse_work_phones ?? '',
     fio: wire.fio ?? '',
     status: wire.status ?? '',

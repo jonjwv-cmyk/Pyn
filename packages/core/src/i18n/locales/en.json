@@ -645,6 +645,9 @@
     "format_pm": "PM"
   },
   "shops": {
+    "mols_n": "Custodians: {{n}}",
+    "mols_of_warehouse": "Warehouse custodians",
+    "mols_short": "Custodians",
     "removed_count": "Warehouses removed {{n}} of {{total}}",
     "no_data": "No data",
     "search_ph": "warehouse · shop · phone",
@@ -660,7 +663,7 @@
   },
   "mol": {
     "fio": "Full name",
-    "phones": "Phones",
+    "phones": "Phone",
     "status": "Status",
     "warehouse": "Warehouse",
     "keeper": "Keeper",
@@ -713,6 +716,7 @@
       "title": "Include in copy?",
       "include_position": "Job position",
       "include_tab": "Employee no.",
+      "include_warehouse": "«Until» date",
       "copy": "Copy"
     }
   },

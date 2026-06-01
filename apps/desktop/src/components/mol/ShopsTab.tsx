@@ -9,19 +9,29 @@ import {
   type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Factory, Phone } from 'lucide-react';
+import * as Popover from '@radix-ui/react-popover';
+import { ChevronDown, Factory, Phone } from 'lucide-react';
 import {
   getWarehouseState,
+  groupByWarehouse,
   parseMolQuery,
+  type MolRecord,
   type ParsedMolQuery,
   type Warehouse,
   type WarehouseCluster,
   type WarehouseWeekday,
 } from '@pyn/core';
 import { cn } from '@/lib/cn';
-import { useUiStateStore } from '@/lib/stores';
+import { useMolStore, useUiStateStore } from '@/lib/stores';
 import { useWarehousesStore } from '@/lib/warehouses-store';
-import { splitAndFormatWorkPhones } from '@/lib/mol-format';
+import {
+  formatMobilePhone,
+  formatMolUntil,
+  MOL_UNTIL_PILL_CLASS,
+  molUntilStatus,
+  sortMolRecords,
+  splitAndFormatWorkPhones,
+} from '@/lib/mol-format';
 import { clusterLabel, monthLabel, weekdayShortLabel } from '@/lib/i18n-labels';
 import { computeRowDates } from '@/lib/schedule/compute';
 import {
@@ -256,6 +266,37 @@ function usePersistedScroll(value: number, setValue: (v: number) => void, ready:
 export function ShopsTab({ query, onContactAction }: ShopsTabProps) {
   const { t } = useTranslation();
   const warehouses = useWarehousesStore((s) => s.warehouses);
+  const molRecords = useMolStore((s) => s.records);
+
+  // §per-цех — число уникальных МОЛ-людей (по табельному) на каждый цех, по всем
+  // его складам. Для счётчика «МОЛов: N» в шапке цеха рядом со «складов: N».
+  const molCountByShop = useMemo(() => {
+    const widToShop = new Map<string, string>();
+    for (const w of warehouses) widToShop.set(w.id.trim().toLowerCase(), w.shop_name || '—');
+    const byShop = new Map<string, Set<string>>();
+    for (const r of molRecords) {
+      const shop = widToShop.get(r.warehouseId.trim().toLowerCase());
+      if (!shop) continue;
+      const key = r.tab.trim() ? `t:${r.tab.trim()}` : `n:${r.fio.trim().toLowerCase()}|${r.mobile.trim()}`;
+      let set = byShop.get(shop);
+      if (!set) { set = new Set<string>(); byShop.set(shop, set); }
+      set.add(key);
+    }
+    const out = new Map<string, number>();
+    for (const [shop, set] of byShop) out.set(shop, set.size);
+    return out;
+  }, [warehouses, molRecords]);
+
+  // §мол-по-дату — записи МОЛ, сгруппированные по складу (для поп-овера в строке
+  // склада: люди, ответственные именно за этот склад). Ключ — нижний регистр кода
+  // (id склада может содержать букву: 824Т / 824T). Источник — groupByWarehouse.
+  const molByWarehouse = useMemo(() => {
+    const m = new Map<string, MolRecord[]>();
+    for (const [wid, recs] of groupByWarehouse(molRecords)) {
+      m.set(wid.trim().toLowerCase(), recs);
+    }
+    return m;
+  }, [molRecords]);
 
   // Persist scroll обеих колонок: лента карточек + правый список цехов. Возврат
   // на вкладку восстанавливает обе позиции (запрос — через shopsQuery).
@@ -447,6 +488,8 @@ export function ShopsTab({ query, onContactAction }: ShopsTabProps) {
           name={shop.name}
           rows={shop.rows}
           all={shop.all}
+          molCount={molCountByShop.get(shop.name) ?? 0}
+          molByWarehouse={molByWarehouse}
           idx={shopOrder.get(shop.name) ?? 0}
           months={months}
           metaMap={metaMap}
@@ -609,6 +652,8 @@ function ShopCard({
   name,
   rows,
   all,
+  molCount,
+  molByWarehouse,
   idx,
   months,
   metaMap,
@@ -620,6 +665,10 @@ function ShopCard({
   rows: Warehouse[];
   /** Полный состав цеха — для счётчика активных и сводки. */
   all: Warehouse[];
+  /** Число уникальных МОЛ-людей на цех — для «МОЛов: N» в шапке. */
+  molCount: number;
+  /** МОЛ-записи по складу (нижний регистр кода) — для поп-овера в строке склада. */
+  molByWarehouse: Map<string, MolRecord[]>;
   idx: number;
   months: MonthEntry[];
   metaMap: Map<string, ScheduleMonthMeta>;
@@ -693,9 +742,11 @@ function ShopCard({
             </div>
           )}
         </div>
-          {/* Кол-во складов — справа, по вертикали по центру между строками. */}
-          <span className="shrink-0 text-[11.5px] tabular-nums text-text-muted">
-            {t('shops.warehouses_n', { n: activeCount })}
+          {/* Кол-во складов + МОЛов — справа, по центру между строками. */}
+          <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] tabular-nums text-text-muted">
+            <span>{t('shops.warehouses_n', { n: activeCount })}</span>
+            <span className="text-text-muted/40">·</span>
+            <span>{t('shops.mols_n', { n: molCount })}</span>
           </span>
         </div>
         {/* Прозрачный удлинитель шапки (14px = высота докующегося низа):
@@ -712,6 +763,7 @@ function ShopCard({
             <WarehouseRow
               key={w.id}
               w={w}
+              mols={molByWarehouse.get(w.id.trim().toLowerCase()) ?? []}
               months={months}
               metaMap={metaMap}
               query={query}
@@ -739,12 +791,15 @@ function ShopCard({
 
 function WarehouseRow({
   w,
+  mols,
   months,
   metaMap,
   query,
   onContactAction,
 }: {
   w: Warehouse;
+  /** МОЛ, ответственные именно за этот склад — для пилюли-счётчика + поп-овера. */
+  mols: MolRecord[];
   months: MonthEntry[];
   metaMap: Map<string, ScheduleMonthMeta>;
   query: string;
@@ -769,6 +824,9 @@ function WarehouseRow({
             <span className="rounded bg-bg-hover px-1.5 py-0.5 text-[10.5px] font-semibold tracking-wide text-text-secondary">
               {clusterLabel(w.cluster, t)} · {weekdayShortLabel(w.delivery_day, t)}
             </span>
+          )}
+          {mols.length > 0 && (
+            <WarehouseMolsPill warehouseId={w.id} records={mols} onContactAction={onContactAction} />
           )}
         </div>
         <EditDialog warehouse={w} />
@@ -841,6 +899,135 @@ function WarehouseRow({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Пилюля-счётчик МОЛ конкретного склада в строке цеха (рядом со Статус/Кластер).
+ * Клик → поп-овер со списком ответственных: ФИО, мобильный телефон (кликабельный),
+ * и срок «по {дата}» цветом по близости дедлайна (красный/жёлтый/clay) — если он
+ * есть; нет срока (ответственность бессрочна) → строка без пилюли срока. Список
+ * сортируется как везде (работающие сверху, затем по ФИО) и скроллится, если длинный.
+ */
+function WarehouseMolsPill({
+  warehouseId,
+  records,
+  onContactAction,
+}: {
+  warehouseId: string;
+  records: MolRecord[];
+  onContactAction: (req: ContactActionRequest) => void;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const sorted = useMemo(() => sortMolRecords(records), [records]);
+
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          title={t('shops.mols_of_warehouse')}
+          className={cn(
+            'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-semibold tracking-wide transition-colors',
+            open
+              ? 'bg-accent-clay/15 text-accent-clay'
+              : 'bg-bg-hover text-text-secondary hover:bg-accent-clay/[0.10] hover:text-accent-clay',
+          )}
+        >
+          <span>{t('shops.mols_short')}</span>
+          <span className="tabular-nums">{records.length}</span>
+          <ChevronDown
+            className={cn('h-3 w-3 transition-transform duration-150', open && 'rotate-180')}
+            strokeWidth={2}
+          />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          sideOffset={6}
+          className={cn(
+            'z-50 flex max-h-[340px] w-[300px] flex-col rounded-xl border border-border-default bg-bg-elevated p-2 shadow-2xl',
+            'data-[state=open]:animate-in data-[state=closed]:animate-out',
+            'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
+            'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
+          )}
+        >
+          <div className="mb-1.5 flex items-baseline gap-1.5 px-1.5">
+            <span className="text-[11px] font-semibold text-text-muted">
+              {t('shops.mols_of_warehouse')}
+            </span>
+            <span className="text-[11px] font-bold tabular-nums text-text-strong">{warehouseId}</span>
+          </div>
+          <ul className="-mx-1 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1">
+            {sorted.map((r, i) => (
+              <MolPopoverRow
+                key={`${r.tab || r.fio}-${i}`}
+                record={r}
+                onContactAction={onContactAction}
+                onClose={() => setOpen(false)}
+              />
+            ))}
+          </ul>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+/** Строка поп-овера МОЛ склада: ФИО + моб.телефон (звонок) + срок «по {дата}». */
+function MolPopoverRow({
+  record,
+  onContactAction,
+  onClose,
+}: {
+  record: MolRecord;
+  onContactAction: (req: ContactActionRequest) => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const mobile = formatMobilePhone(record.mobile);
+  const until = record.warehouseUntil.trim();
+
+  return (
+    <li className="flex items-center justify-between gap-2 rounded-md px-1.5 py-1 hover:bg-bg-hover">
+      <div className="min-w-0 flex-1">
+        <div className="break-words text-[12px] font-medium leading-snug text-text-strong">
+          {record.fio || '—'}
+        </div>
+        {mobile ? (
+          <button
+            type="button"
+            onClick={() => {
+              onContactAction({
+                kind: 'call',
+                target: record.mobile,
+                display: mobile,
+                contactName: record.fio || t('mol.contact_unknown'),
+              });
+              onClose();
+            }}
+            className="mt-0.5 flex items-center gap-1 text-left text-[11px] tabular-nums text-text-muted transition-colors hover:text-accent-clay"
+          >
+            <Phone className="h-3 w-3 shrink-0" strokeWidth={1.75} />
+            {mobile}
+          </button>
+        ) : (
+          <div className="mt-0.5 text-[11px] text-text-muted/55">—</div>
+        )}
+      </div>
+      {until && (
+        <span
+          className={cn(
+            'inline-flex shrink-0 items-center rounded-md px-1.5 py-0.5 text-[10.5px] font-medium tabular-nums ring-1',
+            MOL_UNTIL_PILL_CLASS[molUntilStatus(until)],
+          )}
+        >
+          по {formatMolUntil(until)}
+        </span>
+      )}
+    </li>
   );
 }
 

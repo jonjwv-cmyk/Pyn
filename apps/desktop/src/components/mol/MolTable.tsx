@@ -7,15 +7,23 @@ import type { MolRecord, ParsedMolQuery } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import {
   formatMobilePhone,
+  formatMolUntil,
+  MOL_UNTIL_PILL_CLASS,
   molStatusKind,
+  molUntilStatus,
   splitAndFormatWorkPhones,
 } from '@/lib/mol-format';
 import { useUiStateStore } from '@/lib/stores';
 import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
 import type { ContactActionRequest } from './ContactActionDialog';
 
+/** Строка таблицы = МОЛ + все его склады (с датами «по») для колонки «Склад». */
+export interface MolTableRow extends MolRecord {
+  warehouses: Array<{ code: string; until: string }>;
+}
+
 interface MolTableProps {
-  records: MolRecord[];
+  records: MolTableRow[];
   hasSidebar: boolean;
   onContactAction: (req: ContactActionRequest) => void;
   persistScrollKey: string;
@@ -64,7 +72,36 @@ interface CellRect {
   sr: number; sc: number; er: number; ec: number;
 }
 
-const COL_COUNT = 5;
+const COL_COUNT = 6;
+
+/** Нормализованные границы прямоугольника выделения. */
+function normRect(r: CellRect): SelectionBounds {
+  return {
+    minR: Math.min(r.sr, r.er),
+    maxR: Math.max(r.sr, r.er),
+    minC: Math.min(r.sc, r.ec),
+    maxC: Math.max(r.sc, r.ec),
+  };
+}
+function rectContains(r: CellRect, row: number, col: number): boolean {
+  const b = normRect(r);
+  return row >= b.minR && row <= b.maxR && col >= b.minC && col <= b.maxC;
+}
+/** Прямоугольник — ровно одна полная строка `row` (все колонки) — для toggle-снятия. */
+function isFullRowRect(r: CellRect, row: number): boolean {
+  const b = normRect(r);
+  return b.minR === row && b.maxR === row && b.minC === 0 && b.maxC === COL_COUNT - 1;
+}
+/** Прямоугольник — ровно одна полная колонка `col` (строки 0..lastRowIdx) — для toggle-снятия. */
+function isFullColRect(r: CellRect, col: number, lastRowIdx: number): boolean {
+  const b = normRect(r);
+  return b.minC === col && b.maxC === col && b.minR === 0 && b.maxR === lastRowIdx;
+}
+
+/** Мягкая «рассеянная» подсветка выделенного заголовка/№: радиальный glow,
+ *  гаснущий к краям ячейки (без жёсткой прямоугольной заливки). */
+const SELECT_GLOW_BG =
+  'radial-gradient(ellipse at center, rgba(217,119,87,0.16), rgba(217,119,87,0) 70%)';
 
 export function MolTable({
   records,
@@ -83,14 +120,9 @@ export function MolTable({
   // §copy-flash — после успешного копирования на ~1.4с делаем рамку выделения
   // пунктирной = визуальное подтверждение «скопировано».
   const [copied, setCopied] = useState(false);
-  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flashCopied = useCallback(() => {
-    setCopied(true);
-    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-    copiedTimerRef.current = setTimeout(() => setCopied(false), 1400);
-  }, []);
-  // Чистка таймера на unmount (сброс при смене выделения — ниже, после selection).
-  useEffect(() => () => { if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current); }, []);
+  // §copy-flash — после копирования «бегущая» пунктирная рамка ДЕРЖИТСЯ (как в
+  // Excel/Google Sheets), пока выделение не изменится. Сброс — эффект на [ranges].
+  const flashCopied = useCallback(() => setCopied(true), []);
   const scrollRef = useRef<HTMLDivElement>(null);
   const molScrollTop = useUiStateStore((s) => s.molScrollTop);
   const setMolScrollTop = useUiStateStore((s) => s.setMolScrollTop);
@@ -104,7 +136,10 @@ export function MolTable({
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [filters, setFilters] = useState<Record<FilterKey, ColFilter>>(EMPTY_FILTERS);
 
-  const [selection, setSelection] = useState<CellRect | null>(null);
+  // §multi-range — выделение = НЕСКОЛЬКО прямоугольников (как Cmd-клик в Google
+  // Sheets): несмежные строки/столбцы/ячейки. Активный (расширяемый drag'ом и
+  // shift'ом) — ПОСЛЕДНИЙ в массиве. Пусто = ничего не выделено.
+  const [ranges, setRanges] = useState<CellRect[]>([]);
   const dragModeRef = useRef<'cell' | 'column' | 'row' | null>(null);
   const [nativeEditCell, setNativeEditCell] = useState<{ r: number; c: number } | null>(null);
   // §pyn-1.2.32 — refs на все cells для позиционирования overlay (один div
@@ -121,9 +156,12 @@ export function MolTable({
   // §pyn-1.2.25 — диалог опций при Ctrl+C если в selection попала колонка
   // ФИО (где есть должность) или Статус (где есть табельный). Юзер выбирает
   // включать ли поля. Default — off (чистые основные значения).
-  const [copyDialog, setCopyDialog] = useState<{ rect: CellRect } | null>(null);
+  const [copyDialog, setCopyDialog] = useState<{ ranges: CellRect[] } | null>(null);
   const [includePosition, setIncludePosition] = useState(false);
   const [includeTab, setIncludeTab] = useState(false);
+  // §мол-по-дату — включать ли «по {дата}» в текст колонки «Склад» при копировании
+  // (коды складов копируются всегда; срок — опциональная деталь, как должность/таб.).
+  const [includeWarehouse, setIncludeWarehouse] = useState(false);
 
   const hasAnyFilter = useMemo(
     () => Object.values(filters).some((f) => f.search.trim().length > 0 || f.selected !== null),
@@ -167,7 +205,7 @@ export function MolTable({
 
   useEffect(() => {
     setFilters(EMPTY_FILTERS);
-    setSelection(null);
+    setRanges([]);
     setNativeEditCell(null);
     setSortKey(null);
   }, [persistScrollKey]);
@@ -320,7 +358,7 @@ export function MolTable({
         || target.closest('[data-radix-popper-content-wrapper]')
         || target.closest('[data-mol-selectable="1"]')
       ) return;
-      setSelection(null);
+      setRanges([]);
       setNativeEditCell(null);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -332,7 +370,7 @@ export function MolTable({
           || active.isContentEditable
         );
         if (inInput) return;
-        setSelection(null);
+        setRanges([]);
         setNativeEditCell(null);
       }
     };
@@ -367,30 +405,27 @@ export function MolTable({
       if (code === 'KeyA') {
         if (visibleRecords.length === 0) return;
         e.preventDefault();
-        setSelection({ sr: 0, sc: 0, er: visibleRecords.length - 1, ec: COL_COUNT - 1 });
+        setRanges([{ sr: 0, sc: 0, er: visibleRecords.length - 1, ec: COL_COUNT - 1 }]);
         window.getSelection()?.removeAllRanges();
         return;
       }
 
       if (code === 'KeyC') {
-        if (!selection) return;
+        if (ranges.length === 0) return;
         if (nativeEditCell) return; // native edit → пусть браузер сам копирует текст
         e.preventDefault();
         // Очищаем native selection чтобы default copy ничего лишнего не взял.
         window.getSelection()?.removeAllRanges();
 
-        const minC = Math.min(selection.sc, selection.ec);
-        const maxC = Math.max(selection.sc, selection.ec);
-        const hasNameCol = minC <= 1 && maxC >= 1;
-        const hasStatusCol = minC <= 4 && maxC >= 4;
-
-        if (hasNameCol || hasStatusCol) {
-          setCopyDialog({ rect: selection });
+        // Колонки, реально попавшие в выделение (без № col 0) → нужен ли диалог
+        // опций (должность / табельный / срок «по»).
+        const cols = selectedColumns(ranges);
+        if (cols.has(1) || cols.has(4) || cols.has(5)) {
+          setCopyDialog({ ranges });
           return;
         }
-
-        const tsv = buildTsvFromRect(visibleRecords, selection, {
-          includePosition: false, includeTab: false,
+        const tsv = buildTsvFromRanges(visibleRecords, ranges, {
+          includePosition: false, includeTab: false, includeWarehouse: false,
         });
         if (!tsv) return;
         void copyTsv(tsv).then((ok) => { if (ok) flashCopied(); });
@@ -398,7 +433,7 @@ export function MolTable({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [visibleRecords, selection, nativeEditCell, flashCopied]);
+  }, [visibleRecords, ranges, nativeEditCell, flashCopied]);
 
   const handleCellMouseDown = useCallback((r: number, c: number) => (ev: React.MouseEvent) => {
     const target = ev.target as HTMLElement;
@@ -409,38 +444,51 @@ export function MolTable({
     gridRef.current?.focus({ preventScroll: true });
     setNativeEditCell(null);
     window.getSelection()?.removeAllRanges();
-    if (ev.shiftKey && selection) {
-      setSelection({ sr: selection.sr, sc: selection.sc, er: r, ec: c });
+    // Shift — расширяем активный (последний) диапазон от его якоря.
+    if (ev.shiftKey && ranges.length > 0) {
+      const last = ranges[ranges.length - 1]!;
+      setRanges([...ranges.slice(0, -1), { sr: last.sr, sc: last.sc, er: r, ec: c }]);
       dragModeRef.current = 'cell';
       return;
     }
-    // §pyn-1.2.32 — toggle: если cell уже в selection → snyatie. Иначе new.
-    if (selection) {
-      const minR = Math.min(selection.sr, selection.er);
-      const maxR = Math.max(selection.sr, selection.er);
-      const minC = Math.min(selection.sc, selection.ec);
-      const maxC = Math.max(selection.sc, selection.ec);
-      if (r >= minR && r <= maxR && c >= minC && c <= maxC) {
-        setSelection(null);
+    // Cmd/Ctrl — добавляем НЕсмежную ячейку (повторный клик по ней → снятие).
+    if (ev.metaKey || ev.ctrlKey) {
+      const idx = ranges.findIndex((rg) => rg.sr === r && rg.er === r && rg.sc === c && rg.ec === c);
+      if (idx >= 0) {
+        setRanges(ranges.filter((_, i) => i !== idx));
+        dragModeRef.current = null;
         return;
       }
+      setRanges([...ranges, { sr: r, sc: c, er: r, ec: c }]);
+      dragModeRef.current = 'cell';
+      return;
     }
-    setSelection({ sr: r, sc: c, er: r, ec: c });
+    // Без модификатора: повторный клик в единственное выделение → снятие; иначе новое.
+    if (ranges.length === 1 && rectContains(ranges[0]!, r, c)) {
+      setRanges([]);
+      dragModeRef.current = null;
+      return;
+    }
+    setRanges([{ sr: r, sc: c, er: r, ec: c }]);
     dragModeRef.current = 'cell';
-  }, [selection, nativeEditCell]);
+  }, [ranges, nativeEditCell]);
 
   const handleCellMouseEnter = useCallback((r: number, c: number) => () => {
     if (dragModeRef.current !== 'cell') return;
-    setSelection((prev) => prev ? { ...prev, er: r, ec: c } : { sr: r, sc: c, er: r, ec: c });
+    setRanges((prev) => {
+      if (prev.length === 0) return [{ sr: r, sc: c, er: r, ec: c }];
+      const last = prev[prev.length - 1]!;
+      return [...prev.slice(0, -1), { sr: last.sr, sc: last.sc, er: r, ec: c }];
+    });
   }, []);
 
   const handleCellDoubleClick = useCallback((r: number, c: number) => () => {
     setNativeEditCell({ r, c });
-    setSelection(null);
+    setRanges([]);
   }, []);
 
-  // §pyn-1.2.28 — клик на header «зону» (не на chip-кнопку) → select column.
-  // Drag по headers → multi-column selection. Linear/Figma-style.
+  // §pyn-1.2.28 — клик на header «зону» (не на chip-кнопку) → выделить колонку.
+  // Drag по headers → диапазон колонок; Cmd/Ctrl-клик → несмежные колонки.
   const lastRowIdx = Math.max(0, visibleRecords.length - 1);
   const handleColumnSelectMouseDown = useCallback((c: number) => (ev: React.MouseEvent) => {
     if (ev.button !== 0) return;
@@ -448,120 +496,109 @@ export function MolTable({
     gridRef.current?.focus({ preventScroll: true });
     setNativeEditCell(null);
     window.getSelection()?.removeAllRanges();
-    if (ev.shiftKey && selection) {
-      setSelection({ sr: 0, sc: selection.sc, er: lastRowIdx, ec: c });
+    if (ev.shiftKey && ranges.length > 0) {
+      const last = ranges[ranges.length - 1]!;
+      setRanges([...ranges.slice(0, -1), { sr: 0, sc: last.sc, er: lastRowIdx, ec: c }]);
       dragModeRef.current = 'column';
       return;
     }
-    // §pyn-1.2.32 — toggle: если эта column уже выделена single column →
-    // snyatie. Иначе new.
-    if (selection) {
-      const minC = Math.min(selection.sc, selection.ec);
-      const maxC = Math.max(selection.sc, selection.ec);
-      const minR = Math.min(selection.sr, selection.er);
-      const maxR = Math.max(selection.sr, selection.er);
-      const isThisColumnOnly = minC === c && maxC === c && minR === 0 && maxR === lastRowIdx;
-      if (isThisColumnOnly) {
-        setSelection(null);
+    if (ev.metaKey || ev.ctrlKey) {
+      const idx = ranges.findIndex((rg) => isFullColRect(rg, c, lastRowIdx));
+      if (idx >= 0) {
+        setRanges(ranges.filter((_, i) => i !== idx));
+        dragModeRef.current = null;
         return;
       }
+      setRanges([...ranges, { sr: 0, sc: c, er: lastRowIdx, ec: c }]);
+      dragModeRef.current = 'column';
+      return;
     }
-    setSelection({ sr: 0, sc: c, er: lastRowIdx, ec: c });
+    if (ranges.length === 1 && isFullColRect(ranges[0]!, c, lastRowIdx)) {
+      setRanges([]);
+      dragModeRef.current = null;
+      return;
+    }
+    setRanges([{ sr: 0, sc: c, er: lastRowIdx, ec: c }]);
     dragModeRef.current = 'column';
-  }, [selection, lastRowIdx]);
+  }, [ranges, lastRowIdx]);
 
   const handleColumnSelectMouseEnter = useCallback((c: number) => () => {
     if (dragModeRef.current !== 'column') return;
-    setSelection((prev) => prev ? { ...prev, ec: c, er: lastRowIdx } : { sr: 0, sc: c, er: lastRowIdx, ec: c });
+    setRanges((prev) => {
+      if (prev.length === 0) return [{ sr: 0, sc: c, er: lastRowIdx, ec: c }];
+      const last = prev[prev.length - 1]!;
+      return [...prev.slice(0, -1), { sr: 0, sc: last.sc, er: lastRowIdx, ec: c }];
+    });
   }, [lastRowIdx]);
 
-  // §pyn-1.2.28 — клик на № (первая колонка) → select row. Drag → multi-row.
+  // §pyn-1.2.28 — клик на № → выделить строку. Drag → диапазон; Cmd/Ctrl → несмежные.
   const handleRowSelectMouseDown = useCallback((r: number) => (ev: React.MouseEvent) => {
     if (ev.button !== 0) return;
     ev.preventDefault();
     gridRef.current?.focus({ preventScroll: true });
     setNativeEditCell(null);
     window.getSelection()?.removeAllRanges();
-    if (ev.shiftKey && selection) {
-      setSelection({ sr: selection.sr, sc: 0, er: r, ec: COL_COUNT - 1 });
+    if (ev.shiftKey && ranges.length > 0) {
+      const last = ranges[ranges.length - 1]!;
+      setRanges([...ranges.slice(0, -1), { sr: last.sr, sc: 0, er: r, ec: COL_COUNT - 1 }]);
       dragModeRef.current = 'row';
       return;
     }
-    // §pyn-1.2.32 — toggle: если эта row уже выделена single → snyatie.
-    if (selection) {
-      const minR = Math.min(selection.sr, selection.er);
-      const maxR = Math.max(selection.sr, selection.er);
-      const minC = Math.min(selection.sc, selection.ec);
-      const maxC = Math.max(selection.sc, selection.ec);
-      const isThisRowOnly = minR === r && maxR === r && minC === 0 && maxC === COL_COUNT - 1;
-      if (isThisRowOnly) {
-        setSelection(null);
+    if (ev.metaKey || ev.ctrlKey) {
+      const idx = ranges.findIndex((rg) => isFullRowRect(rg, r));
+      if (idx >= 0) {
+        setRanges(ranges.filter((_, i) => i !== idx));
+        dragModeRef.current = null;
         return;
       }
+      setRanges([...ranges, { sr: r, sc: 0, er: r, ec: COL_COUNT - 1 }]);
+      dragModeRef.current = 'row';
+      return;
     }
-    setSelection({ sr: r, sc: 0, er: r, ec: COL_COUNT - 1 });
+    if (ranges.length === 1 && isFullRowRect(ranges[0]!, r)) {
+      setRanges([]);
+      dragModeRef.current = null;
+      return;
+    }
+    setRanges([{ sr: r, sc: 0, er: r, ec: COL_COUNT - 1 }]);
     dragModeRef.current = 'row';
-  }, [selection]);
+  }, [ranges]);
 
   const handleRowSelectMouseEnter = useCallback((r: number) => () => {
     if (dragModeRef.current !== 'row') return;
-    setSelection((prev) => prev ? { ...prev, er: r, ec: COL_COUNT - 1 } : { sr: r, sc: 0, er: r, ec: COL_COUNT - 1 });
+    setRanges((prev) => {
+      if (prev.length === 0) return [{ sr: r, sc: 0, er: r, ec: COL_COUNT - 1 }];
+      const last = prev[prev.length - 1]!;
+      return [...prev.slice(0, -1), { sr: last.sr, sc: 0, er: r, ec: COL_COUNT - 1 }];
+    });
   }, []);
 
-  // §pyn-1.2.30 — normalized bounds + edge detection per cell.
-  // Linear-style: outline только по краям area selection (а не per cell ring).
-  const selectionBounds = useMemo(() => {
-    if (!selection) return null;
-    return {
-      minR: Math.min(selection.sr, selection.er),
-      maxR: Math.max(selection.sr, selection.er),
-      minC: Math.min(selection.sc, selection.ec),
-      maxC: Math.max(selection.sc, selection.ec),
-    };
-  }, [selection]);
+  // Нормализованные границы всех диапазонов — overlay рисуется по одному на диапазон.
+  const rangeBounds = useMemo(() => ranges.map(normRect), [ranges]);
 
-  // §copy-flash — подтверждение «скопировано» сбрасываем при смене выделения.
-  useEffect(() => { setCopied(false); }, [selection]);
+  // §copy-flash — «бегущая» пунктирная рамка держится после копирования и
+  // сбрасывается при ЛЮБОМ изменении выделения (Excel/Google-стиль).
+  useEffect(() => { setCopied(false); }, [ranges]);
 
-  const isCellSelected = useCallback((r: number, c: number): boolean => {
-    if (!selectionBounds) return false;
-    return r >= selectionBounds.minR && r <= selectionBounds.maxR
-      && c >= selectionBounds.minC && c <= selectionBounds.maxC;
-  }, [selectionBounds]);
+  const isCellSelected = useCallback(
+    (r: number, c: number): boolean => ranges.some((rg) => rectContains(rg, r, c)),
+    [ranges],
+  );
 
-  // §pyn-1.2.28-29 — индикаторы выделения column header / row number.
-  // Особый случай: Cmd+A (full rectangle 0..last × 0..COL_COUNT-1) — это
-  // «select all», не должно подсвечивать сразу все headers + все № — иначе
-  // вся таблица в accent цвете. Detect "full selection" и пропускаем визуал.
-  const isFullSelection = useMemo(() => {
-    if (!selection) return false;
-    const minR = Math.min(selection.sr, selection.er);
-    const maxR = Math.max(selection.sr, selection.er);
-    const minC = Math.min(selection.sc, selection.ec);
-    const maxC = Math.max(selection.sc, selection.ec);
-    return minR === 0 && maxR === lastRowIdx
-      && minC === 0 && maxC === COL_COUNT - 1;
-  }, [selection, lastRowIdx]);
+  // Индикаторы выделения колонки/строки. Колонка «выделена» если её целиком
+  // покрывает диапазон «колоночного типа» (строки 0..lastRowIdx); строка — если
+  // диапазон покрывает все колонки. Cmd+A (всё) при этом подсвечивает И строки,
+  // И колонки — это ОЖИДАЕМО (юзер: «выделение должно быть видно, последняя
+  // строка не должна пропадать»); подавления «full selection» больше нет.
+  const isColumnSelected = useCallback((c: number): boolean => ranges.some((rg) => {
+    const b = normRect(rg);
+    return b.minR === 0 && b.maxR === lastRowIdx && c >= b.minC && c <= b.maxC;
+  }), [ranges, lastRowIdx]);
 
-  const isColumnSelected = useCallback((c: number): boolean => {
-    if (!selection || isFullSelection) return false;
-    const minC = Math.min(selection.sc, selection.ec);
-    const maxC = Math.max(selection.sc, selection.ec);
-    if (c < minC || c > maxC) return false;
-    const minR = Math.min(selection.sr, selection.er);
-    const maxR = Math.max(selection.sr, selection.er);
-    return minR === 0 && maxR === lastRowIdx;
-  }, [selection, lastRowIdx, isFullSelection]);
-
-  const isRowSelected = useCallback((r: number): boolean => {
-    if (!selection || isFullSelection) return false;
-    const minR = Math.min(selection.sr, selection.er);
-    const maxR = Math.max(selection.sr, selection.er);
-    if (r < minR || r > maxR) return false;
-    const minC = Math.min(selection.sc, selection.ec);
-    const maxC = Math.max(selection.sc, selection.ec);
-    return minC === 0 && maxC === COL_COUNT - 1;
-  }, [selection, isFullSelection]);
+  const isRowSelected = useCallback((r: number): boolean => ranges.some((rg) => {
+    const b = normRect(rg);
+    return b.minC === 0 && b.maxC === COL_COUNT - 1 && r >= b.minR && r <= b.maxR;
+  }), [ranges]);
 
   return (
     <div ref={gridRef} tabIndex={-1} className="relative flex flex-1 flex-col overflow-hidden outline-none">
@@ -579,18 +616,20 @@ export function MolTable({
           {hasSidebar ? (
             <colgroup>
               <col className="w-[5%]" />
-              <col className="w-[28%]" />
-              <col className="w-[17%]" />
-              <col className="w-[36%]" />
+              <col className="w-[22%]" />
               <col className="w-[14%]" />
+              <col className="w-[27%]" />
+              <col className="w-[14%]" />
+              <col className="w-[18%]" />
             </colgroup>
           ) : (
             <colgroup>
               <col className="w-[4%]" />
-              <col className="w-[25%]" />
-              <col className="w-[15%]" />
-              <col className="w-[44%]" />
+              <col className="w-[22%]" />
+              <col className="w-[14%]" />
+              <col className="w-[32%]" />
               <col className="w-[12%]" />
+              <col className="w-[16%]" />
             </colgroup>
           )}
           <thead className="select-none sticky top-0 z-10 bg-bg-surface">
@@ -656,6 +695,29 @@ export function MolTable({
                 onSelectMouseDown={handleColumnSelectMouseDown(4)}
                 onSelectMouseEnter={handleColumnSelectMouseEnter(4)}
               />
+              {/* §мол-по-дату — заголовок «Склад» оформлен как ThColumn (без сорт/
+                  фильтр-попапа): та же полоса-индикатор выделения + hover-чип. */}
+              <th
+                style={isColumnSelected(5) ? { backgroundImage: SELECT_GLOW_BG } : undefined}
+                className={cn(
+                  'relative bg-bg-surface px-1 py-1 align-middle transition-colors',
+                  isColumnSelected(5)
+                    ? 'before:absolute before:inset-x-2 before:top-0 before:h-[2px] before:rounded-full before:bg-accent-clay/80'
+                    : '',
+                )}
+              >
+                <div
+                  data-mol-selectable="1"
+                  onMouseDown={handleColumnSelectMouseDown(5)}
+                  onMouseEnter={handleColumnSelectMouseEnter(5)}
+                  className={cn(
+                    'flex cursor-default select-none items-center justify-center gap-1 rounded-md px-1.5 py-1 transition-colors',
+                    isColumnSelected(5) ? 'text-accent-clay' : 'hover:bg-accent-clay/[0.06] hover:text-text-strong',
+                  )}
+                >
+                  <span className="truncate">{t('mol.warehouse')}</span>
+                </div>
+              </th>
             </tr>
           </thead>
           <tbody className="select-none">
@@ -677,7 +739,6 @@ export function MolTable({
                 onCellMouseEnter={handleCellMouseEnter}
                 onCellDoubleClick={handleCellDoubleClick}
                 isCellSelected={isCellSelected}
-                selectionBounds={selectionBounds}
                 rowSelected={isRowSelected(idx)}
                 onRowSelectMouseDown={handleRowSelectMouseDown(idx)}
                 onRowSelectMouseEnter={handleRowSelectMouseEnter(idx)}
@@ -687,30 +748,36 @@ export function MolTable({
             ))}
           </tbody>
         </table>
-        {selectionBounds && !isFullSelection && (
+        {/* Overlay — по одному на диапазон (несмежные выделения Cmd/Ctrl-кликом).
+            Cmd/Ctrl+A тоже даёт общую рамку. Заголовки/№ подсвечиваются отдельно. */}
+        {rangeBounds.map((b, i) => (
           <SelectionOverlay
+            key={i}
             wrapperRef={tableWrapperRef}
             cellRefs={cellRefs}
-            bounds={selectionBounds}
+            bounds={b}
             visibleRecordsCount={visibleRecords.length}
             copied={copied}
           />
-        )}
+        ))}
         </div>
       </div>
 
       {copyDialog && (
         <CopyOptionsDialog
-          rect={copyDialog.rect}
+          ranges={copyDialog.ranges}
           includePosition={includePosition}
           includeTab={includeTab}
+          includeWarehouse={includeWarehouse}
           setIncludePosition={setIncludePosition}
           setIncludeTab={setIncludeTab}
+          setIncludeWarehouse={setIncludeWarehouse}
           onCancel={() => setCopyDialog(null)}
           onConfirm={() => {
-            const tsv = buildTsvFromRect(visibleRecords, copyDialog.rect, {
+            const tsv = buildTsvFromRanges(visibleRecords, copyDialog.ranges, {
               includePosition,
               includeTab,
+              includeWarehouse,
             });
             if (tsv) void copyTsv(tsv).then((ok) => { if (ok) flashCopied(); });
             setCopyDialog(null);
@@ -722,27 +789,31 @@ export function MolTable({
 }
 
 function CopyOptionsDialog({
-  rect,
+  ranges,
   includePosition,
   includeTab,
+  includeWarehouse,
   setIncludePosition,
   setIncludeTab,
+  setIncludeWarehouse,
   onCancel,
   onConfirm,
 }: {
-  rect: CellRect;
+  ranges: CellRect[];
   includePosition: boolean;
   includeTab: boolean;
+  includeWarehouse: boolean;
   setIncludePosition: (v: boolean) => void;
   setIncludeTab: (v: boolean) => void;
+  setIncludeWarehouse: (v: boolean) => void;
   onCancel: () => void;
   onConfirm: () => void;
 }): JSX.Element {
   const { t } = useTranslation();
-  const minC = Math.min(rect.sc, rect.ec);
-  const maxC = Math.max(rect.sc, rect.ec);
-  const hasNameCol = minC <= 1 && maxC >= 1;
-  const hasStatusCol = minC <= 4 && maxC >= 4;
+  const cols = selectedColumns(ranges);
+  const hasNameCol = cols.has(1);
+  const hasStatusCol = cols.has(4);
+  const hasWarehouseCol = cols.has(5);
 
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onCancel()}>
@@ -789,6 +860,13 @@ function CopyOptionsDialog({
                 checked={includeTab}
                 onChange={setIncludeTab}
                 label={t('mol.copy_dialog.include_tab')}
+              />
+            )}
+            {hasWarehouseCol && (
+              <CopyOptCheckbox
+                checked={includeWarehouse}
+                onChange={setIncludeWarehouse}
+                label={t('mol.copy_dialog.include_warehouse')}
               />
             )}
           </div>
@@ -947,7 +1025,7 @@ interface SelectionBounds {
 }
 
 interface RowProps {
-  record: MolRecord;
+  record: MolTableRow;
   index: number;
   /** Главный поиск — подсветка найденного значения «пиллом». */
   search?: ParsedMolQuery;
@@ -956,7 +1034,6 @@ interface RowProps {
   onCellMouseEnter: (r: number, c: number) => () => void;
   onCellDoubleClick: (r: number, c: number) => () => void;
   isCellSelected: (r: number, c: number) => boolean;
-  selectionBounds: SelectionBounds | null;
   rowSelected: boolean;
   onRowSelectMouseDown: (ev: React.MouseEvent) => void;
   onRowSelectMouseEnter: () => void;
@@ -973,7 +1050,6 @@ function MolRow({
   onCellMouseEnter,
   onCellDoubleClick,
   isCellSelected,
-  selectionBounds: _selectionBounds,
   rowSelected,
   onRowSelectMouseDown,
   onRowSelectMouseEnter,
@@ -1045,17 +1121,18 @@ function MolRow({
     <tr className={cn('group transition-colors', rowBg)}>
       {/* §pyn-1.2.28-29 — № row-header: клик/drag выделяет строку/строки.
           Linear-style: subtle bg + tonkий accent stripe слева для selected.
-          № никогда НЕ копируется в clipboard (см. buildTsvFromRect). */}
+          № никогда НЕ копируется в clipboard (см. buildTsvFromRanges). */}
       <td
         ref={setCellRef(index, 0)}
         data-mol-selectable="1"
         onMouseDown={onRowSelectMouseDown}
         onMouseEnter={onRowSelectMouseEnter}
+        style={rowSelected ? { backgroundImage: SELECT_GLOW_BG } : undefined}
         className={cn(
           'relative border-b border-border-subtle/25 px-2 py-1.5 align-middle text-center tabular-nums',
           'select-none cursor-default transition-colors',
           rowSelected
-            ? 'bg-accent-clay/[0.10] font-medium text-accent-clay before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-accent-clay before:rounded-r-full'
+            ? 'font-medium text-accent-clay before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-full before:bg-accent-clay/80'
             : 'text-text-muted hover:bg-bg-hover/50',
         )}
       >
@@ -1130,7 +1207,44 @@ function MolRow({
           </div>
         )}
       </Td>
+
+      <Td tdRef={setCellRef(index, 5)} {...cellProps(5)}>
+        <WarehouseCell warehouses={record.warehouses} />
+      </Td>
     </tr>
+  );
+}
+
+/** Колонка «Склад»: склады человека столбиком; у кого есть дата «по» — пилюля
+ *  с датой и подсветкой по сроку (red/yellow/clay); нет реального склада → «МОЛ».
+ *  pointer-events-none на содержимом: ячейка декоративная (нет кликабельных
+ *  элементов), поэтому пилюли «прозрачны» для mouse-событий → drag-выделение и
+ *  клик по строке/столбцу попадают прямо в `Td`, а не перехватываются пилюлей. */
+function WarehouseCell({ warehouses }: { warehouses: Array<{ code: string; until: string }> }): JSX.Element {
+  const real = warehouses.filter((w) => w.code && w.code !== 'МОЛ' && w.code !== 'MOL');
+  if (real.length === 0) {
+    return <span className="pointer-events-none text-[11px] text-text-muted">МОЛ</span>;
+  }
+  return (
+    <div className="pointer-events-none flex flex-col items-start gap-0.5">
+      {real.map((w) =>
+        w.until ? (
+          <span
+            key={w.code}
+            className={cn(
+              'inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium tabular-nums ring-1',
+              MOL_UNTIL_PILL_CLASS[molUntilStatus(w.until)],
+            )}
+          >
+            {w.code} · по {formatMolUntil(w.until)}
+          </span>
+        ) : (
+          <span key={w.code} className="px-0.5 text-[11.5px] tabular-nums text-text-secondary">
+            {w.code}
+          </span>
+        ),
+      )}
+    </div>
   );
 }
 
@@ -1226,12 +1340,15 @@ function ThColumn({
 
   return (
     <th
+      style={selected ? { backgroundImage: SELECT_GLOW_BG } : undefined}
       className={cn(
         'relative bg-bg-surface px-1 py-1 align-middle',
         'transition-colors',
-        // Linear-style: вместо ring — tonkий accent strip сверху + subtle bg
+        // Linear-style: крисп «плавающая» accent-полоса сверху (инсет по бокам +
+        // скруглённые концы) + МЯГКИЙ рассеянный glow-фон (SELECT_GLOW_BG поверх
+        // bg-surface, гаснет к краям), вместо жёсткой прямоугольной заливки.
         selected
-          ? 'bg-accent-clay/[0.08] before:absolute before:inset-x-0 before:top-0 before:h-[2px] before:bg-accent-clay before:rounded-b-full'
+          ? 'before:absolute before:inset-x-2 before:top-0 before:h-[2px] before:rounded-full before:bg-accent-clay/80'
           : '',
       )}
     >
@@ -1486,36 +1603,61 @@ function Td(props: TdProps): JSX.Element {
 interface CopyOpts {
   includePosition: boolean;
   includeTab: boolean;
+  includeWarehouse: boolean;
 }
 
-function buildTsvFromRect(
-  records: MolRecord[],
-  rect: CellRect,
+/** Колонки (без № col 0), реально попавшие в любой из диапазонов — решают,
+ *  нужен ли диалог опций копирования (должность / табельный / срок «по»). */
+function selectedColumns(ranges: CellRect[]): Set<number> {
+  const cols = new Set<number>();
+  for (const rg of ranges) {
+    const b = normRect(rg);
+    for (let c = Math.max(1, b.minC); c <= b.maxC; c++) cols.add(c);
+  }
+  return cols;
+}
+
+/**
+ * TSV из НЕСКОЛЬКИХ диапазонов (несмежное выделение Cmd-кликом, как в Google).
+ * № (col 0) никогда не копируется. Объединяем все выделенные ячейки в множество
+ * и СХЛОПЫВАЕМ полностью пустые строки/колонки внутри охватывающего
+ * прямоугольника: несмежные строки/колонки склеиваются без промежутков, ячейки
+ * в пределах одной строки/колонки идут подряд, а «разнобой» (ячейки в разных
+ * строках И колонках) даёт разреженную решётку с пустыми клетками на пересечениях.
+ */
+function buildTsvFromRanges(
+  records: MolTableRow[],
+  ranges: CellRect[],
   opts: CopyOpts,
 ): string | null {
-  const minR = Math.min(rect.sr, rect.er);
-  const maxR = Math.max(rect.sr, rect.er);
-  // §pyn-1.2.29 — № (col 0) НИКОГДА не копируется в clipboard, даже если
-  // выделение включает его (row-select захватывает col 0..4). Юзер:
-  // «при копировании номер строки не копируем».
-  const minC = Math.max(1, Math.min(rect.sc, rect.ec));
-  const maxC = Math.max(rect.sc, rect.ec);
-  if (minC > maxC) return null; // выделение только №
-  const rows: string[] = [];
-  for (let r = minR; r <= maxR; r++) {
+  const sel = new Set<string>();
+  for (const rg of ranges) {
+    const b = normRect(rg);
+    for (let r = b.minR; r <= b.maxR; r++) {
+      if (!records[r]) continue;
+      for (let c = Math.max(1, b.minC); c <= b.maxC; c++) sel.add(`${r}:${c}`);
+    }
+  }
+  if (sel.size === 0) return null;
+  const rowsSet = new Set<number>();
+  const colsSet = new Set<number>();
+  for (const key of sel) {
+    const [r, c] = key.split(':');
+    rowsSet.add(Number(r));
+    colsSet.add(Number(c));
+  }
+  const rowsArr = [...rowsSet].sort((a, b) => a - b);
+  const colsArr = [...colsSet].sort((a, b) => a - b);
+  const lines: string[] = [];
+  for (const r of rowsArr) {
     const rec = records[r];
     if (!rec) continue;
-    const cells: string[] = [];
-    for (let c = minC; c <= maxC; c++) {
-      cells.push(cellTextFor(rec, c, r, opts));
-    }
-    rows.push(cells.join('\t'));
+    lines.push(colsArr.map((c) => (sel.has(`${r}:${c}`) ? cellTextFor(rec, c, r, opts) : '')).join('\t'));
   }
-  if (rows.length === 0) return null;
-  return rows.join('\n');
+  return lines.length > 0 ? lines.join('\n') : null;
 }
 
-function cellTextFor(rec: MolRecord, col: number, rowIdx: number, opts: CopyOpts): string {
+function cellTextFor(rec: MolTableRow, col: number, rowIdx: number, opts: CopyOpts): string {
   switch (col) {
     case 0: return String(rowIdx + 1);
     case 1: return opts.includePosition && rec.position ? `${rec.fio} (${rec.position})` : rec.fio;
@@ -1534,6 +1676,13 @@ function cellTextFor(rec: MolRecord, col: number, rowIdx: number, opts: CopyOpts
       const tab = opts.includeTab && rec.tab ? `таб. ${rec.tab}` : '';
       if (s && tab) return `${s} (${tab})`;
       return s || tab || '';
+    }
+    case 5: {
+      const real = rec.warehouses.filter((w) => w.code && w.code !== 'МОЛ' && w.code !== 'MOL');
+      if (real.length === 0) return 'МОЛ';
+      return real
+        .map((w) => (opts.includeWarehouse && w.until ? `${w.code} по ${formatMolUntil(w.until)}` : w.code))
+        .join(', ');
     }
     default: return '';
   }

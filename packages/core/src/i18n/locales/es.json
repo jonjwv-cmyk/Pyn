@@ -645,6 +645,9 @@
     "format_pm": "PM"
   },
   "shops": {
+    "mols_n": "Custodios: {{n}}",
+    "mols_of_warehouse": "Custodios del almacén",
+    "mols_short": "Custodios",
     "removed_count": "Almacenes eliminados: {{n}} de {{total}}",
     "no_data": "Sin datos",
     "search_ph": "almacén · taller · teléfono",
@@ -660,7 +663,7 @@
   },
   "mol": {
     "fio": "Nombre completo",
-    "phones": "Teléfonos",
+    "phones": "Teléfono",
     "status": "Estado",
     "warehouse": "Almacén",
     "keeper": "Encargado",
@@ -713,6 +716,7 @@
       "title": "¿Incluir en la copia?",
       "include_position": "Cargo",
       "include_tab": "Nº empleado",
+      "include_warehouse": "Fecha «hasta»",
       "copy": "Copiar"
     }
   },
