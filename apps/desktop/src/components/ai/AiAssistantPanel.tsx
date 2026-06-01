@@ -299,7 +299,7 @@ export function AiAssistantPanel({ myLogin, myName }: AiAssistantPanelProps) {
               >
                 <div className="mb-1.5 flex items-center gap-1.5">
                   <Sparkles className="h-3.5 w-3.5 text-accent-clay" strokeWidth={1.75} />
-                  <span className="text-[12px] font-semibold text-text-strong">{t('ai.help')}</span>
+                  <span className="text-[12px] font-semibold text-text-strong">{t('ai.help_greeting')}</span>
                 </div>
                 <HelpBody text={t('ai.help_body')} />
               </Popover.Content>

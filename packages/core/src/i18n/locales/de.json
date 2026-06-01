@@ -655,7 +655,8 @@
     "empty": "Was suchst du?",
     "ask": "Fragen…",
     "help": "Was kann ich?",
-    "help_body": "Frag mit einfachen Worten, auch ungefähr. Was ich kann:\n• Fahrzeuge — Telefon des Fahrers, Kennzeichen per Garagennummer, Arbeitsstunden und Fahrten\n• Bestellungen — ob eine Bestellung existiert, ihre Positionen, in welcher Phase\n• Lager — Telefon, Lagerist, Liefertag und Cluster\n• Verantwortliche (MOL) — wer für ein Lager zuständig ist, Suche nach Name oder Personalnummer, abgelaufene Fristen\n• Plan — wann ein Lager beliefert wird, Wochentag eines Datums, ob ein Lager oder Werk im Plan ist"
+    "help_greeting": "Hallo, Spezialist 😎",
+    "help_body": "Ich bin dein Helfer — ich finde, zähle, vergleiche und beantworte deine Frage. Frag mich, zum Beispiel:\n• Fahrzeuge — Telefon des Fahrers, Kennzeichen per Garagennummer; ich zähle Stunden, Fahrten, Ablehnungen und Stornierungen und wie viele Stunden gewährt wurden\n• Bestellungen — ich finde eine Bestellung, ihre Positionen und ihre Phase im Plan, ob geliefert oder die Lieferung erst erstellt wurde; ich gleiche eine Liste und das Gewicht mit ВГХ ab\n• Lager & Plan — Lagerist und Telefon, Liefertag; wann ein Lager beliefert wird und wie viele pro Wochentag\n• Verantwortliche (MOL) — wer für ein Lager zuständig ist und wie viele; per Name oder Personalnummer; wessen ПМО-Frist abgelaufen ist\n• Daten — Wochentag eines beliebigen Datums, ob er im Plan war, ob sich der Liefertag geändert hat\n…und vieles mehr — frag einfach, wir arbeiten zusammen 🥳."
   },
   "shops": {
     "mols_n": "Verantwortliche: {{n}}",

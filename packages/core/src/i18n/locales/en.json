@@ -655,7 +655,8 @@
     "empty": "What are you looking for?",
     "ask": "Ask…",
     "help": "What can I do?",
-    "help_body": "Ask in plain words, even roughly. What I can do:\n• Vehicles — driver's phone, plate by garage number, work hours and trips\n• Orders — whether an order exists, its items, what stage it's at\n• Warehouses — phone, keeper, delivery day and cluster\n• Custodians (MOL) — who's responsible for a warehouse, search by name or ID, expired terms\n• Schedule — when a warehouse is served, weekday of a date, whether a warehouse or shop is scheduled"
+    "help_greeting": "Hi, specialist 😎",
+    "help_body": "I'm your helper — I find, count, compare and answer your question. Ask me, for example:\n• Vehicles — driver's phone, plate by garage number; I'll count hours, trips, refusals and cancellations, and how many hours were granted\n• Orders — I'll find an order, its items and stage in the plan, whether it was delivered or the supply is only just created; I'll check a list and weight against ВГХ\n• Warehouses & schedule — keeper and phone, delivery day; when a warehouse is served and how many per weekday\n• Custodians (MOL) — who's responsible for a warehouse and how many; by name or staff ID; whose ПМО term has expired\n• Dates — weekday of any date, whether it was in the schedule, whether the delivery day changed\n…and much more — just ask however you like, we'll work together 🥳."
   },
   "shops": {
     "mols_n": "Custodians: {{n}}",

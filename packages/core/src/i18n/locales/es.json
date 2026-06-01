@@ -655,7 +655,8 @@
     "empty": "¿Qué buscas?",
     "ask": "Preguntar…",
     "help": "¿Qué puedo hacer?",
-    "help_body": "Pregunta con palabras sencillas, aunque sea aproximado. Qué puedo hacer:\n• Vehículos — teléfono del conductor, matrícula por número de garaje, horas y salidas\n• Pedidos — si existe un pedido, su contenido por posiciones, en qué etapa está\n• Almacenes — teléfono, almacenero, día y clúster de entrega\n• Responsables (MOL) — quién responde por un almacén, búsqueda por nombre o legajo, plazos vencidos\n• Calendario — cuándo se entrega a un almacén, día de la semana de una fecha, si un almacén o taller está en el calendario"
+    "help_greeting": "Hola, especialista 😎",
+    "help_body": "Soy tu ayudante: busco, cuento, comparo y respondo tu pregunta. Pregúntame, por ejemplo:\n• Vehículos — teléfono del conductor, matrícula por número de garaje; contaré horas, salidas, rechazos y cancelaciones, y cuántas horas se asignaron\n• Pedidos — encontraré un pedido, su contenido por posiciones y su etapa en el plan, si se entregó o el suministro recién se creó; cotejaré una lista y el peso con ВГХ\n• Almacenes y calendario — almacenero y teléfono, día de entrega; cuándo se entrega a un almacén y cuántos por día de la semana\n• Responsables (MOL) — quién responde por un almacén y cuántos; por nombre o legajo; a quién se le venció el plazo ПМО\n• Fechas — día de la semana de cualquier fecha, si estuvo en el calendario, si cambió el día de entrega\n…y mucho más: pregunta como quieras, ¡trabajaremos juntos! 🥳"
   },
   "shops": {
     "mols_n": "Custodios: {{n}}",
