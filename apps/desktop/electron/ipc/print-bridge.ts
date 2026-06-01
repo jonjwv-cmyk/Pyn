@@ -113,6 +113,23 @@ async function withTransparentRoot<T>(
 ): Promise<T> {
   const prevBg = win.getBackgroundColor();
   win.setBackgroundColor('#ffffff');
+  // ⚠️ Electron printToPDF по умолчанию рендерит media=screen, поэтому блок
+  // `@media print` (бумажная light-палитра: белый фон + ТЁМНЫЙ текст #1A1815)
+  // в PDF НЕ применялся — текст графика уходил в PDF светло-серым (dark-theme
+  // экранные цвета) на белом фоне = нечитаемо. WebContents.emulateMediaType в
+  // Electron 33 нет → эмулируем print media через CDP-дебаггер
+  // (Emulation.setEmulatedMedia). Сбрасываем в finally.
+  const dbg = win.webContents.debugger;
+  let dbgAttached = false;
+  try {
+    if (!dbg.isAttached()) {
+      dbg.attach('1.3');
+      dbgAttached = true;
+    }
+    await dbg.sendCommand('Emulation.setEmulatedMedia', { media: 'print' });
+  } catch {
+    /* devtools открыт / не поддерживается — PDF будет в screen-media (как было) */
+  }
   // SURGICAL strip — только корневой App wrapper (`body > #root > div` c
   // `bg-bg-surface`). Это единственный источник bleeding в @page margin
   // area (его h-full w-full раздувает bg в зону маржинов Chromium). Не
@@ -204,6 +221,17 @@ async function withTransparentRoot<T>(
     }, 200);
     try {
       win.setBackgroundColor(prevBg);
+    } catch {
+      /* ignore */
+    }
+    // Сброс print-эмуляции → экран снова в обычном (screen) виде + detach.
+    try {
+      await dbg.sendCommand('Emulation.setEmulatedMedia', { media: '' });
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (dbgAttached) dbg.detach();
     } catch {
       /* ignore */
     }
