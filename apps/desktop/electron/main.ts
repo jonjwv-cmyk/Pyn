@@ -150,7 +150,32 @@ function createMainWindow(): void {
   };
   mainWindow.on('minimize', () => emitVisibility('background'));
   mainWindow.on('hide', () => emitVisibility('background'));
-  mainWindow.on('blur', () => emitVisibility('background'));
+  // §pyn-1.2.71 — источник правды «Pyn фронтмост» = app-level активация ОС,
+  // НЕ фокус окна. Когда юзер кликает во встроенный <webview> (Google-лист в
+  // «Таблицах»), фокус уходит в отдельный процесс webview-гостя: BrowserWindow
+  // ловит 'blur', mainWindow.isFocused()===false, focusedWin===null, гость не
+  // focused, activeElement===WEBVIEW — РОВНО как при реальном уходе из Pyn.
+  // Ни один из этих сигналов их не различает (проверено логом). Различает только
+  // активация приложения: did-resign-active НЕ срабатывает при клике в webview,
+  // но срабатывает при alt-tab в другое приложение. Фикс 1.2.67 закрыл лишь
+  // renderer-путь (window blur), а этот main-путь сбрасывал presence в жёлтый.
+  // На Win/Linux did-*-active не эмитятся → appActive остаётся true → main-blur
+  // не трогает presence (уход в фон там ловят renderer window-blur + minimize/hide).
+  if (isMac) {
+    // macOS: app-level активация — чистый признак «Pyn фронтмост», иммунный к
+    // фокусу webview. Клик в Google-лист её НЕ снимает, alt-tab в другое
+    // приложение — снимает.
+    app.on('did-become-active', () => emitVisibility('foreground'));
+    app.on('did-resign-active', () => emitVisibility('background'));
+  } else {
+    // Win/Linux: did-*-active не эмитятся → судим по фокусу окна. Клик в
+    // webview окно ОС не теряет (isFocused===true → не уход в фон), реальный
+    // уход (alt-tab) теряет (isFocused===false). minimize/hide ловятся ниже.
+    mainWindow.on('blur', () => {
+      if (mainWindow?.isFocused()) return;
+      emitVisibility('background');
+    });
+  }
   mainWindow.on('restore', () => emitVisibility('foreground'));
   mainWindow.on('show', () => emitVisibility('foreground'));
   mainWindow.on('focus', () => emitVisibility('foreground'));

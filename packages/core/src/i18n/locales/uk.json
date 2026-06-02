@@ -730,7 +730,7 @@
       "title": "Включити в копіювання?",
       "include_position": "Посада",
       "include_tab": "Табельний номер",
-      "include_warehouse": "Термін «до дати»",
+      "include_warehouse": "Склад",
       "copy": "Скопіювати"
     }
   },

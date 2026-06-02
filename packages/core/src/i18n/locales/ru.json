@@ -741,7 +741,7 @@
       "title": "Включить в копирование?",
       "include_position": "Должность",
       "include_tab": "Табельный номер",
-      "include_warehouse": "Срок «по дату»",
+      "include_warehouse": "Склад",
       "copy": "Скопировать"
     }
   },

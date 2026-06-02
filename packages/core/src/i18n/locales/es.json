@@ -730,7 +730,7 @@
       "title": "¿Incluir en la copia?",
       "include_position": "Cargo",
       "include_tab": "Nº empleado",
-      "include_warehouse": "Fecha «hasta»",
+      "include_warehouse": "Almacén",
       "copy": "Copiar"
     }
   },

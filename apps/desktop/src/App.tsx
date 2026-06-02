@@ -5,6 +5,7 @@ import * as Tooltip from '@radix-ui/react-tooltip';
 import { Sidebar } from '@/components/sidebar';
 import { AiAssistantPanel } from '@/components/ai/AiAssistantPanel';
 import { useAiStore } from '@/lib/ai-store';
+import { useSelectionCopy } from '@/lib/use-selection-copy';
 import { ChatConversation, ChatList } from '@/components/chats';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { MolScreen } from '@/components/mol';
@@ -84,6 +85,9 @@ import { AppLockOverlay } from '@/components/system/AppLockOverlay';
  *   • desktop_kicked / token expired → wipe stores + cache + session.
  */
 export function App() {
+  // Cmd/Ctrl+C копирует выделенный текст (сообщения чата/ИИ) — меню нет, поэтому
+  // восстанавливаем copy в рендерере (см. use-selection-copy).
+  useSelectionCopy();
   const [session, setSession] = useState<Session | null>(null);
   // §pyn-1.2.54 — splash state machine. `splashSession` инкрементируется
   // при replay → useEffect ниже пересоздаёт timers. До этого фикса dep
@@ -642,20 +646,14 @@ export function App() {
       currentState = state;
       sendHeartbeat(state);
     };
-    const onFocus = () => setState('foreground');
-    const onBlur = () => {
-      // Фокус ушёл в НАШ встроенный <webview> (раздел «Таблицы») — приложение
-      // всё ещё активно, это НЕ background. Настоящий уход (другое приложение /
-      // minimize / tray) ловит main-process `pyn:visibility` (mainWindow blur),
-      // который при фокусе на webview не срабатывает (окно ОС не теряет фокус).
-      if (document.activeElement?.tagName === 'WEBVIEW') return;
-      setState('background');
-    };
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('blur', onBlur);
-    // §pyn-1.2.41 — native BrowserWindow events через IPC. Точнее чем
-    // window.blur/focus: ловит minimize-в-taskbar и hide-в-tray, которые
-    // в Win-Chromium не всегда триггерят web blur.
+    // §pyn-1.2.71 — presence-видимость определяет ТОЛЬКО главный процесс через
+    // IPC `pyn:visibility`. Renderer'ный `window` blur/focus убран: при клике во
+    // встроенный <webview> (Google-лист в «Таблицах») окно блюрится, а
+    // `document.activeElement` в момент самого 'blur' ещё не успевает стать
+    // WEBVIEW (кросс-процессный переход фокуса) → guard 1.2.67 промахивался и
+    // presence ложно уходил в жёлтый. Главный процесс судит по app-level
+    // активации ОС (macOS did-*-active) / фокусу окна (Win) + minimize/hide —
+    // это иммунно к фокусу webview. Единый источник правды, без гонок activeElement.
     const unsubVisibility = window.pyn?.onVisibilityChange?.(setState);
     // §pyn-1.2.42 — navigator online/offline. Когда браузер сам обнаружил
     // сетевую недоступность — instant offline без ожидания heartbeat fail.
@@ -666,8 +664,6 @@ export function App() {
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
     return () => {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('blur', onBlur);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
       unsubVisibility?.();

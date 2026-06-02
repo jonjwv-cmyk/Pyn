@@ -577,7 +577,7 @@ function MessageRow({ m, time }: { m: AiChatMessage; time: string }) {
         </div>
         <div className="group flex max-w-[88%] items-start justify-end gap-1">
           <CopyButton text={m.question} />
-          <div className="whitespace-pre-wrap rounded-2xl rounded-tr-sm bg-accent-clay/15 px-3 py-1.5 text-[13px] text-text-strong">
+          <div className="select-text-msg whitespace-pre-wrap rounded-2xl rounded-tr-sm bg-accent-clay/15 px-3 py-1.5 text-[13px] text-text-strong">
             {m.question}
           </div>
         </div>
@@ -587,7 +587,7 @@ function MessageRow({ m, time }: { m: AiChatMessage; time: string }) {
         <Sparkles className="mt-1 h-3.5 w-3.5 shrink-0 text-accent-clay" strokeWidth={1.75} />
         <div
           className={cn(
-            'max-w-[88%] rounded-2xl rounded-tl-sm px-3 py-1.5 text-[13px]',
+            'max-w-[88%] select-text-msg rounded-2xl rounded-tl-sm px-3 py-1.5 text-[13px]',
             m.error ? 'text-danger' : 'bg-bg-deep text-text-primary',
           )}
         >

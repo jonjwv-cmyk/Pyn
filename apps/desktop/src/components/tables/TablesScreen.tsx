@@ -200,10 +200,11 @@ export function TablesScreen({
       // уничтожается → маска слетает → юзер видел raw Google UI с
       // menubar/toolbar/etc. Юзер: «слетает маска и не возвращается».
       //
-      // Скрипт инжекта идемпотентен (внутри `if (!document.getElementById
-      // (STYLE_ID))` — не дублирует если уже есть). Поэтому безопасно
-      // вызывать на ЛЮБОМ did-stop-loading: если DOM жив и style есть —
-      // no-op; если DOM перерисован — восстановит. Overhead minimal.
+      // Скрипт инжекта идемпотентен (гейт `window.__pynMaskBootstrapped` +
+      // наличие `<style id=STYLE_ID>` внутри самого скрипта). Поэтому безопасно
+      // вызывать на ЛЮБОМ did-stop-loading: если DOM жив и бутстрап был —
+      // no-op (без повторного tryCollapse/спама); если DOM перерисован (style
+      // исчез) — восстановит стиль и прогонит бутстрап заново. Overhead minimal.
       lastUrlRef.current.set(fileId, currentUrl);
       try {
         await view.executeJavaScript?.(buildSheetsMaskScript());

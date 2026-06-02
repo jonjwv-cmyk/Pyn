@@ -730,7 +730,7 @@
       "title": "Include in copy?",
       "include_position": "Job position",
       "include_tab": "Employee no.",
-      "include_warehouse": "«Until» date",
+      "include_warehouse": "Warehouse",
       "copy": "Copy"
     }
   },

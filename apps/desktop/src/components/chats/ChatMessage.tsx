@@ -169,7 +169,7 @@ export function ChatMessage({ message, firstInGroup = true, onReact, onReply, on
           <p
             className={cn(
               'min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug',
-              '[overflow-wrap:anywhere]',
+              '[overflow-wrap:anywhere] select-text-msg',
             )}
           >
             {message.text}
@@ -287,7 +287,7 @@ function MetaFooter({ own, time, isRead, pending, variant }: MetaFooterProps) {
       <span aria-hidden>{'  '}</span>
       <span
         className={cn(
-          'float-right ml-2 inline-flex translate-y-[3px] items-center gap-1 text-[10px] tabular-nums',
+          'float-right ml-2 inline-flex translate-y-[3px] select-none items-center gap-1 text-[10px] tabular-nums',
           own ? 'text-text-strong/55' : 'text-text-muted',
         )}
       >

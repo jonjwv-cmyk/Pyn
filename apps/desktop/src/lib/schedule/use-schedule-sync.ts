@@ -743,5 +743,45 @@ export function useScheduleMonthsMeta(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keys]);
 
+  // §pyn-1.2.71 — realtime для карточек Цехов/складов. Правка дней-исключений
+  // уходит на сервер и броадкастится ВСЕМ как `schedule_state_changed`, но
+  // раньше этот хук слушал только смену списка месяцев (deps [keys]), а
+  // обработчик события жил лишь в `useScheduleSync` (смонтирован только на
+  // экране Графика). На вкладке Цеха изменения не подхватывались — помогал
+  // только перезапуск. Теперь хук сам реагирует: инвалидирует кэш затронутого
+  // месяца и до-гружает свежую мету → у всех клиентов сразу актуально.
+  useWsEvent<ScheduleStateChangedEvent>('schedule_state_changed', (event) => {
+    const evYear = Number(event.year);
+    const evMonth = Number(event.month);
+    const evVersion = Number(event.version);
+    if (!Number.isInteger(evYear) || !Number.isInteger(evMonth)) return;
+    const evKey = monthKey(evYear, evMonth);
+    // Реагируем только на месяцы, которые этот хук сейчас показывает.
+    if (!months.some((m) => monthKey(m.year, m.month) === evKey)) return;
+
+    const cached = monthCache.get(evKey);
+    if (cached && cached.version >= evVersion) {
+      // Кэш уже актуален (наш собственный PUT / уже впереди) — синхронизируем
+      // map из кэша, без лишнего GET.
+      const meta = entryToMeta(cached);
+      setMap((prev) => {
+        const next = new Map(prev);
+        next.set(evKey, meta);
+        return next;
+      });
+      return;
+    }
+    // Stale или нет в кэше → инвалидируем и до-грузим свежее с сервера.
+    monthCache.delete(evKey);
+    void loadMonthEntry(evYear, evMonth).then((entry) => {
+      const meta = entry ? entryToMeta(entry) : NO_META;
+      setMap((prev) => {
+        const next = new Map(prev);
+        next.set(evKey, meta);
+        return next;
+      });
+    });
+  });
+
   return map;
 }

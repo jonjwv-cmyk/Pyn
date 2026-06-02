@@ -96,12 +96,24 @@ export function buildSheetsMaskScript(): string {
     (function pynSheetsMask() {
       try {
         var STYLE_ID = ${JSON.stringify(SHEETS_MASK_STYLE_ID)};
-        if (!document.getElementById(STYLE_ID)) {
+        var styleExists = !!document.getElementById(STYLE_ID);
+        if (!styleExists) {
           var s = document.createElement('style');
           s.id = STYLE_ID;
           s.textContent = \`${safeCss}\`;
           (document.head || document.documentElement).appendChild(s);
         }
+
+        // §pyn-1.2.71 — идемпотентность бутстрапа. did-stop-loading стреляет
+        // несколько раз за загрузку (auth-редирект, gid-hash, Boq/realtime), и
+        // раньше весь IIFE гонялся каждый раз (DIAG-спам, повторный tryCollapse,
+        // лишние setTimeout'ы). Тяжёлую часть — поиск кнопок, сворачивание меню,
+        // разметку bottom-bar, guardian, window.__pyn*-функции — делаем ОДИН раз
+        // на JS-контекст. Если стиль жив и бутстрап уже завершался → выходим
+        // (no-op). Если DOM сброшен (стиль исчез) — он выше уже восстановлен, а
+        // бутстрап прогоняем заново (вернёт сворачивание/разметку). Флаг ставится
+        // в КОНЦЕ успешного прогона (см. низ try), чтобы сбой посреди не «залочил».
+        if (window.__pynMaskBootstrapped && styleExists) return;
 
         var T = {
           menu: ['меню', 'menu', 'панель', 'controls', 'compact', 'strip', 'формата'],
@@ -408,57 +420,6 @@ export function buildSheetsMaskScript(): string {
         markBottomBarSiblings();
         setTimeout(markBottomBarSiblings, 500);
         setTimeout(markBottomBarSiblings, 1500);
-
-        // DIAG (временно): структура нижней панели на холодной загрузке —
-        // прицелить точные селекторы кнопок прокрутки/разделителя для
-        // мгновенного скрытия. Удалить после нахождения цели.
-        console.log('[pyn:sheets-mask] injected build=bottombar-1');
-        function pynDiagBottomBar() {
-          try {
-            var firstTab = document.querySelector('.docs-sheet-tab');
-            var info = { tabFound: !!firstTab, barCls: null, kids: [], scroll: [] };
-            if (firstTab && firstTab.parentElement &&
-                firstTab.parentElement.parentElement) {
-              var bottomBar = firstTab.parentElement.parentElement;
-              info.barCls = (bottomBar.className || '').toString().slice(0, 60);
-              for (var i = 0; i < bottomBar.children.length; i++) {
-                var c = bottomBar.children[i];
-                info.kids.push({
-                  tag: c.tagName,
-                  cls: (c.className || '').toString().slice(0, 60),
-                  al: c.getAttribute('aria-label'),
-                  txt: (c.textContent || '').trim().slice(0, 18),
-                  hid: c.hasAttribute('data-pyn-hide'),
-                  w: Math.round(c.getBoundingClientRect().width),
-                });
-              }
-            }
-            var all = document.querySelectorAll('[aria-label],[data-tooltip]');
-            for (var j = 0; j < all.length && info.scroll.length < 6; j++) {
-              var e = all[j];
-              var t = ((e.getAttribute('aria-label') || '') + ' ' +
-                (e.getAttribute('data-tooltip') || '')).toLowerCase();
-              if (t.indexOf('прокру') !== -1 || t.indexOf('scroll') !== -1 ||
-                  t.indexOf('влево') !== -1 || t.indexOf('вправо') !== -1 ||
-                  t.indexOf('предыдущ') !== -1 || t.indexOf('следующ') !== -1) {
-                var par = e.parentElement;
-                info.scroll.push({
-                  tag: e.tagName,
-                  cls: (e.className || '').toString().slice(0, 60),
-                  al: e.getAttribute('aria-label'),
-                  hid: e.hasAttribute('data-pyn-hide'),
-                  w: Math.round(e.getBoundingClientRect().width),
-                  par: par ? (par.className || '').toString().slice(0, 50) : null,
-                });
-              }
-            }
-            console.log('[pyn:sheets-mask] DIAG bottombar ' + JSON.stringify(info));
-          } catch (err) {
-            console.warn('[pyn:sheets-mask] DIAG bb err ' + err);
-          }
-        }
-        setTimeout(pynDiagBottomBar, 1200);
-        setTimeout(pynDiagBottomBar, 3500);
 
         /**
          * Глобальная функция switch-листа. Google не хранит gid в DOM tab'ов
@@ -1165,6 +1126,11 @@ export function buildSheetsMaskScript(): string {
             gridBar: gridBar ? gridBarChildren : null,
           };
         };
+
+        // §pyn-1.2.71 — бутстрап успешно завершён: помечаем JS-контекст, чтобы
+        // повторные did-stop-loading не гоняли всё заново (см. гейт вверху).
+        window.__pynMaskBootstrapped = true;
+        console.log('[pyn:sheets-mask] bootstrapped');
       } catch (e) {
         console.warn('[pyn:sheets-mask] inject failed:', e);
       }

@@ -28,6 +28,20 @@
   cursor: default !important;
 }
 
+/*
+ * §2026-06-02 — выделяемый текст сообщений. Глобально на body стоит
+ * `user-select: none` (ради macOS traffic-lights), поэтому текст нигде не
+ * выделяется мышью. Этот класс точечно возвращает выделение на тексте
+ * сообщений (чат + окно ИИ), чтобы можно было скопировать сообщение или его
+ * ЧАСТЬ. Явный -webkit-префикс — Electron Chromium надёжно перебивает
+ * наследуемый none. cursor:text — I-beam как сигнал «можно выделять».
+ */
+.select-text-msg {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
 @layer base {
   html,
   body,

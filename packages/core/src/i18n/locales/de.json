@@ -730,7 +730,7 @@
       "title": "In Kopie einschließen?",
       "include_position": "Position",
       "include_tab": "Personalnummer",
-      "include_warehouse": "«Bis»-Datum",
+      "include_warehouse": "Lager",
       "copy": "Kopieren"
     }
   },
