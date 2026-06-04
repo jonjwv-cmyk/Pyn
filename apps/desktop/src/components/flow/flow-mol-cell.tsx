@@ -9,7 +9,8 @@ import { cn } from '@/lib/cn';
 export interface FlowMolOption {
   readonly fio: string;
   readonly color: string;
-  readonly phone: string;
+  readonly phone: string; // сырой (для tel:)
+  readonly phoneDisplay: string; // форматированный (как в разделе МОЛ)
   readonly until: string;
 }
 export interface FlowMolData {
@@ -48,11 +49,14 @@ function FlowMolEditor({
             <button
               type="button"
               onClick={() => onFinishedEditing({ ...cell, data: { ...cell.data, value: o.fio } })}
-              className="flex items-center gap-1.5 text-left text-[12px] text-text-strong"
+              className="text-left text-[12px]"
             >
-              <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: o.color }} />
-              {o.fio}
-              {o.until && <span className="text-[11px] font-normal text-text-muted/70">· до {o.until}</span>}
+              <span className="font-medium" style={{ color: o.color }}>
+                {o.fio}
+              </span>
+              {o.until && (
+                <span className="text-[11px] font-normal text-text-muted/70"> · по {o.until}</span>
+              )}
             </button>
             {o.phone && (
               <button
@@ -60,13 +64,13 @@ function FlowMolEditor({
                 onClick={() =>
                   window.dispatchEvent(
                     new CustomEvent('flow:contact', {
-                      detail: { kind: 'call', target: o.phone, display: o.phone, contactName: o.fio },
+                      detail: { kind: 'call', target: o.phone, display: o.phoneDisplay, contactName: o.fio },
                     }),
                   )
                 }
                 className="pl-3.5 text-left text-[11px] text-text-muted/70 transition-colors hover:text-accent-clay"
               >
-                📞 {o.phone}
+                📞 {o.phoneDisplay}
               </button>
             )}
           </div>

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  type CellClickedEventArgs,
   CompactSelection,
   DataEditor,
   type DataEditorRef,
@@ -21,12 +20,16 @@ import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowTwoToneRenderer, type FlowTwoCell } from './flow-composed-cells';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
+import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
+import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
+import { flowToRenderer, type FlowToCell, type FlowToOption } from './flow-to-cell';
 import { FlowHeaderMenu, type FlowHeaderMenuAnchor } from './FlowHeaderMenu';
 import { FlowZoomControl } from './FlowZoomControl';
 import { FlowSearchPanel, type FlowSearchGroup } from './FlowSearchPanel';
 import { ContactActionDialog, type ContactActionRequest } from '@/components/mol/ContactActionDialog';
 import { useMolStore } from '@/lib/stores';
-import { molStatusKind } from '@/lib/mol-format';
+import { useWarehousesStore } from '@/lib/warehouses-store';
+import { molStatusKind, formatMobilePhone } from '@/lib/mol-format';
 import {
   FLOW_COLUMNS,
   makeFlowRows,
@@ -36,6 +39,7 @@ import {
   flowCard,
   parseMol,
   rowTheme,
+  dayState,
   type FlowCardLine,
   type FlowColumnSpec,
   type FlowSandboxRow,
@@ -44,7 +48,14 @@ import {
 /** Объём тестового набора — проверяем грид на «рабочем» масштабе (база). */
 const SANDBOX_ROW_COUNT = 20_000;
 /** Кастомные рендереры ячеек (своя выпадашка в стиле меню колонки). */
-const FLOW_RENDERERS = [flowDropdownRenderer, flowTwoToneRenderer, flowMolRenderer];
+const FLOW_RENDERERS = [
+  flowDropdownRenderer,
+  flowTwoToneRenderer,
+  flowMolRenderer,
+  flowDayRenderer,
+  flowMatRenderer,
+  flowToRenderer,
+];
 /** Базовые метрики грида при 100% (масштабируются кнопкой масштаба).
  *  Шрифт 13px (Inter) — как в сайдбаре: читаемо и компактно (вкус Linear/Figma);
  *  высота строки плотная. */
@@ -232,7 +243,13 @@ function extractValue(
   if (value.kind === GridCellKind.Number) return value.data != null ? String(value.data) : '';
   if (value.kind === GridCellKind.Custom) {
     const data = value.data as { kind?: string; value?: string | null };
-    if (data.kind === 'flow-dropdown' || data.kind === 'flow-mol') return data.value ?? '';
+    if (
+      data.kind === 'flow-dropdown' ||
+      data.kind === 'flow-mol' ||
+      data.kind === 'flow-day' ||
+      data.kind === 'flow-to'
+    )
+      return data.value ?? '';
     return fallback;
   }
   return fallback;
@@ -303,10 +320,12 @@ export function FlowSandboxGrid() {
     for (const r of molRecords) {
       const wid = (r.warehouseId || '').trim();
       if (!wid || !r.fio) continue;
+      const phone = r.mobile || r.work || '';
       const opt: FlowMolOption = {
         fio: r.fio,
         color: COLOR[molStatusKind(r.status)],
-        phone: r.mobile || r.work || '',
+        phone,
+        phoneDisplay: phone ? formatMobilePhone(phone) : '',
         until: r.warehouseUntil || '',
       };
       const arr = map.get(wid);
@@ -315,6 +334,22 @@ export function FlowSandboxGrid() {
     }
     return map;
   }, [molRecords]);
+  // Склады по цеху — для выпадашки TO «склады того же цеха» (из useWarehousesStore).
+  const warehouses = useWarehousesStore((s) => s.warehouses);
+  const { whById, whByShop } = useMemo(() => {
+    const byId = new Map<string, { shopCode: string | null; shopName: string }>();
+    const byShop = new Map<string, FlowToOption[]>();
+    for (const w of warehouses) {
+      byId.set(w.id, { shopCode: w.shop_code, shopName: w.shop_name });
+      if (w.shop_code) {
+        const opt: FlowToOption = { id: w.id, desc: w.description ?? w.designation ?? '' };
+        const arr = byShop.get(w.shop_code);
+        if (arr) arr.push(opt);
+        else byShop.set(w.shop_code, [opt]);
+      }
+    }
+    return { whById: byId, whByShop: byShop };
+  }, [warehouses]);
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
   const [sort, setSort] = useState<SortState | null>(null);
   const [filters, setFilters] = useState<Record<string, ColumnFilter>>({});
@@ -332,13 +367,6 @@ export function FlowSandboxGrid() {
   } | null>(null);
   const lastHoverRef = useRef<string>('');
   const hoverCellRef = useRef<[number, number] | null>(null);
-  // Закреплённая карточка материала (по клику; закрытие — Esc / клик другой ячейки).
-  const [pinnedCard, setPinnedCard] = useState<{
-    y: number;
-    leftPx?: number;
-    rightPx?: number;
-    lines: FlowCardLine[];
-  } | null>(null);
   // Звонок по телефону МОЛ — через общий диалог-подтверждение (как в Цеха/МОЛ).
   const [contactReq, setContactReq] = useState<ContactActionRequest | null>(null);
   useEffect(() => {
@@ -607,6 +635,40 @@ export function FlowSandboxGrid() {
           data: { kind: 'flow-mol', value: rawMol, fio: curFio, color, options: opts },
         } satisfies FlowMolCell;
       }
+      if (spec.kind === 'day') {
+        const s = dayState(rowData);
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: true,
+          copyData: s.label,
+          data: { kind: 'flow-day', value: rowData.day_wk ?? '', label: s.label, color: s.color },
+        } satisfies FlowDayCell;
+      }
+      if (spec.kind === 'mat') {
+        const by = (rowData.created_by || '').trim().toUpperCase();
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: true,
+          copyData: rowData.mat ?? '',
+          data: {
+            kind: 'flow-mat',
+            name: rowData.mat ?? '',
+            warn: by !== '' && by !== 'GROKHOVSKIJ',
+            lines: flowCard(spec, rowData) ?? [],
+          },
+        } satisfies FlowMatCell;
+      }
+      if (spec.kind === 'to') {
+        const code = rowData.to_wh ?? '';
+        const wh = whById.get(code);
+        const opts = wh?.shopCode ? whByShop.get(wh.shopCode) ?? [] : [];
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: true,
+          copyData: code,
+          data: { kind: 'flow-to', value: code, shopName: wh?.shopName ?? '', options: opts },
+        } satisfies FlowToCell;
+      }
       if (spec.kind === 'dropdown') {
         const value = String(raw ?? '');
         return {
@@ -621,9 +683,7 @@ export function FlowSandboxGrid() {
         spec.kind === 'kgv' ||
         spec.kind === 'info' ||
         spec.kind === 'percent' ||
-        spec.kind === 'time' ||
-        spec.kind === 'day' ||
-        spec.kind === 'mat'
+        spec.kind === 'time'
       ) {
         const parts = flowComposed(spec, rowData);
         return {
@@ -644,7 +704,7 @@ export function FlowSandboxGrid() {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse],
+    [viewRows, molByWarehouse, whById, whByShop],
   );
 
   // Обновить активность кнопок отмены/повтора по длине стеков.
@@ -693,6 +753,17 @@ export function FlowSandboxGrid() {
         after.set(viewRow.id, { ...(after.get(viewRow.id) ?? {}), [spec.id]: newVal });
         const prevBefore = before.get(viewRow.id) ?? {};
         if (!(spec.id in prevBefore)) before.set(viewRow.id, { ...prevBefore, [spec.id]: oldVal });
+        // Авто-PR: смена склада-получателя → исходный склад в PR; вернули в исходный → PR очистить.
+        if (spec.id === 'to_wh') {
+          const oldTo = String(oldVal ?? '');
+          const curPr = viewRow.pr ?? '';
+          const nextPr = String(newVal) === curPr ? '' : curPr ? curPr : oldTo;
+          if (nextPr !== curPr) {
+            after.set(viewRow.id, { ...(after.get(viewRow.id) ?? {}), pr: nextPr });
+            const pb = before.get(viewRow.id) ?? {};
+            if (!('pr' in pb)) before.set(viewRow.id, { ...pb, pr: curPr });
+          }
+        }
       }
       if (after.size === 0) return;
       writeCells(after);
@@ -919,39 +990,12 @@ export function FlowSandboxGrid() {
     [viewRows],
   );
 
-  // Клик по ячейке материала — закрепить карточку (раскрытие по клику, не наведению).
-  const handleCellClicked = useCallback(
-    (cellPos: Item, ev: CellClickedEventArgs) => {
-      const [c, r] = cellPos;
-      const spec = FLOW_COLUMNS[c];
-      const row = viewRows[r];
-      if (spec?.id === 'mat' && row) {
-        const lines = flowCard(spec, row);
-        if (lines) {
-          const cw = measureRef.current?.clientWidth ?? 0;
-          const toLeft = ev.bounds.x + ev.bounds.width / 2 > cw / 2;
-          setPinnedCard({
-            y: ev.bounds.y,
-            lines,
-            ...(toLeft
-              ? { rightPx: cw - ev.bounds.x + 8 }
-              : { leftPx: ev.bounds.x + ev.bounds.width + 8 }),
-          });
-          return;
-        }
-      }
-      setPinnedCard(null);
-    },
-    [viewRows],
-  );
-
   // Shift+стрелки расширяют выделение КОЛОНОК (←/→) и СТРОК (↑/↓) от якоря.
   // Для ячеек Shift+стрелки работают нативно в Glide — туда не вмешиваемся.
   const handleKeyDown = useCallback((e: GridKeyEventArgs) => {
     if (e.key === 'Escape') {
       setCopiedRegions([]); // Escape снимает рамку «скопировано» (как в Excel)
       setSearchOpen(false); // и закрывает поиск
-      setPinnedCard(null); // и закрывает закреплённую карточку материала
       return;
     }
     // Поиск по таблице — ⌘F / Ctrl+F (наша панель, не встроенный поиск Glide).
@@ -1437,7 +1481,6 @@ export function FlowSandboxGrid() {
             gridSelection={selection}
             onGridSelectionChange={handleSelectionChange}
             onItemHovered={handleItemHovered}
-            onCellClicked={handleCellClicked}
             onKeyDown={handleKeyDown}
             onVisibleRegionChanged={handleVisibleRegionChanged}
             highlightRegions={gridHighlights}
@@ -1463,14 +1506,6 @@ export function FlowSandboxGrid() {
             style={{ top: tooltip.y, left: tooltip.leftPx, right: tooltip.rightPx }}
           >
             <CardLines lines={tooltip.lines} />
-          </div>
-        )}
-        {pinnedCard && (
-          <div
-            className="absolute z-30 max-w-[300px] rounded-md border border-accent-clay/40 bg-[#302F2D] px-2.5 py-1.5 text-[12px] leading-relaxed shadow-[0_10px_28px_rgba(0,0,0,0.5)]"
-            style={{ top: pinnedCard.y, left: pinnedCard.leftPx, right: pinnedCard.rightPx }}
-          >
-            <CardLines lines={pinnedCard.lines} />
           </div>
         )}
       </div>

@@ -19,8 +19,9 @@ export type FlowColumnKind =
   | 'percent' // % — живой пересчёт; расчёт подсказкой при наведении
   | 'time' // дата-время: часики; полная дата подсказкой
   | 'mol' // МОЛ: статус-точка + ФИО; телефон/срок подсказкой
-  | 'day' // NEW / OFF / дата доставки (объединяет ST + день недели)
-  | 'mat'; // материал: ⚠ ручной заказ + название; карточка по наведению
+  | 'day' // new / OFF / дата доставки (поповер); объединяет ST + день недели
+  | 'mat' // материал: ⚠ ручной заказ + название; карточка-оверлей по двойному клику
+  | 'to'; // склад-получатель: выпадашка складов того же цеха
 
 /** Строка листа WORKFLOW (снимок 1:1). Коды складов — текст (ведущий ноль важен). */
 export interface FlowSandboxRow {
@@ -86,7 +87,7 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'clst', title: 'CLST', width: 70, kind: 'text' },
   { id: 'ord', title: 'ЗАКАЗ', width: 128, kind: 'order' },
   { id: 'fr', title: 'FR', width: 62, kind: 'text', editable: true },
-  { id: 'to_wh', title: 'TO', width: 62, kind: 'text', editable: true },
+  { id: 'to_wh', title: 'TO', width: 62, kind: 'to', editable: true },
   { id: 'pr', title: 'PR', width: 62, kind: 'text' },
   { id: 'day_wk', title: 'DAY', width: 84, kind: 'day', editable: true },
   { id: 'stat', title: 'STAT', width: 104, kind: 'dropdown', options: FLOW_STAT_OPTIONS, editable: true },
@@ -192,8 +193,8 @@ export function parseMol(
 
 /** Состояние DAY-колонки: NEW (новый) / OFF (удалён) / дата доставки. */
 export function dayState(row: FlowSandboxRow): { label: string; color?: string } {
-  if (row.st === 'OFF') return { label: 'OFF', color: '#F85149' };
   const d = row.day_wk;
+  if (d === 'OFF' || row.st === 'OFF') return { label: 'off' }; // строчными, без точки
   const iso = d ? d.match(/^(\d{4})-(\d{2})-(\d{2})/) : null;
   if (iso) {
     // конкретная дата доставки → «5 июня» (день + месяц)
@@ -359,7 +360,7 @@ export function rowTheme(row: FlowSandboxRow): { bg?: string; text?: string } | 
   if (note === 'ERROR') return { bg: '#E2F0F1', text: '#1C5A60' };
   if (note === 'OBD NO') return { bg: '#FBF3D6', text: '#7A5A1E' };
   if (note === 'WORKFLOW NO') return { bg: '#EFEEE9', text: '#7A7770' };
-  if (row.st === 'OFF') return { bg: '#F6E8E5', text: '#8A3030' };
+  if (row.day_wk === 'OFF' || row.st === 'OFF') return { bg: '#F6E8E5', text: '#8A3030' };
   if (row.st === 'NEW') return { bg: '#FBEFE9' };
   if ((row.mol || '').includes('НЕТ МОЛ')) return { bg: '#F8E3DF', text: '#9A2B22' };
   switch (row.stat) {
