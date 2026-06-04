@@ -85,24 +85,71 @@ export const FLOW_STAT_OPTIONS = [
  */
 export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'clst', title: 'CLST', width: 70, kind: 'text' },
-  { id: 'ord', title: 'ЗАКАЗ', width: 128, kind: 'order' },
+  { id: 'ord', title: 'ORD', width: 128, kind: 'order' },
   { id: 'fr', title: 'FR', width: 62, kind: 'text', editable: true },
   { id: 'to_wh', title: 'TO', width: 62, kind: 'to', editable: true },
   { id: 'pr', title: 'PR', width: 62, kind: 'text' },
   { id: 'day_wk', title: 'DAY', width: 84, kind: 'day', editable: true },
+  { id: 'request', title: 'ЗАПРОС', width: 108, kind: 'text', editable: true },
+  { id: 'mol', title: 'МОЛ', width: 172, kind: 'mol', editable: true },
   { id: 'stat', title: 'STAT', width: 104, kind: 'dropdown', options: FLOW_STAT_OPTIONS, editable: true },
   { id: 'pct', title: '%', width: 52, kind: 'percent' },
   { id: 'q', title: 'Q', width: 38, kind: 'text' },
   { id: 'no_num', title: 'NO. №', width: 86, kind: 'text' },
   { id: 'mat', title: 'MAT', width: 210, kind: 'mat' },
-  { id: 'uom', title: 'ЕИ', width: 50, kind: 'text' },
+  { id: 'uom', title: 'UoM', width: 50, kind: 'text' },
   { id: 'qty', title: 'QTY', width: 80, kind: 'number' },
-  { id: 'kg', title: 'КГ', width: 80, kind: 'number' },
+  { id: 'kg', title: 'KG', width: 80, kind: 'number' },
   { id: 'v', title: 'V', width: 70, kind: 'number' },
-  { id: 'mol', title: 'МОЛ', width: 172, kind: 'mol', editable: true },
-  { id: 'request', title: 'ЗАПРОС', width: 108, kind: 'text', editable: true },
   { id: 'note', title: 'NOTE', width: 150, kind: 'text', editable: true },
 ];
+
+/**
+ * Размер шрифта ЗНАЧЕНИЙ по колонкам (px при 100%; зум домножает). Юзер: кластер —
+ * самый мелкий; день/статус/КГ/объём/МОЛ/запрос — компактные; остальное стандарт.
+ * Заголовки колонок НЕ трогаем. Применяется как per-cell `themeOverride`.
+ */
+export const FLOW_FONT_PX_DEFAULT = 10;
+const FLOW_COL_FONT_PX: Partial<Record<keyof FlowSandboxRow, number>> = {
+  clst: 7,
+  day_wk: 8,
+  stat: 8,
+  kg: 8,
+  v: 8,
+  mol: 8,
+  request: 8,
+};
+/** Размер шрифта значения колонки (px при 100%). */
+export function colFontPx(id: keyof FlowSandboxRow): number {
+  return FLOW_COL_FONT_PX[id] ?? FLOW_FONT_PX_DEFAULT;
+}
+
+/** Колонки с ЖИРНЫМ значением (юзер 2026-06-04): отправитель/получатель, Q, КГ, V,
+ *  DAY. Процент уже рисуется жирным своей ячейкой — НЕ дублируем (двойной вес). */
+const FLOW_BOLD_COLS = new Set<keyof FlowSandboxRow>(['fr', 'to_wh', 'q', 'kg', 'v', 'day_wk']);
+/** Значение колонки рисуется жирным? */
+export function isBoldCol(id: keyof FlowSandboxRow): boolean {
+  return FLOW_BOLD_COLS.has(id);
+}
+
+/** «Фамилия Имя Отчество» → «Фамилия Имя О.» (первые два слова целиком, последующие —
+ *  инициалом с точкой). Для компактного показа в выпадашке-карточке МОЛ. */
+export function compactFio(fio: string): string {
+  const toks = fio.trim().split(/\s+/).filter(Boolean);
+  if (toks.length <= 2) return toks.join(' ');
+  const initials = toks.slice(2).map((t) => `${(t[0] ?? '').toUpperCase()}.`).join(' ');
+  return `${toks[0]} ${toks[1]} ${initials}`;
+}
+
+/** «Фамилия Имя Отчество» → «Фамилия И.О.» (фамилия + инициалы остальных). Для
+ *  компактного КОПИРОВАНИЯ мола в обычные ячейки. */
+export function molInitials(fio: string): string {
+  const toks = fio.trim().split(/\s+/).filter(Boolean);
+  if (toks.length === 0) return '';
+  if (toks.length === 1) return toks[0] ?? '';
+  const initials = toks.slice(1).map((t) => `${(t[0] ?? '').toUpperCase()}.`).join('');
+  return `${toks[0]} ${initials}`;
+}
 
 /** Реальные строки снимка (JSON уже в нужной форме). */
 const ROWS = sampleRows as unknown as FlowSandboxRow[];
@@ -139,6 +186,37 @@ export function livePct(row: FlowSandboxRow): number | null {
 
 const MON_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 const MON_LONG = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+
+/** Унифицированные сокращения месяцев «Потока»: первые 3 буквы + точка, кроме «май»
+ *  (он и так короткий). Один источник на ВСЕ даты раздела — не думаем об этом отдельно. */
+export const MONTH_ABBR_RU = [
+  'янв.', 'фев.', 'мар.', 'апр.', 'май', 'июн.',
+  'июл.', 'авг.', 'сен.', 'окт.', 'ноя.', 'дек.',
+] as const;
+
+/** Единый формат даты «Потока»: «месяц ЧИСЛО[, ГОД][, ВРЕМЯ]» — сначала месяц, потом
+ *  число, потом год (в DAY год не показываем). Сокращения месяца — общие (MONTH_ABBR_RU). */
+export function flowDate(s: string, opts?: { year?: boolean; time?: boolean }): string {
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+  if (!m) return s;
+  const [, y, mo, d, hh, mm] = m;
+  let out = `${MONTH_ABBR_RU[parseInt(mo ?? '1', 10) - 1] ?? mo} ${parseInt(d ?? '1', 10)}`;
+  if (opts?.year ?? true) out += `, ${y}`;
+  if ((opts?.time ?? false) && hh != null && mm != null && !(hh === '00' && mm === '00')) {
+    const h = parseInt(hh, 10);
+    out += `, ${h % 12 || 12}:${mm} ${h < 12 ? 'am' : 'pm'}`;
+  }
+  return out;
+}
+
+/** Срок ответственности МОЛ «DD.MM.YYYY» (из базы) → единый формат «месяц число, год».
+ *  Не распознали формат — отдаём как есть. */
+export function formatUntilDate(until: string): string {
+  const m = until.trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  if (!m) return until.trim();
+  const [, d, mo, y] = m;
+  return `${MONTH_ABBR_RU[parseInt(mo ?? '1', 10) - 1] ?? mo} ${parseInt(d ?? '1', 10)}, ${y}`;
+}
 
 /** «2026-06-03 08:01:47» → короткое («3 июн») и полное («3 июня 2026, 8:01 am»). */
 export function parseTime(s: string): { short: string; full: string } | null {
@@ -197,8 +275,8 @@ export function dayState(row: FlowSandboxRow): { label: string; color?: string }
   if (d === 'OFF' || row.st === 'OFF') return { label: 'off' }; // строчными, без точки
   const iso = d ? d.match(/^(\d{4})-(\d{2})-(\d{2})/) : null;
   if (iso) {
-    // конкретная дата доставки → «5 июня» (день + месяц)
-    return { label: `${parseInt(iso[3] ?? '1', 10)} ${MON_LONG[parseInt(iso[2] ?? '1', 10) - 1] ?? ''}` };
+    // дата доставки → «месяц число» БЕЗ года (единый формат «Потока»).
+    return { label: flowDate(d, { year: false }) };
   }
   if (d && /\d/.test(d)) return { label: d };
   return { label: 'new' }; // новый — просто «new», без точки (это и так понятно)
@@ -298,15 +376,8 @@ export interface FlowCardLine {
 /** Дата → «2 июня 2026» (+ «, 8:01 am» если есть время и оно не полночь). */
 export function formatDateRu(s: string): string {
   if (!s) return '';
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
-  if (!m) return s;
-  const [, y, mo, d, hh, mm] = m;
-  const base = `${parseInt(d ?? '1', 10)} ${MON_LONG[parseInt(mo ?? '1', 10) - 1] ?? mo} ${y}`;
-  if (hh != null && mm != null && !(hh === '00' && mm === '00')) {
-    const h = parseInt(hh, 10);
-    return `${base}, ${h % 12 || 12}:${mm} ${h < 12 ? 'am' : 'pm'}`;
-  }
-  return base;
+  // Единый формат: «месяц число, год[, время]» (MAT-карточка и пр.).
+  return flowDate(s, { year: true, time: true });
 }
 
 /** Карточка/подсказка колонки строками. null — нет. */
@@ -340,7 +411,7 @@ export function flowCard(spec: FlowColumnSpec, row: FlowSandboxRow): FlowCardLin
       // ФИО в пилюле по статусу (как в листе МОЛ), ниже — телефон с трубкой.
       const lines: FlowCardLine[] = [{ t: m.fio, pill: m.color }];
       if (m.phone) lines.push({ t: `📞 ${m.phone}`, muted: true });
-      if (m.until) lines.push({ t: `по ${m.until}`, muted: true });
+      if (m.until) lines.push({ t: `по ${formatUntilDate(m.until)}`, muted: true });
       return lines;
     }
     default:
@@ -361,8 +432,11 @@ export function rowTheme(row: FlowSandboxRow): { bg?: string; text?: string } | 
   if (note === 'OBD NO') return { bg: '#FBF3D6', text: '#7A5A1E' };
   if (note === 'WORKFLOW NO') return { bg: '#EFEEE9', text: '#7A7770' };
   if (row.day_wk === 'OFF' || row.st === 'OFF') return { bg: '#F6E8E5', text: '#8A3030' };
+  // Выбрана конкретная дата доставки → заливка YES — сочный салатовый (не бледный,
+  // чтобы не сливался со светлым листом); тёмный текст поверх читается.
+  if (/^\d{4}-\d{2}-\d{2}/.test(row.day_wk || '')) return { bg: '#C8E6A0' };
   if (row.st === 'NEW') return { bg: '#FBEFE9' };
-  if ((row.mol || '').includes('НЕТ МОЛ')) return { bg: '#F8E3DF', text: '#9A2B22' };
+  if ((row.mol || '').toUpperCase().includes('НЕТ МОЛ')) return { bg: '#F2BFB7', text: '#7C1812' };
   switch (row.stat) {
     case 'мало':
     case 'самовывоз':

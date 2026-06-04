@@ -32,11 +32,13 @@ function FlowToEditor({
 }) {
   const { options, value, shopName } = cell.data;
   return (
-    <div className="flex max-h-72 w-56 flex-col text-text-secondary">
-      <div className="shrink-0 border-b border-white/10 px-2 py-1.5 text-[11px] font-medium uppercase tracking-wide text-text-muted/80">
+    <div className="max-h-72 w-56 overflow-y-auto text-text-secondary">
+      {/* Шапка-цех закреплена (sticky) — прокручивается ТОЛЬКО список складов: один
+          скроллер, без бессмысленной двойной прокрутки. Фон = фон контейнера оверлея. */}
+      <div className="sticky top-0 z-10 border-b border-white/10 bg-[#302F2D] px-2 py-1.5 text-[11px] font-medium uppercase tracking-wide text-text-muted/80">
         {shopName || 'Цех не задан'}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-1">
+      <div className="p-1">
         {options.length === 0 && (
           <div className="px-2 py-1.5 text-[12px] text-text-muted/70">Нет складов цеха</div>
         )}
@@ -83,5 +85,7 @@ export const flowToRenderer: CustomRenderer<FlowToCell> = {
       padding: '4px',
     },
   }),
+  // Delete стирает склад-получатель (как в Excel) — потом снова выбрать двойным кликом.
+  onDelete: (cell) => ({ ...cell, data: { ...cell.data, value: '' } }),
   onPaste: (v, d) => ({ ...d, value: v }),
 };

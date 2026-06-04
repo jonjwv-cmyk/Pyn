@@ -17,7 +17,7 @@ export type FlowMatCell = CustomCell<FlowMatData>;
 function FlowMatEditor({ value: cell }: { value: FlowMatCell }) {
   const { lines } = cell.data;
   return (
-    <div className="flex max-w-[320px] flex-col gap-0.5 p-1.5 text-[12px] leading-relaxed text-text-secondary">
+    <div className="flex max-h-[60vh] min-w-[280px] max-w-[70vw] flex-col gap-0.5 overflow-y-auto p-2 text-[12px] leading-relaxed text-text-secondary">
       {lines.length === 0 && <div className="text-text-muted/70">Нет данных</div>}
       {lines.map((ln, i) => (
         <div
@@ -50,9 +50,26 @@ export const flowMatRenderer: CustomRenderer<FlowMatCell> = {
     ctx.textBaseline = 'middle';
     let x = rect.x + padX;
     if (warn) {
-      ctx.fillStyle = '#E3873A';
-      ctx.fillText('⚠', x, cy);
-      x += ctx.measureText('⚠').width + 4;
+      // Восклицательный знак — ярко-жёлтый, во ВСЮ высоту ячейки (ручной заказ = приоритет).
+      // Раньше был бледный полупрозрачный эмодзи ⚠ — еле читался.
+      const top = rect.y + 2.5;
+      const bot = rect.y + rect.height - 2.5;
+      const stemW = Math.max(3, (bot - top) * 0.2);
+      const dotR = stemW * 0.6;
+      ctx.fillStyle = '#F5B301';
+      ctx.strokeStyle = 'rgba(0,0,0,0.30)';
+      ctx.lineWidth = 0.75;
+      // стебель
+      ctx.beginPath();
+      ctx.roundRect(x, top, stemW, bot - top - dotR * 2 - 1.5, stemW / 2);
+      ctx.fill();
+      ctx.stroke();
+      // точка
+      ctx.beginPath();
+      ctx.arc(x + stemW / 2, bot - dotR, dotR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      x += stemW + 7;
     }
     ctx.fillStyle = theme.textDark;
     ctx.fillText(name, x, cy);

@@ -4,6 +4,7 @@ import {
   DataEditor,
   type DataEditorRef,
   GridCellKind,
+  type DrawCellCallback,
   type DrawHeaderCallback,
   type EditableGridCell,
   type GridCell,
@@ -13,8 +14,11 @@ import {
   type GridSelection,
   type Item,
   type Rectangle,
+  type Theme,
 } from '@glideapps/glide-data-grid';
-import { Redo2, Trash2, Undo2 } from 'lucide-react';
+import { AlertTriangle, CalendarDays, ChevronDown, Redo2, Trash2, Undo2 } from 'lucide-react';
+import * as Dialog from '@radix-ui/react-dialog';
+import * as Popover from '@radix-ui/react-popover';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
@@ -30,6 +34,8 @@ import { ContactActionDialog, type ContactActionRequest } from '@/components/mol
 import { useMolStore } from '@/lib/stores';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { molStatusKind, formatMobilePhone } from '@/lib/mol-format';
+import { MonthYearPicker } from '@/components/schedule/MonthYearPicker';
+import { MONTH_NAMES_RU } from '@/lib/schedule/compute';
 import {
   FLOW_COLUMNS,
   makeFlowRows,
@@ -40,6 +46,11 @@ import {
   parseMol,
   rowTheme,
   dayState,
+  colFontPx,
+  isBoldCol,
+  compactFio,
+  molInitials,
+  FLOW_FONT_PX_DEFAULT,
   type FlowCardLine,
   type FlowColumnSpec,
   type FlowSandboxRow,
@@ -60,11 +71,15 @@ const FLOW_RENDERERS = [
  *  Шрифт 13px (Inter) — как в сайдбаре: читаемо и компактно (вкус Linear/Figma);
  *  высота строки плотная. */
 const BASE_ROW_HEIGHT = 20;
-const BASE_FONT = 12;
-const BASE_HPAD = 6;
+/** Минимальная ширина «резиновой» колонки NOTE — ýже не даём (дальше горизонт. скролл). */
+const NOTE_MIN_WIDTH = 160;
+/** Шрифт ЗНАЧЕНИЙ по умолчанию (px при 100%) — мельче колонки задаёт colFontPx. */
+const BASE_FONT = FLOW_FONT_PX_DEFAULT;
+/** Шрифт ЗАГОЛОВКОВ колонок — оставляем 12 (значения уменьшили, шапку нет). */
+const HEADER_FONT = 12;
+/** Горизонтальный отступ контента в ячейке — компактно (юзер: меньше пустоты у границ). */
+const BASE_HPAD = 4;
 const BASE_VPAD = 2;
-/** Базовая ширина колонки-№ (хватает на «20000» при 13px); масштабируется зумом. */
-const ROW_MARKER_BASE = 60;
 /** Семейство шрифта для замера авто-ширины — ДОЛЖНО совпадать с темой грида
  *  (Inter Variable); canvas меряет по нему, иначе ширины разойдутся с рендером. */
 const GRID_FONT_FAMILY =
@@ -82,17 +97,38 @@ const MEASURE_CTX = document.createElement('canvas').getContext('2d');
  * место под значок меню/сортировки. Клампим [40, 420]. Пересчитывается при КАЖДОМ
  * изменении данных (всегда авто-фит) — ручного ресайза колонок нет.
  */
-function computeAutoWidths(rows: readonly FlowSandboxRow[]): Record<string, number> {
+/** ПОЛНОЕ ФИО МОЛ: из живой базы по ключу «фамилия имя», иначе как в снимке. В ЯЧЕЙКЕ
+ *  показываем его компактно (compactFio), в выпадашке-списке — целиком. */
+function resolveMolFull(
+  rawMol: string,
+  molByKey?: ReadonlyMap<string, { fio: string; color: string }>,
+): string {
+  const f = parseMol(rawMol)?.fio ?? rawMol;
+  if (!f) return '';
+  return molByKey?.get(molKey(f))?.fio ?? f;
+}
+
+function computeAutoWidths(
+  rows: readonly FlowSandboxRow[],
+  molByKey?: ReadonlyMap<string, { fio: string; color: string }>,
+): Record<string, number> {
   const out: Record<string, number> = {};
   const ctx = MEASURE_CTX;
-  if (ctx) ctx.font = `${BASE_FONT}px ${GRID_FONT_FAMILY}`;
   const measure = (s: string) => (ctx ? ctx.measureText(s).width : s.length * 7);
   for (const spec of FLOW_COLUMNS) {
+    // Меряем РОВНО тем, чем рисуем: значения — кеглем колонки + её жирностью (жирный
+    // текст шире!), заголовок (ниже) — кеглем колонки и весом 600. Иначе подгонка врёт.
+    const boldVal = isBoldCol(spec.id) || spec.id === 'pct'; // % жирнит своя ячейка
+    if (ctx) ctx.font = `${boldVal ? '600 ' : ''}${colFontPx(spec.id)}px ${GRID_FONT_FAMILY}`;
     // По УНИКАЛЬНЫМ значениям (а не «самым длинным по символам»): у кодов все одной
     // длины, и «2004» с широкими цифрами иначе не попадал в выборку → резало.
     const seen = new Set<string>();
     for (const r of rows) {
-      const v = flowDisplayText(spec, r);
+      // МОЛ — по КОМПАКТНОМУ ФИО (его и рисует ячейка), прочее — как обычно.
+      const v =
+        spec.kind === 'mol'
+          ? compactFio(resolveMolFull(String(r.mol ?? ''), molByKey))
+          : flowDisplayText(spec, r);
       if (v.includes('\n')) for (const line of v.split('\n')) seen.add(line);
       else seen.add(v);
       if (seen.size >= 800) break;
@@ -109,11 +145,52 @@ function computeAutoWidths(rows: readonly FlowSandboxRow[]): Record<string, numb
         ? 16
         : 0;
     const valueW = valuePx + BASE_HPAD * 2 + 4 + dropdownPad + iconPad; // плотно: малый запас, но не режет
+    // Заголовок рисуется кеглем СВОЕЙ колонки, жирным (700) — мерим так же, иначе у
+    // мелких колонок шапка считалась шире и колонка раздувалась впустую.
+    if (ctx) ctx.font = `800 ${colFontPx(spec.id)}px ${GRID_FONT_FAMILY}`;
     const headerW = measure(spec.title) + BASE_HPAD * 2 + 6; // лёгкий запас под значок ▾/сортировки
     out[spec.id] = Math.round(Math.max(30, Math.min(420, Math.max(valueW, headerW))));
   }
   return out;
 }
+/** Кэш числа строк переноса (ключ: шрифт+ширина+текст) — чтобы getRowHeight не мерил
+ *  одно и то же повторно при прокрутке. Растёт ограниченно. */
+const WRAP_CACHE = new Map<string, number>();
+/** Сколько визуальных строк займёт текст в колонке шириной maxWidth (учёт явных \n +
+ *  мягкий перенос по словам). Для «резиновой» колонки NOTE — строка растёт под текст. */
+function countWrapLines(text: string, maxWidth: number, fontPx: number): number {
+  if (!text) return 1;
+  const ctx = MEASURE_CTX;
+  if (!ctx || maxWidth <= 0) return text.includes('\n') ? text.split('\n').length : 1;
+  const key = `${fontPx} ${Math.round(maxWidth)} ${text}`;
+  const cached = WRAP_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  ctx.font = `${fontPx}px ${GRID_FONT_FAMILY}`;
+  let total = 0;
+  for (const para of text.split('\n')) {
+    if (para === '') {
+      total += 1;
+      continue;
+    }
+    const tokens = para.split(/(\s+)/);
+    let line = '';
+    let lines = 1;
+    for (const tok of tokens) {
+      const test = line + tok;
+      if (ctx.measureText(test).width > maxWidth && line.trim() !== '') {
+        lines += 1;
+        line = tok.replace(/^\s+/, '');
+      } else {
+        line = test;
+      }
+    }
+    total += lines;
+  }
+  const result = Math.max(1, total);
+  if (WRAP_CACHE.size < 40000) WRAP_CACHE.set(key, result);
+  return result;
+}
+
 /** Потолок уникальных значений в чек-листе фильтра (защита от больших колонок). */
 const MAX_DISTINCT = 2000;
 const EMPTY_SET: ReadonlySet<string> = new Set();
@@ -132,7 +209,7 @@ const SEARCH_HL_BUFFER = 150;
 /** Подсветка скопированного: чуть более тёмная clay-заливка БЕЗ обводки
  *  (`no-outline`). Показывается на выделении сразу после copy и СНИМАЕТСЯ при
  *  любой смене выделения (юзер: после ухода не должно оставаться помеченной области). */
-const MARQUEE_COLOR = 'rgba(217,119,87,0.26)';
+const MARQUEE_COLOR = 'rgba(217,119,87,0.42)';
 
 /** Пунктирная подсветка скопированного диапазона (Glide highlightRegions, style dashed). */
 interface CopiedRegion {
@@ -203,9 +280,10 @@ function globToRegExp(glob: string): RegExp {
 }
 
 /**
- * Матчер поиска с `*`-синтаксисом: БЕЗ `*` — ТОЧНОЕ совпадение (вся ячейка = запрос);
- * `42*` — начинается на; `*42` — заканчивается на; `*42*` — содержит. Быстрые строковые
- * операции для типовых случаев, regex — только при внутренних `*`. null = пустой запрос.
+ * Матчер поиска с `*`-синтаксисом (юзер 2026-06-04): БЕЗ `*` — СОДЕРЖИТ (ищет везде,
+ * по умолчанию); `42*` — начинается на; `*42` — заканчивается на; `*42*` — ТОЧНОЕ
+ * совпадение (вся ячейка = запрос). Быстрые строковые операции; regex — только при
+ * внутренних `*`. null = пустой запрос.
  */
 function makeSearchMatcher(rawQuery: string): ((value: string) => boolean) | null {
   const q = rawQuery.trim();
@@ -219,10 +297,34 @@ function makeSearchMatcher(rawQuery: string): ((value: string) => boolean) | nul
     return (value) => re.test(value);
   }
   const lc = core.toLowerCase();
-  if (lead && tail) return (value) => value.toLowerCase().includes(lc);
-  if (tail) return (value) => value.toLowerCase().startsWith(lc);
-  if (lead) return (value) => value.toLowerCase().endsWith(lc);
-  return (value) => value.toLowerCase() === lc;
+  if (lead && tail) return (value) => value.toLowerCase() === lc; // *x* — точное совпадение
+  if (tail) return (value) => value.toLowerCase().startsWith(lc); // x* — начинается на
+  if (lead) return (value) => value.toLowerCase().endsWith(lc); // *x — заканчивается на
+  return (value) => value.toLowerCase().includes(lc); // x — содержит (по умолчанию)
+}
+
+/** Ключ сопоставления МОЛ — «ФАМИЛИЯ ИМЯ» (первые 2 токена, верхний регистр). Снимок
+ *  Google хранит сокращённое «ЛЕБЕДЬ АНДРЕЙ Н.», живая база — полное «…НИКОЛАЕВИЧ»; по
+ *  этому ключу они сходятся → показываем полное ФИО + актуальный статус из базы. */
+function molKey(fio: string): string {
+  return fio.trim().toUpperCase().split(/\s+/).filter(Boolean).slice(0, 2).join(' ');
+}
+
+/** Текст окна-предупреждения: «<ФИО> не может быть МОЛом на складе <номера>». Группируем
+ *  по человеку (одной протяжкой обычно один мол на несколько чужих складов). */
+function buildMolErrorMessage(rejects: ReadonlyArray<{ fio: string; wh: string }>): string {
+  const byFio = new Map<string, Set<string>>();
+  for (const r of rejects) {
+    let set = byFio.get(r.fio);
+    if (!set) {
+      set = new Set();
+      byFio.set(r.fio, set);
+    }
+    set.add(r.wh);
+  }
+  return [...byFio.entries()]
+    .map(([fio, whs]) => `${fio} не может быть МОЛом на складе ${[...whs].join(', ')}.`)
+    .join('\n');
 }
 
 /** Достать новое значение поля из отредактированной ячейки (с учётом типа колонки). */
@@ -300,6 +402,8 @@ export function FlowSandboxGrid() {
     Promise.all([
       fonts.load('12px "Inter Variable"').catch(() => undefined),
       fonts.load('600 12px "Inter Variable"').catch(() => undefined),
+      fonts.load('700 12px "Inter Variable"').catch(() => undefined),
+      fonts.load('800 12px "Inter Variable"').catch(() => undefined),
     ]).finally(() => {
       fonts.ready.then(() => {
         if (alive) setFontsReady(true);
@@ -309,31 +413,64 @@ export function FlowSandboxGrid() {
       alive = false;
     };
   }, []);
-  // Авто-ширина — ПРОИЗВОДНАЯ от данных: пересчитывается при изменении строк И после
-  // загрузки шрифта (иначе мерили не тем шрифтом). Всегда плотно по содержимому.
-  const colWidths = useMemo(() => computeAutoWidths(rows), [rows, fontsReady]);
   // Молы по складу-получателю (TO) из РЕАЛЬНОЙ базы МОЛ (useMolStore) — для выпадашки.
   const molRecords = useMolStore((s) => s.records);
-  const molByWarehouse = useMemo(() => {
+  const { molByWarehouse, molByKey } = useMemo(() => {
     const COLOR = { ok: '#3FB950', error: '#F85149', neutral: '#9AA0A6' } as const;
-    const map = new Map<string, FlowMolOption[]>();
+    const byWh = new Map<string, FlowMolOption[]>();
+    // Глобально по ключу «ФАМИЛИЯ ИМЯ» → полное ФИО + цвет статуса. Нужен, чтобы
+    // показывать полное имя и ВЕРНЫЙ цвет даже у скопированных/протянутых ячеек (где
+    // эмодзи статуса потерян) и у снимка с сокращённым ФИО.
+    const byKey = new Map<string, { fio: string; color: string }>();
     for (const r of molRecords) {
+      if (!r.fio) continue;
+      const color = COLOR[molStatusKind(r.status)];
+      const k = molKey(r.fio);
+      if (k && !byKey.has(k)) byKey.set(k, { fio: r.fio, color });
       const wid = (r.warehouseId || '').trim();
-      if (!wid || !r.fio) continue;
+      if (!wid) continue;
       const phone = r.mobile || r.work || '';
       const opt: FlowMolOption = {
         fio: r.fio,
-        color: COLOR[molStatusKind(r.status)],
+        color,
         phone,
         phoneDisplay: phone ? formatMobilePhone(phone) : '',
         until: r.warehouseUntil || '',
+        status: (r.status || '').trim(),
       };
-      const arr = map.get(wid);
+      const arr = byWh.get(wid);
       if (arr) arr.push(opt);
-      else map.set(wid, [opt]);
+      else byWh.set(wid, [opt]);
     }
-    return map;
+    // Порядок опций склада — как в разделе МОЛ: работающие (зелёные) → красные → серые,
+    // внутри группы по алфавиту ФИО. Выпадашка показывает их без поиска.
+    const RANK = { ok: 0, error: 1, neutral: 2 } as const;
+    for (const arr of byWh.values()) {
+      arr.sort((a, b) => {
+        const ra = RANK[molStatusKind(a.status)];
+        const rb = RANK[molStatusKind(b.status)];
+        return ra !== rb ? ra - rb : a.fio.localeCompare(b.fio, 'ru');
+      });
+    }
+    return { molByWarehouse: byWh, molByKey: byKey };
   }, [molRecords]);
+  // Авто-ширина — ПРОИЗВОДНАЯ от данных: пересчитывается при изменении строк, после
+  // загрузки шрифта И при смене базы МОЛ (мол-колонку мерим по РЕЗОЛВНУТОМУ полному
+  // ФИО из базы — оно длиннее снимка, иначе режется). Всегда плотно по содержимому.
+  const colWidths = useMemo(
+    () => computeAutoWidths(rows, molByKey),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, fontsReady, molByKey],
+  );
+  // Ширина колонки-№ — ПОД содержимое (кол-во строк), а не фикс: меряем самый широкий
+  // номер (все «8») + малый отступ. Компактно, без пустоты вокруг (юзер 2026-06-04).
+  const markerWidth = useMemo(() => {
+    const ctx = MEASURE_CTX;
+    const digits = String(Math.max(1, rows.length)).length;
+    if (ctx) ctx.font = `700 ${BASE_FONT}px ${GRID_FONT_FAMILY}`; // номера жирные — мерим жирным
+    const w = ctx ? ctx.measureText('8'.repeat(digits)).width : digits * 7;
+    return Math.max(26, Math.round(w + 16));
+  }, [rows.length]);
   // Склады по цеху — для выпадашки TO «склады того же цеха» (из useWarehousesStore).
   const warehouses = useWarehousesStore((s) => s.warehouses);
   const { whById, whByShop } = useMemo(() => {
@@ -356,8 +493,27 @@ export function FlowSandboxGrid() {
   const [menu, setMenu] = useState<FlowHeaderMenuAnchor | null>(null);
   const [copiedRegions, setCopiedRegions] = useState<CopiedRegion[]>([]);
   const [zoom, setZoom] = useState(1);
+  // Месяц графика, по которому считается кластер CLST (ВЫЕЗД/КХП/день доставки)
+  // у складов-получателей TO. Default — текущий месяц; переключатель в тулбаре.
+  // Живой пересчёт CLST из этого месяца — следующий шаг очереди.
+  const [planYear, setPlanYear] = useState(() => new Date().getFullYear());
+  const [planMonth, setPlanMonth] = useState(() => new Date().getMonth() + 1);
   const [size, setSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  // Ширина для РАСКЛАДКИ колонок (резиновый NOTE) — обновляется с задержкой: при движении
+  // сайдбара live `size` двигает канвас (прокрутка), а переразметку колонок делаем ОДИН
+  // раз, когда движение остановилось — без непрерывного «прыжка».
+  const [layoutWidth, setLayoutWidth] = useState(0);
   const measureRef = useRef<HTMLDivElement | null>(null);
+  // Колонка NOTE — «резиновая»: добивает таблицу до ширины окна. Остаток после колонки-№
+  // и остальных колонок; мал → текст переносится (строка растёт), широко → показ как есть.
+  const noteWidth = useMemo(() => {
+    const marker = Math.round(markerWidth * zoom);
+    const others = FLOW_COLUMNS.reduce(
+      (sum, c) => (c.id === 'note' ? sum : sum + Math.round((colWidths[c.id] ?? c.width) * zoom)),
+      0,
+    );
+    return Math.max(NOTE_MIN_WIDTH, layoutWidth - marker - others - 12); // -12: полоса/зазор
+  }, [layoutWidth, colWidths, markerWidth, zoom]);
   // Всплывающая подсказка (полная дата / расчёт % / телефон-срок МОЛ / тех-имя).
   const [tooltip, setTooltip] = useState<{
     y: number;
@@ -369,6 +525,8 @@ export function FlowSandboxGrid() {
   const hoverCellRef = useRef<[number, number] | null>(null);
   // Звонок по телефону МОЛ — через общий диалог-подтверждение (как в Цеха/МОЛ).
   const [contactReq, setContactReq] = useState<ContactActionRequest | null>(null);
+  // Окно «нельзя назначить МОЛ» — когда мол протянули/вставили на чужой склад.
+  const [molError, setMolError] = useState<{ message: string } | null>(null);
   useEffect(() => {
     const onContact = (e: Event) => {
       const detail = (e as CustomEvent<ContactActionRequest>).detail;
@@ -432,14 +590,23 @@ export function FlowSandboxGrid() {
   useEffect(() => {
     const el = measureRef.current;
     if (!el) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      const { width, height } = entry.contentRect;
-      setSize({ width: Math.floor(width), height: Math.floor(height) });
+      const w = Math.floor(entry.contentRect.width);
+      const h = Math.floor(entry.contentRect.height);
+      setSize({ width: w, height: h }); // live — канвас следует за окном (прокрутка без прыжка)
+      // Раскладка (резиновый NOTE) — первый раз сразу, дальше после паузы движения.
+      setLayoutWidth((prev) => (prev === 0 ? w : prev));
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setLayoutWidth(w), 160);
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      if (timer) clearTimeout(timer);
+      ro.disconnect();
+    };
   }, []);
 
   // «Бегущая» пунктирная рамка скопированного (как Excel): на событие copy
@@ -509,13 +676,9 @@ export function FlowSandboxGrid() {
     }
     if (count === 0) return null;
 
-    let numCount = 0;
-    let sum = 0;
-    let min = Infinity;
-    let max = -Infinity;
-    // Колонки, давшие числа: агрегаты осмысленны ТОЛЬКО если колонка одна
-    // (нельзя складывать «Кол-во» с «Вес»/«Поз.» — разные величины).
-    const numCols = new Set<number>();
+    // Агрегаты ГРУППИРУЕМ ПО ЕДИНИЦЕ ИЗМЕРЕНИЯ — нельзя складывать тонны со штуками или
+    // комплектами! QTY → ЕИ строки (шт/т/кмп/…); КГ → «кг»; V → «м³». Каждая ЕИ — свой счёт.
+    const byUnit = new Map<string, { count: number; sum: number; min: number; max: number }>();
     if (count <= STAT_CAP) {
       const add = (c: number, r: number) => {
         const spec = FLOW_COLUMNS[c];
@@ -524,11 +687,23 @@ export function FlowSandboxGrid() {
         const v = row[spec.id];
         const n = typeof v === 'number' ? v : Number(v);
         if (!Number.isFinite(n)) return;
-        numCount++;
-        numCols.add(c);
-        sum += n;
-        if (n < min) min = n;
-        if (n > max) max = n;
+        const unit =
+          spec.id === 'qty'
+            ? (row.uom || '').trim() || '—'
+            : spec.id === 'kg'
+              ? 'кг'
+              : spec.id === 'v'
+                ? 'м³'
+                : '—';
+        let g = byUnit.get(unit);
+        if (!g) {
+          g = { count: 0, sum: 0, min: Infinity, max: -Infinity };
+          byUnit.set(unit, g);
+        }
+        g.count++;
+        g.sum += n;
+        if (n < g.min) g.min = n;
+        if (n > g.max) g.max = n;
       };
       if (cur) {
         for (const rect of [cur.range, ...cur.rangeStack]) {
@@ -542,15 +717,10 @@ export function FlowSandboxGrid() {
         for (const r of selection.rows) for (let c = 0; c < colCount; c++) add(c, r);
       }
     }
-    return {
-      count,
-      numCount,
-      sum,
-      avg: numCount ? sum / numCount : 0,
-      min: numCount ? min : 0,
-      max: numCount ? max : 0,
-      singleNumCol: numCols.size === 1,
-    };
+    const units = [...byUnit.entries()]
+      .map(([unit, g]) => ({ unit, count: g.count, sum: g.sum, avg: g.sum / g.count, min: g.min, max: g.max }))
+      .sort((a, b) => b.count - a.count);
+    return { count, units };
   }, [selection, viewRows]);
 
   // Уникальные значения колонки открытого меню (для чек-листа фильтра).
@@ -581,26 +751,30 @@ export function FlowSandboxGrid() {
           id: c.id,
           title: c.title,
           // Масштаб («лупа») множит ширину так же, как шрифт — значения не режутся.
-          width: Math.round((colWidths[c.id] ?? c.width) * zoom),
+          // NOTE — резиновая (остаток до края окна), прочие — по авто-ширине.
+          width: c.id === 'note' ? noteWidth : Math.round((colWidths[c.id] ?? c.width) * zoom),
           hasMenu: true,
-          ...(filtered
-            ? {
-                themeOverride: {
-                  // Непрозрачные clay-тона (clay поверх светлой шапки) — чтобы заливка
-                  // значка в drawHeader НЕ накладывалась повторно и не давала тёмный «чип».
+          themeOverride: {
+            // Заголовок колонки — ТЕМ ЖЕ кеглем, что и её значения (юзер 2026-06-04);
+            // жирный (700). Размер множится зумом.
+            headerFontStyle: `800 ${Math.round(colFontPx(c.id) * zoom)}px`,
+            // Активный фильтр — непрозрачные clay-тона (clay поверх светлой шапки), чтобы
+            // заливка значка в drawHeader НЕ накладывалась повторно (без тёмного «чипа»).
+            ...(filtered
+              ? {
                   textHeader: '#B35E45',
                   bgHeader: '#EFE2DA',
                   bgHeaderHovered: '#EEDBD1',
                   bgHeaderHasFocus: '#EEDDD4',
-                },
-              }
-            : {}),
+                }
+              : {}),
+          },
         };
       }),
-    [colWidths, filters, zoom],
+    [colWidths, filters, zoom, noteWidth],
   );
 
-  const getCellContent = useCallback(
+  const getCellContentRaw = useCallback(
     (cellPos: Item): GridCell => {
       const [col, row] = cellPos;
       const spec = FLOW_COLUMNS[col];
@@ -623,16 +797,32 @@ export function FlowSandboxGrid() {
       }
       if (spec.kind === 'mol') {
         const rawMol = String(rowData.mol ?? '');
-        const parsed = parseMol(rawMol);
-        const curFio = parsed?.fio ?? rawMol;
         const opts = molByWarehouse.get(rowData.to_wh) ?? [];
-        const matched = opts.find((o) => o.fio === curFio);
-        const color = matched ? matched.color : parsed?.color ?? '#9AA0A6';
+        // «Нет мола» — без ⚠, акцентная красная пилюля «Нет МОЛа» жирным тёмным текстом,
+        // чтобы сразу было понятно. Двойной клик всё равно открывает список (назначить).
+        if (rawMol.toUpperCase().includes('НЕТ МОЛ')) {
+          return {
+            kind: GridCellKind.Custom,
+            allowOverlay: true,
+            copyData: 'Нет МОЛа',
+            data: { kind: 'flow-mol', value: rawMol, fio: 'Нет МОЛа', color: '#E5484D', noMol: true, options: opts },
+          } satisfies FlowMolCell;
+        }
+        const parsed = parseMol(rawMol);
+        const rawFio = parsed?.fio ?? rawMol;
+        // Резолвим из ЖИВОЙ базы по ключу «фамилия имя»: полное ФИО + актуальный цвет
+        // статуса. Так копия/протяжка зелёные (цвет из базы, не из потерянного эмодзи),
+        // а сокращённое ФИО снимка показывается полным.
+        const resolved = rawFio ? molByKey.get(molKey(rawFio)) : undefined;
+        const fullFio = resolved?.fio ?? rawFio;
+        const color = resolved?.color ?? parsed?.color ?? '#9AA0A6';
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
-          copyData: curFio,
-          data: { kind: 'flow-mol', value: rawMol, fio: curFio, color, options: opts },
+          // Копирование в обычную ячейку — компактно «Фамилия И.О.». В ЯЧЕЙКЕ показываем
+          // «Фамилия Имя О.», полное ФИО — в выпадашке-списке.
+          copyData: molInitials(fullFio),
+          data: { kind: 'flow-mol', value: rawMol, fio: compactFio(fullFio), color, options: opts },
         } satisfies FlowMolCell;
       }
       if (spec.kind === 'day') {
@@ -640,7 +830,9 @@ export function FlowSandboxGrid() {
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
-          copyData: s.label,
+          // Копируем СЫРОЕ значение (ISO-дата / OFF / пусто), а не подпись — тогда при
+          // вставке в другую DAY-ячейку условная заливка (зелёная YES) тянется за датой.
+          copyData: rowData.day_wk ?? '',
           data: { kind: 'flow-day', value: rowData.day_wk ?? '', label: s.label, color: s.color },
         } satisfies FlowDayCell;
       }
@@ -704,7 +896,31 @@ export function FlowSandboxGrid() {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse, whById, whByShop],
+    [viewRows, molByWarehouse, molByKey, whById, whByShop],
+  );
+
+  // Шрифт ЗНАЧЕНИЯ per-колонке (clst 7 / day·stat·kg·v·mol·request 8 / прочее 10) +
+  // ЖИРНОСТЬ для части колонок — через per-cell themeOverride с учётом зума.
+  const getCellContent = useCallback(
+    (cellPos: Item): GridCell => {
+      const cell = getCellContentRaw(cellPos);
+      const spec = FLOW_COLUMNS[cellPos[0]];
+      if (!spec) return cell;
+      const fontPx = colFontPx(spec.id);
+      const bold = isBoldCol(spec.id);
+      if (fontPx === BASE_FONT && !bold) return cell;
+      const px = Math.round(fontPx * zoom);
+      const prev = (cell as { themeOverride?: Partial<Theme> }).themeOverride;
+      return {
+        ...cell,
+        themeOverride: {
+          ...prev,
+          baseFontStyle: `${bold ? '600 ' : ''}${px}px`,
+          editorFontSize: `${px}px`,
+        },
+      } as GridCell;
+    },
+    [getCellContentRaw, zoom],
   );
 
   // Обновить активность кнопок отмены/повтора по длине стеков.
@@ -742,6 +958,9 @@ export function FlowSandboxGrid() {
     (edits: readonly { location: Item; value: EditableGridCell }[]) => {
       const after = new Map<number, FlowRowPatch>();
       const before = new Map<number, FlowRowPatch>();
+      // МОЛ, заехавший протяжкой/вставкой на склад, где человек не МОЛ — НЕ пишем,
+      // копим для окна-предупреждения (проверка раньше оптимистики).
+      const molRejects: { fio: string; wh: string }[] = [];
       for (const { location, value } of edits) {
         const [col, displayRow] = location;
         const spec = FLOW_COLUMNS[col];
@@ -750,6 +969,33 @@ export function FlowSandboxGrid() {
         const oldVal = viewRow[spec.id];
         const newVal = extractValue(spec, value, oldVal);
         if (newVal === oldVal) continue;
+        // Read-only колонки (PR / Q / % / коды / числа выгрузки) — НЕ писать ни вставкой,
+        // ни протяжкой. Авто-PR (внутренняя запись при смене TO) идёт мимо этого пути.
+        if (spec.editable !== true) continue;
+        // Выпадашки принимают ТОЛЬКО валидные значения — нельзя «впихнуть» мола в STAT
+        // или мусор в DAY вставкой/протяжкой: STAT из своего списка, DAY — пусто/OFF/дата.
+        if (spec.kind === 'dropdown') {
+          const v = String(newVal ?? '');
+          if (v !== '' && !(spec.options ?? []).includes(v)) continue;
+        } else if (spec.kind === 'day') {
+          const v = String(newVal ?? '');
+          if (v !== '' && v !== 'OFF' && !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
+        }
+        // МОЛ можно поставить только если человек — МОЛ склада-получателя ЭТОЙ строки.
+        if (spec.id === 'mol') {
+          const fioStr = String(newVal ?? '').trim();
+          if (fioStr) {
+            const wantKey = molKey(parseMol(fioStr)?.fio ?? fioStr);
+            const opts = molByWarehouse.get(viewRow.to_wh) ?? [];
+            if (!opts.some((o) => molKey(o.fio) === wantKey)) {
+              molRejects.push({
+                fio: resolveMolFull(fioStr, molByKey),
+                wh: viewRow.to_wh || '(склад не задан)',
+              });
+              continue; // на этот склад вставлять нельзя
+            }
+          }
+        }
         after.set(viewRow.id, { ...(after.get(viewRow.id) ?? {}), [spec.id]: newVal });
         const prevBefore = before.get(viewRow.id) ?? {};
         if (!(spec.id in prevBefore)) before.set(viewRow.id, { ...prevBefore, [spec.id]: oldVal });
@@ -765,11 +1011,12 @@ export function FlowSandboxGrid() {
           }
         }
       }
+      if (molRejects.length > 0) setMolError({ message: buildMolErrorMessage(molRejects) });
       if (after.size === 0) return;
       writeCells(after);
       pushHistory({ kind: 'cells', before, after });
     },
-    [viewRows, writeCells, pushHistory],
+    [viewRows, writeCells, pushHistory, molByWarehouse, molByKey],
   );
 
   const onCellEdited = useCallback(
@@ -1126,7 +1373,9 @@ export function FlowSandboxGrid() {
     () => ({
       ...FLOW_GRID_THEME,
       baseFontStyle: `${Math.round(BASE_FONT * zoom)}px`,
-      headerFontStyle: `600 ${Math.round(BASE_FONT * zoom)}px`,
+      headerFontStyle: `800 ${Math.round(HEADER_FONT * zoom)}px`,
+      // Колонка-№ — жирная (заметнее), кеглем значений.
+      markerFontStyle: `700 ${Math.round(BASE_FONT * zoom)}px`,
       editorFontSize: `${Math.round(BASE_FONT * zoom)}px`,
       cellHorizontalPadding: Math.max(4, Math.round(BASE_HPAD * zoom)),
       cellVerticalPadding: Math.max(2, Math.round(BASE_VPAD * zoom)),
@@ -1140,18 +1389,26 @@ export function FlowSandboxGrid() {
     (row: number): number => {
       const r = viewRows[row];
       if (!r) return rowH;
+      const noteFontPx = Math.round(colFontPx('note') * zoom);
+      const noteInnerW = noteWidth - 2 * Math.max(4, Math.round(BASE_HPAD * zoom));
       let maxLines = 1;
       for (const spec of FLOW_COLUMNS) {
         if (spec.kind !== 'text') continue;
         const v = r[spec.id];
-        if (typeof v === 'string' && v.includes('\n')) {
-          const lines = v.split('\n').length;
-          if (lines > maxLines) maxLines = lines;
-        }
+        if (typeof v !== 'string' || !v) continue;
+        // NOTE — резиновая, переносится по ширине → считаем визуальные строки (\n + wrap);
+        // прочие текст-колонки фикс-ширины — только явные переносы.
+        const lines =
+          spec.id === 'note'
+            ? countWrapLines(v, noteInnerW, noteFontPx)
+            : v.includes('\n')
+              ? v.split('\n').length
+              : 1;
+        if (lines > maxLines) maxLines = lines;
       }
-      return maxLines <= 1 ? rowH : rowH + (maxLines - 1) * Math.round(BASE_FONT * zoom * 1.3);
+      return maxLines <= 1 ? rowH : rowH + (maxLines - 1) * Math.round(noteFontPx * 1.3);
     },
-    [viewRows, rowH, zoom],
+    [viewRows, rowH, zoom, noteWidth],
   );
   // Условное форматирование строки — мягкий фон по статусу (перенос из Google-листа,
   // адаптирован под светлый лист; clay-выделение читается поверх).
@@ -1159,15 +1416,42 @@ export function FlowSandboxGrid() {
     (row: number) => {
       const r = viewRows[row];
       if (!r) return undefined;
+      const o: {
+        bgCell?: string;
+        bgCellMedium?: string;
+        textDark?: string;
+        horizontalBorderColor?: string;
+      } = {};
       const t = rowTheme(r);
-      if (!t) return undefined;
-      const o: { bgCell?: string; bgCellMedium?: string; textDark?: string } = {};
-      if (t.bg) {
+      if (t?.bg) {
         o.bgCell = t.bg;
         o.bgCellMedium = t.bg;
       }
-      if (t.text) o.textDark = t.text;
-      return o;
+      if (t?.text) o.textDark = t.text;
+      // Граница СКЛАДА (TO) внутри кластера — ШТАТНАЯ линия строки Glide (1px, заметная).
+      // Граница КЛАСТЕРА рисуется отдельно толстой опаковой линией (drawCell) — поэтому
+      // здесь ТОЛЬКО когда кластер тот же, а склад сменился (на границе кластера не дублируем).
+      const prev = row > 0 ? viewRows[row - 1] : undefined;
+      if (prev && prev.clst === r.clst && prev.to_wh !== r.to_wh) {
+        o.horizontalBorderColor = 'rgba(0,0,0,0.6)';
+      }
+      return Object.keys(o).length > 0 ? o : undefined;
+    },
+    [viewRows],
+  );
+  // Граница КЛАСТЕРА — ТОЛСТАЯ (2.5px) ОПАКОВАЯ линия (без alpha!) по верху первой строки
+  // кластера. Опаковая = идемпотентна: перерисовка на hover не накапливает цвет (это и
+  // было «корявостью» полупрозрачной версии). Рисуется в синхроне с прокруткой (canvas).
+  const drawCell = useCallback<DrawCellCallback>(
+    (args, drawContent) => {
+      drawContent();
+      const { ctx, rect, row } = args;
+      if (row <= 0) return;
+      const r = viewRows[row];
+      const prev = viewRows[row - 1];
+      if (!r || !prev || prev.clst === r.clst) return;
+      ctx.fillStyle = '#1E1E1E';
+      ctx.fillRect(rect.x, rect.y, rect.width, 2.5);
     },
     [viewRows],
   );
@@ -1232,13 +1516,13 @@ export function FlowSandboxGrid() {
   // столько: справа нет пустых «фантомных» колонок, но граница последней видна и
   // полоса прокрутки помещается. Шире окна → width = окно + горизонтальная полоса.
   const contentWidth = useMemo(() => {
-    const marker = Math.round(ROW_MARKER_BASE * zoom);
+    const marker = Math.round(markerWidth * zoom);
     const cols = FLOW_COLUMNS.reduce(
-      (sum, c) => sum + Math.round((colWidths[c.id] ?? c.width) * zoom),
+      (sum, c) => sum + (c.id === 'note' ? noteWidth : Math.round((colWidths[c.id] ?? c.width) * zoom)),
       0,
     );
     return marker + cols + 12; // +12: полоса прокрутки (~10) + граница/зазор
-  }, [colWidths, zoom]);
+  }, [colWidths, zoom, markerWidth, noteWidth]);
 
   // Матчер с `*`-синтаксисом (точное / начинается / заканчивается / содержит).
   const searchMatcher = useMemo(() => makeSearchMatcher(searchQuery), [searchQuery]);
@@ -1436,6 +1720,28 @@ export function FlowSandboxGrid() {
           replaceResult={replaceResult}
           dimmed={searchDimmed}
         />
+        {/* Месяц графика — задаёт, по какому месяцу считается кластер CLST
+            (ВЫЕЗД/КХП/день доставки) у складов-получателей. Переиспользуем
+            пикер месяца из Графика; поповер на z-30 (как остальные в «Потоке»). */}
+        <div className="h-5 w-px bg-black/[0.08]" />
+        <MonthYearPicker
+          year={planYear}
+          month={planMonth}
+          onChangeYear={setPlanYear}
+          onChangeMonth={setPlanMonth}
+          contentZIndex="z-30"
+        >
+          <button
+            type="button"
+            title="Месяц графика — по нему считается кластер CLST"
+            className="flex h-6 items-center gap-1.5 rounded-md border border-black/10 px-2 text-[12px] tabular-nums text-[#6B6862] outline-none transition-colors hover:text-[#0A0A0A] data-[state=open]:text-[#0A0A0A]"
+          >
+            <CalendarDays size={13} strokeWidth={1.75} />
+            <span>
+              {MONTH_NAMES_RU[planMonth - 1]} {planYear}
+            </span>
+          </button>
+        </MonthYearPicker>
         {selectedRowCount > 0 && (
           <div className="ml-auto flex items-center gap-2 text-[12px] text-[#6B6862]">
             <span className="tabular-nums text-[#2A2925]">Выбрано строк: {selectedRowCount}</span>
@@ -1477,6 +1783,7 @@ export function FlowSandboxGrid() {
             onPaste={handlePaste}
             onDelete={handleDelete}
             onHeaderMenuClick={handleHeaderMenuClick}
+            drawCell={drawCell}
             drawHeader={drawHeader}
             gridSelection={selection}
             onGridSelectionChange={handleSelectionChange}
@@ -1489,7 +1796,7 @@ export function FlowSandboxGrid() {
             getCellsForSelection
             fillHandle
             rowMarkers="clickable-number"
-            rowMarkerWidth={Math.round(ROW_MARKER_BASE * zoom)}
+            rowMarkerWidth={Math.round(markerWidth * zoom)}
             rowSelect="multi"
             columnSelect="multi"
             rangeSelect="multi-rect"
@@ -1498,6 +1805,15 @@ export function FlowSandboxGrid() {
             smoothScrollX
             smoothScrollY
             keybindings={{ search: false }}
+          />
+        )}
+        {/* Тёмная линия-разделитель между колонкой-№ (слева) и данными. Колонка-№ липкая,
+            поэтому x границы фиксирован = её ширине, при горизонт. прокрутке не плывёт. */}
+        {size.width > 0 && size.height > 0 && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute bottom-0 top-0 z-[1] w-px bg-black/45"
+            style={{ left: Math.round(markerWidth * zoom) }}
           />
         )}
         {tooltip && (
@@ -1519,13 +1835,24 @@ export function FlowSandboxGrid() {
               Выделено:{' '}
               <span className="tabular-nums text-[#2A2925]">{selStats.count.toLocaleString('ru-RU')}</span>
             </span>
-            {selStats.numCount > 0 && selStats.singleNumCol && (
+            {/* Одна ЕИ — агрегаты в строку; несколько ЕИ — стрелка → табличка по каждой ЕИ
+                (как в Google), чтобы тонны/штуки/комплекты не смешивались и всё влезло. */}
+            {selStats.units.length === 1 && (
               <>
                 <span className="text-black/25">·</span>
-                <FlowStat label="Сумма" value={selStats.sum} />
-                <FlowStat label="Среднее" value={selStats.avg} />
-                <FlowStat label="Мин" value={selStats.min} />
-                <FlowStat label="Макс" value={selStats.max} />
+                <span className="rounded bg-black/[0.06] px-1.5 py-px text-[11px] font-semibold text-[#2A2925]">
+                  {selStats.units[0]!.unit}
+                </span>
+                <FlowStat label="Сумма" value={selStats.units[0]!.sum} />
+                <FlowStat label="Среднее" value={selStats.units[0]!.avg} />
+                <FlowStat label="Мин" value={selStats.units[0]!.min} />
+                <FlowStat label="Макс" value={selStats.units[0]!.max} />
+              </>
+            )}
+            {selStats.units.length >= 2 && (
+              <>
+                <span className="text-black/25">·</span>
+                <FlowUnitStatsPopover units={selStats.units} />
               </>
             )}
           </>
@@ -1561,6 +1888,37 @@ export function FlowSandboxGrid() {
         onClose={() => setMenu(null)}
       />
       <ContactActionDialog request={contactReq} onClose={() => setContactReq(null)} />
+
+      {/* «Нельзя назначить МОЛ» — мол протянули/вставили на чужой склад. */}
+      <Dialog.Root open={molError !== null} onOpenChange={(o) => { if (!o) setMolError(null); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-40 bg-bg-deep/70 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[380px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-default bg-bg-elevated p-5 shadow-2xl data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-danger/15 text-danger">
+                <AlertTriangle size={16} strokeWidth={2} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <Dialog.Title className="text-[14px] font-semibold tracking-[-0.005em] text-text-strong">
+                  Нельзя назначить МОЛ
+                </Dialog.Title>
+                <Dialog.Description className="mt-1.5 whitespace-pre-line text-[13px] leading-relaxed text-text-secondary">
+                  {molError?.message}
+                </Dialog.Description>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setMolError(null)}
+                className="rounded-md bg-accent-clay px-3 py-1.5 text-[13px] font-medium text-white outline-none transition-colors hover:bg-accent-clay-dim"
+              >
+                Понятно
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -1602,5 +1960,72 @@ function FlowStat({ label, value }: { label: string; value: number }) {
         {value.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}
       </span>
     </span>
+  );
+}
+
+interface FlowUnitStat {
+  unit: string;
+  count: number;
+  sum: number;
+  avg: number;
+  min: number;
+  max: number;
+}
+
+/** Несколько единиц измерения в выделении → стрелка-раскрытие с табличкой агрегатов
+ *  ПО КАЖДОЙ ЕИ (тонны/штуки/комплекты не смешиваем). Как разворот итогов в Google. */
+function FlowUnitStatsPopover({ units }: { units: FlowUnitStat[] }) {
+  const [open, setOpen] = useState(false);
+  const fmt = (n: number) => n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[12px] text-[#2A2925] outline-none transition-colors hover:border-black/30 data-[state=open]:border-black/30"
+        >
+          Итоги по ЕИ: {units.length}
+          <ChevronDown
+            size={12}
+            strokeWidth={1.75}
+            className={`transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          side="top"
+          sideOffset={6}
+          className="z-30 overflow-hidden rounded-xl border border-border-subtle bg-bg-elevated text-text-secondary shadow-[0_8px_28px_rgba(0,0,0,0.45)]"
+        >
+          <table className="text-[12px] tabular-nums">
+            <thead>
+              <tr className="text-[11px] text-text-muted/70">
+                <th className="px-2.5 py-1.5 text-left font-medium">ЕИ</th>
+                <th className="px-2.5 py-1.5 text-right font-medium">Кол-во</th>
+                <th className="px-2.5 py-1.5 text-right font-medium">Сумма</th>
+                <th className="px-2.5 py-1.5 text-right font-medium">Среднее</th>
+                <th className="px-2.5 py-1.5 text-right font-medium">Мин</th>
+                <th className="px-2.5 py-1.5 text-right font-medium">Макс</th>
+              </tr>
+            </thead>
+            <tbody>
+              {units.map((u) => (
+                <tr key={u.unit} className="border-t border-white/[0.06]">
+                  <td className="px-2.5 py-1.5 text-left font-semibold text-text-strong">{u.unit}</td>
+                  <td className="px-2.5 py-1.5 text-right">{u.count.toLocaleString('ru-RU')}</td>
+                  <td className="px-2.5 py-1.5 text-right text-text-primary">{fmt(u.sum)}</td>
+                  <td className="px-2.5 py-1.5 text-right">{fmt(u.avg)}</td>
+                  <td className="px-2.5 py-1.5 text-right">{fmt(u.min)}</td>
+                  <td className="px-2.5 py-1.5 text-right">{fmt(u.max)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <Popover.Arrow className="fill-bg-elevated" />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

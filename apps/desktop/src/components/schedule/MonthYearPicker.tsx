@@ -17,6 +17,12 @@ interface MonthYearPickerProps {
   children?: React.ReactNode;
   /** Collaboration lock resource_id, e.g. 'schedule:2026-05:month'. */
   lockResourceId?: string;
+  /**
+   * z-index класс поповера (default `z-50`). В разделе «Поток» все поповеры
+   * живут на `z-30` (ниже системных окон: сессия z-40), поэтому там передаём
+   * `z-30`, чтобы пикер месяца не перекрывал предупреждение о сессии.
+   */
+  contentZIndex?: string;
 }
 
 /**
@@ -30,6 +36,7 @@ export function MonthYearPicker({
   onChangeMonth,
   children,
   lockResourceId,
+  contentZIndex = 'z-50',
 }: MonthYearPickerProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -65,7 +72,7 @@ export function MonthYearPicker({
         <Popover.Content
           align="start"
           sideOffset={6}
-          className="z-50 w-[228px] rounded-lg border border-white/[0.08] bg-bg-elevated p-2.5 text-text-primary shadow-2xl outline-none"
+          className={`${contentZIndex} w-[228px] rounded-lg border border-white/[0.08] bg-bg-elevated p-2.5 text-text-primary shadow-2xl outline-none`}
         >
           <LockedEditorContent resourceId={lockResourceId ?? null} active={open}>
           {/* Год — current + next. Labels убраны: 4-значные числа vs 3-буквенные

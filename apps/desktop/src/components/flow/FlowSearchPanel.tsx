@@ -171,12 +171,10 @@ export function FlowSearchPanel({
             {!has ? (
               <div className="px-3 py-3 text-[12px] leading-relaxed text-text-muted/75">
                 <p className="mb-1.5">
-                  Ищу <span className="text-text-secondary">точно</span>:{' '}
-                  <code className={CODE}>42</code> — найду ровно «42».
+                  Ищу <span className="text-text-secondary">везде</span>:{' '}
+                  <code className={CODE}>42</code> — найду всё, где встречается «42».
                 </p>
-                <p className="mb-1">
-                  Добавь <code className={CODE}>*</code> — и поймаю больше:
-                </p>
+                <p className="mb-1">Звёздочка уточняет:</p>
                 <ul className="space-y-1">
                   <li>
                     <code className={CODE}>42*</code> — начинается на 42
@@ -185,7 +183,7 @@ export function FlowSearchPanel({
                     <code className={CODE}>*42</code> — заканчивается на 42
                   </li>
                   <li>
-                    <code className={CODE}>*42*</code> — встречается где угодно
+                    <code className={CODE}>*42*</code> — ровно «42» (точное совпадение)
                   </li>
                 </ul>
               </div>

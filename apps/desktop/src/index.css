@@ -158,6 +158,37 @@ input[type='search']::-webkit-search-decoration {
 }
 
 /**
+ * Glide добавляет редактору 6px сверху (`.gdg-g1y0xocz{margin-top:6px}`) → текст
+ * «проваливается» и над ним пустота. Прижимаем к верху — открытая ячейка совпадает
+ * с тем, что нарисовано (компактно, без странного зазора). Класс из glide 6.0.3.
+ */
+.gdg-growing-entry > div,
+.gdg-g1y0xocz {
+  margin-top: 0 !important;
+}
+
+/**
+ * Редактор ТЕКСТОВОЙ ячейки (NOTE и пр.): длинная строка должна ПЕРЕНОСИТЬСЯ визуально
+ * и быть видна ЦЕЛИКОМ, а не уезжать одной строкой за край. По умолчанию Glide делает
+ * окно по ширине контента (одна длинная строка) — фиксируем разумную ширину, тогда
+ * текст переносится. `.gdg-pad` = только текст-редактор (у выпадашек disablePadding —
+ * их НЕ трогаем). `overflow-wrap:anywhere` ломает и длинные слова без пробелов.
+ */
+.gdg-style.gdg-pad {
+  width: 460px !important;
+  min-width: 300px !important;
+  max-width: calc(100vw - 40px) !important;
+}
+.gdg-style.gdg-pad .gdg-growing-entry,
+.gdg-style.gdg-pad .gdg-growing-entry > div {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+.gdg-growing-entry > div > * {
+  overflow-wrap: anywhere !important;
+}
+
+/**
  * Subtle pattern для chat-фона — Pyn-логотип ("P") по диагонали в очень
  * слабой clay-tint'е. Под текстом сообщения почти невидим, но даёт «живой»
  * характер фона как в Telegram.

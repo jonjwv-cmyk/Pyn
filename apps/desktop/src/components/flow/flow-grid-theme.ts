@@ -12,9 +12,11 @@ import type { Theme } from '@glideapps/glide-data-grid';
  * здесь — чистая clay-рамка + тонкая заливка (тот же цвет, близкий вид).
  */
 export const FLOW_GRID_THEME: Partial<Theme> = {
-  // Акцент выделения — clay (как на листе МОЛ).
+  // Акцент выделения — clay (как на листе МОЛ). accentLight — заливка выделения:
+  // НАСЫЩЕННЕЕ (юзер: бледная сливалась с цветными строками-условием); читается поверх
+  // зелёных/красных/розовых строк. Граница диапазона — сочный clay (accentColor).
   accentColor: '#D97757',
-  accentLight: 'rgba(217,119,87,0.14)',
+  accentLight: 'rgba(217,119,87,0.30)',
   accentFg: '#FFFFFF',
 
   // Текст — тёплый «почти чёрный» на светлом.
@@ -22,7 +24,7 @@ export const FLOW_GRID_THEME: Partial<Theme> = {
   textMedium: '#33312E',
   textLight: '#6B6862',
   textBubble: '#0A0A0A',
-  textHeader: '#33312E',
+  textHeader: '#1C1B19', // шапка — тёмный + жирный (800), заметна как номера строк
   textHeaderSelected: '#0A0A0A',
 
   // Иконка меню (▾) в заголовке.
@@ -39,9 +41,11 @@ export const FLOW_GRID_THEME: Partial<Theme> = {
   bgBubbleSelected: '#E4E2DB',
   bgSearchResult: 'rgba(217,119,87,0.22)',
 
-  // Границы — ультра-тонкие тёмные на светлом (Linear-вкус).
-  borderColor: 'rgba(0,0,0,0.07)',
-  horizontalBorderColor: 'rgba(0,0,0,0.05)',
+  // Сетка — тонкие (1px), но ощутимо ТЁМНЫЕ линии (юзер: чёрные читаются лучше).
+  borderColor: 'rgba(0,0,0,0.18)',
+  horizontalBorderColor: 'rgba(0,0,0,0.13)',
+  // Линия под шапкой — заметная, как вертикальный разделитель колонки-№ (юзер).
+  headerBottomBorderColor: 'rgba(0,0,0,0.45)',
   drilldownBorder: 'rgba(0,0,0,0.14)',
   linkColor: '#B35E45',
 
