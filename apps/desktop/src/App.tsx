@@ -8,6 +8,7 @@ import { useAiStore } from '@/lib/ai-store';
 import { useSelectionCopy } from '@/lib/use-selection-copy';
 import { ChatConversation, ChatList } from '@/components/chats';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
+import { FlowScreen } from '@/components/flow';
 import { MolScreen } from '@/components/mol';
 import { initMol, refreshMolFromServer } from '@/lib/mol-repo';
 import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
@@ -968,6 +969,7 @@ export function App() {
               userAvatarBlobNonce={session.user.avatarBlobNonce}
               badges={sidebarBadges}
               showAi={isAdminLike(session.role)}
+              showFlow={isAdminLike(session.role)}
               onToggleCollapsed={() => setCollapsed((v) => !v)}
               onAiClick={() => useAiStore.getState().setOpen(true)}
               onSectionClick={setActiveSection}
@@ -1007,6 +1009,12 @@ export function App() {
                 (Breadcrumb/Home/FileList) в WorkspaceCard. Conditional render —
                 storage-store держит currentPath между mount'ами. */}
             {activeSection === 'vault' && <StorageScreen />}
+
+            {/* §flow-β — раздел «Поток» (собственный табличный реестр, миграция
+                с Google Sheets). Песочница Фазы 0: спайк движка Glide на тестовых
+                данных. Conditional render (admin/developer-only через showFlow в
+                Sidebar). Существующие «Таблицы»/Google не затрагивает. */}
+            {activeSection === 'flow' && <FlowScreen />}
 
             {/* §design — Новости always-mounted, вынесены на подложку: шапка на
                 подложке + контент в WorkspaceCard (внутри NewsFeed). */}

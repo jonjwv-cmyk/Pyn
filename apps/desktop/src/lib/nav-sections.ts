@@ -1,4 +1,4 @@
-import { Archive, CalendarRange, Database, MessageSquare, Newspaper } from 'lucide-react';
+import { Archive, CalendarRange, Database, MessageSquare, Newspaper, Workflow } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -24,6 +24,20 @@ export const NAV_WORKSPACE_BEFORE_TABLES: NavSection[] = [
 export const NAV_WORKSPACE_AFTER_TABLES: NavSection[] = [
   { id: 'mol', get label() { return i18next.t('sidebar.nav_base'); }, icon: Database },
 ];
+
+/**
+ * Раздел «Поток» (β) — собственный табличный реестр рабочих данных, миграция
+ * с Google Sheets. Изолирован: рендерится только для admin/developer (флаг
+ * `showFlow` в Sidebar), существующие «Таблицы»/Google не затрагивает. НЕ входит
+ * в `NAV_SECTIONS` — у него нет badge'а, незачем участвовать в расчёте ширины/
+ * бейджей у всех пользователей. Внутренний id `flow` стабилен независимо от
+ * витринного имени (его можно переименовать в одной строке i18n).
+ */
+export const NAV_FLOW: NavSection = {
+  id: 'flow',
+  get label() { return i18next.t('sidebar.nav_flow'); },
+  icon: Workflow,
+};
 
 // Группа «Лента».
 export const NAV_FEED: NavSection[] = [

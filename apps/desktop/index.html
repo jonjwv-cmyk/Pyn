@@ -23,6 +23,13 @@
   </head>
   <body class="h-screen w-screen overflow-hidden bg-bg-surface">
     <div id="root"></div>
+    <!--
+      Portal-узел для оверлей-редактора ячеек glide-data-grid (раздел «Поток»).
+      Требование Glide v6: редактор ячейки/выпадашка монтируются в `#portal`
+      последним в body. Пустой узел 0×0 — невидим и ничего не блокирует, пока
+      не идёт правка ячейки. Канонический setup, не трогает остальной UI.
+    -->
+    <div id="portal" style="position: fixed; left: 0; top: 0; z-index: 9999;"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import type { Role } from '@pyn/core';
 import {
   NAV_FEED,
+  NAV_FLOW,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
 } from '@/lib/nav-sections';
@@ -45,6 +46,12 @@ interface SidebarProps {
    */
   badges?: Partial<Record<NavSectionId, number>>;
   showAi: boolean;
+  /**
+   * Показывать ли раздел «Поток» (β) — собственный табличный реестр (миграция
+   * с Google Sheets). На время разработки виден только admin/developer, как
+   * кнопка ИИ, чтобы рабочие пользователи не видели незавершённый раздел.
+   */
+  showFlow: boolean;
   onToggleCollapsed: () => void;
   onAiClick: () => void;
   onSectionClick: (id: NavSectionId) => void;
@@ -111,6 +118,7 @@ export function Sidebar({
   userAvatarBlobNonce,
   badges,
   showAi,
+  showFlow,
   onToggleCollapsed,
   onAiClick,
   onSectionClick,
@@ -297,6 +305,11 @@ export function Sidebar({
             onSectionClick('mol');
           }}
         />
+
+        {/* §flow-β — раздел «Поток» (собственный табличный реестр, миграция с
+            Google Sheets). Виден только admin/developer на время разработки —
+            изолирован от рабочего раздела «Таблицы»/Google. */}
+        {showFlow && renderNavItem(NAV_FLOW)}
 
         {/* Группа «Лента»: Чаты, Новости. */}
         <NavGroupHeader label={t('sidebar.group_feed')} collapsed={collapsed} />

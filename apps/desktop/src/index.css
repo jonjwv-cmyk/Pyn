@@ -139,6 +139,25 @@ input[type='search']::-webkit-search-decoration {
 }
 
 /**
+ * Раздел «Поток»: грид Glide — СВЕТЛЫЙ лист, а глобальный thumb белёсый
+ * (rgba(255,255,255,.06)) → на светлом фоне невидим, и юзер «крутит вслепую».
+ * Здесь thumb ТЁМНЫЙ — полосы прокрутки видны (правая всегда: 20к строк; нижняя
+ * при переполнении), понятно «сколько ещё крутить». Ширина/радиус — из глобального.
+ */
+.flow-grid ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.28);
+  background-clip: padding-box;
+}
+.flow-grid ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.44);
+  background-clip: padding-box;
+}
+.flow-grid ::-webkit-scrollbar-thumb:active {
+  background: rgba(0, 0, 0, 0.55);
+  background-clip: padding-box;
+}
+
+/**
  * Subtle pattern для chat-фона — Pyn-логотип ("P") по диагонали в очень
  * слабой clay-tint'е. Под текстом сообщения почти невидим, но даёт «живой»
  * характер фона как в Telegram.
