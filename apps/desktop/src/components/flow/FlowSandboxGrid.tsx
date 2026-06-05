@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   CompactSelection,
   DataEditor,
@@ -33,7 +33,7 @@ import { FlowSearchPanel, type FlowSearchGroup } from './FlowSearchPanel';
 import { ContactActionDialog, type ContactActionRequest } from '@/components/mol/ContactActionDialog';
 import { useMolStore } from '@/lib/stores';
 import { useWarehousesStore } from '@/lib/warehouses-store';
-import { molStatusKind, formatMobilePhone } from '@/lib/mol-format';
+import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
 import { MonthYearPicker } from '@/components/schedule/MonthYearPicker';
 import { MONTH_NAMES_RU } from '@/lib/schedule/compute';
 import {
@@ -337,6 +337,52 @@ function buildMolErrorMessage(rejects: ReadonlyArray<{ fio: string; wh: string }
     .join('\n');
 }
 
+/** «DD.MM.YYYY» → полночь Date (или null). */
+function parseRuDate(s: string): Date | null {
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec((s || '').trim());
+  if (!m) return null;
+  const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+/** «YYYY-MM-DD…» → полночь Date (или null). */
+function parseIsoDate(s: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || '');
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+/** Сообщение окна по договору МОЛ — ДВЕ строки (юзер): «Срок действия ПМО для {ФИО}»,
+ *  а вердикт («истёк» / «не покрывает дату доставки») — на ВТОРОЙ строке. ФИО жирным. */
+function buildContractError(kind: 'expired' | 'not-covered', fio: string): ReactNode {
+  return (
+    <>
+      Срок действия ПМО для <span className="font-semibold text-text-strong">{fio}</span>
+      <br />
+      {kind === 'expired' ? 'истёк.' : 'не покрывает дату доставки.'}
+    </>
+  );
+}
+
+/** МОЛ строки «отсутствует» = в данных «Нет МОЛа» ЛИБО выбранный МОЛ просрочен (договор
+ *  истёк по живой базе). Тогда строка показывает «Нет МОЛа» и светится красным —
+ *  автоматически, руками снимать не нужно (просрочка вычисляется относительно сегодня). */
+function molIsGone(
+  row: FlowSandboxRow,
+  molByWarehouse: ReadonlyMap<string, readonly FlowMolOption[]>,
+): boolean {
+  const raw = String(row.mol ?? '');
+  if (!raw.trim()) return false;
+  if (raw.toUpperCase().includes('НЕТ МОЛ')) return true;
+  const opts = molByWarehouse.get(row.to_wh) ?? [];
+  const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
+  if (!sel || molUntilStatus(sel.until) !== 'expired') return false;
+  // Просроченный выбранный МОЛ → «Нет МОЛа» ТОЛЬКО если валидных молов у склада не осталось
+  // (он был единственным). Если валидные есть — авто-эффект подставит одного либо снимет.
+  return !opts.some((o) => molUntilStatus(o.until) !== 'expired');
+}
+
 /** Достать новое значение поля из отредактированной ячейки (с учётом типа колонки). */
 function extractValue(
   spec: FlowColumnSpec,
@@ -464,6 +510,35 @@ export function FlowSandboxGrid() {
     }
     return { molByWarehouse: byWh, molByKey: byKey };
   }, [molRecords]);
+  // Авто-обработка ПРОСРОЧЕННОГО выбранного МОЛ (по живой базе, относительно сегодня):
+  //  • остался ОДИН валидный мол → подставляем его сразу;
+  //  • валидных ДВА и более → снимаем просроченного (нужно выбрать вручную);
+  //  • валидных НЕТ (просроченный был единственным) → оставляем — строка покажет «Нет МОЛа».
+  // Идёт автоматически (руками снимать не нужно), пересчитывается при изменении базы молов.
+  useEffect(() => {
+    setRows((prev) => {
+      let changed = false;
+      const next = prev.map((r) => {
+        const raw = String(r.mol ?? '');
+        if (!raw.trim() || raw.toUpperCase().includes('НЕТ МОЛ')) return r;
+        const opts = molByWarehouse.get(r.to_wh) ?? [];
+        const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
+        if (!sel || molUntilStatus(sel.until) !== 'expired') return r;
+        const valid = opts.filter((o) => molUntilStatus(o.until) !== 'expired');
+        const only = valid.length === 1 ? valid[0] : undefined;
+        if (only) {
+          changed = true;
+          return { ...r, mol: only.fio };
+        }
+        if (valid.length >= 2) {
+          changed = true;
+          return { ...r, mol: '' };
+        }
+        return r; // валидных нет — оставляем (покажется «Нет МОЛа»)
+      });
+      return changed ? next : prev;
+    });
+  }, [molByWarehouse]);
   // Авто-ширина — ПРОИЗВОДНАЯ от данных: пересчитывается при изменении строк, после
   // загрузки шрифта И при смене базы МОЛ (мол-колонку мерим по РЕЗОЛВНУТОМУ полному
   // ФИО из базы — оно длиннее снимка, иначе режется). Всегда плотно по содержимому.
@@ -472,15 +547,9 @@ export function FlowSandboxGrid() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, fontsReady, molByKey],
   );
-  // Ширина колонки-№ — ПОД содержимое (кол-во строк), а не фикс: меряем самый широкий
-  // номер (все «8») + малый отступ. Компактно, без пустоты вокруг (юзер 2026-06-04).
-  const markerWidth = useMemo(() => {
-    const ctx = MEASURE_CTX;
-    const digits = String(Math.max(1, rows.length)).length;
-    if (ctx) ctx.font = `700 ${BASE_FONT}px ${GRID_FONT_FAMILY}`; // номера жирные — мерим жирным
-    const w = ctx ? ctx.measureText('8'.repeat(digits)).width : digits * 7;
-    return Math.max(26, Math.round(w + 16));
-  }, [rows.length]);
+  // Колонку-номеров строк УБРАЛИ (юзер 2026-06-05: колонок-номеров сверху тоже нет, так
+  // больше колонок данных влезает). Ширина гаттера = 0; rowMarkers='none' у DataEditor.
+  const markerWidth = 0;
   // Склады по цеху — для выпадашки TO «склады того же цеха» (из useWarehousesStore).
   const warehouses = useWarehousesStore((s) => s.warehouses);
   const { whById, whByShop } = useMemo(() => {
@@ -536,7 +605,7 @@ export function FlowSandboxGrid() {
   // Звонок по телефону МОЛ — через общий диалог-подтверждение (как в Цеха/МОЛ).
   const [contactReq, setContactReq] = useState<ContactActionRequest | null>(null);
   // Окно «нельзя назначить МОЛ» — когда мол протянули/вставили на чужой склад.
-  const [molError, setMolError] = useState<{ message: string } | null>(null);
+  const [molError, setMolError] = useState<{ body: ReactNode } | null>(null);
   useEffect(() => {
     const onContact = (e: Event) => {
       const detail = (e as CustomEvent<ContactActionRequest>).detail;
@@ -815,9 +884,10 @@ export function FlowSandboxGrid() {
       if (spec.kind === 'mol') {
         const rawMol = String(rowData.mol ?? '');
         const opts = molByWarehouse.get(rowData.to_wh) ?? [];
-        // «Нет мола» — без ⚠, акцентная красная пилюля «Нет МОЛа» жирным тёмным текстом,
-        // чтобы сразу было понятно. Двойной клик всё равно открывает список (назначить).
-        if (rawMol.toUpperCase().includes('НЕТ МОЛ')) {
+        // «Нет МОЛа» (красная пилюля + красная строка) если в данных явно «нет мола» ЛИБО
+        // выбранный МОЛ ПРОСРОЧЕН (договор истёк по живой базе) — автоматически. В выпадашке
+        // он всё равно виден (но с красной пилюлей «по дату» = неактивен, выбрать нельзя).
+        if (molIsGone(rowData, molByWarehouse)) {
           return {
             kind: GridCellKind.Custom,
             allowOverlay: true,
@@ -977,6 +1047,21 @@ export function FlowSandboxGrid() {
       // МОЛ, заехавший протяжкой/вставкой на склад, где человек не МОЛ — НЕ пишем,
       // копим для окна-предупреждения (проверка раньше оптимистики).
       const molRejects: { fio: string; wh: string }[] = [];
+      // Договор МОЛ: первая ошибка срока (истёк / дата вне срока) — для окна-предупреждения.
+      let contractErr: { kind: 'expired' | 'not-covered'; fio: string } | null = null;
+      const molUntilFor = (toWh: string, molRaw: string): string | undefined => {
+        const key = molKey(parseMol(molRaw)?.fio ?? molRaw);
+        return (molByWarehouse.get(toWh) ?? []).find((o) => molKey(o.fio) === key)?.until;
+      };
+      // Срок договора МОЛ vs дата доставки: 'expired' (истёк) / 'not-covered' (дата позже
+      // конца договора) / null (срока нет, даты нет, либо дата покрывается — дедлайн включителен).
+      const checkContract = (until: string | undefined, dayVal: string): 'expired' | 'not-covered' | null => {
+        if (!until) return null;
+        if (molUntilStatus(until) === 'expired') return 'expired';
+        const dd = parseIsoDate(dayVal);
+        const ud = parseRuDate(until);
+        return dd && ud && dd.getTime() > ud.getTime() ? 'not-covered' : null;
+      };
       for (const { location, value } of edits) {
         const [col, displayRow] = location;
         const spec = FLOW_COLUMNS[col];
@@ -996,6 +1081,14 @@ export function FlowSandboxGrid() {
         } else if (spec.kind === 'day') {
           const v = String(newVal ?? '');
           if (v !== '' && v !== 'new' && v !== 'OFF' && !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
+          // Дата доставки должна укладываться в срок договора выбранного МОЛ строки.
+          if (/^\d{4}-\d{2}-\d{2}/.test(v) && viewRow.mol) {
+            const ce = checkContract(molUntilFor(viewRow.to_wh, viewRow.mol), v);
+            if (ce) {
+              if (!contractErr) contractErr = { kind: ce, fio: resolveMolFull(viewRow.mol, molByKey) };
+              continue;
+            }
+          }
         }
         // МОЛ можно поставить только если человек — МОЛ склада-получателя ЭТОЙ строки.
         if (spec.id === 'mol') {
@@ -1003,12 +1096,19 @@ export function FlowSandboxGrid() {
           if (fioStr) {
             const wantKey = molKey(parseMol(fioStr)?.fio ?? fioStr);
             const opts = molByWarehouse.get(viewRow.to_wh) ?? [];
-            if (!opts.some((o) => molKey(o.fio) === wantKey)) {
+            const opt = opts.find((o) => molKey(o.fio) === wantKey);
+            if (!opt) {
               molRejects.push({
                 fio: resolveMolFull(fioStr, molByKey),
                 wh: viewRow.to_wh || '(склад не задан)',
               });
               continue; // на этот склад вставлять нельзя
+            }
+            // Договор этого МОЛ: истёк → нельзя назначить; не покрывает дату строки → нельзя.
+            const ce = checkContract(opt.until, String(viewRow.day_wk ?? ''));
+            if (ce) {
+              if (!contractErr) contractErr = { kind: ce, fio: resolveMolFull(fioStr, molByKey) };
+              continue;
             }
           }
         }
@@ -1027,7 +1127,11 @@ export function FlowSandboxGrid() {
           }
         }
       }
-      if (molRejects.length > 0) setMolError({ message: buildMolErrorMessage(molRejects) });
+      if (molRejects.length > 0) {
+        setMolError({ body: <span className="whitespace-pre-line">{buildMolErrorMessage(molRejects)}</span> });
+      } else if (contractErr) {
+        setMolError({ body: buildContractError(contractErr.kind, contractErr.fio) });
+      }
       if (after.size === 0) return;
       writeCells(after);
       pushHistory({ kind: 'cells', before, after });
@@ -1433,7 +1537,7 @@ export function FlowSandboxGrid() {
       const r = viewRows[row];
       if (!r) return undefined;
       const o: { bgCell?: string; bgCellMedium?: string; textDark?: string } = {};
-      const t = rowTheme(r);
+      const t = rowTheme(r, molIsGone(r, molByWarehouse));
       if (t?.bg) {
         o.bgCell = t.bg;
         o.bgCellMedium = t.bg;
@@ -1444,7 +1548,7 @@ export function FlowSandboxGrid() {
       // заходил на колонку номера). Тут только фон/текст условного форматирования.
       return Object.keys(o).length > 0 ? o : undefined;
     },
-    [viewRows],
+    [viewRows, molByWarehouse],
   );
   // Граница КЛАСТЕРА — ТОЛСТАЯ (2.5px) ОПАКОВАЯ линия (без alpha!) по верху первой строки
   // кластера. Опаковая = идемпотентна: перерисовка на hover не накапливает цвет (это и
@@ -1846,8 +1950,8 @@ export function FlowSandboxGrid() {
             customRenderers={FLOW_RENDERERS}
             getCellsForSelection
             fillHandle
-            rowMarkers="clickable-number"
-            rowMarkerWidth={Math.round(markerWidth * zoom)}
+            rowMarkers="none"
+            freezeColumns={8}
             rowSelect="multi"
             columnSelect="multi"
             rangeSelect="multi-rect"
@@ -1856,26 +1960,6 @@ export function FlowSandboxGrid() {
             smoothScrollX
             smoothScrollY
             keybindings={{ search: false }}
-          />
-        )}
-        {/* Фон колонки-номеров — лёгкий серый «gutter», как в Google Sheets. У Glide нет
-            ключа темы для фона маркеров (их фон = bgCell, белый), а через drawCell колонка
-            не проходит — поэтому полупрозрачная подложка ПОВЕРХ canvas (тёмные цифры почти
-            не тинтуются). От низа шапки (top = rowH) до низа листа; не ловит клики. */}
-        {size.width > 0 && size.height > 0 && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute bottom-0 left-0 z-[1]"
-            style={{ top: rowH, width: Math.round(markerWidth * zoom), background: 'rgba(0,0,0,0.05)' }}
-          />
-        )}
-        {/* Тёмная линия-разделитель между колонкой-№ (слева) и данными. Колонка-№ липкая,
-            поэтому x границы фиксирован = её ширине, при горизонт. прокрутке не плывёт. */}
-        {size.width > 0 && size.height > 0 && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute bottom-0 top-0 z-[1] w-px bg-black/45"
-            style={{ left: Math.round(markerWidth * zoom) }}
           />
         )}
         {tooltip && (
@@ -1905,10 +1989,10 @@ export function FlowSandboxGrid() {
                 <span className="rounded bg-black/[0.06] px-1.5 py-px text-[11px] font-semibold text-[#2A2925]">
                   {selStats.units[0]!.unit}
                 </span>
-                <FlowStat label="Сумма" value={selStats.units[0]!.sum} />
-                <FlowStat label="Среднее" value={selStats.units[0]!.avg} />
-                <FlowStat label="Мин" value={selStats.units[0]!.min} />
-                <FlowStat label="Макс" value={selStats.units[0]!.max} />
+                <FlowStat label="Сумма" value={selStats.units[0]!.sum} unit={selStats.units[0]!.unit} />
+                <FlowStat label="Среднее" value={selStats.units[0]!.avg} unit={selStats.units[0]!.unit} />
+                <FlowStat label="Мин" value={selStats.units[0]!.min} unit={selStats.units[0]!.unit} />
+                <FlowStat label="Макс" value={selStats.units[0]!.max} unit={selStats.units[0]!.unit} />
               </>
             )}
             {selStats.units.length >= 2 && (
@@ -1951,7 +2035,7 @@ export function FlowSandboxGrid() {
       />
       <ContactActionDialog request={contactReq} onClose={() => setContactReq(null)} />
 
-      {/* «Нельзя назначить МОЛ» — мол протянули/вставили на чужой склад. */}
+      {/* Окно-предупреждение по МОЛ: чужой склад / договор истёк / дата вне срока договора. */}
       <Dialog.Root open={molError !== null} onOpenChange={(o) => { if (!o) setMolError(null); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-40 bg-bg-deep/70 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=open]:fade-in-0" />
@@ -1960,14 +2044,9 @@ export function FlowSandboxGrid() {
               <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-danger/15 text-danger">
                 <AlertTriangle size={16} strokeWidth={2} />
               </span>
-              <div className="min-w-0 flex-1">
-                <Dialog.Title className="text-[14px] font-semibold tracking-[-0.005em] text-text-strong">
-                  Нельзя назначить МОЛ
-                </Dialog.Title>
-                <Dialog.Description className="mt-1.5 whitespace-pre-line text-[13px] leading-relaxed text-text-secondary">
-                  {molError?.message}
-                </Dialog.Description>
-              </div>
+              <Dialog.Title className="min-w-0 flex-1 self-center text-[13.5px] font-normal leading-relaxed tracking-[-0.005em] text-text-secondary [text-wrap:pretty]">
+                {molError?.body}
+              </Dialog.Title>
             </div>
             <div className="mt-5 flex justify-end">
               <button
@@ -2013,14 +2092,25 @@ function CardLines({ lines }: { lines: FlowCardLine[] }) {
   );
 }
 
+/** ЕИ-меры (вес/объём/длина/площадь) — 3 знака если есть дробь, иначе целым. Штучные
+ *  (ШТ/КМП/РУЛ/КОР/АМП/ПАР/УПК…) — всегда целым (юзер 2026-06-06). */
+const MEASURE_UNITS = new Set(['КГ', 'Т', 'Г', 'Л', 'М', 'М2', 'М3', 'М³', 'ПМ', 'КМ', 'ММ', 'СМ', 'ГА']);
+/** Число итога: мерная ЕИ → 3 знака при наличии дроби (иначе целым); штучная → целым. */
+function fmtStatNum(n: number, unit: string): string {
+  if (!MEASURE_UNITS.has(unit.trim().toUpperCase())) return Math.round(n).toLocaleString('ru-RU');
+  const r = Math.round(n * 1000) / 1000;
+  const hasFrac = Math.abs(r - Math.round(r)) > 1e-9;
+  return r.toLocaleString(
+    'ru-RU',
+    hasFrac ? { minimumFractionDigits: 3, maximumFractionDigits: 3 } : { maximumFractionDigits: 0 },
+  );
+}
+
 /** Один агрегат строки-счётчика (подпись + число) на светлом листе. */
-function FlowStat({ label, value }: { label: string; value: number }) {
+function FlowStat({ label, value, unit }: { label: string; value: number; unit: string }) {
   return (
     <span>
-      {label}:{' '}
-      <span className="tabular-nums text-[#2A2925]">
-        {value.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}
-      </span>
+      {label}: <span className="tabular-nums text-[#2A2925]">{fmtStatNum(value, unit)}</span>
     </span>
   );
 }
@@ -2038,7 +2128,6 @@ interface FlowUnitStat {
  *  ПО КАЖДОЙ ЕИ (тонны/штуки/комплекты не смешиваем). Как разворот итогов в Google. */
 function FlowUnitStatsPopover({ units }: { units: FlowUnitStat[] }) {
   const [open, setOpen] = useState(false);
-  const fmt = (n: number) => n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
@@ -2077,10 +2166,10 @@ function FlowUnitStatsPopover({ units }: { units: FlowUnitStat[] }) {
                 <tr key={u.unit} className="border-t border-white/[0.06]">
                   <td className="px-2.5 py-1.5 text-left font-semibold text-text-strong">{u.unit}</td>
                   <td className="px-2.5 py-1.5 text-right">{u.count.toLocaleString('ru-RU')}</td>
-                  <td className="px-2.5 py-1.5 text-right text-text-primary">{fmt(u.sum)}</td>
-                  <td className="px-2.5 py-1.5 text-right">{fmt(u.avg)}</td>
-                  <td className="px-2.5 py-1.5 text-right">{fmt(u.min)}</td>
-                  <td className="px-2.5 py-1.5 text-right">{fmt(u.max)}</td>
+                  <td className="px-2.5 py-1.5 text-right text-text-primary">{fmtStatNum(u.sum, u.unit)}</td>
+                  <td className="px-2.5 py-1.5 text-right">{fmtStatNum(u.avg, u.unit)}</td>
+                  <td className="px-2.5 py-1.5 text-right">{fmtStatNum(u.min, u.unit)}</td>
+                  <td className="px-2.5 py-1.5 text-right">{fmtStatNum(u.max, u.unit)}</td>
                 </tr>
               ))}
             </tbody>

@@ -434,7 +434,10 @@ export function flowCard(spec: FlowColumnSpec, row: FlowSandboxRow): FlowCardLin
  * NEW показывает подпись «new» в колонке DAY + анимированный оранжевый «вжух» по строке
  * (drawCell в гриде). undefined — без подсветки. Возвращаем фон ячеек строки.
  */
-export function rowTheme(row: FlowSandboxRow): { bg?: string; text?: string } | undefined {
+export function rowTheme(
+  row: FlowSandboxRow,
+  molGone = false,
+): { bg?: string; text?: string } | undefined {
   const note = (row.note || '').trim().toUpperCase();
   if (note === 'DUPLICATE') return { bg: '#F8E3DF', text: '#9A2B22' };
   if (note === 'ERROR') return { bg: '#E2F0F1', text: '#1C5A60' };
@@ -444,7 +447,7 @@ export function rowTheme(row: FlowSandboxRow): { bg?: string; text?: string } | 
   // Выбрана конкретная дата доставки → заливка YES — сочный салатовый (не бледный,
   // чтобы не сливался со светлым листом); тёмный текст поверх читается.
   if (/^\d{4}-\d{2}-\d{2}/.test(row.day_wk || '')) return { bg: '#C8E6A0' };
-  if ((row.mol || '').toUpperCase().includes('НЕТ МОЛ')) return { bg: '#F2BFB7', text: '#7C1812' };
+  if (molGone || (row.mol || '').toUpperCase().includes('НЕТ МОЛ')) return { bg: '#F2BFB7', text: '#7C1812' };
   switch (row.stat) {
     case 'мало':
     case 'самовывоз':

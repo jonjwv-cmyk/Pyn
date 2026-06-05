@@ -53,6 +53,14 @@ function FlowDayEditor({
     return [n, n + 1];
   }, []);
 
+  // Сегодня (полночь): прошлые даты выбирать НЕЛЬЗЯ — только сегодня и будущее.
+  const today = useMemo(() => {
+    const n = new Date();
+    return { y: n.getFullYear(), m: n.getMonth() + 1, d: n.getDate() };
+  }, []);
+  // Листать в прошлое нет смысла: «назад» доступно только если вид ПОЗЖЕ текущего месяца.
+  const canPrev = view.y > today.y || (view.y === today.y && view.m > today.m);
+
   const cells = useMemo(() => {
     const firstWd = (new Date(view.y, view.m - 1, 1).getDay() + 6) % 7;
     const dim = new Date(view.y, view.m, 0).getDate();
@@ -119,8 +127,9 @@ function FlowDayEditor({
       <div className="flex items-center justify-between gap-1">
         <button
           type="button"
-          onClick={prevMonth}
-          className="flex h-7 w-7 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-white/[0.06] hover:text-text-strong"
+          onClick={() => canPrev && prevMonth()}
+          disabled={!canPrev}
+          className="flex h-7 w-7 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-white/[0.06] hover:text-text-strong disabled:cursor-not-allowed disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-text-muted"
         >
           <ChevronLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
         </button>
@@ -148,18 +157,25 @@ function FlowDayEditor({
         {cells.map((c, i) => {
           if (c.day === null) return <div key={`e${i}`} className="h-7" />;
           const selected = selY === view.y && selM === view.m && selD === c.day;
+          // Прошлые даты (раньше сегодня) — недоступны.
+          const past =
+            view.y < today.y ||
+            (view.y === today.y && (view.m < today.m || (view.m === today.m && c.day < today.d)));
           return (
             <button
               key={c.day}
               type="button"
-              onClick={() => pickDay(c.day!)}
+              disabled={past}
+              onClick={() => !past && pickDay(c.day!)}
               className={[
                 'flex h-7 items-center justify-center rounded text-[11.5px] tabular-nums outline-none transition-colors',
-                selected
-                  ? 'bg-accent-clay-bg font-semibold text-accent-clay ring-1 ring-inset ring-accent-clay/40'
-                  : c.weekend
-                    ? 'text-accent-clay/80 hover:bg-white/[0.06] hover:text-accent-clay'
-                    : 'text-text-primary hover:bg-white/[0.06] hover:text-text-strong',
+                past
+                  ? 'cursor-not-allowed text-text-muted/25'
+                  : selected
+                    ? 'bg-accent-clay-bg font-semibold text-accent-clay ring-1 ring-inset ring-accent-clay/40'
+                    : c.weekend
+                      ? 'text-accent-clay/80 hover:bg-white/[0.06] hover:text-accent-clay'
+                      : 'text-text-primary hover:bg-white/[0.06] hover:text-text-strong',
               ].join(' ')}
             >
               {c.day}

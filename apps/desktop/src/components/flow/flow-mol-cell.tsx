@@ -1,6 +1,7 @@
 import { GridCellKind, type CustomCell, type CustomRenderer } from '@glideapps/glide-data-grid';
 import { Phone } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { MOL_UNTIL_PILL_CLASS, molUntilStatus } from '@/lib/mol-format';
 import { formatUntilDate } from './flow-sandbox.fixtures';
 
 /**
@@ -67,10 +68,18 @@ function FlowMolEditor({
                   <span className="text-[12px] font-medium leading-snug" style={{ color: o.color }}>
                     {o.fio}
                   </span>
-                  {/* 2 — срок «по дата» отдельной строкой (если задан) */}
+                  {/* 2 — срок «по дата» ЦВЕТНОЙ ПИЛЮЛЕЙ по близости дедлайна (как в разделе
+                      МОЛ/Цеха): просрочено — красный, ≤2 дней — жёлтый, обычный — clay. */}
                   {o.until && (
-                    <span className="mt-0.5 block text-[11px] font-normal text-text-muted/70">
-                      по {formatUntilDate(o.until)}
+                    <span className="mt-1 block">
+                      <span
+                        className={cn(
+                          'inline-flex items-center rounded-md px-1.5 py-0.5 text-[10.5px] font-medium tabular-nums ring-1',
+                          MOL_UNTIL_PILL_CLASS[molUntilStatus(o.until)],
+                        )}
+                      >
+                        по {formatUntilDate(o.until)}
+                      </span>
                     </span>
                   )}
                 </button>
