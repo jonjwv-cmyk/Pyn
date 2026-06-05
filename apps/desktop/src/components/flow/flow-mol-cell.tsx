@@ -151,7 +151,12 @@ export const flowMolRenderer: CustomRenderer<FlowMolCell> = {
       minWidth: '240px',
     },
   }),
-  // Delete на ячейке стирает МОЛ (как в Excel) — потом снова выбрать двойным кликом.
-  onDelete: (cell) => ({ ...cell, data: { ...cell.data, value: '' } }),
+  // Снять МОЛ можно ТОЛЬКО когда у склада несколько молов (есть из кого выбрать заново).
+  // «Нет мола» снимется само при синхронизации; единственного мола склада руками не убираем
+  // (возвращаем клетку без изменений → запись пропускается). Несколько → стираем, как в Excel.
+  onDelete: (cell) =>
+    cell.data.noMol || cell.data.options.length <= 1
+      ? cell
+      : { ...cell, data: { ...cell.data, value: '' } },
   onPaste: (v, d) => ({ ...d, value: v }),
 };

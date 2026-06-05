@@ -32,8 +32,7 @@ export interface FlowSandboxRow {
   fr: string; // D FR — склад-отправитель
   to_wh: string; // E TO — склад-получатель
   pr: string; // F PR — прежний/исходный склад
-  day_wk: string; // G DAY — выбранный день недели / дата
-  st: string; // H ST — стадия NEW/YES/OFF/OBD
+  day_wk: string; // G DAY — единая колонка: 'new' | 'OFF' | дата (ISO). Стадия ST схлопнута сюда (2026-06-05).
   stat: string; // I STAT — статус
   time_at: string; // J TIME — когда выгружен к нам (до секунд)
   pct: number | null; // K % — формула: снимок (не используем, считаем сами)
@@ -65,16 +64,18 @@ export interface FlowColumnSpec {
   editable?: boolean;
 }
 
-/** Значения выпадашки STAT (статус разнарядки). */
+/** Значения выпадашки STAT (статус разнарядки) — порядок задан юзером 2026-06-05.
+ *  «???» переименован в «вопрос»; добавлен «прекурсор» (спец-категория). */
 export const FLOW_STAT_OPTIONS = [
-  'заявка',
   'мало',
+  'заявка',
   'мет_ок',
-  'масловоз',
-  '???',
-  'неликвиды',
-  'отказ',
+  'вопрос',
   'самовывоз',
+  'отказ',
+  'масловоз',
+  'неликвиды',
+  'прекурсор',
 ] as const;
 
 /**
@@ -269,23 +270,29 @@ export function parseMol(
   return { color, fio, until, phone };
 }
 
-/** Состояние DAY-колонки: NEW (новый) / OFF (удалён) / дата доставки. */
+/**
+ * Состояние DAY-колонки. Одна колонка `day_wk` = 'new' | 'OFF' | дата(ISO) | пусто
+ * (юзер 2026-06-05: стадию ST схлопнули в DAY, легаси дни недели → реальные даты).
+ * Показ: off / дата доставки / new / пусто. Никаких заглушек-«new» на строках без даты.
+ */
 export function dayState(row: FlowSandboxRow): { label: string; color?: string } {
-  const d = row.day_wk;
-  if (d === 'OFF' || row.st === 'OFF') return { label: 'off' }; // строчными, без точки
-  const iso = d ? d.match(/^(\d{4})-(\d{2})-(\d{2})/) : null;
-  if (iso) {
-    // дата доставки → «месяц число» БЕЗ года (единый формат «Потока»).
-    return { label: flowDate(d, { year: false }) };
-  }
-  if (d && /\d/.test(d)) return { label: d };
-  return { label: 'new' }; // новый — просто «new», без точки (это и так понятно)
+  const d = (row.day_wk || '').trim();
+  if (d === 'OFF') return { label: 'off' }; // строчными, без точки
+  // Конкретная дата доставки → «месяц число» БЕЗ года (единый формат «Потока»).
+  if (/^\d{4}-\d{2}-\d{2}/.test(d)) return { label: flowDate(d, { year: false }) };
+  // 'new' (стадия) или иной заданный день — как есть; пусто → пусто.
+  return { label: d };
 }
 
-/** Признак ручного заказа (не Гроховский) — ⚠ перед материалом. */
-function isManual(row: FlowSandboxRow): boolean {
+/** Заказ помечается значком ⚠ (приоритет/внимание), если выполнено ЛЮБОЕ условие:
+ *  • создан НЕ Гроховским (ручной заказ) — как было; ИЛИ
+ *  • номер заказа начинается на «43» (особая группа; у нас заказы 44* / 42* / 43*).
+ *  Юзер 2026-06-05: к правилу «кто создал» добавили правило на номер «43*». */
+export function needsWarn(row: FlowSandboxRow): boolean {
   const by = (row.created_by || '').trim().toUpperCase();
-  return by !== '' && by !== 'GROKHOVSKIJ';
+  const manual = by !== '' && by !== 'GROKHOVSKIJ';
+  const ord43 = (row.ord || '').trim().startsWith('43');
+  return manual || ord43;
 }
 
 /** Составная ячейка: основное (тёмное) + вторичное (приглушённое) + опц. значок/точка. */
@@ -333,7 +340,7 @@ export function flowComposed(
     }
     case 'mat':
       // Без ▾: карточка раскрывается по КЛИКУ на ячейку (стрелка не нужна).
-      return { primary: row.mat ?? '', secondary: '', icon: isManual(row) ? 'warn' : undefined };
+      return { primary: row.mat ?? '', secondary: '', icon: needsWarn(row) ? 'warn' : undefined };
     default:
       return { primary: '', secondary: '' };
   }
@@ -422,8 +429,10 @@ export function flowCard(spec: FlowColumnSpec, row: FlowSandboxRow): FlowCardLin
 /**
  * Условное форматирование СТРОКИ — мягкий фон по статусу (перенос из Google-листа,
  * адаптировано под светлый лист: тихие тона иной палитры, чтобы clay-выделение
- * текста читалось поверх). Приоритет как в листе: NOTE-метки → стадия → нет МОЛа →
- * статус. undefined — без подсветки. Возвращаем именно фон ячеек строки.
+ * текста читалось поверх). Приоритет как в листе: NOTE-метки → стадия (OFF, дата=YES)
+ * → нет МОЛа → статус. NEW — НЕ красим фоном (иначе перебивал бы статус строки): стадию
+ * NEW показывает подпись «new» в колонке DAY + анимированный оранжевый «вжух» по строке
+ * (drawCell в гриде). undefined — без подсветки. Возвращаем фон ячеек строки.
  */
 export function rowTheme(row: FlowSandboxRow): { bg?: string; text?: string } | undefined {
   const note = (row.note || '').trim().toUpperCase();
@@ -431,11 +440,10 @@ export function rowTheme(row: FlowSandboxRow): { bg?: string; text?: string } | 
   if (note === 'ERROR') return { bg: '#E2F0F1', text: '#1C5A60' };
   if (note === 'OBD NO') return { bg: '#FBF3D6', text: '#7A5A1E' };
   if (note === 'WORKFLOW NO') return { bg: '#EFEEE9', text: '#7A7770' };
-  if (row.day_wk === 'OFF' || row.st === 'OFF') return { bg: '#F6E8E5', text: '#8A3030' };
+  if (row.day_wk === 'OFF') return { bg: '#F6E8E5', text: '#8A3030' };
   // Выбрана конкретная дата доставки → заливка YES — сочный салатовый (не бледный,
   // чтобы не сливался со светлым листом); тёмный текст поверх читается.
   if (/^\d{4}-\d{2}-\d{2}/.test(row.day_wk || '')) return { bg: '#C8E6A0' };
-  if (row.st === 'NEW') return { bg: '#FBEFE9' };
   if ((row.mol || '').toUpperCase().includes('НЕТ МОЛ')) return { bg: '#F2BFB7', text: '#7C1812' };
   switch (row.stat) {
     case 'мало':
@@ -445,12 +453,14 @@ export function rowTheme(row: FlowSandboxRow): { bg?: string; text?: string } | 
       return { bg: '#F1F0EC', text: '#5A5752' }; // темнее — активно
     case 'заявка':
       return { bg: '#F1F0EC' };
-    case '???':
-      return { bg: '#FBF1DD', text: '#7A5A2E' };
+    // «вопрос» (бывш. «???») — теперь ЖИВОЙ переливающийся янтарный фон (drawCell в гриде),
+    // а не статичная заливка; поэтому здесь его НЕ красим.
     case 'масловоз':
       return { bg: '#FBEDE3', text: '#8A5A2E' };
     case 'мет_ок':
       return { bg: '#EDF5E6', text: '#2E7D4F' };
+    case 'прекурсор':
+      return { bg: '#ECE3F3', text: '#5E3E86' }; // спец-категория (регулируемое) — мягкий фиолет
     default:
       return undefined;
   }

@@ -168,19 +168,34 @@ input[type='search']::-webkit-search-decoration {
 }
 
 /**
- * Редактор ТЕКСТОВОЙ ячейки (NOTE и пр.): длинная строка должна ПЕРЕНОСИТЬСЯ визуально
- * и быть видна ЦЕЛИКОМ, а не уезжать одной строкой за край. По умолчанию Glide делает
- * окно по ширине контента (одна длинная строка) — фиксируем разумную ширину, тогда
- * текст переносится. `.gdg-pad` = только текст-редактор (у выпадашек disablePadding —
- * их НЕ трогаем). `overflow-wrap:anywhere` ломает и длинные слова без пробелов.
+ * Редактор ТЕКСТОВОЙ ячейки (NOTE/FR/ЗАПРОС): длинная строка должна ПЕРЕНОСИТЬСЯ и быть
+ * видна ЦЕЛИКОМ, а не уезжать одной строкой за край без прокрутки.
+ * ⚠️ Glide для ячеек с `allowWrapping` (а у нас ВСЕ text-ячейки такие) ставит редактору
+ * `disablePadding` → у оверлея класс `.gdg-style` БЕЗ `.gdg-pad`. Поэтому прежние
+ * `.gdg-style.gdg-pad`-правила к NOTE НЕ применялись, и редактор жил на дефолтном Glide
+ * `width:max-content`/`max-width:400px`: длинная строка уезжала под `overflow-x:hidden`
+ * горизонтально, без скролла. Целимся в `.gdg-style` (любой text-редактор): фикс. удобная
+ * ширина → перенос; ограничиваем высоту внутренней зоны `.gdg-clip-region` (у неё штатный
+ * `overflow-y:auto`) → длинный текст СКРОЛЛИТСЯ, а не обрезается.
+ * Кастомные карточки (МОЛ/DAY/TO/MAT/STAT) идут через `.gdg-unstyle` (disableStyling) —
+ * их это НЕ трогает. `overflow-wrap:anywhere` дополнительно ломает длинные слова без пробелов.
  */
-.gdg-style.gdg-pad {
+.gdg-d19meir1.gdg-style {
   width: 460px !important;
   min-width: 300px !important;
   max-width: calc(100vw - 40px) !important;
 }
-.gdg-style.gdg-pad .gdg-growing-entry,
-.gdg-style.gdg-pad .gdg-growing-entry > div {
+.gdg-d19meir1.gdg-style .gdg-clip-region {
+  max-height: 50vh;
+}
+/* Растущее поле тянется ПОД контент (а не упирается в штатный `height:100%` зоны
+   прокрутки) — тогда `.gdg-clip-region` видит переполнение и реально скроллит длинный
+   текст, а не обрезает его снизу. */
+.gdg-d19meir1.gdg-style .gdg-clip-region .gdg-growing-entry {
+  height: auto !important;
+}
+.gdg-d19meir1.gdg-style .gdg-growing-entry,
+.gdg-d19meir1.gdg-style .gdg-growing-entry > div {
   width: 100% !important;
   max-width: 100% !important;
 }

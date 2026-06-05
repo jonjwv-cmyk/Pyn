@@ -43,6 +43,7 @@ import {
   flowComposed,
   flowDisplayText,
   flowCard,
+  needsWarn,
   parseMol,
   rowTheme,
   dayState,
@@ -210,6 +211,15 @@ const SEARCH_HL_BUFFER = 150;
  *  (`no-outline`). Показывается на выделении сразу после copy и СНИМАЕТСЯ при
  *  любой смене выделения (юзер: после ухода не должно оставаться помеченной области). */
 const MARQUEE_COLOR = 'rgba(217,119,87,0.42)';
+
+/** Перелив по NEW-строкам (day_wk='new'): ПОСТОЯННЫЙ плавный оранжевый градиент —
+ *  мягкие волны медленно текут вдоль строки (всегда видно, что строка новая). */
+const SWEEP_CYCLE_MS = 3000; // период дрейфа (медленно, плавно)
+const SWEEP_WAVES = 2; // сколько мягких волн по ширине строки
+// Цвета «живого» переливающегося фона по типу строки (сочные, не бледные): NEW —
+// оранжевый, STAT «вопрос» — насыщенный янтарь. base = фон в провале волны, peak = пик.
+const SWEEP_NEW = { rgb: '247,130,22', base: 0.18, peak: 0.52 };
+const SWEEP_VOPROS = { rgb: '233,176,30', base: 0.16, peak: 0.48 };
 
 /** Пунктирная подсветка скопированного диапазона (Glide highlightRegions, style dashed). */
 interface CopiedRegion {
@@ -553,8 +563,14 @@ export function FlowSandboxGrid() {
   searchOpenRef.current = searchOpen;
   const visibleRef = useRef<{ start: number; end: number }>({ start: 0, end: 80 });
   const [visibleWindow, setVisibleWindow] = useState<{ start: number; end: number }>({ start: 0, end: 80 });
+  // Перелив по NEW-строкам (day_wk='new') рисуется в drawCell; анимацию гоняет ШТАТНЫЙ
+  // механизм Glide (args.requestAnimationFrame из drawCell) — он надёжно перерисовывает
+  // ячейку каждый кадр (тот же путь, что у встроенных анимаций Glide) и сам встаёт, когда
+  // NEW-строки уходят из обзора. gridPxWidthRef — диапазон волн (ширина видимого листа).
+  const gridPxWidthRef = useRef(0);
   const handleVisibleRegionChanged = useCallback((range: Rectangle) => {
     visibleRef.current = { start: range.y, end: range.y + range.height };
+    // Подсветка поиска следует за прокруткой (только при открытом поиске).
     if (!searchOpenRef.current) return;
     setVisibleWindow((prev) =>
       Math.abs(prev.start - range.y) >= 8 ? { start: range.y, end: range.y + range.height } : prev,
@@ -652,6 +668,7 @@ export function FlowSandboxGrid() {
   selectionRef.current = selection;
   viewRowsRef.current = viewRows;
   rowsRef.current = rows;
+  gridPxWidthRef.current = size.width; // диапазон «вжуха» = ширина видимого листа
   sortRef.current = sort ? { colId: FLOW_COLUMNS[sort.colIndex]?.id ?? '', dir: sort.dir } : null;
   filteredColsRef.current = new Set(
     Object.entries(filters)
@@ -837,7 +854,6 @@ export function FlowSandboxGrid() {
         } satisfies FlowDayCell;
       }
       if (spec.kind === 'mat') {
-        const by = (rowData.created_by || '').trim().toUpperCase();
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
@@ -845,7 +861,7 @@ export function FlowSandboxGrid() {
           data: {
             kind: 'flow-mat',
             name: rowData.mat ?? '',
-            warn: by !== '' && by !== 'GROKHOVSKIJ',
+            warn: needsWarn(rowData),
             lines: flowCard(spec, rowData) ?? [],
           },
         } satisfies FlowMatCell;
@@ -979,7 +995,7 @@ export function FlowSandboxGrid() {
           if (v !== '' && !(spec.options ?? []).includes(v)) continue;
         } else if (spec.kind === 'day') {
           const v = String(newVal ?? '');
-          if (v !== '' && v !== 'OFF' && !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
+          if (v !== '' && v !== 'new' && v !== 'OFF' && !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
         }
         // МОЛ можно поставить только если человек — МОЛ склада-получателя ЭТОЙ строки.
         if (spec.id === 'mol') {
@@ -1416,25 +1432,16 @@ export function FlowSandboxGrid() {
     (row: number) => {
       const r = viewRows[row];
       if (!r) return undefined;
-      const o: {
-        bgCell?: string;
-        bgCellMedium?: string;
-        textDark?: string;
-        horizontalBorderColor?: string;
-      } = {};
+      const o: { bgCell?: string; bgCellMedium?: string; textDark?: string } = {};
       const t = rowTheme(r);
       if (t?.bg) {
         o.bgCell = t.bg;
         o.bgCellMedium = t.bg;
       }
       if (t?.text) o.textDark = t.text;
-      // Граница СКЛАДА (TO) внутри кластера — ШТАТНАЯ линия строки Glide (1px, заметная).
-      // Граница КЛАСТЕРА рисуется отдельно толстой опаковой линией (drawCell) — поэтому
-      // здесь ТОЛЬКО когда кластер тот же, а склад сменился (на границе кластера не дублируем).
-      const prev = row > 0 ? viewRows[row - 1] : undefined;
-      if (prev && prev.clst === r.clst && prev.to_wh !== r.to_wh) {
-        o.horizontalBorderColor = 'rgba(0,0,0,0.6)';
-      }
+      // Линии-разделители КЛАСТЕРА и СКЛАДА (TO) рисуются в drawCell (опаково, по данным,
+      // ДО колонки номера) — строковый horizontalBorderColor здесь НЕ используем (он
+      // заходил на колонку номера). Тут только фон/текст условного форматирования.
       return Object.keys(o).length > 0 ? o : undefined;
     },
     [viewRows],
@@ -1444,17 +1451,61 @@ export function FlowSandboxGrid() {
   // было «корявостью» полупрозрачной версии). Рисуется в синхроне с прокруткой (canvas).
   const drawCell = useCallback<DrawCellCallback>(
     (args, drawContent) => {
-      drawContent();
-      const { ctx, rect, row } = args;
-      if (row <= 0) return;
+      const { ctx, rect, row, col } = args;
       const r = viewRows[row];
+      // «Живой» переливающийся фон — ПОДЛОЖКОЙ под контентом, инсет 1px (как Glide для
+      // своих подложек, см. drawLastUpdateUnderlay) → линии/текст не задеваются. NEW
+      // (оранжевый) ИЛИ STAT «вопрос» (янтарь); NEW в приоритете, если строка и то, и то.
+      // ⚠️ save/restore ОБЯЗАТЕЛЕН: Glide кеширует fillStyle между ячейками (drawPrep), и
+      // без восстановления градиент утекал в текст этой и СОСЕДНИХ ячеек.
+      const sweep = r ? (r.day_wk === 'new' ? SWEEP_NEW : r.stat === 'вопрос' ? SWEEP_VOPROS : null) : null;
+      if (sweep) {
+        const W = gridPxWidthRef.current || rect.x + rect.width * 4;
+        // Фаза — по времени (одинаковая для всех ячеек кадра → полоса непрерывна по строке).
+        const phase = (performance.now() / SWEEP_CYCLE_MS) % 1;
+        const g = ctx.createLinearGradient(0, 0, W, 0);
+        const N = 16;
+        for (let i = 0; i <= N; i++) {
+          const p = i / N;
+          const wave = 0.5 + 0.5 * Math.cos(2 * Math.PI * (p * SWEEP_WAVES - phase));
+          const a = sweep.base + (sweep.peak - sweep.base) * wave;
+          g.addColorStop(p, `rgba(${sweep.rgb},${a.toFixed(3)})`);
+        }
+        const lastCol = col === FLOW_COLUMNS.length - 1;
+        const lastRow = row === viewRows.length - 1;
+        ctx.save();
+        ctx.fillStyle = g;
+        ctx.fillRect(rect.x + 1, rect.y + 1, rect.width - (lastCol ? 2 : 1), rect.height - (lastRow ? 2 : 1));
+        ctx.restore();
+        // Двигаем анимацию ШТАТНЫМ механизмом Glide: просим следующий кадр — Glide
+        // перерисует эту ячейку (как у встроенного last-updated flash). Надёжнее внешнего
+        // updateCells, который покадрово не перерисовывал. (requestAnimationFrame есть в
+        // рантайм-args, но не в публичном типе DrawCellCallback — отсюда узкий каст.)
+        (args as unknown as { requestAnimationFrame?: () => void }).requestAnimationFrame?.();
+      }
+      drawContent();
+      // Разделители по ВЕРХУ строки — ОПАКОВЫЕ (иначе на hover накапливают альфу) и рисуются
+      // в drawCell → идут ТОЛЬКО по данным, ДО колонки номера (не заходят на неё, в отличие
+      // от строкового horizontalBorderColor). Кластер — толстая 2.5px; склад (TO) — тонкая 1px.
+      // save/restore — чтобы цвет линии не утёк в следующие ячейки (как у подложки выше).
+      if (row <= 0) return;
       const prev = viewRows[row - 1];
-      if (!r || !prev || prev.clst === r.clst) return;
-      ctx.fillStyle = '#1E1E1E';
-      ctx.fillRect(rect.x, rect.y, rect.width, 2.5);
+      if (!r || !prev) return;
+      if (prev.clst !== r.clst) {
+        ctx.save();
+        ctx.fillStyle = '#1E1E1E';
+        ctx.fillRect(rect.x, rect.y, rect.width, 2.5);
+        ctx.restore();
+      } else if (prev.to_wh !== r.to_wh) {
+        ctx.save();
+        ctx.fillStyle = '#656564'; // опаковый ≈ прежняя граница склада rgba(0,0,0,0.6) на листе
+        ctx.fillRect(rect.x, rect.y, rect.width, 1);
+        ctx.restore();
+      }
     },
     [viewRows],
   );
+
   // Индикаторы в шапке поверх дефолта Glide, в одной точке справа: стрелка МЕНЮ (▾)
   // на hover (приоритет) и стрелка СОРТИРОВКИ (↑/↓) — всегда, когда колонка
   // отсортирована. Рисуем на canvas (текст заголовка не трогаем → ширина плотная).
@@ -1805,6 +1856,17 @@ export function FlowSandboxGrid() {
             smoothScrollX
             smoothScrollY
             keybindings={{ search: false }}
+          />
+        )}
+        {/* Фон колонки-номеров — лёгкий серый «gutter», как в Google Sheets. У Glide нет
+            ключа темы для фона маркеров (их фон = bgCell, белый), а через drawCell колонка
+            не проходит — поэтому полупрозрачная подложка ПОВЕРХ canvas (тёмные цифры почти
+            не тинтуются). От низа шапки (top = rowH) до низа листа; не ловит клики. */}
+        {size.width > 0 && size.height > 0 && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute bottom-0 left-0 z-[1]"
+            style={{ top: rowH, width: Math.round(markerWidth * zoom), background: 'rgba(0,0,0,0.05)' }}
           />
         )}
         {/* Тёмная линия-разделитель между колонкой-№ (слева) и данными. Колонка-№ липкая,

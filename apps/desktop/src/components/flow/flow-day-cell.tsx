@@ -5,7 +5,8 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 /**
  * Ячейка DAY: метка `new` / `OFF` / дата доставки. Двойной клик → поповер с двумя
  * пунктами (новый / удалён) и календарём (на какое число планируется). Значение
- * пишется в `day_wk` ('' = новый, 'OFF', либо ISO-дата YYYY-MM-DD); дата тянется копированием.
+ * пишется в `day_wk` ('new' = новый, 'OFF' = удалён, ISO-дата YYYY-MM-DD = доставка,
+ * '' = без стадии/пусто); дата тянется копированием.
  */
 export interface FlowDayData {
   readonly kind: 'flow-day';
@@ -77,17 +78,17 @@ function FlowDayEditor({
     <div className="flex w-[244px] flex-col gap-1 p-1 text-text-secondary">
       <button
         type="button"
-        onClick={() => set('')}
+        onClick={() => set('new')}
         className="rounded px-2 py-1 text-left text-[12px] text-text-strong transition-colors hover:bg-accent-clay/15"
       >
-        Новый заказ (new)
+        new
       </button>
       <button
         type="button"
         onClick={() => set('OFF')}
         className="rounded px-2 py-1 text-left text-[12px] text-text-strong transition-colors hover:bg-accent-clay/15"
       >
-        Удалён (off)
+        off
       </button>
 
       <div className="mt-1 border-t border-white/10 px-1 pt-1.5 text-[11px] text-text-muted/80">
