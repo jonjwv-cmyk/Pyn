@@ -250,6 +250,11 @@ const SEARCH_HL_BUFFER = 150;
  *  любой смене выделения (юзер: после ухода не должно оставаться помеченной области). */
 const MARQUEE_COLOR = 'rgba(217,119,87,0.42)';
 
+/** Штучные ЕИ — при кол-ве <1 заказ всегда «мало» (как в гугл-скрипте minqty). */
+const PIECE_UOMS = new Set(['ШТ', 'КМП', 'РУЛ', 'УПК', 'КОР']);
+/** Толеранс транспортной нормы: проходим, если Σкол-ва × 1.5 ≥ MIN QTY (≈66.7%). */
+const MIN_QTY_TOLERANCE = 1.5;
+
 /** Перелив по NEW-строкам (day_wk='new'): ПОСТОЯННЫЙ плавный оранжевый градиент —
  *  мягкие волны медленно текут вдоль строки (всегда видно, что строка новая). */
 const SWEEP_CYCLE_MS = 3000; // период дрейфа (медленно, плавно)
@@ -948,6 +953,18 @@ export function FlowSandboxGrid() {
     const haveVgh = vghByKey.size > 0; // ЖИВЫЕ KG/V/тех-имя из базы ВГХ
     if (!haveWh && !haveVgh) return rows;
     const shops = planMeta?.shops ?? [];
+    // Сумма КОЛ-ВА по группе отправитель|получатель|номенклатура|ЕИ|MAT (не-OFF) —
+    // для расчётного «мало» (транспортная норма: Σкол-ва × 1.5 < MIN QTY → «мало»).
+    const sumByGroup = new Map<string, number>();
+    if (haveVgh) {
+      for (const r of rows) {
+        if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
+        const q = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+        if (!Number.isFinite(q)) continue;
+        const g = `${r.fr}|${r.to_wh}|${normVghKey(r.no_num)}|${r.uom}|${r.mat}`;
+        sumByGroup.set(g, (sumByGroup.get(g) ?? 0) + q);
+      }
+    }
     let changed = false;
     const next = rows.map((r) => {
       const patch: Partial<FlowSandboxRow> = {};
@@ -980,6 +997,23 @@ export function FlowSandboxGrid() {
           }
           const tech = base.tech_name || r.mat_full;
           if (tech !== r.mat_full) patch.mat_full = tech;
+          // Расчётное «мало» (транспортная норма) — ТОЛЬКО если STAT авто-свободен
+          // (пусто/мало/мет_ок); ручные статусы (заявка/отказ/…) не трогаем. Норма
+          // пройдена → лишнее «мало» снимаем. (Снять руками в ячейке нельзя — см. applyEdits.)
+          const stored = String(r.stat ?? '');
+          if (
+            r.day_wk !== 'OFF' &&
+            (stored === '' || stored === 'мало' || stored === 'мет_ок') &&
+            base.min_qty != null &&
+            Number.isFinite(base.min_qty)
+          ) {
+            const g = `${r.fr}|${r.to_wh}|${normVghKey(r.no_num)}|${r.uom}|${r.mat}`;
+            const sum = sumByGroup.get(g) ?? 0;
+            const forceLow = PIECE_UOMS.has(String(r.uom ?? '').trim().toUpperCase()) && hasQty && qty < 1;
+            const under = forceLow || sum * MIN_QTY_TOLERANCE < (base.min_qty as number);
+            const derivedStat = under ? 'мало' : stored === 'мало' ? '' : stored;
+            if (derivedStat !== stored) patch.stat = derivedStat;
+          }
         }
       }
       if (Object.keys(patch).length === 0) return r;
@@ -1583,6 +1617,17 @@ export function FlowSandboxGrid() {
         if (spec.kind === 'dropdown') {
           const v = String(newVal ?? '');
           if (v !== '' && !(spec.options ?? []).includes(v)) continue;
+          // «Мало» — РАСЧЁТНЫЙ статус (транспортная норма). Снять пустым в ячейке нельзя —
+          // оно пересчитается обратно; убрать можно только поправив MIN QTY в карточке
+          // материала (раздел ВГХ). Ручной статус (заявка/отказ/…) поставить можно — он перекрывает.
+          if (spec.id === 'stat' && v === '' && String(viewRow.stat ?? '').trim() === 'мало') {
+            setMolError({
+              body:
+                'Статус «мало» — расчётный по транспортной норме (сумма по маршруту и номенклатуре ниже MIN QTY × толеранс). ' +
+                'Снять можно только в карточке материала (раздел ВГХ), поправив MIN QTY.',
+            });
+            continue;
+          }
         } else if (spec.kind === 'day') {
           const v = String(newVal ?? '');
           // «new» ставить нельзя (авто-состояние) — допустимо только пусто / OFF / дата.
