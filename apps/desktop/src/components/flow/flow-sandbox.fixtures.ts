@@ -81,6 +81,25 @@ export const FLOW_STAT_OPTIONS = [
 ] as const;
 
 /**
+ * РУЧНЫЕ («липкие») статусы — ставятся/снимаются руками, ПЕРЕКРЫВАЮТ расчёт; ни
+ * выгрузка заказов, ни транспортная норма их НЕ меняют. Только эти доступны в
+ * выпадашке STAT. Снял ручной → расчёт включается сразу (показывается мало/мет_ок).
+ */
+export const FLOW_STAT_MANUAL = ['заявка', 'вопрос', 'самовывоз', 'отказ', 'неликвиды'] as const;
+
+/**
+ * РАСЧЁТНЫЕ статусы — ставятся/снимаются ТОЛЬКО автоматически (транспортная норма +
+ * номенклатура). Руками не выбираются и не снимаются (только через карточку ВГХ →
+ * MIN QTY). `мало`=недобор нормы; `мет_ок`/`масловоз`/`прекурсор`=добор (ok-ярлык).
+ */
+export const FLOW_STAT_AUTO = ['мало', 'мет_ок', 'масловоз', 'прекурсор'] as const;
+
+/** Номенклатуры-масловоз — ok-ярлык «масловоз» при добре нормы (недобор → «мало»). */
+export const MASLOVOZ_NOS = new Set(['2030054', '2030058', '2030077', '2031541', '2031542']);
+/** Номенклатура-прекурсор — ok-ярлык «прекурсор» при добре нормы (недобор → «мало»). */
+export const PRECURSOR_NO = '2266901';
+
+/**
  * ВИДИМЫЕ колонки «Формирования» (слой показа, юзер 2026-06-04). Свёрнуто:
  * заказ|поз — одна колонка; DAY = NEW/OFF/дата (ST+день слиты); ⚠ — префикс
  * материала; вторичные поля выгрузки (TIME/%/CREATEDBY/LOADDT/CHG/тех-имя) скрыты
@@ -95,7 +114,7 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'day_wk', title: 'DAY', width: 84, kind: 'day', editable: true },
   { id: 'request', title: 'ЗАПРОС', width: 108, kind: 'text', editable: true },
   { id: 'mol', title: 'МОЛ', width: 172, kind: 'mol', editable: true },
-  { id: 'stat', title: 'STAT', width: 104, kind: 'dropdown', options: FLOW_STAT_OPTIONS, editable: true },
+  { id: 'stat', title: 'STAT', width: 104, kind: 'dropdown', options: FLOW_STAT_MANUAL, editable: true },
   { id: 'pct', title: '%', width: 52, kind: 'percent' },
   { id: 'q', title: 'Q', width: 38, kind: 'text' },
   { id: 'no_num', title: 'NO. №', width: 86, kind: 'text' },

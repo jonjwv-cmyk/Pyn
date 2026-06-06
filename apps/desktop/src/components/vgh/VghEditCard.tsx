@@ -20,6 +20,8 @@ export interface VghCardSeed {
 interface VghEditCardProps {
   noNum: string | null;
   seed?: VghCardSeed | null;
+  /** Подсказка-плашка вверху (напр. «статус расчётный — поправьте MIN QTY»). */
+  note?: string;
   onClose: () => void;
 }
 
@@ -53,7 +55,7 @@ function numToStr(n: number | null | undefined): string {
  * строки на время правки (resource `vgh:{no_num}:edit`, общий schedule_lock).
  * Сохранение → сервер (`flow_vgh_edit`, upsert) + реалтайм всем (`vgh_changed`).
  */
-export function VghEditCard({ noNum, seed, onClose }: VghEditCardProps): JSX.Element {
+export function VghEditCard({ noNum, seed, note, onClose }: VghEditCardProps): JSX.Element {
   const open = noNum !== null;
   const base = useVghStore((s) => (noNum ? s.get(noNum) : undefined));
   const [form, setForm] = useState<FormState>(EMPTY);
@@ -123,6 +125,12 @@ export function VghEditCard({ noNum, seed, onClose }: VghEditCardProps): JSX.Ele
             {!base && <span className="text-[10.5px] font-normal text-accent-clay">новая в базе</span>}
           </Dialog.Title>
           <Dialog.Description className="sr-only">Правка вес-габаритных характеристик номенклатуры</Dialog.Description>
+
+          {note && (
+            <div className="mt-2 rounded-md border border-accent-clay/30 bg-accent-clay/[0.08] px-2.5 py-1.5 text-[11.5px] leading-snug text-text-secondary">
+              {note}
+            </div>
+          )}
 
           <LockedEditorContent resourceId={noNum ? `vgh:${noNum}:edit` : null} active={open}>
             <div className="mt-3 flex flex-col gap-2.5">

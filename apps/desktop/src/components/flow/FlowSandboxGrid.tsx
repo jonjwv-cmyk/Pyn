@@ -48,6 +48,7 @@ import { api } from '@/lib/api';
 import { useWsEvent } from '@/lib/ws';
 import { useVghStore, normVghKey } from '@/lib/vgh-store';
 import { ensureVghLoaded, applyVghChanged } from '@/lib/vgh-repo';
+import { VghEditCard } from '@/components/vgh/VghEditCard';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import { FlowZoomControl } from './FlowZoomControl';
 import { FlowSearchPanel, type FlowSearchGroup } from './FlowSearchPanel';
@@ -60,6 +61,10 @@ import { useScheduleMonthsMeta, monthKey } from '@/lib/schedule/use-schedule-syn
 import {
   FLOW_COLUMNS,
   FLOW_STAT_OPTIONS,
+  FLOW_STAT_MANUAL,
+  FLOW_STAT_AUTO,
+  MASLOVOZ_NOS,
+  PRECURSOR_NO,
   fmtNum3,
   flowComposed,
   flowDisplayText,
@@ -835,6 +840,9 @@ export function FlowSandboxGrid() {
   const [contactReq, setContactReq] = useState<ContactActionRequest | null>(null);
   // Окно «нельзя назначить МОЛ» — когда мол протянули/вставили на чужой склад.
   const [molError, setMolError] = useState<{ body: ReactNode } | null>(null);
+  // Карточка ВГХ для правки MIN QTY — открывается при попытке снять/сменить расчётный
+  // STAT (мало/мет_ок/масловоз/прекурсор): статус меняется только через норму в базе ВГХ.
+  const [statCard, setStatCard] = useState<{ noNum: string; mat: string; uom: string } | null>(null);
   useEffect(() => {
     const onContact = (e: Event) => {
       const detail = (e as CustomEvent<ContactActionRequest>).detail;
@@ -981,39 +989,49 @@ export function FlowSandboxGrid() {
         if (clst !== r.clst) patch.clst = clst;
       }
       if (haveVgh) {
-        // KG = кол-во × вес на 1 ЕИ; V = кол-во × объём на 1 ЕИ; тех-имя — из базы.
-        // Перекрываем ТОЛЬКО когда база даёт значение (иначе оставляем снимок).
+        const qtyNum = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+        const hasQty = Number.isFinite(qtyNum);
         const base = vghByKey.get(normVghKey(r.no_num));
         if (base) {
-          const qty = typeof r.qty === 'number' ? r.qty : Number(r.qty);
-          const hasQty = Number.isFinite(qty);
+          // KG = кол-во × вес на 1 ЕИ; V = кол-во × объём на 1 ЕИ; тех-имя — из базы.
+          // Перекрываем ТОЛЬКО когда база даёт значение (иначе оставляем снимок).
           if (base.weight_kg != null && hasQty) {
-            const kg = Math.round(qty * base.weight_kg * 1000) / 1000;
+            const kg = Math.round(qtyNum * base.weight_kg * 1000) / 1000;
             if (kg !== r.kg) patch.kg = kg;
           }
           if (base.volume_m3 != null && hasQty) {
-            const v = qty * base.volume_m3;
+            const v = qtyNum * base.volume_m3;
             if (v !== r.v) patch.v = v;
           }
           const tech = base.tech_name || r.mat_full;
           if (tech !== r.mat_full) patch.mat_full = tech;
-          // Расчётное «мало» (транспортная норма) — ТОЛЬКО если STAT авто-свободен
-          // (пусто/мало/мет_ок); ручные статусы (заявка/отказ/…) не трогаем. Норма
-          // пройдена → лишнее «мало» снимаем. (Снять руками в ячейке нельзя — см. applyEdits.)
-          const stored = String(r.stat ?? '');
-          if (
-            r.day_wk !== 'OFF' &&
-            (stored === '' || stored === 'мало' || stored === 'мет_ок') &&
-            base.min_qty != null &&
-            Number.isFinite(base.min_qty)
-          ) {
-            const g = `${r.fr}|${r.to_wh}|${normVghKey(r.no_num)}|${r.uom}|${r.mat}`;
+        }
+        // РАСЧЁТНЫЙ STAT (транспортная норма + номенклатура). Считаем ТОЛЬКО если статус
+        // НЕ ручной-липкий (заявка/вопрос/самовывоз/отказ/неликвиды) — те перекрывают
+        // расчёт и не трогаются. OFF — пропуск. ok-ярлык по номенклатуре/складу:
+        // масловоз / прекурсор / мет_ок(склад 9002) / пусто; недобор нормы → «мало».
+        const stored = String(r.stat ?? '').trim();
+        if (r.day_wk !== 'OFF' && !(FLOW_STAT_MANUAL as readonly string[]).includes(stored)) {
+          const noKey = normVghKey(r.no_num);
+          const okLabel = MASLOVOZ_NOS.has(noKey)
+            ? 'масловоз'
+            : noKey === PRECURSOR_NO
+              ? 'прекурсор'
+              : String(r.fr ?? '').trim() === '9002'
+                ? 'мет_ок'
+                : '';
+          const minQty = base?.min_qty;
+          let derived: string;
+          if (minQty != null && Number.isFinite(minQty)) {
+            const g = `${r.fr}|${r.to_wh}|${noKey}|${r.uom}|${r.mat}`;
             const sum = sumByGroup.get(g) ?? 0;
-            const forceLow = PIECE_UOMS.has(String(r.uom ?? '').trim().toUpperCase()) && hasQty && qty < 1;
-            const under = forceLow || sum * MIN_QTY_TOLERANCE < (base.min_qty as number);
-            const derivedStat = under ? 'мало' : stored === 'мало' ? '' : stored;
-            if (derivedStat !== stored) patch.stat = derivedStat;
+            const forceLow = PIECE_UOMS.has(String(r.uom ?? '').trim().toUpperCase()) && hasQty && qtyNum < 1;
+            derived = forceLow || sum * MIN_QTY_TOLERANCE < (minQty as number) ? 'мало' : okLabel;
+          } else {
+            // Норму не знаем (нет MIN QTY в базе ВГХ) → «мало» не ставим; ярлык по номенклатуре.
+            derived = okLabel;
           }
+          if (derived !== stored) patch.stat = derived;
         }
       }
       if (Object.keys(patch).length === 0) return r;
@@ -1617,15 +1635,15 @@ export function FlowSandboxGrid() {
         if (spec.kind === 'dropdown') {
           const v = String(newVal ?? '');
           if (v !== '' && !(spec.options ?? []).includes(v)) continue;
-          // «Мало» — РАСЧЁТНЫЙ статус (транспортная норма). Снять пустым в ячейке нельзя —
-          // оно пересчитается обратно; убрать можно только поправив MIN QTY в карточке
-          // материала (раздел ВГХ). Ручной статус (заявка/отказ/…) поставить можно — он перекрывает.
-          if (spec.id === 'stat' && v === '' && String(viewRow.stat ?? '').trim() === 'мало') {
-            setMolError({
-              body:
-                'Статус «мало» — расчётный по транспортной норме (сумма по маршруту и номенклатуре ниже MIN QTY × толеранс). ' +
-                'Снять можно только в карточке материала (раздел ВГХ), поправив MIN QTY.',
-            });
+          // РАСЧЁТНЫЕ статусы (мало/мет_ок/масловоз/прекурсор) руками не трогаем: ни снять,
+          // ни сменить на другой расчётный — только через карточку ВГХ (MIN QTY). Сменить
+          // на РУЧНОЙ (заявка/отказ/…) — можно, он перекроет расчёт. Открываем карточку материала.
+          if (
+            spec.id === 'stat' &&
+            (FLOW_STAT_AUTO as readonly string[]).includes(String(viewRow.stat ?? '').trim()) &&
+            (v === '' || (FLOW_STAT_AUTO as readonly string[]).includes(v))
+          ) {
+            setStatCard({ noNum: String(viewRow.no_num ?? ''), mat: String(viewRow.mat ?? ''), uom: String(viewRow.uom ?? '') });
             continue;
           }
         } else if (spec.kind === 'day') {
@@ -2768,6 +2786,15 @@ export function FlowSandboxGrid() {
         onClose={() => setMenu(null)}
       />
       <ContactActionDialog request={contactReq} onClose={() => setContactReq(null)} />
+
+      {/* Карточка ВГХ для смены расчётного STAT: правят MIN QTY → норма пересчитается →
+          статус («мало»/«мет_ок») сменится у всех реалтайм. (Снять расчётный в ячейке нельзя.) */}
+      <VghEditCard
+        noNum={statCard?.noNum ?? null}
+        seed={statCard ? { mat: statCard.mat, uom: statCard.uom } : null}
+        note="Статус «мало»/«мет_ок» — расчётный по транспортной норме. Снять в ячейке нельзя: поправьте MIN QTY ниже — статус пересчитается у всех."
+        onClose={() => setStatCard(null)}
+      />
 
       {/* Окно-предупреждение по МОЛ: чужой склад / договор истёк / дата вне срока договора. */}
       <Dialog.Root open={molError !== null} onOpenChange={(o) => { if (!o) setMolError(null); }}>
