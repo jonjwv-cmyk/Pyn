@@ -16,7 +16,7 @@ import {
   type Rectangle,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { AlertTriangle, CalendarDays, ChevronDown, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { AlertTriangle, ArrowDownUp, CalendarDays, ChevronDown, Redo2, Trash2, Undo2 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
 import '@glideapps/glide-data-grid/dist/index.css';
@@ -28,6 +28,12 @@ import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
 import { flowToRenderer, type FlowToCell, type FlowToOption } from './flow-to-cell';
 import { FlowHeaderMenu, type FlowHeaderMenuAnchor } from './FlowHeaderMenu';
+import { FlowMatFilterMenu, type FlowMatSubState } from './FlowMatFilterMenu';
+import { FlowOrdFilterMenu, type FlowOrdEntry } from './FlowOrdFilterMenu';
+import { useBlockingModal, blockingDialogContentProps } from '@/lib/modal-guard';
+import { flowWorkflowGet, flowWorkflowEdit, type FlowChangedEvent } from '@pyn/core';
+import { api } from '@/lib/api';
+import { useWsEvent } from '@/lib/ws';
 import { FlowZoomControl } from './FlowZoomControl';
 import { FlowSearchPanel, type FlowSearchGroup } from './FlowSearchPanel';
 import { ContactActionDialog, type ContactActionRequest } from '@/components/mol/ContactActionDialog';
@@ -38,7 +44,6 @@ import { MonthYearPicker } from '@/components/schedule/MonthYearPicker';
 import { MONTH_NAMES_RU } from '@/lib/schedule/compute';
 import {
   FLOW_COLUMNS,
-  makeFlowRows,
   fmtNum3,
   flowComposed,
   flowDisplayText,
@@ -51,14 +56,18 @@ import {
   isBoldCol,
   compactFio,
   molInitials,
+  formatUntilDate,
+  flowFilterText,
+  flowMatSubText,
+  FLOW_MAT_SUBFIELDS,
   FLOW_FONT_PX_DEFAULT,
   type FlowCardLine,
   type FlowColumnSpec,
   type FlowSandboxRow,
+  type FlowMatSubId,
 } from './flow-sandbox.fixtures';
 
 /** Объём тестового набора — проверяем грид на «рабочем» масштабе (база). */
-const SANDBOX_ROW_COUNT = 20_000;
 /** Кастомные рендереры ячеек (своя выпадашка в стиле меню колонки). */
 const FLOW_RENDERERS = [
   flowDropdownRenderer,
@@ -248,9 +257,14 @@ function buildCopiedRegions(sel: GridSelection, rowCount: number): CopiedRegion[
   return out;
 }
 
-/** Текущая сортировка (индекс колонки + направление) или её отсутствие. */
-interface SortState {
-  colIndex: number;
+/**
+ * Умная (многоуровневая) сортировка: список уровней в ПОРЯДКЕ ВЫБОРА пользователем.
+ * Первый уровень — главный ключ, следующие — вторичные (заказ↑ → потом статус↑ и т.д.).
+ * Каждый уровень = колонка (`colId`) + направление. Кнопка «Сортировка» в панели светится,
+ * пока список не пуст, и сбрасывает его (возврат к исходному порядку).
+ */
+interface SortLevel {
+  colId: string;
   dir: 'asc' | 'desc';
 }
 
@@ -353,14 +367,26 @@ function parseIsoDate(s: string): Date | null {
   d.setHours(0, 0, 0, 0);
   return d;
 }
-/** Сообщение окна по договору МОЛ — ДВЕ строки (юзер): «Срок действия ПМО для {ФИО}»,
- *  а вердикт («истёк» / «не покрывает дату доставки») — на ВТОРОЙ строке. ФИО жирным. */
-function buildContractError(kind: 'expired' | 'not-covered', fio: string): ReactNode {
+/** Сообщение окна по договору МОЛ — ДВЕ строки (юзер). Для истёкшего: строка 1
+ *  «Срок действия ПМО для», строка 2 «{ФИО} истёк — {дата окончания}.» — читается
+ *  как одно предложение («истёк» согласуется со «Срок»). Для «не покрывает дату»:
+ *  ФИО на первой строке, вердикт на второй. ФИО всегда жирным. */
+function buildContractError(kind: 'expired' | 'not-covered', fio: string, until?: string): ReactNode {
+  if (kind === 'expired') {
+    return (
+      <>
+        Срок действия ПМО для
+        <br />
+        <span className="font-semibold text-text-strong">{fio}</span> истёк
+        {until ? ` — ${formatUntilDate(until, { comma: false })}` : ''}.
+      </>
+    );
+  }
   return (
     <>
       Срок действия ПМО для <span className="font-semibold text-text-strong">{fio}</span>
       <br />
-      {kind === 'expired' ? 'истёк.' : 'не покрывает дату доставки.'}
+      не покрывает дату доставки.
     </>
   );
 }
@@ -414,19 +440,49 @@ function extractValue(
 }
 
 /** Сравнить две строки по колонке (число — численно, текст — по локали). */
+/** Числовое сравнение «по сути»: вытаскиваем цифры (коды/номера с ведущими нулями,
+ *  заказы), нечисловое/пустое — в конец. Для ORD/складов/количества. */
+function numCmp(a: unknown, b: unknown): number {
+  const x = parseInt(String(a ?? '').replace(/\D/g, ''), 10);
+  const y = parseInt(String(b ?? '').replace(/\D/g, ''), 10);
+  const xn = Number.isNaN(x);
+  const yn = Number.isNaN(y);
+  if (xn && yn) return 0;
+  if (xn) return 1;
+  if (yn) return -1;
+  return x - y;
+}
+
+/** Сравнение строк с пустыми В КОНЦЕ (как WF_SORT для материала); A-Я, числа естественно. */
+function blankLastCmp(a: unknown, b: unknown): number {
+  const x = String(a ?? '').trim();
+  const y = String(b ?? '').trim();
+  if (!x && !y) return 0;
+  if (!x) return 1;
+  if (!y) return -1;
+  return x.localeCompare(y, 'ru', { numeric: true });
+}
+
+/** Сортировка по ОДНОЙ колонке (из меню заголовка). «Умно» для составных:
+ *  ORD — иерархия заказ→позиция (числом); MAT — по названию, пустые в конец;
+ *  числа — числом; прочее — естественное сравнение (числа в тексте по значению). */
 function compareRows(
   a: FlowSandboxRow,
   b: FlowSandboxRow,
   spec: FlowColumnSpec,
   dir: 'asc' | 'desc',
 ): number {
-  const av = a[spec.id];
-  const bv = b[spec.id];
   let cmp: number;
-  if (spec.kind === 'number') {
+  if (spec.kind === 'order') {
+    cmp = numCmp(a.ord, b.ord) || numCmp(a.it, b.it);
+  } else if (spec.kind === 'mat') {
+    cmp = blankLastCmp(a.mat, b.mat);
+  } else if (spec.kind === 'number') {
+    const av = a[spec.id];
+    const bv = b[spec.id];
     cmp = (typeof av === 'number' ? av : Number(av)) - (typeof bv === 'number' ? bv : Number(bv));
   } else {
-    cmp = String(av).localeCompare(String(bv), 'ru');
+    cmp = String(a[spec.id] ?? '').localeCompare(String(b[spec.id] ?? ''), 'ru', { numeric: true });
   }
   return dir === 'asc' ? cmp : -cmp;
 }
@@ -444,7 +500,8 @@ function compareRows(
  * «фильтр показа» (личный); общий (как filter-views Google) добавится на сервере.
  */
 export function FlowSandboxGrid() {
-  const [rows, setRows] = useState<FlowSandboxRow[]>(() => makeFlowRows(SANDBOX_ROW_COUNT));
+  const [rows, setRows] = useState<FlowSandboxRow[]>([]);
+  const [loading, setLoading] = useState(true);
   // Шрифт Inter мог не загрузиться к ПЕРВОМУ замеру авто-ширины → мерили системным
   // (он уже) и коды резались («6604»→«660»). Ждём шрифт и пересчитываем ширины.
   const [fontsReady, setFontsReady] = useState(false);
@@ -567,8 +624,18 @@ export function FlowSandboxGrid() {
     return { whById: byId, whByShop: byShop };
   }, [warehouses]);
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
-  const [sort, setSort] = useState<SortState | null>(null);
+  const [sortLevels, setSortLevels] = useState<SortLevel[]>([]);
   const [filters, setFilters] = useState<Record<string, ColumnFilter>>({});
+  // «Умный» фильтр MAT: отдельные под-фильтры по скрытым полям материала (название/
+  // создал/даты/тех-имя), условия объединяются И. Вне общего `filters` — там свой UI.
+  const [matFilter, setMatFilter] = useState<Partial<Record<FlowMatSubId, FlowMatSubState>>>({});
+  // «Умный» фильтр ORD: заказы целиком (orders) + отдельные позиции (positions, ключ
+  // `ord|it`). Свой UI (две колонки пилюль), вне общего `filters`.
+  const [ordFilter, setOrdFilter] = useState<{ orders: Set<string>; positions: Set<string> }>(() => ({
+    orders: new Set(),
+    positions: new Set(),
+  }));
+  const [ordSearch, setOrdSearch] = useState('');
   const [menu, setMenu] = useState<FlowHeaderMenuAnchor | null>(null);
   const [copiedRegions, setCopiedRegions] = useState<CopiedRegion[]>([]);
   const [zoom, setZoom] = useState(1);
@@ -661,7 +728,7 @@ export function FlowSandboxGrid() {
   const rowsRef = useRef<FlowSandboxRow[]>(rows);
   // Активная сортировка по id колонки — drawHeader читает ref и рисует стрелку
   // (не дописываем стрелку в текст заголовка → ширина колонки не пухнет).
-  const sortRef = useRef<{ colId: string; dir: 'asc' | 'desc' } | null>(null);
+  const sortRef = useRef<Map<string, 'asc' | 'desc'>>(new Map());
   // Колонки под активным фильтром — для согласованной (в тон заголовку) подсветки
   // значка в drawHeader.
   const filteredColsRef = useRef<Set<string>>(new Set());
@@ -708,42 +775,95 @@ export function FlowSandboxGrid() {
   // ни сортировки — отдаём исходный массив без копий.
   const viewRows = useMemo<FlowSandboxRow[]>(() => {
     let out: FlowSandboxRow[] = rows;
-    const active = Object.entries(filters).filter(
-      ([, f]) => f.search.trim() !== '' || f.excluded.size > 0,
+    // Активные фильтры + спеки колонок. Фильтр сверяет ОТФОРМАТИРОВАННОЕ значение
+    // (как в таблице — проценты/даты/числа), а не сырьё: «что видишь, то и фильтруешь».
+    const active = Object.entries(filters)
+      .filter(([, f]) => f.search.trim() !== '' || f.excluded.size > 0)
+      .map(([colId, f]) => ({ spec: FLOW_COLUMNS.find((c) => c.id === colId), f }))
+      .filter((x): x is { spec: FlowColumnSpec; f: ColumnFilter } => x.spec !== undefined);
+    // Под-фильтры MAT (скрытые поля материала) — ещё несколько условий И, по форматированному значению.
+    const matActive = FLOW_MAT_SUBFIELDS.map((sf) => ({ sf, f: matFilter[sf.id] })).filter(
+      (x): x is { sf: (typeof FLOW_MAT_SUBFIELDS)[number]; f: FlowMatSubState } =>
+        x.f !== undefined && (x.f.search.trim() !== '' || x.f.excluded.size > 0),
     );
-    if (active.length > 0) {
-      out = rows.filter((row) =>
-        active.every(([colId, f]) => {
-          const v = String(row[colId as keyof FlowSandboxRow] ?? '');
-          const q = f.search.trim().toLowerCase();
-          if (q && !v.toLowerCase().includes(q)) return false;
-          if (f.excluded.has(v)) return false;
-          return true;
-        }),
+    // Фильтр ORD: заказ берётся целиком; если у него отмечены конкретные позиции — только они.
+    const ordActive = ordFilter.orders.size > 0;
+    const ordRestricted = new Set<string>();
+    for (const k of ordFilter.positions) {
+      const i = k.indexOf('|');
+      if (i >= 0) ordRestricted.add(k.slice(0, i));
+    }
+    if (active.length > 0 || matActive.length > 0 || ordActive) {
+      out = rows.filter(
+        (row) =>
+          active.every(({ spec, f }) => {
+            const v = flowFilterText(spec, row);
+            const q = f.search.trim().toLowerCase();
+            if (q && !v.toLowerCase().includes(q)) return false;
+            if (f.excluded.has(v)) return false;
+            return true;
+          }) &&
+          matActive.every(({ sf, f }) => {
+            const v = flowMatSubText(sf.id, row);
+            const q = f.search.trim().toLowerCase();
+            if (q && !v.toLowerCase().includes(q)) return false;
+            if (f.excluded.has(v)) return false;
+            return true;
+          }) &&
+          (!ordActive ||
+            (ordFilter.orders.has(String(row.ord ?? '')) &&
+              (!ordRestricted.has(String(row.ord ?? '')) ||
+                ordFilter.positions.has(`${row.ord ?? ''}|${row.it ?? ''}`)))),
       );
     }
-    if (sort) {
-      const spec = FLOW_COLUMNS[sort.colIndex];
-      if (spec) {
+    // Умная сортировка: уровни в порядке выбора (первый — главный ключ, далее вторичные).
+    if (sortLevels.length > 0) {
+      const levels = sortLevels
+        .map((lv) => ({ spec: FLOW_COLUMNS.find((c) => c.id === lv.colId), dir: lv.dir }))
+        .filter((x): x is { spec: FlowColumnSpec; dir: 'asc' | 'desc' } => x.spec !== undefined);
+      if (levels.length > 0) {
         const base = out === rows ? out.slice() : out;
-        base.sort((a, b) => compareRows(a, b, spec, sort.dir));
+        base.sort((a, b) => {
+          for (const { spec, dir } of levels) {
+            const c = compareRows(a, b, spec, dir);
+            if (c !== 0) return c;
+          }
+          return 0;
+        });
         out = base;
       }
     }
     return out;
-  }, [rows, filters, sort]);
+  }, [rows, filters, matFilter, ordFilter, sortLevels]);
+
+  // Активен ли «умный» фильтр MAT (любое под-поле) — для индикатора заголовка + funnel.
+  const matFilterActive = useMemo(
+    () =>
+      FLOW_MAT_SUBFIELDS.some((sf) => {
+        const f = matFilter[sf.id];
+        return !!f && (f.search.trim() !== '' || f.excluded.size > 0);
+      }),
+    [matFilter],
+  );
+  const ordFilterActive = ordFilter.orders.size > 0 || ordFilter.positions.size > 0;
+
+  // Окно-предупреждение МОЛ — блокирующее: пока открыто, клик мимо не закрывает его
+  // и не сбивает фильтр/выделение в гриде (общее правило, см. modal-guard).
+  useBlockingModal(molError !== null);
 
   // Зеркала для глобального слушателя copy (см. выше).
   selectionRef.current = selection;
   viewRowsRef.current = viewRows;
   rowsRef.current = rows;
   gridPxWidthRef.current = size.width; // диапазон «вжуха» = ширина видимого листа
-  sortRef.current = sort ? { colId: FLOW_COLUMNS[sort.colIndex]?.id ?? '', dir: sort.dir } : null;
-  filteredColsRef.current = new Set(
-    Object.entries(filters)
+  sortRef.current = new Map(sortLevels.map((lv) => [lv.colId, lv.dir]));
+  filteredColsRef.current = new Set([
+    ...Object.entries(filters)
       .filter(([, f]) => f.search.trim() !== '' || f.excluded.size > 0)
       .map(([id]) => id),
-  );
+    ...(matFilterActive ? ['mat'] : []),
+    ...(ordFilterActive ? ['ord'] : []),
+  ]);
 
   // Агрегаты выделения для строки-счётчика: кол-во / сумма / среднее / мин / макс.
   // Тяжёлые агрегаты считаем только до STAT_CAP ячеек (защита от лагов).
@@ -814,12 +934,62 @@ export function FlowSandboxGrid() {
     if (!menu) return [];
     const spec = FLOW_COLUMNS[menu.colIndex];
     if (!spec) return [];
-    const set = new Set<string>();
+    const set = new Set<string>(); // дедуп по ОТФОРМАТИРОВАННОМУ значению (фильтр сверяет его же)
     for (const r of rows) {
-      set.add(String(r[spec.id] ?? ''));
+      set.add(flowFilterText(spec, r));
       if (set.size >= MAX_DISTINCT) break;
     }
-    return [...set].sort((a, b) => a.localeCompare(b, 'ru'));
+    return [...set].sort((a, b) => a.localeCompare(b, 'ru', { numeric: true }));
+  }, [menu, rows]);
+
+  // Уникальные значения каждого под-поля MAT — чек-листы «умного» фильтра (считаем только
+  // когда открыто меню MAT). Значения отформатированы (даты по-русски); даты сортируем
+  // ХРОНОЛОГИЧЕСКИ (по исходному ISO), остальное — по алфавиту/числам.
+  const matSubValues = useMemo<Record<FlowMatSubId, string[]>>(() => {
+    const empty = { mat: [], created_by: [], load_dt: [], time_at: [], mat_full: [] } as Record<FlowMatSubId, string[]>;
+    if (!menu || FLOW_COLUMNS[menu.colIndex]?.kind !== 'mat') return empty;
+    const maps: Record<FlowMatSubId, Map<string, string>> = {
+      mat: new Map(), created_by: new Map(), load_dt: new Map(), time_at: new Map(), mat_full: new Map(),
+    };
+    for (const r of rows) {
+      for (const sf of FLOW_MAT_SUBFIELDS) {
+        const m = maps[sf.id];
+        if (m.size >= MAX_DISTINCT) continue;
+        const label = flowMatSubText(sf.id, r);
+        if (!m.has(label)) {
+          const sortKey =
+            sf.id === 'load_dt' ? String(r.load_dt ?? '') : sf.id === 'time_at' ? String(r.time_at ?? '') : label;
+          m.set(label, sortKey);
+        }
+      }
+    }
+    const out = {} as Record<FlowMatSubId, string[]>;
+    for (const sf of FLOW_MAT_SUBFIELDS) {
+      out[sf.id] = [...maps[sf.id].entries()]
+        .sort((a, b) => a[1].localeCompare(b[1], 'ru', { numeric: true }))
+        .map(([label]) => label);
+    }
+    return out;
+  }, [menu, rows]);
+
+  // Заказы и их позиции для «умного» фильтра ORD (когда открыто меню ORD): заказы по
+  // номеру (числом), позиции каждого — тоже по номеру.
+  const ordData = useMemo<FlowOrdEntry[]>(() => {
+    if (!menu || FLOW_COLUMNS[menu.colIndex]?.kind !== 'order') return [];
+    const map = new Map<string, Set<string>>();
+    for (const r of rows) {
+      const o = String(r.ord ?? '');
+      if (!o) continue;
+      let s = map.get(o);
+      if (!s) {
+        s = new Set();
+        map.set(o, s);
+      }
+      s.add(String(r.it ?? ''));
+    }
+    return [...map.entries()]
+      .sort((a, b) => numCmp(a[0], b[0]))
+      .map(([ord, set]) => ({ ord, positions: [...set].sort((x, y) => numCmp(x, y)) }));
   }, [menu, rows]);
 
   // Колонки: ширина (resizable) + меню (▾) + индикаторы сортировки/фильтра в заголовке.
@@ -827,7 +997,14 @@ export function FlowSandboxGrid() {
     () =>
       FLOW_COLUMNS.map((c) => {
         const f = filters[c.id];
-        const filtered = f ? f.search.trim() !== '' || f.excluded.size > 0 : false;
+        const filtered =
+          c.kind === 'mat'
+            ? matFilterActive
+            : c.kind === 'order'
+              ? ordFilterActive
+              : f
+                ? f.search.trim() !== '' || f.excluded.size > 0
+                : false;
         // БЕЗ grow: колонка кончается ровно по содержимому (авто-ширина). Свободное
         // место справа — пустой лист (как в Excel), а не растянутые колонки.
         // Сортировка/фильтр НЕ дописываются в текст заголовка (иначе раздувают
@@ -857,7 +1034,7 @@ export function FlowSandboxGrid() {
           },
         };
       }),
-    [colWidths, filters, zoom, noteWidth],
+    [colWidths, filters, matFilterActive, ordFilterActive, zoom, noteWidth],
   );
 
   const getCellContentRaw = useCallback(
@@ -1026,6 +1203,64 @@ export function FlowSandboxGrid() {
     );
   }, []);
 
+  // Применить серверные строки (ответ на правку / реалтайм flow_changed): заменяем
+  // строку по id, если серверная версия не старее (идемпотентно к собственному эху).
+  const applyServerRows = useCallback((serverRows: readonly FlowSandboxRow[]) => {
+    if (serverRows.length === 0) return;
+    const byId = new Map(serverRows.map((s) => [s.id, s]));
+    setRows((prev) =>
+      prev.map((r) => {
+        const s = byId.get(r.id);
+        if (!s) return r;
+        return (s.row_version ?? 0) >= (r.row_version ?? 0) ? s : r;
+      }),
+    );
+  }, []);
+
+  // Отправить правки на сервер (реалтайм всем). Конфликт по row_version: если версия
+  // устарела — сервер вернёт актуальную строку, применяем её (наша оптимистичная
+  // правка откатывается к серверной правде, без ошибки — «последняя запись побеждает»).
+  const syncEdits = useCallback(
+    (after: Map<number, FlowRowPatch>) => {
+      if (after.size === 0) return;
+      const verById = new Map(rowsRef.current.map((r) => [r.id, r.row_version ?? 1]));
+      const edits = [...after.entries()].map(([id, fields]) => ({
+        id,
+        row_version: verById.get(id) ?? 1,
+        fields: fields as Record<string, string | number | null>,
+      }));
+      void flowWorkflowEdit(api, edits)
+        .then((res) => applyServerRows(res.rows as FlowSandboxRow[]))
+        .catch(() => {
+          /* офлайн/сеть — локально уже применено, WS/перезагрузка догонит */
+        });
+    },
+    [applyServerRows],
+  );
+
+  // Живое чтение базы формирования при монтировании (вместо снимка-файла).
+  useEffect(() => {
+    let alive = true;
+    void flowWorkflowGet(api)
+      .then((serverRows) => {
+        if (alive) setRows(serverRows as FlowSandboxRow[]);
+      })
+      .catch(() => {
+        /* ошибка сети — оставляем пусто */
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Реалтайм: правки других клиентов прилетают строками — применяем по версии.
+  useWsEvent<FlowChangedEvent>('flow_changed', (event) => {
+    applyServerRows((event.rows ?? []) as unknown as FlowSandboxRow[]);
+  });
+
   // Положить запись в историю: новый шаг обнуляет «повтор» (как везде).
   const pushHistory = useCallback(
     (entry: FlowUndoEntry) => {
@@ -1048,7 +1283,8 @@ export function FlowSandboxGrid() {
       // копим для окна-предупреждения (проверка раньше оптимистики).
       const molRejects: { fio: string; wh: string }[] = [];
       // Договор МОЛ: первая ошибка срока (истёк / дата вне срока) — для окна-предупреждения.
-      let contractErr: { kind: 'expired' | 'not-covered'; fio: string } | null = null;
+      // `until` (дата окончания договора, DD.MM.YYYY) — чтобы показать «истёк — май 12 2026».
+      let contractErr: { kind: 'expired' | 'not-covered'; fio: string; until?: string } | null = null;
       const molUntilFor = (toWh: string, molRaw: string): string | undefined => {
         const key = molKey(parseMol(molRaw)?.fio ?? molRaw);
         return (molByWarehouse.get(toWh) ?? []).find((o) => molKey(o.fio) === key)?.until;
@@ -1067,7 +1303,7 @@ export function FlowSandboxGrid() {
         const spec = FLOW_COLUMNS[col];
         const viewRow = viewRows[displayRow];
         if (!spec || !viewRow) continue;
-        const oldVal = viewRow[spec.id];
+        const oldVal = viewRow[spec.id] ?? null; // spec.id — колонка данных, не row_version
         const newVal = extractValue(spec, value, oldVal);
         if (newVal === oldVal) continue;
         // Read-only колонки (PR / Q / % / коды / числа выгрузки) — НЕ писать ни вставкой,
@@ -1080,12 +1316,14 @@ export function FlowSandboxGrid() {
           if (v !== '' && !(spec.options ?? []).includes(v)) continue;
         } else if (spec.kind === 'day') {
           const v = String(newVal ?? '');
-          if (v !== '' && v !== 'new' && v !== 'OFF' && !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
+          // «new» ставить нельзя (авто-состояние) — допустимо только пусто / OFF / дата.
+          if (v !== '' && v !== 'OFF' && !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
           // Дата доставки должна укладываться в срок договора выбранного МОЛ строки.
           if (/^\d{4}-\d{2}-\d{2}/.test(v) && viewRow.mol) {
-            const ce = checkContract(molUntilFor(viewRow.to_wh, viewRow.mol), v);
+            const until = molUntilFor(viewRow.to_wh, viewRow.mol);
+            const ce = checkContract(until, v);
             if (ce) {
-              if (!contractErr) contractErr = { kind: ce, fio: resolveMolFull(viewRow.mol, molByKey) };
+              if (!contractErr) contractErr = { kind: ce, fio: resolveMolFull(viewRow.mol, molByKey), until };
               continue;
             }
           }
@@ -1107,7 +1345,7 @@ export function FlowSandboxGrid() {
             // Договор этого МОЛ: истёк → нельзя назначить; не покрывает дату строки → нельзя.
             const ce = checkContract(opt.until, String(viewRow.day_wk ?? ''));
             if (ce) {
-              if (!contractErr) contractErr = { kind: ce, fio: resolveMolFull(fioStr, molByKey) };
+              if (!contractErr) contractErr = { kind: ce, fio: resolveMolFull(fioStr, molByKey), until: opt.until };
               continue;
             }
           }
@@ -1130,13 +1368,14 @@ export function FlowSandboxGrid() {
       if (molRejects.length > 0) {
         setMolError({ body: <span className="whitespace-pre-line">{buildMolErrorMessage(molRejects)}</span> });
       } else if (contractErr) {
-        setMolError({ body: buildContractError(contractErr.kind, contractErr.fio) });
+        setMolError({ body: buildContractError(contractErr.kind, contractErr.fio, contractErr.until) });
       }
       if (after.size === 0) return;
       writeCells(after);
       pushHistory({ kind: 'cells', before, after });
+      syncEdits(after); // → сервер + реалтайм всем
     },
-    [viewRows, writeCells, pushHistory, molByWarehouse, molByKey],
+    [viewRows, writeCells, pushHistory, syncEdits, molByWarehouse, molByKey],
   );
 
   const onCellEdited = useCallback(
@@ -1245,22 +1484,26 @@ export function FlowSandboxGrid() {
   const undo = useCallback(() => {
     const entry = undoRef.current.pop();
     if (!entry) return;
-    if (entry.kind === 'cells') writeCells(entry.before);
-    else reinsertRows(entry.removed);
+    if (entry.kind === 'cells') {
+      writeCells(entry.before);
+      syncEdits(entry.before); // отмена = тоже правка → на сервер
+    } else reinsertRows(entry.removed);
     redoRef.current.push(entry);
     // Выделение НЕ сбрасываем — после «назад» отменённые ячейки остаются
     // выделенными (как в Google/Excel), панель снизу не слетает.
     syncHistory();
-  }, [writeCells, reinsertRows, syncHistory]);
+  }, [writeCells, syncEdits, reinsertRows, syncHistory]);
 
   const redo = useCallback(() => {
     const entry = redoRef.current.pop();
     if (!entry) return;
-    if (entry.kind === 'cells') writeCells(entry.after);
-    else removeRowsByIds(new Set(entry.removed.map((x) => x.row.id)));
+    if (entry.kind === 'cells') {
+      writeCells(entry.after);
+      syncEdits(entry.after);
+    } else removeRowsByIds(new Set(entry.removed.map((x) => x.row.id)));
     undoRef.current.push(entry);
     syncHistory();
-  }, [writeCells, removeRowsByIds, syncHistory]);
+  }, [writeCells, syncEdits, removeRowsByIds, syncHistory]);
 
   // Glide шлёт сюда изменения выделения (клик/Shift/Ctrl). Запоминаем якорь+фокус
   // одиночно выбранной колонки/строки (для drag и Shift+стрелок) и снимаем рамку
@@ -1432,19 +1675,53 @@ export function FlowSandboxGrid() {
   const menuColId = menu ? FLOW_COLUMNS[menu.colIndex]?.id : undefined;
   const menuFilter = menuColId ? filters[menuColId] : undefined;
 
+  // — умная (многоуровневая) сортировка: уровни копятся в порядке выбора —
+  /** Задать сортировку колонки: если колонка уже в списке — меняем её направление
+   *  (позиция/приоритет сохраняется), иначе добавляем В КОНЕЦ (станет следующим ключом). */
+  const applyColumnSort = useCallback((colId: string, dir: 'asc' | 'desc') => {
+    setSortLevels((prev) => {
+      const idx = prev.findIndex((l) => l.colId === colId);
+      if (idx >= 0) {
+        const next = prev.slice();
+        next[idx] = { colId, dir };
+        return next;
+      }
+      return [...prev, { colId, dir }];
+    });
+    setSelection(emptySelection());
+  }, []);
+  /** Убрать сортировку конкретной колонки (остальные уровни сохраняются). */
+  const clearColumnSort = useCallback((colId: string) => {
+    setSortLevels((prev) => prev.filter((l) => l.colId !== colId));
+    setSelection(emptySelection());
+  }, []);
+  /** Сбросить ВСЮ умную сортировку — возврат к исходному порядку (кнопка в панели). */
+  const clearAllSorts = useCallback(() => {
+    setSortLevels([]);
+    setSelection(emptySelection());
+  }, []);
+
   const handleSort = useCallback(
     (dir: 'asc' | 'desc') => {
-      if (!menu) return;
-      setSort({ colIndex: menu.colIndex, dir });
-      setSelection(emptySelection());
+      if (!menuColId) return;
+      applyColumnSort(menuColId, dir);
     },
-    [menu],
+    [menuColId, applyColumnSort],
   );
 
   const handleSortReset = useCallback(() => {
-    setSort(null);
-    setSelection(emptySelection());
-  }, []);
+    if (!menuColId) return;
+    clearColumnSort(menuColId);
+  }, [menuColId, clearColumnSort]);
+
+  // Человекочитаемая последовательность сортировки — для подсказки кнопки «Сортировка».
+  const sortSummary = useMemo(
+    () =>
+      sortLevels
+        .map((l) => `${FLOW_COLUMNS.find((c) => c.id === l.colId)?.title ?? l.colId} ${l.dir === 'asc' ? '↑' : '↓'}`)
+        .join(' → '),
+    [sortLevels],
+  );
 
   const updateColumnFilter = useCallback(
     (colId: string, updater: (cur: ColumnFilter) => ColumnFilter) => {
@@ -1478,15 +1755,88 @@ export function FlowSandboxGrid() {
     [menuColId, updateColumnFilter],
   );
 
-  const handleCheckAll = useCallback(() => {
+  // «Очистить» фильтр колонки = полный сброс (снять поиск + вернуть все галочки) → показать
+  // всё. Единообразно с фильтром заказов (интуитивно: очистить = убрать фильтр, не «спрятать всё»).
+  const handleClearColumnFilter = useCallback(() => {
     if (!menuColId) return;
-    updateColumnFilter(menuColId, (cur) => ({ search: cur.search, excluded: new Set<string>() }));
+    updateColumnFilter(menuColId, () => ({ search: '', excluded: new Set<string>() }));
   }, [menuColId, updateColumnFilter]);
 
-  const handleUncheckAll = useCallback(() => {
-    if (!menuColId) return;
-    updateColumnFilter(menuColId, (cur) => ({ search: cur.search, excluded: new Set(menuValues) }));
-  }, [menuColId, menuValues, updateColumnFilter]);
+  // — «умный» фильтр MAT (под-фильтры по скрытым полям материала) —
+  const updateMatSub = useCallback(
+    (sub: FlowMatSubId, updater: (cur: FlowMatSubState) => FlowMatSubState) => {
+      setMatFilter((prev) => ({
+        ...prev,
+        [sub]: updater(prev[sub] ?? { search: '', excluded: new Set<string>() }),
+      }));
+      setSelection(emptySelection());
+    },
+    [],
+  );
+  const handleMatSearch = useCallback(
+    (sub: FlowMatSubId, q: string) => updateMatSub(sub, (cur) => ({ search: q, excluded: cur.excluded })),
+    [updateMatSub],
+  );
+  const handleMatToggle = useCallback(
+    (sub: FlowMatSubId, value: string) =>
+      updateMatSub(sub, (cur) => {
+        const excluded = new Set(cur.excluded);
+        if (excluded.has(value)) excluded.delete(value);
+        else excluded.add(value);
+        return { search: cur.search, excluded };
+      }),
+    [updateMatSub],
+  );
+  const handleMatClear = useCallback(
+    (sub: FlowMatSubId) => updateMatSub(sub, () => ({ search: '', excluded: new Set<string>() })),
+    [updateMatSub],
+  );
+  const handleMatClearAll = useCallback(() => {
+    setMatFilter({});
+    setSelection(emptySelection());
+  }, []);
+
+  // — «умный» фильтр ORD (заказы целиком + отдельные позиции) —
+  const handleOrdToggleOrder = useCallback((ord: string) => {
+    setOrdFilter((prev) => {
+      const orders = new Set(prev.orders);
+      const positions = new Set(prev.positions);
+      if (orders.has(ord)) {
+        orders.delete(ord);
+        // Сняли заказ → убираем и его ограничения по позициям (ключи `ord|...`).
+        for (const k of positions) if (k.startsWith(`${ord}|`)) positions.delete(k);
+      } else {
+        orders.add(ord);
+      }
+      return { orders, positions };
+    });
+    setSelection(emptySelection());
+  }, []);
+  const handleOrdTogglePosition = useCallback((ord: string, it: string) => {
+    const key = `${ord}|${it}`;
+    setOrdFilter((prev) => {
+      const positions = new Set(prev.positions);
+      if (positions.has(key)) positions.delete(key);
+      else positions.add(key);
+      return { orders: prev.orders, positions };
+    });
+    setSelection(emptySelection());
+  }, []);
+  const handleOrdClearAll = useCallback(() => {
+    setOrdFilter({ orders: new Set(), positions: new Set() });
+    setSelection(emptySelection());
+  }, []);
+  const handleOrdSelectAllPositions = useCallback((ord: string) => {
+    // «Все» позиции заказа = весь заказ: убираем точечные ограничения, заказ выбран.
+    setOrdFilter((prev) => {
+      const positions = new Set(prev.positions);
+      for (const k of positions) if (k.startsWith(`${ord}|`)) positions.delete(k);
+      const orders = new Set(prev.orders);
+      orders.add(ord);
+      return { orders, positions };
+    });
+    setSelection(emptySelection());
+  }, []);
 
   // Масштаб: единый множитель для шрифтов, отступов и высоты строки.
   const gridTheme = useMemo(
@@ -1619,8 +1969,7 @@ export function FlowSandboxGrid() {
     // Только для колонок с меню (не для гаттера-маркера строк — он тоже проходит сюда).
     if (args.column.hasMenu !== true) return;
     const { ctx, menuBounds, theme, isSelected, hasSelectedCell, isHovered } = args;
-    const s = sortRef.current;
-    const sortedDir = s && s.colId === args.column.id ? s.dir : null;
+    const sortedDir = sortRef.current.get(args.column.id ?? '') ?? null;
     if (!isHovered && !sortedDir) return; // ни меню (hover), ни сортировки — нечего рисовать
     const cx = menuBounds.x + menuBounds.width - 13;
     const cy = menuBounds.y + menuBounds.height / 2;
@@ -1691,10 +2040,13 @@ export function FlowSandboxGrid() {
       const matches: { id: number; value: string }[] = [];
       let total = 0;
       for (const row of rows) {
-        const value = String(row[spec.id] ?? '');
-        if (searchMatcher(value)) {
+        // Сопоставляем по сырому значению (как хранится), но ПОКАЗЫВАЕМ — отформатированным
+        // как в таблице/фильтре (МОЛ без смайлика-статуса, даты «июн. 4», числа с пробелами).
+        if (searchMatcher(String(row[spec.id] ?? ''))) {
           total++;
-          if (matches.length < SEARCH_CAP_PER_COL) matches.push({ id: row.id, value });
+          if (matches.length < SEARCH_CAP_PER_COL) {
+            matches.push({ id: row.id, value: flowFilterText(spec, row) });
+          }
         }
       }
       if (total > 0) groups.push({ colIndex, title: spec.title, matches, total });
@@ -1812,11 +2164,12 @@ export function FlowSandboxGrid() {
       if (after.size > 0) {
         writeCells(after);
         pushHistory({ kind: 'cells', before, after });
+        syncEdits(after); // → сервер + реалтайм
         setActiveMatch(null);
       }
       setReplaceResult(changed); // подтверждение «заменено N» (0 = ничего не подошло)
     },
-    [searchMatcher, rows, writeCells, pushHistory],
+    [searchMatcher, rows, writeCells, pushHistory, syncEdits],
   );
 
   return (
@@ -1875,6 +2228,26 @@ export function FlowSandboxGrid() {
           replaceResult={replaceResult}
           dimmed={searchDimmed}
         />
+        {/* Умная сортировка: копится из сорта по колонкам/заказам в порядке выбора.
+            Кнопка светится, пока сортировка активна; клик — СБРОС к исходному порядку. */}
+        <button
+          type="button"
+          onClick={clearAllSorts}
+          disabled={sortLevels.length === 0}
+          title={
+            sortLevels.length > 0
+              ? `Сортировка: ${sortSummary} — нажмите, чтобы сбросить`
+              : 'Сортировка — задаётся в меню колонки / фильтре заказов'
+          }
+          className={`flex h-6 items-center gap-1 rounded-md border px-1.5 text-[12px] transition-all ${
+            sortLevels.length > 0
+              ? 'border-accent-clay/70 text-[#0A0A0A] shadow-[0_0_7px_rgba(217,119,87,0.45)]'
+              : 'cursor-default border-black/10 text-[#6B6862]/45'
+          }`}
+        >
+          <ArrowDownUp size={13} strokeWidth={1.75} />
+          Сортировка
+        </button>
         {/* Месяц графика — задаёт, по какому месяцу считается кластер CLST
             (ВЫЕЗД/КХП/день доставки) у складов-получателей. Переиспользуем
             пикер месяца из Графика; поповер на z-30 (как остальные в «Потоке»). */}
@@ -1924,6 +2297,11 @@ export function FlowSandboxGrid() {
           setTooltip(null);
         }}
       >
+        {loading && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#FDFDFB]/70 text-[13px] text-[#6B6862]">
+            Загрузка формирования…
+          </div>
+        )}
         {size.width > 0 && size.height > 0 && (
           <DataEditor
             ref={gridRef}
@@ -2020,8 +2398,12 @@ export function FlowSandboxGrid() {
       </div>
 
       <FlowHeaderMenu
-        state={menu}
-        sortDir={menu && sort?.colIndex === menu.colIndex ? sort.dir : null}
+        state={
+          menu && FLOW_COLUMNS[menu.colIndex]?.kind !== 'mat' && FLOW_COLUMNS[menu.colIndex]?.kind !== 'order'
+            ? menu
+            : null
+        }
+        sortDir={menuColId ? (sortLevels.find((l) => l.colId === menuColId)?.dir ?? null) : null}
         search={menuFilter?.search ?? ''}
         values={menuValues}
         excluded={menuFilter?.excluded ?? EMPTY_SET}
@@ -2029,8 +2411,35 @@ export function FlowSandboxGrid() {
         onSortReset={handleSortReset}
         onSearchChange={handleSearchChange}
         onToggleValue={handleToggleValue}
-        onCheckAll={handleCheckAll}
-        onUncheckAll={handleUncheckAll}
+        onClear={handleClearColumnFilter}
+        onClose={() => setMenu(null)}
+      />
+      {/* «Умный» фильтр MAT — несколько под-фильтров по скрытым полям материала. */}
+      <FlowMatFilterMenu
+        state={menu && FLOW_COLUMNS[menu.colIndex]?.kind === 'mat' ? menu : null}
+        filters={matFilter}
+        values={matSubValues}
+        onSearch={handleMatSearch}
+        onToggleValue={handleMatToggle}
+        onClear={handleMatClear}
+        onClearAll={handleMatClearAll}
+        onClose={() => setMenu(null)}
+      />
+      {/* «Умный» фильтр ORD — заказы в две колонки, у каждого его позиции пилюлями. */}
+      <FlowOrdFilterMenu
+        state={menu && FLOW_COLUMNS[menu.colIndex]?.kind === 'order' ? menu : null}
+        orders={ordData}
+        search={ordSearch}
+        sortDir={sortLevels.find((l) => l.colId === 'ord')?.dir ?? null}
+        onSort={(dir) => applyColumnSort('ord', dir)}
+        onSortReset={() => clearColumnSort('ord')}
+        selectedOrders={ordFilter.orders}
+        selectedPositions={ordFilter.positions}
+        onSearch={setOrdSearch}
+        onToggleOrder={handleOrdToggleOrder}
+        onTogglePosition={handleOrdTogglePosition}
+        onSelectAllPositions={handleOrdSelectAllPositions}
+        onClearAll={handleOrdClearAll}
         onClose={() => setMenu(null)}
       />
       <ContactActionDialog request={contactReq} onClose={() => setContactReq(null)} />
@@ -2039,7 +2448,10 @@ export function FlowSandboxGrid() {
       <Dialog.Root open={molError !== null} onOpenChange={(o) => { if (!o) setMolError(null); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-40 bg-bg-deep/70 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=open]:fade-in-0" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[380px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-default bg-bg-elevated p-5 shadow-2xl data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
+          <Dialog.Content
+            {...blockingDialogContentProps}
+            className="fixed left-1/2 top-1/2 z-50 w-[380px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-default bg-bg-elevated p-5 shadow-2xl data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
+          >
             <div className="flex items-start gap-3">
               <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-danger/15 text-danger">
                 <AlertTriangle size={16} strokeWidth={2} />

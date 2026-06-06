@@ -85,6 +85,12 @@ export const WS_EVENT_TYPES = {
    * resource_id убирают overlay.
    */
   SCHEDULE_LOCK_RELEASED: 'schedule_lock_released',
+  /**
+   * Раздел «Поток» (Этап 1 Формирование) — строки изменены (правка/реалтайм).
+   * Сервер шлёт актуальные строки всем после flow_workflow_edit; клиент применяет
+   * по id, если row_version новее (sender'у прилетает своё — идемпотентно, skip).
+   */
+  FLOW_CHANGED: 'flow_changed',
 } as const;
 
 export type WsEventType = (typeof WS_EVENT_TYPES)[keyof typeof WS_EVENT_TYPES];
@@ -154,6 +160,12 @@ export interface BaseChangedEvent extends WsServerEvent {
   records_count?: number | null;
   previous_records_count?: number | null;
   diff_count?: number | null;
+}
+
+/** Строки «Потока» изменены — рассылка актуальных строк (по id, с row_version). */
+export interface FlowChangedEvent extends WsServerEvent {
+  type: 'flow_changed';
+  rows: Array<{ id: number; row_version: number; [key: string]: unknown }>;
 }
 
 export interface WarehousesChangedEvent extends WsServerEvent {

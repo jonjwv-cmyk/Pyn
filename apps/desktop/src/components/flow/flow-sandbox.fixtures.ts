@@ -51,6 +51,7 @@ export interface FlowSandboxRow {
   created_by: string; // W CREATEDBY — кто создал (GROKHOVSKIJ = авто)
   load_dt: string; // X LOADDT — дата создания заказа
   chg: number | null; // Y CHG — исходное количество
+  row_version?: number; // версия строки (оптимистичная блокировка, реалтайм)
 }
 
 /** Спецификация колонки грида. */
@@ -211,12 +212,14 @@ export function flowDate(s: string, opts?: { year?: boolean; time?: boolean }): 
 }
 
 /** Срок ответственности МОЛ «DD.MM.YYYY» (из базы) → единый формат «месяц число, год».
+ *  `{ comma:false }` — без запятой («май 12 2026», для окна «срок истёк»).
  *  Не распознали формат — отдаём как есть. */
-export function formatUntilDate(until: string): string {
+export function formatUntilDate(until: string, opts?: { comma?: boolean }): string {
   const m = until.trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
   if (!m) return until.trim();
   const [, d, mo, y] = m;
-  return `${MONTH_ABBR_RU[parseInt(mo ?? '1', 10) - 1] ?? mo} ${parseInt(d ?? '1', 10)}, ${y}`;
+  const sep = (opts?.comma ?? true) ? ',' : '';
+  return `${MONTH_ABBR_RU[parseInt(mo ?? '1', 10) - 1] ?? mo} ${parseInt(d ?? '1', 10)}${sep} ${y}`;
 }
 
 /** «2026-06-03 08:01:47» → короткое («3 июн») и полное («3 июня 2026, 8:01 am»). */
@@ -371,6 +374,71 @@ export function flowDisplayText(spec: FlowColumnSpec, row: FlowSandboxRow): stri
   }
 }
 
+/**
+ * Значение колонки для ФИЛЬТРА показа (и его чек-листа) — отформатировано КАК В
+ * ТАБЛИЦЕ: проценты «12%», даты «июн. 4», числа «1 366,000» — а не сырьём («0.1234…»,
+ * «2026-06-04»). Для составных колонок берём смысловое поле (заказ — номер без позиции,
+ * МОЛ — ФИО, материал — название), чтобы чек-лист не дробился по каждой позиции.
+ * Фильтр сверяет РОВНО это значение — что видишь в списке, то и фильтруешь.
+ */
+export function flowFilterText(spec: FlowColumnSpec, row: FlowSandboxRow): string {
+  switch (spec.kind) {
+    case 'day':
+      return dayState(row).label;
+    case 'percent': {
+      const p = livePct(row);
+      return p == null || p === 0 ? '' : fmtPct(p);
+    }
+    case 'number': {
+      const n = row[spec.id];
+      return typeof n === 'number' ? fmtNum3(n) : '';
+    }
+    case 'order':
+      return row.ord ?? '';
+    case 'mol': {
+      const m = parseMol(row.mol);
+      return m ? m.fio : (row.mol ?? '');
+    }
+    case 'mat':
+      return row.mat ?? '';
+    case 'to':
+      return row.to_wh ?? '';
+    case 'time': {
+      const t = parseTime(row.time_at);
+      return t ? t.short : '';
+    }
+    default: {
+      const raw = row[spec.id];
+      return raw == null ? '' : String(raw);
+    }
+  }
+}
+
+/** Под-поля «умного» фильтра колонки MAT (скрыты в карточке материала). Фильтруем по
+ *  каждому отдельно, условия объединяются И. Без процента — он отдельной колонкой. */
+export type FlowMatSubId = 'mat' | 'created_by' | 'load_dt' | 'time_at' | 'mat_full';
+export const FLOW_MAT_SUBFIELDS: readonly { id: FlowMatSubId; title: string }[] = [
+  { id: 'mat', title: 'Название' },
+  { id: 'created_by', title: 'Создал' },
+  { id: 'load_dt', title: 'Дата создания' },
+  { id: 'time_at', title: 'Дата выгрузки' },
+  { id: 'mat_full', title: 'Тех-имя' },
+];
+/** Значение под-поля MAT для фильтра/чек-листа — отформатировано как в карточке:
+ *  даты «месяц число, год» (выгрузка — со временем, это метка партии выгрузки). */
+export function flowMatSubText(sub: FlowMatSubId, row: FlowSandboxRow): string {
+  switch (sub) {
+    case 'load_dt':
+      return row.load_dt ? flowDate(row.load_dt, { year: true }) : '';
+    case 'time_at':
+      return row.time_at ? formatDateRu(row.time_at) : '';
+    default: {
+      const raw = row[sub];
+      return raw == null ? '' : String(raw);
+    }
+  }
+}
+
 /** Одна строка карточки/подсказки. */
 export interface FlowCardLine {
   t: string;
@@ -426,6 +494,59 @@ export function flowCard(spec: FlowColumnSpec, row: FlowSandboxRow): FlowCardLin
   }
 }
 
+/** Стиль значения = его условное форматирование в таблице (заливка/текст или живой
+ *  градиент). Нужен, чтобы пункты выпадашек DAY/STAT выглядели как в таблице.
+ *  undefined — без особого форматирования (пункт оставляем как есть). */
+export interface FlowOptionStyle {
+  bg?: string;
+  text?: string;
+  /** Живой переливающийся фон (как в строке): NEW — оранжевый, «вопрос» — янтарь. */
+  gradient?: 'new' | 'vopros';
+}
+
+/** Цвет статуса STAT (единый источник для строки таблицы И пунктов выпадашки STAT). */
+export function statTheme(stat: string): FlowOptionStyle | undefined {
+  switch (stat) {
+    case 'мало':
+    case 'самовывоз':
+      return { bg: '#F1F0EC', text: '#8A8782' };
+    case 'отказ':
+      return { bg: '#F1F0EC', text: '#5A5752' };
+    case 'заявка':
+      return { bg: '#F1F0EC' };
+    case 'вопрос':
+      return { gradient: 'vopros' };
+    case 'масловоз':
+      return { bg: '#FBEDE3', text: '#8A5A2E' };
+    case 'мет_ок':
+      return { bg: '#EDF5E6', text: '#2E7D4F' };
+    case 'прекурсор':
+      return { bg: '#ECE3F3', text: '#5E3E86' };
+    default:
+      return undefined;
+  }
+}
+
+/** Цвет значения DAY (для пунктов выпадашки DAY): new — градиент, OFF — розово-красный. */
+export function dayOptionTheme(value: string): FlowOptionStyle | undefined {
+  if (value === 'new') return { gradient: 'new' };
+  if (value === 'OFF' || value === 'off') return { bg: '#F6E8E5', text: '#8A3030' };
+  return undefined;
+}
+
+// Статичные градиенты для пунктов (те же цвета, что живой «вжух» строки в гриде).
+const OPT_GRAD_NEW = 'linear-gradient(90deg, rgba(247,130,22,0.20), rgba(247,130,22,0.55) 50%, rgba(247,130,22,0.20))';
+const OPT_GRAD_VOPROS = 'linear-gradient(90deg, rgba(233,176,30,0.18), rgba(233,176,30,0.50) 50%, rgba(233,176,30,0.18))';
+
+/** Стиль `FlowOptionStyle` → CSS для пункта (на тёмном оверлее выпадашки). Светлая
+ *  заливка → тёмный текст (как в таблице); градиент — без заливки текста. */
+export function flowOptionStyleCss(s: FlowOptionStyle | undefined): { background?: string; color?: string } {
+  if (!s) return {};
+  if (s.gradient === 'new') return { background: OPT_GRAD_NEW };
+  if (s.gradient === 'vopros') return { background: OPT_GRAD_VOPROS };
+  return { background: s.bg, color: s.text ?? '#2A2925' };
+}
+
 /**
  * Условное форматирование СТРОКИ — мягкий фон по статусу (перенос из Google-листа,
  * адаптировано под светлый лист: тихие тона иной палитры, чтобы clay-выделение
@@ -448,23 +569,8 @@ export function rowTheme(
   // чтобы не сливался со светлым листом); тёмный текст поверх читается.
   if (/^\d{4}-\d{2}-\d{2}/.test(row.day_wk || '')) return { bg: '#C8E6A0' };
   if (molGone || (row.mol || '').toUpperCase().includes('НЕТ МОЛ')) return { bg: '#F2BFB7', text: '#7C1812' };
-  switch (row.stat) {
-    case 'мало':
-    case 'самовывоз':
-      return { bg: '#F1F0EC', text: '#8A8782' }; // тихий серый — «мало/самовывоз»
-    case 'отказ':
-      return { bg: '#F1F0EC', text: '#5A5752' }; // темнее — активно
-    case 'заявка':
-      return { bg: '#F1F0EC' };
-    // «вопрос» (бывш. «???») — теперь ЖИВОЙ переливающийся янтарный фон (drawCell в гриде),
-    // а не статичная заливка; поэтому здесь его НЕ красим.
-    case 'масловоз':
-      return { bg: '#FBEDE3', text: '#8A5A2E' };
-    case 'мет_ок':
-      return { bg: '#EDF5E6', text: '#2E7D4F' };
-    case 'прекурсор':
-      return { bg: '#ECE3F3', text: '#5E3E86' }; // спец-категория (регулируемое) — мягкий фиолет
-    default:
-      return undefined;
-  }
+  // STAT — единый источник цвета (statTheme, он же красит пункты выпадашки). «вопрос» =
+  // живой переливающийся градиент (drawCell в гриде), поэтому фоном здесь его НЕ красим.
+  const st = statTheme(row.stat);
+  return st && !st.gradient ? { bg: st.bg, text: st.text } : undefined;
 }

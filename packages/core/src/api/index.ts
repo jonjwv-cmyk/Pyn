@@ -18,6 +18,7 @@ export {
   type UnreadUpdateEvent,
   type PresenceChangeEvent,
   type BaseChangedEvent,
+  type FlowChangedEvent,
   type WarehousesChangedEvent,
   type DesktopKickedEvent,
   type SheetLockAcquiredEvent,

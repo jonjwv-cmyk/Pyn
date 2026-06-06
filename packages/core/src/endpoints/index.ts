@@ -206,3 +206,10 @@ export {
   type SchedulePutResult,
   type ScheduleLockOwner,
 } from './schedule';
+
+export {
+  flowWorkflowGet,
+  flowWorkflowEdit,
+  type FlowRow,
+  type FlowEdit,
+} from './flow';
