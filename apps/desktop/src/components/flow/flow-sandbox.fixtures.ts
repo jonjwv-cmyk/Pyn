@@ -35,6 +35,7 @@ export interface FlowSandboxRow {
   day_wk: string; // G DAY — единая колонка: 'new' | 'OFF' | дата (ISO). Стадия ST схлопнута сюда (2026-06-05).
   stat: string; // I STAT — статус
   time_at: string; // J TIME — когда выгружен к нам (до секунд)
+  off_at?: string; // когда удалён (пропал из выгрузки → day_wk='OFF'); пусто — активен
   pct: number | null; // % — ВИРТУАЛЬНАЯ (в БД нет): считаем livePct из qty/chg; поле-ключ колонки
   q: string; // L Q — значок аварийного запаса
   warn: string; // M ⚠️ — ручной заказ + ФИО
@@ -480,6 +481,11 @@ export function flowCard(spec: FlowColumnSpec, row: FlowSandboxRow): FlowCardLin
       }
       const up = formatDateRu(row.time_at);
       if (up) lines.push({ t: `Выгружен: ${up}`, muted: true, nowrap: true });
+      // Дата удаления — для OFF-строк (когда заказ пропал из выгрузки).
+      if (row.day_wk === 'OFF' && row.off_at) {
+        const off = formatDateRu(row.off_at);
+        if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
+      }
       // В КАРТОЧКЕ показываем вывоз всегда, когда есть данные (в т.ч. 0%); в КОЛОНКЕ 0 не пишем.
       const p = livePct(row);
       if (p != null && row.qty != null && row.chg != null) {

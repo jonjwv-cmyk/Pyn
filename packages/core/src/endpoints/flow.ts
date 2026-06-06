@@ -31,6 +31,8 @@ export interface FlowRow {
   load_dt: string;
   chg: number | null;
   mat_full: string;
+  /** Когда заказ удалён (пропал из выгрузки → day_wk='OFF'). Пусто — активен. */
+  off_at: string;
   row_version: number;
 }
 

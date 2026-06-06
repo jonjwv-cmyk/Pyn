@@ -39,11 +39,16 @@ import {
   type FlowChangedEvent,
   type FlowPlanMonth,
   type FlowPlanMonthChangedEvent,
+  type VghChangedEvent,
+  type VghRow,
   type WarehouseCluster,
   type WarehouseWeekday,
 } from '@pyn/core';
 import { api } from '@/lib/api';
 import { useWsEvent } from '@/lib/ws';
+import { useVghStore, normVghKey } from '@/lib/vgh-store';
+import { ensureVghLoaded, applyVghChanged } from '@/lib/vgh-repo';
+import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import { FlowZoomControl } from './FlowZoomControl';
 import { FlowSearchPanel, type FlowSearchGroup } from './FlowSearchPanel';
 import { ContactActionDialog, type ContactActionRequest } from '@/components/mol/ContactActionDialog';
@@ -730,6 +735,15 @@ export function FlowSandboxGrid() {
     }
     return { whById: byId, whByShop: byShop };
   }, [warehouses]);
+  // База ВГХ — источник KG/V и тех-имени для формирования (РЕАЛТАЙМ): KG = кол-во ×
+  // вес на 1 ЕИ, V = кол-во × объём на 1 ЕИ, тех-имя (MAT-карточка) — из базы по
+  // номенклатуре. Грузим лениво при входе, обновляем по WS `vgh_changed` (правка
+  // карточки / перенос из промежуточного листа сразу пересчитывают всем).
+  const vghByKey = useVghStore((s) => s.byKey);
+  useEffect(() => { void ensureVghLoaded(); }, []);
+  useWsEvent<VghChangedEvent>('vgh_changed', (e) => {
+    if (Array.isArray(e.rows)) applyVghChanged(e.rows as unknown as VghRow[]);
+  });
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
   const [sortLevels, setSortLevels] = useState<SortLevel[]>([]);
   const [filters, setFilters] = useState<Record<string, ColumnFilter>>({});
@@ -929,26 +943,51 @@ export function FlowSandboxGrid() {
   // Пока мета месяца НЕ загружена — снимок до загрузки (без мигания). Производное от
   // rows: смена TO / месяца сразу пересчитывает CLST у всех.
   const liveRows = useMemo<FlowSandboxRow[]>(() => {
-    if (rows.length === 0 || whById.size === 0) return rows;
-    if (!planMeta) return rows; // мета выбранного месяца ещё грузится — снимок
-    const shops = planMeta.shops;
+    if (rows.length === 0) return rows;
+    const haveWh = whById.size > 0 && !!planMeta; // ЖИВОЙ CLST (нужны склады + месяц)
+    const haveVgh = vghByKey.size > 0; // ЖИВЫЕ KG/V/тех-имя из базы ВГХ
+    if (!haveWh && !haveVgh) return rows;
+    const shops = planMeta?.shops ?? [];
     let changed = false;
     const next = rows.map((r) => {
-      const wh = whById.get(r.to_wh);
-      const weekday =
-        (shops.length ? frozenWeekdayOf(shops, r.to_wh) : null) ||
-        (wh?.inSchedule ? wh.deliveryDay : null);
-      const clst = !weekday
-        ? CLST_NONE
-        : wh && (wh.cluster === 'ВЫЕЗД' || wh.cluster === 'КХП')
-          ? `${weekday} ${wh.cluster}`
-          : weekday;
-      if (clst === r.clst) return r;
+      const patch: Partial<FlowSandboxRow> = {};
+      if (haveWh) {
+        const wh = whById.get(r.to_wh);
+        const weekday =
+          (shops.length ? frozenWeekdayOf(shops, r.to_wh) : null) ||
+          (wh?.inSchedule ? wh.deliveryDay : null);
+        const clst = !weekday
+          ? CLST_NONE
+          : wh && (wh.cluster === 'ВЫЕЗД' || wh.cluster === 'КХП')
+            ? `${weekday} ${wh.cluster}`
+            : weekday;
+        if (clst !== r.clst) patch.clst = clst;
+      }
+      if (haveVgh) {
+        // KG = кол-во × вес на 1 ЕИ; V = кол-во × объём на 1 ЕИ; тех-имя — из базы.
+        // Перекрываем ТОЛЬКО когда база даёт значение (иначе оставляем снимок).
+        const base = vghByKey.get(normVghKey(r.no_num));
+        if (base) {
+          const qty = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+          const hasQty = Number.isFinite(qty);
+          if (base.weight_kg != null && hasQty) {
+            const kg = Math.round(qty * base.weight_kg * 1000) / 1000;
+            if (kg !== r.kg) patch.kg = kg;
+          }
+          if (base.volume_m3 != null && hasQty) {
+            const v = qty * base.volume_m3;
+            if (v !== r.v) patch.v = v;
+          }
+          const tech = base.tech_name || r.mat_full;
+          if (tech !== r.mat_full) patch.mat_full = tech;
+        }
+      }
+      if (Object.keys(patch).length === 0) return r;
       changed = true;
-      return { ...r, clst };
+      return { ...r, ...patch };
     });
     return changed ? next : rows;
-  }, [rows, whById, planMeta]);
+  }, [rows, whById, planMeta, vghByKey]);
 
   // Представление = фильтр показа + сортировка поверх источника (с ЖИВЫМ CLST).
   // Если ни фильтра, ни сортировки — отдаём массив liveRows без копий.
@@ -1257,7 +1296,14 @@ export function FlowSandboxGrid() {
         return {
           kind: GridCellKind.Number,
           data: valid ? num : undefined,
-          displayData: valid ? fmtNum3(num) : spec.id === 'kg' || spec.id === 'v' ? '—' : '',
+          // V — «умный» показ (хвостовые нули убраны, до 6 знаков); KG/прочее — 3 знака.
+          displayData: valid
+            ? spec.id === 'v'
+              ? fmtSmart(num, 6)
+              : fmtNum3(num)
+            : spec.id === 'kg' || spec.id === 'v'
+              ? '—'
+              : '',
           allowOverlay: spec.editable === true,
           contentAlign: 'right',
         };
