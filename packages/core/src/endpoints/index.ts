@@ -228,9 +228,13 @@ export {
   flowWorkflowEdit,
   flowPlanMonthGet,
   flowPlanMonthSet,
+  flowImport,
+  parseOrdersTsv,
   type FlowRow,
   type FlowEdit,
   type FlowPlanMonth,
+  type FlowImportRow,
+  type FlowImportResult,
 } from './flow';
 
 export {

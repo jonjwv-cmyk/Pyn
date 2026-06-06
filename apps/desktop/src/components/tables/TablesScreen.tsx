@@ -4,8 +4,10 @@ import * as Popover from '@radix-ui/react-popover';
 import { Chrome, RefreshCcw } from 'lucide-react';
 import {
   checkSheetActionStatus,
+  flowImport,
   getMacroBundle,
   getSheetStats,
+  parseOrdersTsv,
   releaseSheetLock,
   runScript,
   submitMacroData,
@@ -690,6 +692,22 @@ export function TablesScreen({
         if (!vbsRun || !vbsRun.ok || !vbsRun.tsv) {
           showToast(t('tables.toast_vbs_failed', { error: vbsRun?.error ?? 'unknown' }));
           return;
+        }
+
+        // §flow-import — выгрузка заказов ДОПОЛНИТЕЛЬНО уходит в НАШЕ формирование
+        // (flow_workflow) своим E2E-каналом (приложение шифрует → корп-прокси если
+        // есть → слепой VPS → воркер). Аддитивно к Google-пути на переходный период;
+        // падение здесь НЕ ломает обновление Google (старый путь ниже).
+        if (customActionLabel(action.label, t) === t('tables_registry.action_update_orders')) {
+          try {
+            const orders = parseOrdersTsv(vbsRun.tsv);
+            if (orders.length > 0) {
+              const r = await flowImport(api, orders);
+              showToast(`Формирование обновлено: +${r.inserted} нов · ${r.updated} правок · ${r.off} снято`);
+            }
+          } catch (_) {
+            // некритично — Google-путь отработает ниже
+          }
         }
 
         const submit = await submitMacroData(api, {

@@ -120,3 +120,80 @@ export async function flowPlanMonthSet(
   const wire = await client.call<FlowPlanMonthWire>('flow_plan_month_set', params);
   return wireToPlanMonth(wire, params.year, params.month);
 }
+
+/**
+ * Приём выгрузки заказов: приложение запускает VBS «Выгрузка заказов» (SAP→TSV),
+ * парсит TSV (`parseOrdersTsv`) и шлёт строки сюда СВОИМ E2E-каналом (через
+ * корп-прокси если есть → слепой VPS → воркер). Сервер корректирует (111→0111,
+ * чистка чисел), обновляет формирование НА МЕСТЕ и рассылает реалтайм.
+ */
+export interface FlowImportRow {
+  ord: string;
+  it: string;
+  fr: string;
+  q: string;
+  no_num: string;
+  mat: string;
+  uom: string;
+  qty: string;
+  kg: string;
+  chg: string;
+  created_by: string;
+  load_dt: string;
+  /** Сырой склад-получатель (TO_1); корректировку 111→0111 делает сервер. */
+  to: string;
+}
+
+export interface FlowImportResult {
+  received: number;
+  updated: number;
+  inserted: number;
+  off: number;
+  reappeared: number;
+  staging_upserted: number;
+}
+
+/**
+ * Разобрать TSV выгрузки заказов (как пишет VBS `Pyn-wf_orders.vbs`): без шапки,
+ * строки через перевод строки, 13 колонок через TAB:
+ * ORD·IT·FR·Q·NO.№·MAT·UoM·QTY·KG·CHG·CREATEDBY·LOADDT·TO_1.
+ * Строки, где первая колонка не число (шапка/мусор) — пропускаем.
+ */
+export function parseOrdersTsv(tsv: string): FlowImportRow[] {
+  const out: FlowImportRow[] = [];
+  for (const raw of String(tsv ?? '').split(/\r?\n/)) {
+    if (!raw.trim()) continue;
+    const p = raw.split('\t');
+    const ord = (p[0] ?? '').trim();
+    if (!/^\d+$/.test(ord)) continue;
+    out.push({
+      ord,
+      it: (p[1] ?? '').trim(),
+      fr: (p[2] ?? '').trim(),
+      q: (p[3] ?? '').trim(),
+      no_num: (p[4] ?? '').trim(),
+      mat: (p[5] ?? '').trim(),
+      uom: (p[6] ?? '').trim(),
+      qty: (p[7] ?? '').trim(),
+      kg: (p[8] ?? '').trim(),
+      chg: (p[9] ?? '').trim(),
+      created_by: (p[10] ?? '').trim(),
+      load_dt: (p[11] ?? '').trim(),
+      to: (p[12] ?? '').trim(),
+    });
+  }
+  return out;
+}
+
+/** Отправить разобранную выгрузку заказов на воркер (E2E через VPS). */
+export async function flowImport(client: ApiClient, rows: FlowImportRow[]): Promise<FlowImportResult> {
+  const wire = await client.call<Partial<FlowImportResult>>('flow_import', { rows });
+  return {
+    received: Number(wire.received) || 0,
+    updated: Number(wire.updated) || 0,
+    inserted: Number(wire.inserted) || 0,
+    off: Number(wire.off) || 0,
+    reappeared: Number(wire.reappeared) || 0,
+    staging_upserted: Number(wire.staging_upserted) || 0,
+  };
+}
