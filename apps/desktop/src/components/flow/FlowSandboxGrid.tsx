@@ -1635,15 +1635,23 @@ export function FlowSandboxGrid() {
         if (spec.kind === 'dropdown') {
           const v = String(newVal ?? '');
           if (v !== '' && !(spec.options ?? []).includes(v)) continue;
-          // РАСЧЁТНЫЕ статусы (мало/мет_ок/масловоз/прекурсор). Поставить руками нельзя
-          // (хотим «мало» → меняем норму), снять расчётный — тоже нельзя: открываем карточку
-          // ВГХ (правка MIN QTY → статус пересчитается). Сменить на РУЧНОЙ (заявка/отказ/…) —
-          // можно, он перекроет расчёт. Снять РУЧНОЙ (пусто) — можно, расчёт включится сам.
+          // Карточка ВГХ открывается ТОЛЬКО при реальном конфликте с нормой:
+          //  • снять расчётный «в пусто» (мало/мет_ок/масловоз/прекурсор) → карточка;
+          //  • поставить «мало», когда норма ПРОЙДЕНА (строка сейчас не «мало») → карточка
+          //    (надо поднять MIN QTY, чтобы заказ считался недобором);
+          //  • поставить другой расчётный (мет_ок/масловоз/прекурсор) руками → карточка
+          //    (их ставит только расчёт; в выпадашке их нет, это защита от вставки).
+          // НЕ открывается: смена расчётного на РУЧНОЙ (заявка/отказ/…) — разрешена сразу;
+          // «мало» когда уже «мало» — no-op; снятие РУЧНОГО — разрешено (расчёт включится сам).
           if (spec.id === 'stat') {
             const cur = String(viewRow.stat ?? '').trim();
-            const settingAuto = (FLOW_STAT_AUTO as readonly string[]).includes(v);
-            const clearingAuto = v === '' && (FLOW_STAT_AUTO as readonly string[]).includes(cur);
-            if (settingAuto || clearingAuto) {
+            const curIsAuto = (FLOW_STAT_AUTO as readonly string[]).includes(cur);
+            const openCard =
+              (v === '' && curIsAuto) || // снять расчётный
+              (v === 'мало' && cur !== 'мало') || // поставить «мало» при пройденной норме
+              ((FLOW_STAT_AUTO as readonly string[]).includes(v) && v !== 'мало'); // мет_ок/масловоз/прекурсор руками
+            if (v === 'мало' && cur === 'мало') continue; // уже «мало» — ничего не делаем
+            if (openCard) {
               setStatCard({ noNum: String(viewRow.no_num ?? ''), mat: String(viewRow.mat ?? ''), uom: String(viewRow.uom ?? '') });
               continue;
             }
