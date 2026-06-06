@@ -16,6 +16,8 @@ export interface FlowTwoData {
   readonly dot?: string;
   /** Цвет «пилюли» под основным текстом (МОЛ — по статусу). */
   readonly pill?: string;
+  /** Насыщенная пилюля (DAY new/OFF): без точки, ЖИРНЫЙ текст цветом пилюли — заметно. */
+  readonly pillStrong?: boolean;
   /** Колонка с раскрытием — на hover рисуем ▾ (как в заголовке). */
   readonly expand?: boolean;
   /** Жирный основной текст (колонка %). */
@@ -52,7 +54,7 @@ export const flowTwoToneRenderer: CustomRenderer<FlowTwoCell> = {
     (c.data as { kind?: unknown }).kind === 'flow-two',
   draw: (args, cell) => {
     const { ctx, rect, theme } = args;
-    const { primary, secondary, icon, dot, pill, bold, alignSep } = cell.data;
+    const { primary, secondary, icon, dot, pill, pillStrong, bold, alignSep } = cell.data;
     const padX = theme.cellHorizontalPadding;
     const cy = rect.y + rect.height / 2;
     ctx.save();
@@ -76,8 +78,23 @@ export const flowTwoToneRenderer: CustomRenderer<FlowTwoCell> = {
       ctx.fill();
       x += 13;
     }
-    if (pill && primary) {
-      // Пилюля по статусу: тонкий фон + точка слева + ФИО внутри.
+    if (pill && primary && pillStrong) {
+      // Насыщенная пилюля (DAY new/OFF): фон-тон + ЖИРНЫЙ текст цветом пилюли, без точки.
+      ctx.font = `700 ${theme.baseFontStyle} ${theme.fontFamily}`;
+      const tw = ctx.measureText(primary).width;
+      const padP = 6;
+      const ph = Math.min(rect.height - 4, 18);
+      const pw = padP + tw + padP;
+      const py = cy - ph / 2;
+      ctx.fillStyle = pill + '33'; // ~20% alpha
+      ctx.beginPath();
+      ctx.roundRect(x, py, pw, ph, ph / 2);
+      ctx.fill();
+      ctx.fillStyle = pill;
+      ctx.fillText(primary, x + padP, cy);
+      x += pw + 5;
+    } else if (pill && primary) {
+      // Пилюля по статусу (МОЛ): тонкий фон + точка слева + ФИО внутри.
       const tw = ctx.measureText(primary).width;
       const padP = 5;
       const dotR = 3;

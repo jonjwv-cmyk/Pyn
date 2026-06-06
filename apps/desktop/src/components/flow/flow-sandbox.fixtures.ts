@@ -278,6 +278,11 @@ export function parseMol(
  * (юзер 2026-06-05: стадию ST схлопнули в DAY, легаси дни недели → реальные даты).
  * Показ: off / дата доставки / new / пусто. Никаких заглушек-«new» на строках без даты.
  */
+/** Цвета пилюль DAY: NEW — насыщенный оранжевый; OFF («нет заказа») — насыщенный
+ *  красный (заметнее и приоритетнее NEW). */
+const DAY_NEW_COLOR = '#C2620E';
+const DAY_OFF_COLOR = '#B42318';
+
 export function dayState(row: FlowSandboxRow): { label: string; color?: string } {
   const d = (row.day_wk || '').trim();
   if (d === 'OFF') return { label: 'off' }; // строчными, без точки
@@ -308,6 +313,7 @@ export function flowComposed(
   icon?: 'clock' | 'warn';
   dot?: string;
   pill?: string;
+  pillStrong?: boolean;
   expand?: boolean;
   bold?: boolean;
   alignSep?: boolean;
@@ -338,6 +344,10 @@ export function flowComposed(
       return { primary: m.fio, secondary: '', pill: m.color, expand: true };
     }
     case 'day': {
+      const d = (row.day_wk || '').trim();
+      // NEW/OFF — насыщенные пилюли (как «Нет МОЛа»); OFF (нет заказа) краснее и приоритетнее.
+      if (d === 'new') return { primary: 'new', secondary: '', pill: DAY_NEW_COLOR, pillStrong: true, expand: true };
+      if (d === 'OFF') return { primary: 'OFF', secondary: '', pill: DAY_OFF_COLOR, pillStrong: true, expand: true };
       const s = dayState(row);
       return { primary: s.label, secondary: '', dot: s.color, expand: true };
     }
@@ -564,7 +574,7 @@ export function rowTheme(
   if (note === 'ERROR') return { bg: '#E2F0F1', text: '#1C5A60' };
   if (note === 'OBD NO') return { bg: '#FBF3D6', text: '#7A5A1E' };
   if (note === 'WORKFLOW NO') return { bg: '#EFEEE9', text: '#7A7770' };
-  if (row.day_wk === 'OFF') return { bg: '#F6E8E5', text: '#8A3030' };
+  if (row.day_wk === 'OFF') return { bg: '#F4C5BE', text: '#8A1E14' }; // насыщеннее: OFF = нет заказа, приоритет
   // Выбрана конкретная дата доставки → заливка YES — сочный салатовый (не бледный,
   // чтобы не сливался со светлым листом); тёмный текст поверх читается.
   if (/^\d{4}-\d{2}-\d{2}/.test(row.day_wk || '')) return { bg: '#C8E6A0' };

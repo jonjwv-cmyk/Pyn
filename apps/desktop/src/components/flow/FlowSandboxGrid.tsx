@@ -1912,7 +1912,17 @@ export function FlowSandboxGrid() {
       // (оранжевый) ИЛИ STAT «вопрос» (янтарь); NEW в приоритете, если строка и то, и то.
       // ⚠️ save/restore ОБЯЗАТЕЛЕН: Glide кеширует fillStyle между ячейками (drawPrep), и
       // без восстановления градиент утекал в текст этой и СОСЕДНИХ ячеек.
-      const sweep = r ? (r.day_wk === 'new' ? SWEEP_NEW : r.stat === 'вопрос' ? SWEEP_VOPROS : null) : null;
+      // Приоритет подсветки: OFF (нет заказа) → NEW → STAT «вопрос». OFF НИКОГДА не
+      // перебиваем анимацией (он краснее и важнее); NEW светится как раньше + имеет пилюлю.
+      const sweep = r
+        ? r.day_wk === 'OFF'
+          ? null
+          : r.day_wk === 'new'
+            ? SWEEP_NEW
+            : r.stat === 'вопрос'
+              ? SWEEP_VOPROS
+              : null
+        : null;
       if (sweep) {
         const W = gridPxWidthRef.current || rect.x + rect.width * 4;
         // Фаза — по времени (одинаковая для всех ячеек кадра → полоса непрерывна по строке).
