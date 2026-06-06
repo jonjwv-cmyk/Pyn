@@ -1635,16 +1635,18 @@ export function FlowSandboxGrid() {
         if (spec.kind === 'dropdown') {
           const v = String(newVal ?? '');
           if (v !== '' && !(spec.options ?? []).includes(v)) continue;
-          // РАСЧЁТНЫЕ статусы (мало/мет_ок/масловоз/прекурсор) руками не трогаем: ни снять,
-          // ни сменить на другой расчётный — только через карточку ВГХ (MIN QTY). Сменить
-          // на РУЧНОЙ (заявка/отказ/…) — можно, он перекроет расчёт. Открываем карточку материала.
-          if (
-            spec.id === 'stat' &&
-            (FLOW_STAT_AUTO as readonly string[]).includes(String(viewRow.stat ?? '').trim()) &&
-            (v === '' || (FLOW_STAT_AUTO as readonly string[]).includes(v))
-          ) {
-            setStatCard({ noNum: String(viewRow.no_num ?? ''), mat: String(viewRow.mat ?? ''), uom: String(viewRow.uom ?? '') });
-            continue;
+          // РАСЧЁТНЫЕ статусы (мало/мет_ок/масловоз/прекурсор). Поставить руками нельзя
+          // (хотим «мало» → меняем норму), снять расчётный — тоже нельзя: открываем карточку
+          // ВГХ (правка MIN QTY → статус пересчитается). Сменить на РУЧНОЙ (заявка/отказ/…) —
+          // можно, он перекроет расчёт. Снять РУЧНОЙ (пусто) — можно, расчёт включится сам.
+          if (spec.id === 'stat') {
+            const cur = String(viewRow.stat ?? '').trim();
+            const settingAuto = (FLOW_STAT_AUTO as readonly string[]).includes(v);
+            const clearingAuto = v === '' && (FLOW_STAT_AUTO as readonly string[]).includes(cur);
+            if (settingAuto || clearingAuto) {
+              setStatCard({ noNum: String(viewRow.no_num ?? ''), mat: String(viewRow.mat ?? ''), uom: String(viewRow.uom ?? '') });
+              continue;
+            }
           }
         } else if (spec.kind === 'day') {
           const v = String(newVal ?? '');

@@ -426,12 +426,18 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
           if (value.data && !vghReady(rowData)) { setToast('Сначала заполните вес — без него нельзя перенести в базу'); continue; }
           v = !!value.data;
         } else if (spec.kind === 'number') {
-          if (value.kind !== GridCellKind.Number) continue;
-          v = value.data == null ? null : Number(value.data);
+          // Правка-числом ИЛИ вставка-текстом из буфера: принимаем оба; запятая→точка.
+          if (value.kind === GridCellKind.Number) {
+            v = value.data == null ? null : Number(value.data);
+          } else if (value.kind === GridCellKind.Text) {
+            const s = value.data.trim().replace(/\s+/g, '').replace(',', '.');
+            v = s === '' ? null : Number(s);
+          } else continue;
           if (v != null && !Number.isFinite(v)) continue;
         } else {
-          if (value.kind !== GridCellKind.Text) continue;
-          v = value.data;
+          if (value.kind === GridCellKind.Text) v = value.data;
+          else if (value.kind === GridCellKind.Number) v = value.data == null ? '' : String(value.data);
+          else continue;
         }
         const p = patchByNo.get(String(rowData.no_num)) ?? {};
         p[spec.id] = v;
@@ -488,6 +494,35 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
   const onCellEdited = useCallback(
     (cellPos: Item, value: EditableGridCell) => applyEdits([{ location: cellPos, value }]),
     [applyEdits],
+  );
+
+  // Множественная правка / вставка из буфера (Glide зовёт onCellsEdited при paste).
+  const onCellsEdited = useCallback(
+    (edits: readonly { location: Item; value: EditableGridCell }[]) => {
+      applyEdits(edits.map((e) => ({ location: e.location, value: e.value })));
+      return true;
+    },
+    [applyEdits],
+  );
+
+  // Вставка одной ячейки в ВЕСЬ выделенный диапазон (Excel-поведение).
+  const handlePaste = useCallback(
+    (_target: Item, values: readonly (readonly string[])[]): boolean => {
+      const single = values.length === 1 && values[0]?.length === 1 ? values[0][0] : undefined;
+      const range = selection.current?.range;
+      if (single !== undefined && range && (range.width > 1 || range.height > 1)) {
+        const edits: { location: Item; value: EditableGridCell }[] = [];
+        for (let r = range.y; r < range.y + range.height; r++) {
+          for (let c = range.x; c < range.x + range.width; c++) {
+            edits.push({ location: [c, r], value: { kind: GridCellKind.Text, data: single, displayData: single, allowOverlay: true } });
+          }
+        }
+        applyEdits(edits);
+        return false;
+      }
+      return true;
+    },
+    [selection, applyEdits],
   );
 
   // Двойной клик по NO.№/MAT — открыть карточку правки базы ВГХ для этой номенклатуры.
@@ -759,6 +794,8 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
             rows={viewRows.length}
             getCellContent={getCellContent}
             onCellEdited={onCellEdited}
+            onCellsEdited={onCellsEdited}
+            onPaste={handlePaste}
             onCellActivated={onCellActivated}
             onHeaderMenuClick={handleHeaderMenuClick}
             drawHeader={drawHeader}

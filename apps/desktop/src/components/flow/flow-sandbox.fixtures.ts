@@ -100,6 +100,13 @@ export const MASLOVOZ_NOS = new Set(['2030054', '2030058', '2030077', '2031541',
 export const PRECURSOR_NO = '2266901';
 
 /**
+ * Значения выпадашки STAT: ручные (ставятся) + `мало`/`мет_ок` (видны, но выбор
+ * открывает карточку ВГХ — они расчётные по MIN QTY). масловоз/прекурсор —
+ * чисто авто по номенклатуре, в выпадашку не выносим.
+ */
+export const FLOW_STAT_DROPDOWN = ['мало', 'мет_ок', 'заявка', 'вопрос', 'самовывоз', 'отказ', 'неликвиды'] as const;
+
+/**
  * ВИДИМЫЕ колонки «Формирования» (слой показа, юзер 2026-06-04). Свёрнуто:
  * заказ|поз — одна колонка; DAY = NEW/OFF/дата (ST+день слиты); ⚠ — префикс
  * материала; вторичные поля выгрузки (TIME/%/CREATEDBY/LOADDT/CHG/тех-имя) скрыты
@@ -114,7 +121,7 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'day_wk', title: 'DAY', width: 84, kind: 'day', editable: true },
   { id: 'request', title: 'ЗАПРОС', width: 108, kind: 'text', editable: true },
   { id: 'mol', title: 'МОЛ', width: 172, kind: 'mol', editable: true },
-  { id: 'stat', title: 'STAT', width: 104, kind: 'dropdown', options: FLOW_STAT_MANUAL, editable: true },
+  { id: 'stat', title: 'STAT', width: 104, kind: 'dropdown', options: FLOW_STAT_DROPDOWN, editable: true },
   { id: 'pct', title: '%', width: 52, kind: 'percent' },
   { id: 'q', title: 'Q', width: 38, kind: 'text' },
   { id: 'no_num', title: 'NO. №', width: 86, kind: 'text' },

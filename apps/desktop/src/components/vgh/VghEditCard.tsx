@@ -38,15 +38,16 @@ interface FormState {
 
 const EMPTY: FormState = { mat: '', uom: '', tech_name: '', weight_kg: '', len_mm: '', wid_mm: '', hgt_mm: '', min_qty: '' };
 
-/** Текст → число|null (запятая-десятич ок). Пусто → null. */
+/** Текст → число|null. Разряды пробелом и запятая-десятич — ок. Пусто → null. */
 function parseNum(s: string): number | null {
-  const t = s.trim().replace(',', '.');
+  const t = s.replace(/\s+/g, '').replace(',', '.');
   if (!t) return null;
   const n = Number(t);
   return Number.isFinite(n) ? n : null;
 }
+/** Число → текст для поля ввода: запятая-десятич (как везде в Pyn), без хвостовых нулей. */
 function numToStr(n: number | null | undefined): string {
-  return n == null || !Number.isFinite(n) ? '' : String(n);
+  return n == null || !Number.isFinite(n) ? '' : String(n).replace('.', ',');
 }
 
 /**

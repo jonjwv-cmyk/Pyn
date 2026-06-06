@@ -35,19 +35,21 @@ export interface VghColumnSpec {
   frac?: number;
 }
 
+// Редактируем РУКАМИ только вес/Д/Ш/В/MIN QTY (+ чекбокс переноса). FR/NO/MAT/ЕИ/
+// тех-имя приходят из формирования/SAP — read-only (правка → каша). (Юзер 2026-06-08.)
 export const VGH_COLUMNS: VghColumnSpec[] = [
   { id: 'marked', title: '✓', kind: 'check', width: 40, editable: true },
-  { id: 'fr', title: 'FR', kind: 'text', width: 56, editable: true },
+  { id: 'fr', title: 'FR', kind: 'text', width: 56, editable: false },
   { id: 'no_num', title: 'NO. №', kind: 'text', width: 92, editable: false },
-  { id: 'mat', title: 'MAT', kind: 'text', width: 280, editable: true },
-  { id: 'uom', title: 'ЕИ', kind: 'text', width: 48, editable: true },
+  { id: 'mat', title: 'MAT', kind: 'text', width: 280, editable: false },
+  { id: 'uom', title: 'ЕИ', kind: 'text', width: 48, editable: false },
   { id: 'weight_kg', title: 'КГ (1 ЕИ)', kind: 'number', width: 84, editable: true, frac: 3 },
   { id: 'len_mm', title: 'Д', kind: 'number', width: 64, editable: true, frac: 1 },
   { id: 'wid_mm', title: 'Ш', kind: 'number', width: 64, editable: true, frac: 1 },
   { id: 'hgt_mm', title: 'В', kind: 'number', width: 64, editable: true, frac: 1 },
   { id: 'min_qty', title: 'MIN QTY', kind: 'number', width: 76, editable: true, frac: 3 },
   { id: 'volume', title: 'V, м³', kind: 'volume', width: 84, editable: false, frac: 6 },
-  { id: 'tech_name', title: 'ТЕХ-ИМЯ', kind: 'text', width: 280, editable: true },
+  { id: 'tech_name', title: 'ТЕХ-ИМЯ', kind: 'text', width: 280, editable: false },
 ];
 
 /** Строка показа = серверная строка staging + стабильный _id + производный объём. */
