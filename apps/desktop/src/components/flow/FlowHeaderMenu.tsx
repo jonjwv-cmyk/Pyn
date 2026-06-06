@@ -2,6 +2,8 @@ import { useMemo } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { ArrowDown, ArrowUp, Check, Search, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { guardInteractOutside } from '@/lib/modal-guard';
+import { useScrollMemory } from './use-scroll-memory';
 
 /** Экранные координаты заголовка колонки (из Glide `onHeaderMenuClick`). */
 export interface FlowHeaderMenuAnchor {
@@ -28,8 +30,10 @@ interface FlowHeaderMenuProps {
   onSortReset: () => void;
   onSearchChange: (q: string) => void;
   onToggleValue: (value: string) => void;
-  onCheckAll: () => void;
-  onUncheckAll: () => void;
+  /** Очистить фильтр колонки (снять поиск + вернуть все галочки) → показать всё. */
+  onClear: () => void;
+  /** Снять ВСЕ галочки (исключить все значения) → дальше отметить только нужные. */
+  onDeselectAll: () => void;
   onClose: () => void;
 }
 
@@ -51,11 +55,13 @@ export function FlowHeaderMenu({
   onSortReset,
   onSearchChange,
   onToggleValue,
-  onCheckAll,
-  onUncheckAll,
+  onClear,
+  onDeselectAll,
   onClose,
 }: FlowHeaderMenuProps) {
   const open = state !== null;
+  const scroll = useScrollMemory(`col-${state?.colIndex ?? 'none'}`);
+  const filterActive = search.trim() !== '' || excluded.size > 0;
 
   // Чек-лист: сужаем поиском + кап, чтобы не рисовать тысячи строк.
   const shown = useMemo(() => {
@@ -84,6 +90,7 @@ export function FlowHeaderMenu({
           align="start"
           sideOffset={4}
           collisionPadding={8}
+          onInteractOutside={guardInteractOutside}
           className="z-30 flex w-64 flex-col rounded-xl border border-border-subtle bg-bg-elevated p-1.5 text-text-secondary shadow-[0_8px_28px_rgba(0,0,0,0.45)]"
         >
           <button type="button" className={sortBtn} onClick={() => onSort('asc')}>
@@ -113,18 +120,43 @@ export function FlowHeaderMenu({
               placeholder="Поиск в колонке…"
               className="w-full bg-transparent text-[12px] text-text-primary outline-none placeholder:text-text-muted/60"
             />
+            {search !== '' && (
+              <button
+                type="button"
+                onClick={() => onSearchChange('')}
+                title="Очистить"
+                className="shrink-0 rounded p-0.5 text-text-muted/70 transition-colors hover:text-text-strong"
+              >
+                <X size={12} strokeWidth={2} />
+              </button>
+            )}
           </div>
 
           <div className="flex items-center justify-between px-1 pt-1.5 text-[12px]">
-            <button type="button" className="text-text-muted hover:text-text-strong" onClick={onCheckAll}>
-              Выбрать все
-            </button>
-            <button type="button" className="text-text-muted hover:text-text-strong" onClick={onUncheckAll}>
-              Очистить
-            </button>
+            <span className="text-text-muted/70">Значения</span>
+            <div className="flex items-center gap-2.5">
+              {/* «Сбросить» — снять все галочки (дальше отметить нужные). */}
+              <button
+                type="button"
+                onClick={onDeselectAll}
+                disabled={values.length === 0}
+                className="text-text-muted transition-colors hover:text-text-strong disabled:opacity-40"
+              >
+                Сбросить
+              </button>
+              {/* «Очистить» — вернуть все галочки + снять поиск (показать всё). */}
+              <button
+                type="button"
+                onClick={onClear}
+                disabled={!filterActive}
+                className="text-text-muted transition-colors hover:text-text-strong disabled:opacity-40"
+              >
+                Очистить
+              </button>
+            </div>
           </div>
 
-          <div className="mt-1 max-h-56 overflow-y-auto">
+          <div ref={scroll.ref} onScroll={scroll.onScroll} className="mt-1 max-h-56 overflow-y-auto">
             {shown.items.map((v) => {
               const checked = !excluded.has(v);
               return (

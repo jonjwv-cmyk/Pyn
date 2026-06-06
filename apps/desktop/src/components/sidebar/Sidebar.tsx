@@ -8,10 +8,11 @@ import {
 } from '@/lib/nav-sections';
 import { cn } from '@/lib/cn';
 import { formatDbDate } from '@/lib/mol-format';
-import { refreshMolFromServer } from '@/lib/mol-repo';
+import { refreshPersonsFromServer } from '@/lib/persons-repo';
+import { usePersonsStore } from '@/lib/persons-store';
 import { refreshWarehousesFromServer } from '@/lib/warehouses-repo';
 import { useWarehousesStore } from '@/lib/warehouses-store';
-import { useMolStore, usePresenceStore, useUiStateStore } from '@/lib/stores';
+import { usePresenceStore, useUiStateStore } from '@/lib/stores';
 import type { NavSection, NavSectionId } from '@/types/nav';
 import { SessionExpiryPill } from './SessionExpiryPill';
 import { SidebarHeader } from './SidebarHeader';
@@ -133,14 +134,14 @@ export function Sidebar({
     badge: badges?.[s.id] ?? s.badge,
   }));
 
-  // Метадата базы МОЛ — для попап-меню. `Sidebar` всегда rendered поверх
-  // mol-store, поэтому subscribe здесь и пасуем в UserPopupMenu пропсами.
-  const molMeta = useMolStore((s) => s.meta);
-  const molStatus = useMolStore((s) => s.status);
+  // Метадата единой базы «Контакты» (persons) — для попап-меню. МОЛ — её
+  // производное, отдельной базы МОЛ больше нет.
+  const molMeta = usePersonsStore((s) => s.meta);
+  const molStatus = usePersonsStore((s) => s.status);
   // Складская база («Цеха») — версия/дата/статус для строки «База данных Цеха».
   const whMeta = useWarehousesStore((s) => s.meta);
   const whStatus = useWarehousesStore((s) => s.status);
-  const molOutcome = useMolStore((s) => s.lastRefreshOutcome);
+  const molOutcome = usePersonsStore((s) => s.lastRefreshOutcome);
   const whOutcome = useWarehousesStore((s) => s.lastRefreshOutcome);
 
   // §pyn-1.2.42 — self-status из единого presenceStore (раньше был hardcoded
@@ -238,7 +239,7 @@ export function Sidebar({
           dbToastKind={molOutcome === 'error' ? 'error' : 'info'}
           onOpenSettings={onOpenSettings}
           onRefreshDb={() => {
-            void refreshMolFromServer({ force: true });
+            void refreshPersonsFromServer({ force: true });
           }}
           warehouseDbVersion={whMeta ? `v${whMeta.version}` : '—'}
           warehouseDbDate={whMeta ? formatDbDate(whMeta.updatedAt) : t('sidebar_extra.db_not_loaded')}

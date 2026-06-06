@@ -2,6 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { ArrowUpCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
+import { useBlockingModal, blockingDialogContentProps } from '@/lib/modal-guard';
 
 /**
  * Confirm-prompt после успешного скачивания обновления.
@@ -20,6 +21,8 @@ export function UpdateConfirmDialog({
   onCancel: () => void;
 }): JSX.Element {
   const { t } = useTranslation();
+  // Окно обновления — блокирующее: клик мимо не закрывает и не сбивает фон (modal-guard).
+  useBlockingModal(open);
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
@@ -31,6 +34,7 @@ export function UpdateConfirmDialog({
           )}
         />
         <Dialog.Content
+          {...blockingDialogContentProps}
           className={cn(
             'fixed left-1/2 top-1/2 z-50 w-[380px] -translate-x-1/2 -translate-y-1/2',
             'rounded-xl border border-border-default bg-bg-elevated p-5 shadow-2xl',

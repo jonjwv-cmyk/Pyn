@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
 import * as Dialog from '@radix-ui/react-dialog';
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, Copy as CopyIcon, Search, SlidersHorizontal, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, Copy as CopyIcon, Pencil, Search, SlidersHorizontal, X } from 'lucide-react';
 import type { MolRecord, ParsedMolQuery } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import {
@@ -17,9 +17,16 @@ import { useUiStateStore } from '@/lib/stores';
 import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
 import type { ContactActionRequest } from './ContactActionDialog';
 
-/** Строка таблицы = МОЛ + все его склады (с датами «по») для колонки «Склад». */
+/** Строка таблицы = контакт + все его склады (с датами «по») для колонки «Склад». */
 export interface MolTableRow extends MolRecord {
   warehouses: Array<{ code: string; until: string }>;
+  /** Контакты: коммент-пилл под должностью (в копирование НЕ идёт). */
+  comment?: string;
+  /** id персоны — для кнопки-карандаша правки (null у legacy МОЛ-строк). */
+  personId?: number;
+  /** Материально-ответственное лицо — «Склад» показывает «МОЛ» только у МОЛ. */
+  isMol?: boolean;
+  isOrphan?: boolean;
 }
 
 interface MolTableProps {
@@ -29,6 +36,8 @@ interface MolTableProps {
   persistScrollKey: string;
   /** Главный поиск (из MolTopBar) — для подсветки найденного в ячейках. */
   searchQuery?: ParsedMolQuery;
+  /** Контакты: открыть правку контакта (карандаш справа от № строки). */
+  onEditPerson?: (personId: number) => void;
 }
 
 /**
@@ -109,6 +118,7 @@ export function MolTable({
   onContactAction,
   persistScrollKey,
   searchQuery,
+  onEditPerson,
 }: MolTableProps) {
   const { t } = useTranslation();
   const tableRef = useRef<HTMLTableElement>(null);
@@ -615,19 +625,19 @@ export function MolTable({
         >
           {hasSidebar ? (
             <colgroup>
-              <col className="w-[5%]" />
+              <col className="w-[7%]" />
               <col className="w-[22%]" />
               <col className="w-[14%]" />
-              <col className="w-[27%]" />
+              <col className="w-[25%]" />
               <col className="w-[14%]" />
               <col className="w-[18%]" />
             </colgroup>
           ) : (
             <colgroup>
-              <col className="w-[4%]" />
+              <col className="w-[6%]" />
               <col className="w-[22%]" />
               <col className="w-[14%]" />
-              <col className="w-[32%]" />
+              <col className="w-[30%]" />
               <col className="w-[12%]" />
               <col className="w-[16%]" />
             </colgroup>
@@ -711,7 +721,7 @@ export function MolTable({
                   onMouseDown={handleColumnSelectMouseDown(5)}
                   onMouseEnter={handleColumnSelectMouseEnter(5)}
                   className={cn(
-                    'flex cursor-default select-none items-center justify-center gap-1 rounded-md px-1.5 py-1 transition-colors',
+                    'flex cursor-default select-none items-center justify-start gap-1 rounded-md px-1.5 py-1 transition-colors',
                     isColumnSelected(5) ? 'text-accent-clay' : 'hover:bg-accent-clay/[0.06] hover:text-text-strong',
                   )}
                 >
@@ -730,11 +740,12 @@ export function MolTable({
             )}
             {visibleRecords.map((r, idx) => (
               <MolRow
-                key={`${r.remoteId}-${r.warehouseId}-${idx}`}
+                key={`${r.personId ?? r.remoteId}-${r.warehouseId}-${idx}`}
                 record={r}
                 index={idx}
                 search={searchQuery}
                 onContactAction={onContactAction}
+                onEditPerson={onEditPerson}
                 onCellMouseDown={handleCellMouseDown}
                 onCellMouseEnter={handleCellMouseEnter}
                 onCellDoubleClick={handleCellDoubleClick}
@@ -1030,6 +1041,7 @@ interface RowProps {
   /** Главный поиск — подсветка найденного значения «пиллом». */
   search?: ParsedMolQuery;
   onContactAction: (req: ContactActionRequest) => void;
+  onEditPerson?: (personId: number) => void;
   onCellMouseDown: (r: number, c: number) => (ev: React.MouseEvent) => void;
   onCellMouseEnter: (r: number, c: number) => () => void;
   onCellDoubleClick: (r: number, c: number) => () => void;
@@ -1046,6 +1058,7 @@ function MolRow({
   index,
   search,
   onContactAction,
+  onEditPerson,
   onCellMouseDown,
   onCellMouseEnter,
   onCellDoubleClick,
@@ -1129,14 +1142,29 @@ function MolRow({
         onMouseEnter={onRowSelectMouseEnter}
         style={rowSelected ? { backgroundImage: SELECT_GLOW_BG } : undefined}
         className={cn(
-          'relative border-b border-border-subtle/25 px-2 py-1.5 align-middle text-center tabular-nums',
+          'relative border-b border-border-subtle/25 py-1.5 pl-2 pr-1 align-middle tabular-nums',
           'select-none cursor-default transition-colors',
           rowSelected
             ? 'font-medium text-accent-clay before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-full before:bg-accent-clay/80'
-            : 'text-text-muted hover:bg-bg-hover/50',
+            : 'text-text-muted hover:bg-accent-clay/[0.06]',
         )}
       >
-        {index + 1}
+        {/* № слева + узкая колонка карандашей справа (карандаш всегда виден). */}
+        <div className="flex items-center justify-between gap-1">
+          <span className="min-w-[1.2em] text-center">{index + 1}</span>
+          {onEditPerson && record.personId != null && (
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => onEditPerson(record.personId!)}
+              title={t('mol.edit_contact_tip')}
+              aria-label={t('mol.edit_contact_tip')}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-muted/45 outline-none transition-colors hover:bg-accent-clay/20 hover:text-accent-clay hover:ring-1 hover:ring-accent-clay/40 group-hover:text-text-muted"
+            >
+              <Pencil className="h-3 w-3" strokeWidth={1.75} />
+            </button>
+          )}
+        </div>
       </td>
 
       <Td tdRef={setCellRef(index, 1)} {...cellProps(1)}>
@@ -1146,6 +1174,13 @@ function MolRow({
         {record.position && (
           <div className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-text-muted">
             <SearchMark text={record.position} query={nameQ} />
+          </div>
+        )}
+        {record.comment && (
+          <div className="mt-1">
+            <span className="inline-flex items-center rounded-md bg-accent-clay/[0.12] px-1.5 py-0.5 text-[10.5px] font-medium leading-tight text-accent-clay">
+              {record.comment}
+            </span>
           </div>
         )}
       </Td>
@@ -1209,7 +1244,7 @@ function MolRow({
       </Td>
 
       <Td tdRef={setCellRef(index, 5)} {...cellProps(5)}>
-        <WarehouseCell warehouses={record.warehouses} />
+        <WarehouseCell warehouses={record.warehouses} isMol={record.isMol ?? true} />
       </Td>
     </tr>
   );
@@ -1220,10 +1255,13 @@ function MolRow({
  *  pointer-events-none на содержимом: ячейка декоративная (нет кликабельных
  *  элементов), поэтому пилюли «прозрачны» для mouse-событий → drag-выделение и
  *  клик по строке/столбцу попадают прямо в `Td`, а не перехватываются пилюлей. */
-function WarehouseCell({ warehouses }: { warehouses: Array<{ code: string; until: string }> }): JSX.Element {
+function WarehouseCell({ warehouses, isMol }: { warehouses: Array<{ code: string; until: string }>; isMol: boolean }): JSX.Element {
   const real = warehouses.filter((w) => w.code && w.code !== 'МОЛ' && w.code !== 'MOL');
   if (real.length === 0) {
-    return <span className="pointer-events-none text-[11px] text-text-muted">МОЛ</span>;
+    // МОЛ без склада → «МОЛ»; обычный контакт (не МОЛ) → пусто.
+    return (
+      <span className="pointer-events-none text-[11px] text-text-muted">{isMol ? 'МОЛ' : '—'}</span>
+    );
   }
   return (
     <div className="pointer-events-none flex flex-col items-start gap-0.5">
@@ -1361,7 +1399,7 @@ function ThColumn({
           onMouseDown={onSelectMouseDown}
           onMouseEnter={onSelectMouseEnter}
           className={cn(
-            'group/colhead flex flex-1 cursor-default select-none items-center justify-center gap-1 rounded-md px-1.5 py-1 transition-colors',
+            'group/colhead flex flex-1 cursor-default select-none items-center justify-start gap-1 rounded-md px-1.5 py-1 transition-colors',
             !selected && 'hover:bg-accent-clay/[0.06] hover:text-text-strong',
             (sortActive || hasFilter) && 'text-accent-clay',
           )}
@@ -1679,7 +1717,7 @@ function cellTextFor(rec: MolTableRow, col: number, rowIdx: number, opts: CopyOp
     }
     case 5: {
       const real = rec.warehouses.filter((w) => w.code && w.code !== 'МОЛ' && w.code !== 'MOL');
-      if (real.length === 0) return 'МОЛ';
+      if (real.length === 0) return rec.isMol === false ? '' : 'МОЛ';
       return real
         .map((w) => (opts.includeWarehouse && w.until ? `${w.code} по ${formatMolUntil(w.until)}` : w.code))
         .join(', ');

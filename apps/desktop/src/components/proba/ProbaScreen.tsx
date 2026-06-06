@@ -630,6 +630,7 @@ export function ProbaScreen() {
                   onChangeYear={changeYear}
                   onChangeMonth={changeMonth}
                   lockResourceId={lockIds.month}
+                  markNoHolidayMonths
                 >
                   <button
                     type="button"

@@ -62,6 +62,14 @@ declare global {
           blobNonceB64: string,
         ) => Promise<string>;
       };
+      /** Снэпшот базы ПЕРСОН («Контакты») — encrypted → plain JSON string. */
+      persons: {
+        fetchSnapshot: (
+          url: string,
+          blobKeyB64: string,
+          blobNonceB64: string,
+        ) => Promise<string>;
+      };
       /** Encrypted cache (Zustand persist storage). */
       cache: {
         load: (name: string) => Promise<string | null>;

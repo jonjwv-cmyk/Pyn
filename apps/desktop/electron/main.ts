@@ -13,6 +13,7 @@ import { setupBridgeBridge } from './ipc/bridge-bridge';
 import { setupMacroBridge } from './ipc/macro-bridge';
 import { setupMolBridge } from './ipc/mol-bridge';
 import { setupWarehousesBridge } from './ipc/warehouses-bridge';
+import { setupPersonsBridge } from './ipc/persons-bridge';
 import { setupTokenBridge } from './ipc/token-bridge';
 import { setupTrayBridge } from './ipc/tray-bridge';
 import { setupUpdateBridge } from './ipc/update-bridge';
@@ -355,6 +356,8 @@ app.whenReady().then(async () => {
   setupMolBridge();
   // Снэпшот складов («Цеха»-база) — тот же механизм что МОЛ (R2 + AES + gunzip).
   setupWarehousesBridge();
+  // Снэпшот базы ПЕРСОН («Контакты») — тот же механизм (R2 + AES + gunzip).
+  setupPersonsBridge();
   setupGoogleBridge();
   // Google-bridge: PAC + локальный туннель webview Google-таблиц через VPS-релей
   // (применяется только при обнаруженном корп-прокси, по config.bridge из CF).

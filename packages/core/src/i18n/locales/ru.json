@@ -70,7 +70,7 @@
   "sidebar": {
     "nav_storage": "Хранилище",
     "nav_schedule": "График",
-    "nav_mol": "МОЛы",
+    "nav_mol": "Контакты",
     "nav_base": "База",
     "nav_flow": "Поток",
     "nav_chats": "Чаты",
@@ -133,7 +133,7 @@
     "version_desktop": "Pyn Desktop",
     "version_android": "Pyn Android",
     "version_db": "База данных",
-    "version_db_mol": "База данных МОЛы",
+    "version_db_mol": "База Контакты",
     "version_db_warehouses": "База данных Цеха",
     "db_checking": "Проверяем…",
     "db_refresh_tooltip": "Проверить новую версию",
@@ -744,6 +744,39 @@
       "include_tab": "Табельный номер",
       "include_warehouse": "Склад",
       "copy": "Скопировать"
+    },
+    "mols_label": "МОЛы",
+    "add_contact": "Контакт",
+    "add_contact_tip": "Добавить новый контакт",
+    "edit_contact_tip": "Редактировать контакт",
+    "results_truncated": "Показаны первые {{shown}} из {{total}} — уточните запрос",
+    "orphan": {
+      "title": "Нет МОЛов",
+      "subtitle": "Заполните данные",
+      "edit": "Редактировать",
+      "mol_flag": "МОЛ"
+    },
+    "edit": {
+      "title_edit": "Контакт",
+      "title_orphan": "Заполнить данные МОЛа",
+      "title_create": "Новый контакт",
+      "field_fio": "ФИО",
+      "field_position": "Должность",
+      "field_status": "Статус",
+      "field_mobile": "Сотовый",
+      "field_work": "Рабочий",
+      "field_mail": "Почта",
+      "field_comment": "Комментарий",
+      "field_tab": "Табельный",
+      "field_is_mol": "МОЛ (материально-ответственное лицо)",
+      "tab_optional": "необязателен",
+      "status_none": "—",
+      "fio_required": "Укажите ФИО",
+      "save": "Подтвердить",
+      "cancel": "Отмена",
+      "ph_mobile": "+7 900 000 0000",
+      "ph_mail": "name@evraz.com",
+      "ph_comment": "заметка о контакте"
     }
   },
   "lock": {

@@ -104,6 +104,12 @@ contextBridge.exposeInMainWorld('pyn', {
       return ipcRenderer.invoke('pyn:warehouses:fetch-snapshot', url, blobKeyB64, blobNonceB64);
     },
   },
+  /** Снэпшот базы ПЕРСОН («Контакты») — тот же путь что warehouses.fetchSnapshot. */
+  persons: {
+    fetchSnapshot: function pynPersonsFetchSnapshot(url, blobKeyB64, blobNonceB64) {
+      return ipcRenderer.invoke('pyn:persons:fetch-snapshot', url, blobKeyB64, blobNonceB64);
+    },
+  },
   /**
    * Encrypted cache (Zustand persist storage). Renderer пишет JSON-стрингу
    * по имени; main process encrypt'ит через safeStorage и кладёт в userData/cache/.

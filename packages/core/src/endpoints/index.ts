@@ -111,6 +111,22 @@ export {
   type WarehousePatch,
 } from './warehouses';
 
+// Persons — единая база ПЕРСОН (ФИО + МОЛ), вкладка «Контакты». МОЛ — производное.
+export {
+  personsVersion,
+  personsDownload,
+  personsDownloadUrl,
+  personUpdate,
+  personCreate,
+  parsePersonsSnapshotJson,
+  type Person,
+  type PersonWarehouse,
+  type PersonsMeta,
+  type PersonsDownloadInfo,
+  type PersonPatch,
+  type PersonCreateInput,
+} from './persons';
+
 // Chats
 export {
   getAdminMessages,
@@ -210,6 +226,9 @@ export {
 export {
   flowWorkflowGet,
   flowWorkflowEdit,
+  flowPlanMonthGet,
+  flowPlanMonthSet,
   type FlowRow,
   type FlowEdit,
+  type FlowPlanMonth,
 } from './flow';

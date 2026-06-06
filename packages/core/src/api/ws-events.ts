@@ -49,6 +49,8 @@ export const WS_EVENT_TYPES = {
   BASE_CHANGED: 'base_changed',
   /** Изменилась база складов («Цеха») — правка карточки / импорт. Клиент refetch'ит. */
   WAREHOUSES_CHANGED: 'warehouses_changed',
+  /** Изменилась база ПЕРСОН (вкладка «Контакты») — правка/создание контакта. */
+  PERSONS_CHANGED: 'persons_changed',
   DESKTOP_KICKED: 'desktop_kicked',
   /** Запущен скрипт/макрос на листе — блокируем UI для всех клиентов. */
   SHEET_LOCK_ACQUIRED: 'sheet_lock_acquired',
@@ -91,6 +93,11 @@ export const WS_EVENT_TYPES = {
    * по id, если row_version новее (sender'у прилетает своё — идемпотентно, skip).
    */
   FLOW_CHANGED: 'flow_changed',
+  /**
+   * Раздел «Поток» — сменён ОБЩИЙ месяц формирования (flow_plan_month_set). Шлётся
+   * всем: клиенты обновляют выбранный месяц (+ аватар автора) и пересчитывают CLST.
+   */
+  FLOW_PLAN_MONTH_CHANGED: 'flow_plan_month_changed',
 } as const;
 
 export type WsEventType = (typeof WS_EVENT_TYPES)[keyof typeof WS_EVENT_TYPES];
@@ -168,8 +175,25 @@ export interface FlowChangedEvent extends WsServerEvent {
   rows: Array<{ id: number; row_version: number; [key: string]: unknown }>;
 }
 
+/** Сменён общий месяц формирования «Потока» — у всех обновить месяц + CLST. */
+export interface FlowPlanMonthChangedEvent extends WsServerEvent {
+  type: 'flow_plan_month_changed';
+  year: number;
+  month: number;
+  updated_by: string;
+  updated_by_name: string;
+  updated_at: string;
+}
+
 export interface WarehousesChangedEvent extends WsServerEvent {
   type: 'warehouses_changed';
+  version?: string;
+  updated_by?: string;
+  updated_by_name?: string;
+}
+
+export interface PersonsChangedEvent extends WsServerEvent {
+  type: 'persons_changed';
   version?: string;
   updated_by?: string;
   updated_by_name?: string;

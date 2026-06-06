@@ -113,6 +113,16 @@ export function FlowSearchPanel({
               className="w-full bg-transparent text-[13px] text-text-primary outline-none placeholder:text-text-muted/60"
             />
             {has && (
+              <button
+                type="button"
+                onClick={() => onQueryChange('')}
+                title="Очистить"
+                className="shrink-0 rounded p-0.5 text-text-muted/70 transition-colors hover:text-text-strong"
+              >
+                <X size={13} strokeWidth={2} />
+              </button>
+            )}
+            {has && (
               <span className="shrink-0 text-[12px] tabular-nums text-text-muted/70">{totalMatches}</span>
             )}
             <button
@@ -149,6 +159,16 @@ export function FlowSearchPanel({
                   placeholder="На что меняем…"
                   className="w-full bg-transparent text-[13px] text-text-primary outline-none placeholder:text-text-muted/60"
                 />
+                {replaceText !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setReplaceText('')}
+                    title="Очистить"
+                    className="shrink-0 rounded p-0.5 text-text-muted/70 transition-colors hover:text-text-strong"
+                  >
+                    <X size={13} strokeWidth={2} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onReplace(replaceText)}

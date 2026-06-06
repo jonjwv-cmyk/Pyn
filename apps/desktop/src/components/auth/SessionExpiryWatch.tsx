@@ -4,6 +4,7 @@ import { Clock, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { useBlockingModal, blockingDialogContentProps } from '@/lib/modal-guard';
 import { useSessionInfoStore } from '@/lib/stores';
 import { useSessionRemaining } from '@/lib/use-session-remaining';
 import { extendSession, meSessionInfo } from '@pyn/core';
@@ -131,6 +132,9 @@ export function SessionExpiryWatch() {
     dismissedAtRemainingMs === null || remainingMs > dismissedAtRemainingMs;
   /** Диалог с кнопкой «Продлить» — только если есть свободные продления. */
   const shouldShow = inWarningWindow && hasExtensionsLeft && notDismissed;
+  // Окно «Продлить сессию» — блокирующее: клик мимо не закрывает его и не сбивает
+  // фильтр/выделение за ним. Закрытие — кнопкой (Отложить/Продлить/✕). См. modal-guard.
+  useBlockingModal(shouldShow);
   // §v1.2.14 — case «продлений нет» теперь — sidebar pill (SessionExpiryPill).
   // Top-toast убран по UX-request — он закрывался крестиком, теперь
   // постоянный индикатор в sidebar.
@@ -197,6 +201,7 @@ export function SessionExpiryWatch() {
           )}
         />
         <Dialog.Content
+          {...blockingDialogContentProps}
           onOpenAutoFocus={(e) => e.preventDefault()}
           className={cn(
             'fixed left-1/2 top-1/2 z-50 w-[360px] -translate-x-1/2 -translate-y-1/2',

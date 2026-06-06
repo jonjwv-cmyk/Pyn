@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { AlertCircle, Search, X } from 'lucide-react';
+import { AlertCircle, Plus, Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
@@ -14,6 +14,12 @@ interface MolTopBarProps {
   /** Лист «Склады»: кол-во складов и цехов (unique shop_name) «сейчас». */
   shopsCount: number;
   warehousesCount: number;
+  /** Вкладка «Контакты»: сколько из контактов — МОЛ. */
+  molCount: number;
+  /** Сколько МОЛ было в предыдущей версии базы (для дельты). null = не было. */
+  molPreviousCount: number | null;
+  /** «+ Контакт» — открыть окно создания контакта. */
+  onAddContact: () => void;
   /** Поиск МОЛ — теперь в шапке (как в графике), а не нижним композером. */
   query: string;
   onQueryChange: (v: string) => void;
@@ -32,6 +38,9 @@ export function MolTopBar({
   previousCount,
   shopsCount,
   warehousesCount,
+  molCount,
+  molPreviousCount,
+  onAddContact,
   query,
   onQueryChange,
 }: MolTopBarProps) {
@@ -39,6 +48,8 @@ export function MolTopBar({
   const hasError = status === 'error';
   const diff: number | null =
     previousCount !== null ? recordCount - previousCount : null;
+  const molDiff: number | null =
+    molPreviousCount !== null ? molCount - molPreviousCount : null;
   return (
     <header className="drag-region relative flex h-9 shrink-0 items-center gap-2 px-4">
       {/* Заголовок = активный лист базы (переключение — в сайдбаре, флайаут «База»). */}
@@ -73,6 +84,31 @@ export function MolTopBar({
                   ({diff === null ? '—' : `${diff > 0 ? '+' : ''}${diff}`})
                 </span>
               </span>
+              {/* Сколько из контактов — МОЛ: текущее + ранее + разница (как у Контактов). */}
+              <span className="no-drag-region flex shrink-0 items-center gap-1 text-[11.5px] tabular-nums text-text-muted">
+                <span className="text-text-muted/50">·</span>
+                <span>{t('mol.mols_label')}</span>
+                <span className="text-[12px] font-medium text-accent-clay">{molCount.toLocaleString('ru-RU')}</span>
+                <span>
+                  {t('mol.previous', {
+                    count: molPreviousCount !== null ? molPreviousCount.toLocaleString('ru-RU') : '—',
+                  })}
+                </span>
+                <span
+                  className={cn(
+                    'font-medium',
+                    molDiff === null
+                      ? 'text-text-muted'
+                      : molDiff > 0
+                        ? 'text-presence-online'
+                        : molDiff < 0
+                          ? 'text-danger'
+                          : 'text-text-muted',
+                  )}
+                >
+                  ({molDiff === null ? '—' : `${molDiff > 0 ? '+' : ''}${molDiff}`})
+                </span>
+              </span>
             </>
           )
         : (
@@ -97,6 +133,18 @@ export function MolTopBar({
         placeholder={tab === 'mol' ? t('mol.composer_placeholder') : t('shops.search_ph')}
       />
       <div className="flex-1" />
+
+      {tab === 'mol' && (
+        <button
+          type="button"
+          onClick={onAddContact}
+          title={t('mol.add_contact_tip')}
+          className="no-drag-region flex h-7 shrink-0 items-center gap-1 rounded-md bg-accent-clay/[0.1] pl-1.5 pr-2.5 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/[0.16]"
+        >
+          <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+          {t('mol.add_contact')}
+        </button>
+      )}
 
       {hasError && errorMessage && (
         <span className="no-drag-region flex shrink-0 items-center gap-1 text-[12px] text-danger">

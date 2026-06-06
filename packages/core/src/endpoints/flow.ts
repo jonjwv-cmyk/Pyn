@@ -6,7 +6,7 @@ import type { ApiClient } from '../api/client';
  */
 export interface FlowRow {
   id: number;
-  clst: string;
+  // CLST в БД НЕ хранится — кластер/день чисто показ (расчёт из графика на клиенте).
   ord: string;
   it: string;
   fr: string;
@@ -15,7 +15,7 @@ export interface FlowRow {
   day_wk: string;
   stat: string;
   time_at: string;
-  pct: number | null;
+  // % в БД НЕ хранится — производное (1 − qty/chg), считаем на клиенте (livePct).
   q: string;
   warn: string;
   no_num: string;
@@ -65,4 +65,56 @@ export async function flowWorkflowEdit(
     conflicts: Array.isArray(wire.conflicts) ? wire.conflicts : [],
     rows: Array.isArray(wire.rows) ? wire.rows : [],
   };
+}
+
+/**
+ * Выбранный месяц формирования — ОБЩАЯ настройка раздела «Поток»: какой месяц
+ * графика берётся за основу (CLST/даты). Хранится на сервере, меняется под
+ * паролем, рассылается всем реалтайм. `updatedBy` — кто выбрал (для аватара).
+ */
+export interface FlowPlanMonth {
+  year: number;
+  month: number;
+  /** Login выбравшего (для аватара). Пусто — месяц по умолчанию (не выбирали). */
+  updatedBy: string;
+  updatedByName: string;
+  updatedAt: string;
+}
+
+interface FlowPlanMonthWire {
+  year?: number;
+  month?: number;
+  updated_by?: string;
+  updated_by_name?: string;
+  updated_at?: string;
+}
+
+function wireToPlanMonth(wire: FlowPlanMonthWire, fallbackYear = 0, fallbackMonth = 0): FlowPlanMonth {
+  return {
+    year: Number(wire.year) || fallbackYear,
+    month: Number(wire.month) || fallbackMonth,
+    updatedBy: wire.updated_by ?? '',
+    updatedByName: wire.updated_by_name ?? '',
+    updatedAt: wire.updated_at ?? '',
+  };
+}
+
+/** Прочитать выбранный месяц формирования. Не задан → текущий месяц (updatedBy пуст). */
+export async function flowPlanMonthGet(client: ApiClient): Promise<FlowPlanMonth> {
+  const wire = await client.call<FlowPlanMonthWire>('flow_plan_month_get', {});
+  return wireToPlanMonth(wire);
+}
+
+/**
+ * Сменить месяц формирования (общий для всех). Требует пароль. Сервер проверяет:
+ * прошлый месяц нельзя, месяц без «дней без доставки» нельзя — бросает ApiError
+ * с code `wrong_password` / `month_in_past` / `schedule_not_formed`. Успех →
+ * сервер рассылает `flow_plan_month_changed` всем (CLST пересчитается у каждого).
+ */
+export async function flowPlanMonthSet(
+  client: ApiClient,
+  params: { year: number; month: number; password: string },
+): Promise<FlowPlanMonth> {
+  const wire = await client.call<FlowPlanMonthWire>('flow_plan_month_set', params);
+  return wireToPlanMonth(wire, params.year, params.month);
 }

@@ -10,8 +10,9 @@ import { ChatConversation, ChatList } from '@/components/chats';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { FlowScreen } from '@/components/flow';
 import { MolScreen } from '@/components/mol';
-import { initMol, refreshMolFromServer } from '@/lib/mol-repo';
 import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
+import { initPersons, refreshPersonsFromServer } from '@/lib/persons-repo';
+import { usePersonsStore } from '@/lib/persons-store';
 import { prefetchScheduleMonthsMeta } from '@/lib/schedule/use-schedule-sync';
 import { NewsFeed } from '@/components/news';
 import { ProbaScreen } from '@/components/proba';
@@ -61,8 +62,8 @@ import {
   useAppLockStore,
   useSheetsLockStore,
   type AppControlStateChangedEvent,
-  type BaseChangedEvent,
   type WarehousesChangedEvent,
+  type PersonsChangedEvent,
   type NewMessageEvent,
   type Session,
   type SheetLockAcquiredEvent,
@@ -495,28 +496,28 @@ export function App() {
   // обновления применяются автоматически независимо от текущего раздела.
   useEffect(() => {
     if (!session) return;
-    void initMol();
+    // §единая-база — «База Контакты» (persons) качается целиком, кэшируется,
+    // и ПИТАЕТ производный МОЛ (useMolStore) на клиенте. Отдельной загрузки МОЛ
+    // (base_records) больше нет — не дробим и не качаем дважды.
+    void initPersons();
     // Складская база («Цеха») — тот же паттерн: eager preload (кэш + сервер).
     void initWarehouses();
     // Прогреваем мету графика (prev/current/next) — карточки склада показывают
     // дни доставки сразу, без async pop-in при первом открытии Базы.
     prefetchScheduleMonthsMeta();
   }, [session]);
-  useWsEvent<BaseChangedEvent>('base_changed', (event) => {
-    // §pyn-1.2.21 — server теперь шлёт counts → optimistic update мета
-    // (UI MolTopBar мгновенно показывает «было N → сейчас M (±K)»), а
-    // снапшот records догружается в фоне для actual поиска.
-    if (event.records_count !== undefined || event.previous_records_count !== undefined) {
-      useMolStore.getState().setCountsFromWs({
-        recordsCount: event.records_count ?? null,
-        previousRecordsCount: event.previous_records_count ?? null,
-      });
-    }
-    void refreshMolFromServer({ force: true });
-  });
+  // §единая-база — base_changed больше не слушаем: МОЛ выводится из persons,
+  // а правки контактов прилетают через 'persons_changed' (ниже).
   // Склады: админ/разработчик правит карточку → server broadcast → refetch у всех.
   useWsEvent<WarehousesChangedEvent>('warehouses_changed', () => {
     void refreshWarehousesFromServer({ force: true });
+  });
+  // Контакты: правка/создание контакта → broadcast → refetch ТОЛЬКО у тех, кто
+  // уже открывал вкладку (база 19.6k не грузится фоном тем, кто туда не заходил).
+  useWsEvent<PersonsChangedEvent>('persons_changed', () => {
+    if (usePersonsStore.getState().status === 'loaded') {
+      void refreshPersonsFromServer({ force: true });
+    }
   });
 
   // desktop_kicked → wipe всё.

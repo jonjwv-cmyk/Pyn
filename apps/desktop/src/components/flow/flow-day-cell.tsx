@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { GridCellKind, type CustomCell, type CustomRenderer } from '@glideapps/glide-data-grid';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { flowOptionStyleCss, dayOptionTheme, DAY_NEW_COLOR, DAY_OFF_COLOR } from './flow-sandbox.fixtures';
 
 /**
  * Ячейка DAY: метка `new` / `OFF` / дата доставки. Двойной клик → поповер с двумя
@@ -84,20 +85,26 @@ function FlowDayEditor({
 
   return (
     <div className="flex w-[244px] flex-col gap-1 p-1 text-text-secondary">
-      <button
-        type="button"
-        onClick={() => set('new')}
-        className="rounded px-2 py-1 text-left text-[12px] text-text-strong transition-colors hover:bg-accent-clay/15"
-      >
-        new
-      </button>
-      <button
-        type="button"
-        onClick={() => set('OFF')}
-        className="rounded px-2 py-1 text-left text-[12px] text-text-strong transition-colors hover:bg-accent-clay/15"
-      >
-        off
-      </button>
+      {/* «new» ставить НЕЛЬЗЯ (авто-состояние по правилам). Можно только пометить заказ
+          удалённым (off) или ОТМЕНИТЬ удаление (снять off). Дата доставки — из календаря. */}
+      {v === 'OFF' ? (
+        <button
+          type="button"
+          onClick={() => set('')}
+          className="rounded px-2 py-1 text-left text-[12px] font-medium text-text-strong outline-none transition-colors hover:bg-accent-clay/15"
+        >
+          Отменить удаление
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => set('OFF')}
+          style={flowOptionStyleCss(dayOptionTheme('OFF'))}
+          className="rounded px-2 py-1 text-left text-[12px] font-medium outline-none transition-colors hover:ring-1 hover:ring-inset hover:ring-accent-clay/50"
+        >
+          off
+        </button>
+      )}
 
       <div className="mt-1 border-t border-white/10 px-1 pt-1.5 text-[11px] text-text-muted/80">
         День доставки
@@ -195,25 +202,50 @@ export const flowDayRenderer: CustomRenderer<FlowDayCell> = {
     (c.data as { kind?: unknown }).kind === 'flow-day',
   draw: (args, cell) => {
     const { ctx, rect, theme } = args;
-    const { label, color } = cell.data;
+    const { value, label, color } = cell.data;
     const padX = theme.cellHorizontalPadding;
     const cy = rect.y + rect.height / 2;
     ctx.save();
     ctx.beginPath();
     ctx.rect(rect.x, rect.y, rect.width, rect.height);
     ctx.clip();
-    ctx.font = `${theme.baseFontStyle} ${theme.fontFamily}`;
     ctx.textBaseline = 'middle';
-    let x = rect.x + padX;
+    const x = rect.x + padX;
+    // NEW / OFF — насыщенная пилюля (как «Нет МОЛа»): фон-тон + ЖИРНЫЙ текст
+    // цветом пилюли. OFF (нет заказа) краснее и приоритетнее NEW. Свечение
+    // строки NEW и красный фон OFF остаются — пилюля рисуется ДОПОЛНИТЕЛЬНО.
+    const pill = value === 'new' ? DAY_NEW_COLOR : value === 'OFF' ? DAY_OFF_COLOR : null;
+    if (pill && label) {
+      // Кегль колонки идёт префиксом в baseFontStyle («600 8px») — для жирной
+      // пилюли заменяем вес на 700, сохраняя размер.
+      const sizePart = theme.baseFontStyle.replace(/^\s*\d+\s+/, '');
+      ctx.font = `700 ${sizePart} ${theme.fontFamily}`;
+      const tw = ctx.measureText(label).width;
+      const padP = 6;
+      const ph = Math.min(rect.height - 4, 18);
+      const pw = padP + tw + padP;
+      const py = cy - ph / 2;
+      ctx.fillStyle = pill + '33'; // ~20% alpha — мягкая подложка
+      ctx.beginPath();
+      ctx.roundRect(x, py, pw, ph, ph / 2);
+      ctx.fill();
+      ctx.fillStyle = pill;
+      ctx.fillText(label, x + padP, cy);
+      ctx.restore();
+      return true;
+    }
+    // Дата доставки / пусто — как было: опц. статус-точка слева + метка.
+    ctx.font = `${theme.baseFontStyle} ${theme.fontFamily}`;
+    let tx = x;
     if (color) {
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(x + 3.5, cy, 3.5, 0, Math.PI * 2);
+      ctx.arc(tx + 3.5, cy, 3.5, 0, Math.PI * 2);
       ctx.fill();
-      x += 13;
+      tx += 13;
     }
     ctx.fillStyle = theme.textDark;
-    ctx.fillText(label, x, cy);
+    ctx.fillText(label, tx, cy);
     ctx.restore();
     return true;
   },

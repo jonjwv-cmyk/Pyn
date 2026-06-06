@@ -16,7 +16,7 @@ import {
   type Rectangle,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { AlertTriangle, ArrowDownUp, CalendarDays, ChevronDown, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { AlertTriangle, ArrowDownUp, ChevronDown, Redo2, Trash2, Undo2 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
 import '@glideapps/glide-data-grid/dist/index.css';
@@ -31,7 +31,17 @@ import { FlowHeaderMenu, type FlowHeaderMenuAnchor } from './FlowHeaderMenu';
 import { FlowMatFilterMenu, type FlowMatSubState } from './FlowMatFilterMenu';
 import { FlowOrdFilterMenu, type FlowOrdEntry } from './FlowOrdFilterMenu';
 import { useBlockingModal, blockingDialogContentProps } from '@/lib/modal-guard';
-import { flowWorkflowGet, flowWorkflowEdit, type FlowChangedEvent } from '@pyn/core';
+import {
+  flowWorkflowGet,
+  flowWorkflowEdit,
+  flowPlanMonthGet,
+  flowPlanMonthSet,
+  type FlowChangedEvent,
+  type FlowPlanMonth,
+  type FlowPlanMonthChangedEvent,
+  type WarehouseCluster,
+  type WarehouseWeekday,
+} from '@pyn/core';
 import { api } from '@/lib/api';
 import { useWsEvent } from '@/lib/ws';
 import { FlowZoomControl } from './FlowZoomControl';
@@ -40,10 +50,11 @@ import { ContactActionDialog, type ContactActionRequest } from '@/components/mol
 import { useMolStore } from '@/lib/stores';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
-import { MonthYearPicker } from '@/components/schedule/MonthYearPicker';
-import { MONTH_NAMES_RU } from '@/lib/schedule/compute';
+import { FlowMonthPicker } from './FlowMonthPicker';
+import { useScheduleMonthsMeta, monthKey } from '@/lib/schedule/use-schedule-sync';
 import {
   FLOW_COLUMNS,
+  FLOW_STAT_OPTIONS,
   fmtNum3,
   flowComposed,
   flowDisplayText,
@@ -126,6 +137,19 @@ function computeAutoWidths(
   const ctx = MEASURE_CTX;
   const measure = (s: string) => (ctx ? ctx.measureText(s).width : s.length * 7);
   for (const spec of FLOW_COLUMNS) {
+    if (spec.id === 'clst') {
+      // CLST — ЖИВОЙ формат («ПН», «ПН ВЫЕЗД», «СР КХП», «Нет»). Меряем эти кандидаты,
+      // а не снимочные значения — иначе колонка режет живой текст с суффиксом кластера.
+      if (ctx) ctx.font = `${colFontPx('clst')}px ${GRID_FONT_FAMILY}`;
+      let valuePx = measure('Нет');
+      for (const wd of ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ']) {
+        for (const suf of ['', ' ВЫЕЗД', ' КХП']) valuePx = Math.max(valuePx, measure(wd + suf));
+      }
+      if (ctx) ctx.font = `800 ${colFontPx('clst')}px ${GRID_FONT_FAMILY}`;
+      const headerW = measure(spec.title) + BASE_HPAD * 2 + 6;
+      out.clst = Math.round(Math.max(30, Math.min(420, Math.max(valuePx + BASE_HPAD * 2 + 4, headerW))));
+      continue;
+    }
     // Меряем РОВНО тем, чем рисуем: значения — кеглем колонки + её жирностью (жирный
     // текст шире!), заголовок (ниже) — кеглем колонки и весом 600. Иначе подгонка врёт.
     const boldVal = isBoldCol(spec.id) || spec.id === 'pct'; // % жирнит своя ячейка
@@ -229,6 +253,9 @@ const SWEEP_WAVES = 2; // сколько мягких волн по ширине
 // оранжевый, STAT «вопрос» — насыщенный янтарь. base = фон в провале волны, peak = пик.
 const SWEEP_NEW = { rgb: '247,130,22', base: 0.18, peak: 0.52 };
 const SWEEP_VOPROS = { rgb: '233,176,30', base: 0.16, peak: 0.48 };
+// «Нет» (склад вне графика выбранного месяца) — СИНИЙ перелив (как NEW, но синий):
+// кластер/день по графику не определить, строку нужно видеть и доформировать.
+const SWEEP_NET = { rgb: '56,124,222', base: 0.18, peak: 0.52 };
 
 /** Пунктирная подсветка скопированного диапазона (Glide highlightRegions, style dashed). */
 interface CopiedRegion {
@@ -487,6 +514,62 @@ function compareRows(
   return dir === 'asc' ? cmp : -cmp;
 }
 
+/** День недели склада в снапшоте графика месяца (из его цехов). null — нет.
+ *  Тот же приём, что у Цеха (`frozenWeekday`) — день недели НТМК-склада за месяц. */
+function frozenWeekdayOf(
+  shops: ReadonlyArray<{ rows: ReadonlyArray<{ weekday: string; warehouses: ReadonlyArray<{ code: string }> }> }>,
+  code: string,
+): string | null {
+  const lc = code.trim().toLowerCase();
+  if (!lc) return null;
+  for (const shop of shops) {
+    for (const row of shop.rows) {
+      if (row.warehouses.some((w) => w.code.toLowerCase() === lc)) return row.weekday;
+    }
+  }
+  return null;
+}
+
+/** CLST склада, которого НЕТ в графике выбранного месяца — день/кластер не определить. */
+const CLST_NONE = 'Нет';
+
+/** Порядок дней недели CLST. */
+const WD_RANK: Record<string, number> = { ПН: 1, ВТ: 2, СР: 3, ЧТ: 4, ПТ: 5, СБ: 6, ВС: 7 };
+
+/**
+ * Ключ сортировки CLST для группировки по умолчанию: «Нет» ВВЕРХУ, далее ПО ДНЯМ
+ * недели (ПН→ПТ), а ВНУТРИ дня — ВЫЕЗД → КХП → НТМК. Значение колонки = «день» /
+ * «день ВЫЕЗД» / «день КХП» / «Нет».
+ */
+function clstSortKey(clst: string): number {
+  if (clst === CLST_NONE) return -1; // «Нет» — перед всеми днями
+  const sp = clst.indexOf(' ');
+  const wd = sp >= 0 ? clst.slice(0, sp) : clst;
+  const cl = sp >= 0 ? clst.slice(sp + 1) : '';
+  const w = WD_RANK[wd] ?? 8;
+  const c = cl === 'ВЫЕЗД' ? 0 : cl === 'КХП' ? 1 : 2; // НТМК (без суффикса) — последним в дне
+  return w * 10 + c;
+}
+
+/** Порядок значений DAY в фильтре: пусто → off → new → даты ХРОНОЛОГИЧЕСКИ (как в календаре). */
+function dayFilterRank(dayWk: string): number {
+  const d = (dayWk || '').trim();
+  if (d === '') return 0;
+  if (d === 'OFF') return 1;
+  if (d === 'new') return 2;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
+  if (m) return 3 + Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]);
+  return Number.MAX_SAFE_INTEGER; // прочее — в конец
+}
+
+/** Порядок значений STAT в фильтре = порядок пунктов выпадашки (как в ячейке); пусто первым. */
+function statFilterRank(stat: string): number {
+  const s = (stat || '').trim();
+  if (s === '') return -1;
+  const i = (FLOW_STAT_OPTIONS as readonly string[]).indexOf(s);
+  return i >= 0 ? i : 999;
+}
+
 /**
  * Песочница-грид раздела «Поток» (Фаза 0). Спайк движка glide-data-grid:
  * виртуализация на ~20к строк, правка ячеек, выделение строк/колонок/ячеек
@@ -499,9 +582,17 @@ function compareRows(
  * пишутся в `rows` ПО id (порядок показа ≠ порядок данных). Фильтр — клиентский
  * «фильтр показа» (личный); общий (как filter-views Google) добавится на сервере.
  */
+/**
+ * Модульный кэш строк формирования — переживает уход/возврат в раздел (компонент
+ * размонтируется). При ПОВТОРНОМ входе грид показывается мгновенно из кэша (без
+ * спиннера), затем фоновый refetch + реалтайм догоняют. Живёт на время сессии.
+ */
+let flowRowsCache: FlowSandboxRow[] | null = null;
+
 export function FlowSandboxGrid() {
-  const [rows, setRows] = useState<FlowSandboxRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Стартуем из кэша (мгновенно) если он есть; иначе пусто + спиннер до первой загрузки.
+  const [rows, setRows] = useState<FlowSandboxRow[]>(() => flowRowsCache ?? []);
+  const [loading, setLoading] = useState(() => flowRowsCache === null);
   // Шрифт Inter мог не загрузиться к ПЕРВОМУ замеру авто-ширины → мерили системным
   // (он уже) и коды резались («6604»→«660»). Ждём шрифт и пересчитываем ширины.
   const [fontsReady, setFontsReady] = useState(false);
@@ -608,12 +699,28 @@ export function FlowSandboxGrid() {
   // больше колонок данных влезает). Ширина гаттера = 0; rowMarkers='none' у DataEditor.
   const markerWidth = 0;
   // Склады по цеху — для выпадашки TO «склады того же цеха» (из useWarehousesStore).
+  // По id храним также cluster + delivery_day — для ЖИВОГО CLST (см. liveRows).
   const warehouses = useWarehousesStore((s) => s.warehouses);
   const { whById, whByShop } = useMemo(() => {
-    const byId = new Map<string, { shopCode: string | null; shopName: string }>();
+    const byId = new Map<
+      string,
+      {
+        shopCode: string | null;
+        shopName: string;
+        cluster: WarehouseCluster | null;
+        deliveryDay: WarehouseWeekday | null;
+        inSchedule: boolean;
+      }
+    >();
     const byShop = new Map<string, FlowToOption[]>();
     for (const w of warehouses) {
-      byId.set(w.id, { shopCode: w.shop_code, shopName: w.shop_name });
+      byId.set(w.id, {
+        shopCode: w.shop_code,
+        shopName: w.shop_name,
+        cluster: w.cluster,
+        deliveryDay: w.delivery_day,
+        inSchedule: w.in_schedule === 1,
+      });
       if (w.shop_code) {
         const opt: FlowToOption = { id: w.id, desc: w.description ?? w.designation ?? '' };
         const arr = byShop.get(w.shop_code);
@@ -639,11 +746,47 @@ export function FlowSandboxGrid() {
   const [menu, setMenu] = useState<FlowHeaderMenuAnchor | null>(null);
   const [copiedRegions, setCopiedRegions] = useState<CopiedRegion[]>([]);
   const [zoom, setZoom] = useState(1);
-  // Месяц графика, по которому считается кластер CLST (ВЫЕЗД/КХП/день доставки)
-  // у складов-получателей TO. Default — текущий месяц; переключатель в тулбаре.
-  // Живой пересчёт CLST из этого месяца — следующий шаг очереди.
+  // Месяц формирования — ОБЩИЙ для всех (сервер помнит, рассылает реалтайм). По
+  // нему считается CLST (кластер/день доставки) у складов-получателей TO. Грузим
+  // с сервера на маунте, обновляем по WS `flow_plan_month_changed`. `planMonthInfo`
+  // — кто выбрал месяц (для аватара рядом с кнопкой). Default до ответа — текущий.
   const [planYear, setPlanYear] = useState(() => new Date().getFullYear());
   const [planMonth, setPlanMonth] = useState(() => new Date().getMonth() + 1);
+  const [planMonthInfo, setPlanMonthInfo] = useState<{ updatedBy: string; updatedByName: string; updatedAt: string }>({
+    updatedBy: '',
+    updatedByName: '',
+    updatedAt: '',
+  });
+  const applyPlanMonth = useCallback((p: FlowPlanMonth) => {
+    if (p.year > 0 && p.month >= 1 && p.month <= 12) {
+      setPlanYear(p.year);
+      setPlanMonth(p.month);
+    }
+    setPlanMonthInfo({ updatedBy: p.updatedBy, updatedByName: p.updatedByName, updatedAt: p.updatedAt });
+  }, []);
+  // Загрузка общего месяца формирования на маунте.
+  useEffect(() => {
+    let alive = true;
+    void flowPlanMonthGet(api)
+      .then((p) => {
+        if (alive) applyPlanMonth(p);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [applyPlanMonth]);
+  // Реалтайм: кто-то сменил месяц формирования → у всех обновляем месяц + автора
+  // (CLST пересчитается через planMeta → liveRows).
+  useWsEvent<FlowPlanMonthChangedEvent>('flow_plan_month_changed', (event) => {
+    applyPlanMonth({
+      year: Number(event.year) || 0,
+      month: Number(event.month) || 0,
+      updatedBy: event.updated_by ?? '',
+      updatedByName: event.updated_by_name ?? '',
+      updatedAt: event.updated_at ?? '',
+    });
+  });
   const [size, setSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   // Ширина для РАСКЛАДКИ колонок (резиновый NOTE) — обновляется с задержкой: при движении
   // сайдбара live `size` двигает канвас (прокрутка), а переразметку колонок делаем ОДИН
@@ -771,10 +914,46 @@ export function FlowSandboxGrid() {
     return () => window.removeEventListener('copy', onCopy);
   }, []);
 
-  // Представление = фильтр показа + сортировка поверх источника. Если ни фильтра,
-  // ни сортировки — отдаём исходный массив без копий.
+  // Месяц формирования → мета графика выбранного месяца (для ЖИВОГО CLST). Сам
+  // holidays-контроль делает пикер; здесь нужны frozen-дни недели НТМК-складов.
+  const planMonths = useMemo(() => [{ year: planYear, month: planMonth }], [planYear, planMonth]);
+  const planMetaMap = useScheduleMonthsMeta(planMonths);
+  const planMeta = planMetaMap.get(monthKey(planYear, planMonth));
+
+  // CLST — ЖИВОЙ из нашего графика. Колонка ПО ДНЯМ НЕДЕЛИ (ПН-ПТ) из графика
+  // ВЫБРАННОГО месяца; внутри дня кластер выводим суффиксом: ВЫЕЗД/КХП («ПН КХП»,
+  // «СР ВЫЕЗД»), НТМК — только день («ПН»). День берём ТОЛЬКО из графика месяца:
+  // frozen-снапшот (committed) → иначе текущий delivery_day склада (черновой месяц =
+  // его график). Склад не в графике (не scheduled и не во frozen) → «Нет» (синий
+  // перелив строки). CLST (кластер+день графика) и DAY (дата доставки) — РАЗНОЕ.
+  // Пока мета месяца НЕ загружена — снимок до загрузки (без мигания). Производное от
+  // rows: смена TO / месяца сразу пересчитывает CLST у всех.
+  const liveRows = useMemo<FlowSandboxRow[]>(() => {
+    if (rows.length === 0 || whById.size === 0) return rows;
+    if (!planMeta) return rows; // мета выбранного месяца ещё грузится — снимок
+    const shops = planMeta.shops;
+    let changed = false;
+    const next = rows.map((r) => {
+      const wh = whById.get(r.to_wh);
+      const weekday =
+        (shops.length ? frozenWeekdayOf(shops, r.to_wh) : null) ||
+        (wh?.inSchedule ? wh.deliveryDay : null);
+      const clst = !weekday
+        ? CLST_NONE
+        : wh && (wh.cluster === 'ВЫЕЗД' || wh.cluster === 'КХП')
+          ? `${weekday} ${wh.cluster}`
+          : weekday;
+      if (clst === r.clst) return r;
+      changed = true;
+      return { ...r, clst };
+    });
+    return changed ? next : rows;
+  }, [rows, whById, planMeta]);
+
+  // Представление = фильтр показа + сортировка поверх источника (с ЖИВЫМ CLST).
+  // Если ни фильтра, ни сортировки — отдаём массив liveRows без копий.
   const viewRows = useMemo<FlowSandboxRow[]>(() => {
-    let out: FlowSandboxRow[] = rows;
+    let out: FlowSandboxRow[] = liveRows;
     // Активные фильтры + спеки колонок. Фильтр сверяет ОТФОРМАТИРОВАННОЕ значение
     // (как в таблице — проценты/даты/числа), а не сырьё: «что видишь, то и фильтруешь».
     const active = Object.entries(filters)
@@ -794,7 +973,7 @@ export function FlowSandboxGrid() {
       if (i >= 0) ordRestricted.add(k.slice(0, i));
     }
     if (active.length > 0 || matActive.length > 0 || ordActive) {
-      out = rows.filter(
+      out = liveRows.filter(
         (row) =>
           active.every(({ spec, f }) => {
             const v = flowFilterText(spec, row);
@@ -822,7 +1001,7 @@ export function FlowSandboxGrid() {
         .map((lv) => ({ spec: FLOW_COLUMNS.find((c) => c.id === lv.colId), dir: lv.dir }))
         .filter((x): x is { spec: FlowColumnSpec; dir: 'asc' | 'desc' } => x.spec !== undefined);
       if (levels.length > 0) {
-        const base = out === rows ? out.slice() : out;
+        const base = out === liveRows ? out.slice() : out;
         base.sort((a, b) => {
           for (const { spec, dir } of levels) {
             const c = compareRows(a, b, spec, dir);
@@ -832,9 +1011,17 @@ export function FlowSandboxGrid() {
         });
         out = base;
       }
+    } else {
+      // Без пользовательской сортировки — группировка по CLST: «Нет» вверху, далее ПО
+      // ДНЯМ недели (ПН→ПТ), внутри дня ВЫЕЗД → КХП → НТМК. Сорт стабилен (ES2019+) →
+      // внутри группы сохраняется снимочный под-порядок (TO/MAT/…). «Нет» и каждый
+      // (день·кластер) — отдельный блок с разделителем (разделитель по смене clst).
+      const base = out === liveRows ? out.slice() : out;
+      base.sort((a, b) => clstSortKey(a.clst) - clstSortKey(b.clst));
+      out = base;
     }
     return out;
-  }, [rows, filters, matFilter, ordFilter, sortLevels]);
+  }, [liveRows, filters, matFilter, ordFilter, sortLevels]);
 
   // Активен ли «умный» фильтр MAT (любое под-поле) — для индикатора заголовка + funnel.
   const matFilterActive = useMemo(
@@ -929,18 +1116,35 @@ export function FlowSandboxGrid() {
     return { count, units };
   }, [selection, viewRows]);
 
-  // Уникальные значения колонки открытого меню (для чек-листа фильтра).
+  // Уникальные значения колонки открытого меню (для чек-листа фильтра). Порядок чек-листа
+  // = порядок В ТАБЛИЦЕ, а не алфавит, для семантических колонок: CLST (Нет→дни→кластер
+  // внутри дня), DAY (пусто→off→new→даты по календарю), STAT (как пункты выпадашки). Иначе
+  // алфавит/числа. Считаем РАНГ по первому ряду с этим значением (label→rank), сортируем им.
   const menuValues = useMemo<string[]>(() => {
     if (!menu) return [];
     const spec = FLOW_COLUMNS[menu.colIndex];
     if (!spec) return [];
-    const set = new Set<string>(); // дедуп по ОТФОРМАТИРОВАННОМУ значению (фильтр сверяет его же)
-    for (const r of rows) {
-      set.add(flowFilterText(spec, r));
-      if (set.size >= MAX_DISTINCT) break;
+    const rankOf = (r: FlowSandboxRow): number | null => {
+      if (spec.id === 'clst') return clstSortKey(String(r.clst ?? ''));
+      if (spec.kind === 'day') return dayFilterRank(String(r.day_wk ?? ''));
+      if (spec.id === 'stat') return statFilterRank(String(r.stat ?? ''));
+      return null; // прочие колонки — по алфавиту
+    };
+    const ranks = new Map<string, number>();
+    for (const r of liveRows) {
+      const label = flowFilterText(spec, r);
+      if (!ranks.has(label)) ranks.set(label, rankOf(r) ?? 0);
+      if (ranks.size >= MAX_DISTINCT) break;
     }
-    return [...set].sort((a, b) => a.localeCompare(b, 'ru', { numeric: true }));
-  }, [menu, rows]);
+    const semantic = spec.id === 'clst' || spec.kind === 'day' || spec.id === 'stat';
+    return [...ranks.keys()].sort((a, b) => {
+      if (semantic) {
+        const d = (ranks.get(a) ?? 0) - (ranks.get(b) ?? 0);
+        if (d !== 0) return d;
+      }
+      return a.localeCompare(b, 'ru', { numeric: true });
+    });
+  }, [menu, liveRows]);
 
   // Уникальные значения каждого под-поля MAT — чек-листы «умного» фильтра (считаем только
   // когда открыто меню MAT). Значения отформатированы (даты по-русски); даты сортируем
@@ -1212,7 +1416,8 @@ export function FlowSandboxGrid() {
       prev.map((r) => {
         const s = byId.get(r.id);
         if (!s) return r;
-        return (s.row_version ?? 0) >= (r.row_version ?? 0) ? s : r;
+        // CLST/% в БД нет — сохраняем текущие виртуальные поля строки (liveRows/livePct пересчитают).
+        return (s.row_version ?? 0) >= (r.row_version ?? 0) ? { ...s, clst: r.clst, pct: r.pct } : r;
       }),
     );
   }, []);
@@ -1229,6 +1434,14 @@ export function FlowSandboxGrid() {
         row_version: verById.get(id) ?? 1,
         fields: fields as Record<string, string | number | null>,
       }));
+      // Оптимистично бампим локальную row_version СРАЗУ при отправке (предсказываем,
+      // что сервер примет → version+1). Без этого несколько правок/undo подряд по
+      // одной строке (быстрее ответа сервера ~160мс) уходят со СТАРОЙ версией →
+      // сервер отклоняет (WHERE row_version=?) и эхо откатывает → ломается откат.
+      // Эхо с актуальной версией (>=) всё равно догоняет и поправит (last-write-wins).
+      setRows((prev) =>
+        prev.map((r) => (after.has(r.id) ? { ...r, row_version: (r.row_version ?? 1) + 1 } : r)),
+      );
       void flowWorkflowEdit(api, edits)
         .then((res) => applyServerRows(res.rows as FlowSandboxRow[]))
         .catch(() => {
@@ -1238,15 +1451,19 @@ export function FlowSandboxGrid() {
     [applyServerRows],
   );
 
-  // Живое чтение базы формирования при монтировании (вместо снимка-файла).
+  // Живое чтение базы формирования при монтировании. Если кэш есть — грид уже
+  // показан из него, спиннера нет; всё равно тянем свежее в фоне (refetch догоняет
+  // правки, пропущенные пока раздел был закрыт), затем реалтайм.
   useEffect(() => {
     let alive = true;
     void flowWorkflowGet(api)
       .then((serverRows) => {
-        if (alive) setRows(serverRows as FlowSandboxRow[]);
+        // CLST и % в БД нет — виртуальные поля-ключи колонок: clst посчитает liveRows из
+        // графика, % считается livePct из qty/chg (значение pct не используется).
+        if (alive) setRows(serverRows.map((r) => ({ ...r, clst: '', pct: null }) as FlowSandboxRow));
       })
       .catch(() => {
-        /* ошибка сети — оставляем пусто */
+        /* ошибка сети — остаёмся на кэше (или пусто) */
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -1255,6 +1472,12 @@ export function FlowSandboxGrid() {
       alive = false;
     };
   }, []);
+
+  // Держим модульный кэш в актуальном состоянии (fetch / правки / WS) — для мгновенного
+  // повторного входа в раздел.
+  useEffect(() => {
+    if (rows.length > 0) flowRowsCache = rows;
+  }, [rows]);
 
   // Реалтайм: правки других клиентов прилетают строками — применяем по версии.
   useWsEvent<FlowChangedEvent>('flow_changed', (event) => {
@@ -1762,6 +1985,13 @@ export function FlowSandboxGrid() {
     updateColumnFilter(menuColId, () => ({ search: '', excluded: new Set<string>() }));
   }, [menuColId, updateColumnFilter]);
 
+  // «Сбросить» = СНЯТЬ все галочки (исключить все значения колонки) → ничего не показано,
+  // дальше юзер отмечает только нужные. («Очистить» — наоборот, возвращает все галочки.)
+  const handleDeselectAllColumn = useCallback(() => {
+    if (!menuColId) return;
+    updateColumnFilter(menuColId, (cur) => ({ search: cur.search, excluded: new Set(menuValues) }));
+  }, [menuColId, updateColumnFilter, menuValues]);
+
   // — «умный» фильтр MAT (под-фильтры по скрытым полям материала) —
   const updateMatSub = useCallback(
     (sub: FlowMatSubId, updater: (cur: FlowMatSubState) => FlowMatSubState) => {
@@ -1790,6 +2020,12 @@ export function FlowSandboxGrid() {
   const handleMatClear = useCallback(
     (sub: FlowMatSubId) => updateMatSub(sub, () => ({ search: '', excluded: new Set<string>() })),
     [updateMatSub],
+  );
+  // «Сбросить» под-поле = снять все галочки (исключить все значения под-поля).
+  const handleMatDeselectAll = useCallback(
+    (sub: FlowMatSubId) =>
+      updateMatSub(sub, (cur) => ({ search: cur.search, excluded: new Set(matSubValues[sub] ?? []) })),
+    [updateMatSub, matSubValues],
   );
   const handleMatClearAll = useCallback(() => {
     setMatFilter({});
@@ -1912,16 +2148,19 @@ export function FlowSandboxGrid() {
       // (оранжевый) ИЛИ STAT «вопрос» (янтарь); NEW в приоритете, если строка и то, и то.
       // ⚠️ save/restore ОБЯЗАТЕЛЕН: Glide кеширует fillStyle между ячейками (drawPrep), и
       // без восстановления градиент утекал в текст этой и СОСЕДНИХ ячеек.
-      // Приоритет подсветки: OFF (нет заказа) → NEW → STAT «вопрос». OFF НИКОГДА не
-      // перебиваем анимацией (он краснее и важнее); NEW светится как раньше + имеет пилюлю.
+      // Приоритет подсветки: OFF (нет заказа) → «Нет» (склад вне графика, синий) → NEW →
+      // STAT «вопрос». OFF НИКОГДА не перебиваем анимацией (он краснее и важнее); «Нет»
+      // важнее NEW — без кластера строку нельзя сформировать.
       const sweep = r
         ? r.day_wk === 'OFF'
           ? null
-          : r.day_wk === 'new'
-            ? SWEEP_NEW
-            : r.stat === 'вопрос'
-              ? SWEEP_VOPROS
-              : null
+          : r.clst === CLST_NONE
+            ? SWEEP_NET
+            : r.day_wk === 'new'
+              ? SWEEP_NEW
+              : r.stat === 'вопрос'
+                ? SWEEP_VOPROS
+                : null
         : null;
       if (sweep) {
         const W = gridPxWidthRef.current || rect.x + rect.width * 4;
@@ -2258,28 +2497,11 @@ export function FlowSandboxGrid() {
           <ArrowDownUp size={13} strokeWidth={1.75} />
           Сортировка
         </button>
-        {/* Месяц графика — задаёт, по какому месяцу считается кластер CLST
-            (ВЫЕЗД/КХП/день доставки) у складов-получателей. Переиспользуем
-            пикер месяца из Графика; поповер на z-30 (как остальные в «Потоке»). */}
+        {/* Месяц ФОРМИРОВАНИЯ — общий для всех (сервер помнит, реалтайм). По нему
+            считается CLST. Смена под паролем (как «скрипты»); рядом аватар того,
+            кто выбрал; нельзя прошлый месяц и месяц без «дней без доставки». */}
         <div className="h-5 w-px bg-black/[0.08]" />
-        <MonthYearPicker
-          year={planYear}
-          month={planMonth}
-          onChangeYear={setPlanYear}
-          onChangeMonth={setPlanMonth}
-          contentZIndex="z-30"
-        >
-          <button
-            type="button"
-            title="Месяц графика — по нему считается кластер CLST"
-            className="flex h-6 items-center gap-1.5 rounded-md border border-black/10 px-2 text-[12px] tabular-nums text-[#6B6862] outline-none transition-colors hover:text-[#0A0A0A] data-[state=open]:text-[#0A0A0A]"
-          >
-            <CalendarDays size={13} strokeWidth={1.75} />
-            <span>
-              {MONTH_NAMES_RU[planMonth - 1]} {planYear}
-            </span>
-          </button>
-        </MonthYearPicker>
+        <FlowMonthPicker year={planYear} month={planMonth} info={planMonthInfo} onChanged={applyPlanMonth} />
         {selectedRowCount > 0 && (
           <div className="ml-auto flex items-center gap-2 text-[12px] text-[#6B6862]">
             <span className="tabular-nums text-[#2A2925]">Выбрано строк: {selectedRowCount}</span>
@@ -2422,6 +2644,7 @@ export function FlowSandboxGrid() {
         onSearchChange={handleSearchChange}
         onToggleValue={handleToggleValue}
         onClear={handleClearColumnFilter}
+        onDeselectAll={handleDeselectAllColumn}
         onClose={() => setMenu(null)}
       />
       {/* «Умный» фильтр MAT — несколько под-фильтров по скрытым полям материала. */}
@@ -2432,6 +2655,7 @@ export function FlowSandboxGrid() {
         onSearch={handleMatSearch}
         onToggleValue={handleMatToggle}
         onClear={handleMatClear}
+        onDeselectAll={handleMatDeselectAll}
         onClearAll={handleMatClearAll}
         onClose={() => setMenu(null)}
       />
