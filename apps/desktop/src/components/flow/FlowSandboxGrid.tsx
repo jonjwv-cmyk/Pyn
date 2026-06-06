@@ -34,6 +34,7 @@ import { useBlockingModal, blockingDialogContentProps } from '@/lib/modal-guard'
 import {
   flowWorkflowGet,
   flowWorkflowEdit,
+  flowWorkflowDelete,
   flowPlanMonthGet,
   flowPlanMonthSet,
   type FlowChangedEvent,
@@ -49,7 +50,7 @@ import { useWsEvent } from '@/lib/ws';
 import { useVghStore, normVghKey } from '@/lib/vgh-store';
 import { ensureVghLoaded, applyVghChanged } from '@/lib/vgh-repo';
 import { VghEditCard } from '@/components/vgh/VghEditCard';
-import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
+import { fmtSmart, fmtVolume } from '@/components/vgh/vgh-staging.fixtures';
 import { FlowZoomControl } from './FlowZoomControl';
 import { FlowSearchPanel, type FlowSearchGroup } from './FlowSearchPanel';
 import { ContactActionDialog, type ContactActionRequest } from '@/components/mol/ContactActionDialog';
@@ -61,8 +62,6 @@ import { useScheduleMonthsMeta, monthKey } from '@/lib/schedule/use-schedule-syn
 import {
   FLOW_COLUMNS,
   FLOW_STAT_OPTIONS,
-  FLOW_STAT_MANUAL,
-  FLOW_STAT_AUTO,
   MASLOVOZ_NOS,
   PRECURSOR_NO,
   fmtNum3,
@@ -259,6 +258,24 @@ const MARQUEE_COLOR = 'rgba(217,119,87,0.42)';
 const PIECE_UOMS = new Set(['ШТ', 'КМП', 'РУЛ', 'УПК', 'КОР']);
 /** Толеранс транспортной нормы: проходим, если Σкол-ва × 1.5 ≥ MIN QTY (≈66.7%). */
 const MIN_QTY_TOLERANCE = 1.5;
+
+/** Получатель «заявки» для отправителя 9002: куст КХП ИЛИ склад 8006/806Т ИЛИ код на «06…»
+ *  (правило гугл-скрипта NEW_ZAYAVKA). При норме-ок 9002 в такой склад → «заявка» (авто). */
+function is9002ZayavkaDest(to: string, cluster?: string | null): boolean {
+  const t = String(to ?? '').trim();
+  return cluster === 'КХП' || t === '8006' || t === '806Т' || t === '806T' || t.startsWith('06');
+}
+
+/** Строка подчиняется АВТО-правилу STAT (отправитель 9002 → заявка/мет_ок, либо номенклатура
+ *  масловоз/прекурсор)? На таких ярлык расчётный (руками не ставится): ручной выбор — только
+ *  отказ/самовывоз + маркеры вопрос/неликвиды; снял → ярлык вернётся. На строках БЕЗ авто-правила
+ *  заявку можно ставить руками. */
+function hasAutoRule(row: FlowSandboxRow): boolean {
+  const fr = String(row.fr ?? '').trim();
+  const noKey = normVghKey(row.no_num);
+  return fr === '9002' || MASLOVOZ_NOS.has(noKey) || noKey === PRECURSOR_NO;
+}
+
 
 /** Перелив по NEW-строкам (day_wk='new'): ПОСТОЯННЫЙ плавный оранжевый градиент —
  *  мягкие волны медленно текут вдоль строки (всегда видно, что строка новая). */
@@ -842,7 +859,22 @@ export function FlowSandboxGrid() {
   const [molError, setMolError] = useState<{ body: ReactNode } | null>(null);
   // Карточка ВГХ для правки MIN QTY — открывается при попытке снять/сменить расчётный
   // STAT (мало/мет_ок/масловоз/прекурсор): статус меняется только через норму в базе ВГХ.
-  const [statCard, setStatCard] = useState<{ noNum: string; mat: string; uom: string } | null>(null);
+  // Карточка номенклатуры (ЕДИНАЯ): открывается двойным кликом по номенклатуре (NO.№/MAT)
+  // — без плашки; ИЛИ при конфликте расчётного статуса (снять/сменить мет_ок/мало) — с жёлтой
+  // плашкой про транспортную норму. Правится норма/вес/габариты; наименование/тех-имя — показ.
+  const [vghCard, setVghCard] = useState<{
+    noNum: string;
+    mat: string;
+    uom: string;
+    note?: string;
+  } | null>(null);
+
+  // Карточка ИЗМЕНЕНИЯ материала (ТМЦ): чисто правка вес/габариты/норма — БЕЗ деталей
+  // Создал/Выгружен/Удалён (они показываются в оверлее колонки MAT — её «свои данные»).
+  // note — жёлтая плашка только при конфликте расчётного статуса.
+  const openVghCard = useCallback((r: FlowSandboxRow, note?: string) => {
+    setVghCard({ noNum: String(r.no_num ?? ''), mat: String(r.mat ?? ''), uom: String(r.uom ?? ''), note });
+  }, []);
   useEffect(() => {
     const onContact = (e: Event) => {
       const detail = (e as CustomEvent<ContactActionRequest>).detail;
@@ -892,6 +924,10 @@ export function FlowSandboxGrid() {
   const colFocusRef = useRef<number | null>(null);
   const rowAnchorRef = useRef<number | null>(null);
   const rowFocusRef = useRef<number | null>(null);
+  // Якорь/фокус ВЫДЕЛЕНИЯ ЯЧЕЕК — для Shift+стрелок по ячейкам (расширяем сами, чтобы
+  // нативное поведение Glide не «прыгало»; контролируемый scrollTo без рывка).
+  const cellAnchorRef = useRef<[number, number] | null>(null);
+  const cellFocusRef = useRef<[number, number] | null>(null);
   // Зеркала состояния для глобального слушателя copy (читает актуальное без переподписки).
   const selectionRef = useRef<GridSelection>(selection);
   const viewRowsRef = useRef<FlowSandboxRow[]>([]);
@@ -947,6 +983,59 @@ export function FlowSandboxGrid() {
   const planMetaMap = useScheduleMonthsMeta(planMonths);
   const planMeta = planMetaMap.get(monthKey(planYear, planMonth));
 
+  // РАСЧЁТНЫЙ STAT по строке (id → { auto, undershoot }) — ЕДИНЫЙ источник вердикта для
+  // показа (liveRows), пунктов выпадашки (statOptionsForRow) и валидации (applyEdits).
+  // Транспортная норма: Σкол-ва не-OFF по связке отправитель|получатель|номенклатура|ЕИ|MAT
+  // × 1.5 < MIN QTY → недобор (штучные при кол-ве <1 — всегда недобор). АВТО-ярлык:
+  // масловоз/прекурсор (по номенклатуре) · мало (недобор) · заявка (9002 + куст КХП/8006,
+  // норма ок) · мет_ок (9002 прочие, норма ок) · пусто. Нет нормы → ПУСТО (статус «нет ВГХ»
+  // убран — сигнал «новый/без нормы» несёт стадия NEW). Производное от базы ВГХ — вписал
+  // норму в карточке → ярлык оживает у всех.
+  const statMetaById = useMemo(() => {
+    const map = new Map<number, { auto: string; undershoot: boolean }>();
+    if (vghByKey.size === 0) return map; // нет базы ВГХ → нормы неизвестны, вердикт не считаем
+    const sumByGroup = new Map<string, number>();
+    for (const r of rows) {
+      if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
+      const q = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+      if (!Number.isFinite(q)) continue;
+      const g = `${r.fr}|${r.to_wh}|${normVghKey(r.no_num)}|${r.uom}|${r.mat}`;
+      sumByGroup.set(g, (sumByGroup.get(g) ?? 0) + q);
+    }
+    for (const r of rows) {
+      if (String(r.day_wk ?? '').toUpperCase() === 'OFF') {
+        map.set(r.id, { auto: '', undershoot: false });
+        continue;
+      }
+      const noKey = normVghKey(r.no_num);
+      const fr = String(r.fr ?? '').trim();
+      const qtyNum = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+      const hasQty = Number.isFinite(qtyNum);
+      const minQty = vghByKey.get(noKey)?.min_qty;
+      const hasNorm = minQty != null && Number.isFinite(minQty);
+      const masloLabel = MASLOVOZ_NOS.has(noKey) ? 'масловоз' : noKey === PRECURSOR_NO ? 'прекурсор' : '';
+      let undershoot = false;
+      if (PIECE_UOMS.has(String(r.uom ?? '').trim().toUpperCase()) && hasQty && qtyNum < 1) undershoot = true;
+      else if (hasNorm) {
+        const g = `${r.fr}|${r.to_wh}|${noKey}|${r.uom}|${r.mat}`;
+        undershoot = (sumByGroup.get(g) ?? 0) * MIN_QTY_TOLERANCE < (minQty as number);
+      }
+      const auto = masloLabel
+        ? hasNorm && undershoot
+          ? 'мало'
+          : masloLabel
+        : undershoot
+          ? 'мало'
+          : hasNorm && fr === '9002'
+            ? is9002ZayavkaDest(r.to_wh, whById.get(r.to_wh)?.cluster)
+              ? 'заявка'
+              : 'мет_ок'
+            : '';
+      map.set(r.id, { auto, undershoot });
+    }
+    return map;
+  }, [rows, vghByKey, whById]);
+
   // CLST — ЖИВОЙ из нашего графика. Колонка ПО ДНЯМ НЕДЕЛИ (ПН-ПТ) из графика
   // ВЫБРАННОГО месяца; внутри дня кластер выводим суффиксом: ВЫЕЗД/КХП («ПН КХП»,
   // «СР ВЫЕЗД»), НТМК — только день («ПН»). День берём ТОЛЬКО из графика месяца:
@@ -961,18 +1050,6 @@ export function FlowSandboxGrid() {
     const haveVgh = vghByKey.size > 0; // ЖИВЫЕ KG/V/тех-имя из базы ВГХ
     if (!haveWh && !haveVgh) return rows;
     const shops = planMeta?.shops ?? [];
-    // Сумма КОЛ-ВА по группе отправитель|получатель|номенклатура|ЕИ|MAT (не-OFF) —
-    // для расчётного «мало» (транспортная норма: Σкол-ва × 1.5 < MIN QTY → «мало»).
-    const sumByGroup = new Map<string, number>();
-    if (haveVgh) {
-      for (const r of rows) {
-        if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
-        const q = typeof r.qty === 'number' ? r.qty : Number(r.qty);
-        if (!Number.isFinite(q)) continue;
-        const g = `${r.fr}|${r.to_wh}|${normVghKey(r.no_num)}|${r.uom}|${r.mat}`;
-        sumByGroup.set(g, (sumByGroup.get(g) ?? 0) + q);
-      }
-    }
     let changed = false;
     const next = rows.map((r) => {
       const patch: Partial<FlowSandboxRow> = {};
@@ -1006,32 +1083,17 @@ export function FlowSandboxGrid() {
           const tech = base.tech_name || r.mat_full;
           if (tech !== r.mat_full) patch.mat_full = tech;
         }
-        // РАСЧЁТНЫЙ STAT (транспортная норма + номенклатура). Считаем ТОЛЬКО если статус
-        // НЕ ручной-липкий (заявка/вопрос/самовывоз/отказ/неликвиды) — те перекрывают
-        // расчёт и не трогаются. OFF — пропуск. ok-ярлык по номенклатуре/складу:
-        // масловоз / прекурсор / мет_ок(склад 9002) / пусто; недобор нормы → «мало».
-        const stored = String(r.stat ?? '').trim();
-        if (r.day_wk !== 'OFF' && !(FLOW_STAT_MANUAL as readonly string[]).includes(stored)) {
-          const noKey = normVghKey(r.no_num);
-          const okLabel = MASLOVOZ_NOS.has(noKey)
-            ? 'масловоз'
-            : noKey === PRECURSOR_NO
-              ? 'прекурсор'
-              : String(r.fr ?? '').trim() === '9002'
-                ? 'мет_ок'
-                : '';
-          const minQty = base?.min_qty;
-          let derived: string;
-          if (minQty != null && Number.isFinite(minQty)) {
-            const g = `${r.fr}|${r.to_wh}|${noKey}|${r.uom}|${r.mat}`;
-            const sum = sumByGroup.get(g) ?? 0;
-            const forceLow = PIECE_UOMS.has(String(r.uom ?? '').trim().toUpperCase()) && hasQty && qtyNum < 1;
-            derived = forceLow || sum * MIN_QTY_TOLERANCE < (minQty as number) ? 'мало' : okLabel;
-          } else {
-            // Норму не знаем (нет MIN QTY в базе ВГХ) → «мало» не ставим; ярлык по номенклатуре.
-            derived = okLabel;
-          }
-          if (derived !== stored) patch.stat = derived;
+      }
+      // STAT: ручной-липкий (stat_manual=1, непустой) держим как есть; иначе показываем
+      // РАСЧЁТНЫЙ ярлык (statMetaById — реалтайм от нормы/связки/номенклатуры). Снял липкий
+      // (manual=0) → ярлык вернётся (заявка/мало/мет_ок/масловоз/пусто). OFF не трогаем.
+      {
+        const meta = statMetaById.get(r.id);
+        if (meta && r.day_wk !== 'OFF') {
+          const stored = String(r.stat ?? '').trim();
+          const statManual = Number(r.stat_manual) === 1;
+          const display = statManual && stored !== '' ? stored : meta.auto;
+          if (display !== stored) patch.stat = display;
         }
       }
       if (Object.keys(patch).length === 0) return r;
@@ -1039,7 +1101,24 @@ export function FlowSandboxGrid() {
       return { ...r, ...patch };
     });
     return changed ? next : rows;
-  }, [rows, whById, planMeta, vghByKey]);
+  }, [rows, whById, planMeta, vghByKey, statMetaById]);
+
+  // Допустимые РУЧНЫЕ значения STAT по строке (для пунктов выпадашки И валидации в applyEdits).
+  // Универсальные маркеры (вопрос/самовывоз/отказ/неликвиды) — на любой строке. «заявка» руками —
+  // только на строках БЕЗ авто-правила (не 9002 / не масловоз/прекурсор): на авто-строках ярлык
+  // расчётный (снять → вернётся), руками заявку там не ставим. «мало» — валидируемый возврат:
+  // предлагаем только при реальном недоборе и если строка ещё не показывает «мало».
+  // мет_ок/масловоз/прекурсор НЕ предлагаем НИГДЕ (только авто).
+  const statOptionsForRow = useCallback(
+    (row: FlowSandboxRow): string[] => {
+      const opts = ['вопрос', 'самовывоз', 'отказ', 'неликвиды'];
+      if (!hasAutoRule(row)) opts.unshift('заявка');
+      const meta = statMetaById.get(row.id);
+      if (meta?.undershoot && String(row.stat ?? '').trim() !== 'мало') opts.unshift('мало');
+      return opts;
+    },
+    [statMetaById],
+  );
 
   // Представление = фильтр показа + сортировка поверх источника (с ЖИВЫМ CLST).
   // Если ни фильтра, ни сортировки — отдаём массив liveRows без копий.
@@ -1207,6 +1286,44 @@ export function FlowSandboxGrid() {
     return { count, units };
   }, [selection, viewRows]);
 
+  // Транспортная норма по выделению: если выделены ячейки колонки QTY строк ОДНОЙ
+  // номенклатуры в рамках ОДНОГО отправителя+получателя — сколько кол-ва НЕ ХВАТАЕТ до
+  // нормы (просто = MIN QTY − Σ) и с учётом толеранса (MIN QTY/1.5 − Σ, порог снятия «мало»).
+  const selNorm = useMemo(() => {
+    const cur = selection.current;
+    if (!cur) return null;
+    const qtyCol = FLOW_COLUMNS.findIndex((c) => c.id === 'qty');
+    if (qtyCol < 0) return null;
+    const rowsSet = new Set<number>();
+    for (const rect of [cur.range, ...cur.rangeStack]) {
+      if (qtyCol < rect.x || qtyCol >= rect.x + rect.width) continue;
+      for (let r = rect.y; r < rect.y + rect.height; r++) rowsSet.add(r);
+    }
+    if (rowsSet.size === 0) return null;
+    let fr = '', to = '', noKey = '', uom = '', sum = 0, n = 0;
+    for (const r of rowsSet) {
+      const row = viewRows[r];
+      if (!row || String(row.day_wk ?? '').toUpperCase() === 'OFF') continue;
+      const q = typeof row.qty === 'number' ? row.qty : Number(row.qty);
+      if (!Number.isFinite(q)) continue;
+      const k = normVghKey(row.no_num);
+      if (n === 0) { fr = row.fr; to = row.to_wh; noKey = k; uom = (row.uom || '').trim(); }
+      else if (row.fr !== fr || row.to_wh !== to || k !== noKey) return null; // разные связки — норма не применима
+      sum += q; n++;
+    }
+    if (n === 0 || !noKey) return null;
+    const minQty = vghByKey.get(noKey)?.min_qty;
+    if (minQty == null || !Number.isFinite(minQty)) return null;
+    // needPlain — добрать до MIN QTY напрямую; needTol — добрать так, чтобы (Σ+need)×1.5 = MIN QTY
+    // (порог снятия «мало»): need = MIN QTY/1.5 − Σ. Юзер 2026-06-07.
+    return {
+      uom: uom || '—',
+      minQty,
+      needPlain: Math.max(0, minQty - sum),
+      needTol: Math.max(0, minQty / MIN_QTY_TOLERANCE - sum),
+    };
+  }, [selection, viewRows, vghByKey]);
+
   // Уникальные значения колонки открытого меню (для чек-листа фильтра). Порядок чек-листа
   // = порядок В ТАБЛИЦЕ, а не алфавит, для семантических колонок: CLST (Нет→дни→кластер
   // внутри дня), DAY (пусто→off→new→даты по календарю), STAT (как пункты выпадашки). Иначе
@@ -1348,10 +1465,10 @@ export function FlowSandboxGrid() {
         return {
           kind: GridCellKind.Number,
           data: valid ? num : undefined,
-          // V — «умный» показ (хвостовые нули убраны, до 6 знаков); KG/прочее — 3 знака.
+          // V — «умный» показ (до первого значащего знака); KG/прочее — 3 знака.
           displayData: valid
             ? spec.id === 'v'
-              ? fmtSmart(num, 6)
+              ? fmtVolume(num)
               : fmtNum3(num)
             : spec.id === 'kg' || spec.id === 'v'
               ? '—'
@@ -1403,6 +1520,8 @@ export function FlowSandboxGrid() {
         } satisfies FlowDayCell;
       }
       if (spec.kind === 'mat') {
+        // MAT — «свои данные» (Создал/Выгружен/Удалён/Вывезено) в read-only оверлее (FlowMatEditor),
+        // как было. Карточка ИЗМЕНЕНИЯ материала открывается двойным кликом на НОМЕНКЛАТУРЕ (NO.№), не тут.
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
@@ -1428,11 +1547,13 @@ export function FlowSandboxGrid() {
       }
       if (spec.kind === 'dropdown') {
         const value = String(raw ?? '');
+        // STAT — пункты ПО СТРОКЕ (statOptionsForRow): авто-ярлык не предлагаем руками.
+        const options = spec.id === 'stat' ? statOptionsForRow(rowData) : (spec.options ?? []);
         return {
           kind: GridCellKind.Custom,
           allowOverlay: spec.editable === true,
           copyData: value,
-          data: { kind: 'flow-dropdown', value, options: spec.options ?? [] },
+          data: { kind: 'flow-dropdown', value, options },
         } satisfies FlowDropdownCell;
       }
       if (
@@ -1461,7 +1582,7 @@ export function FlowSandboxGrid() {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse, molByKey, whById, whByShop],
+    [viewRows, molByWarehouse, molByKey, whById, whByShop, statOptionsForRow],
   );
 
   // Шрифт ЗНАЧЕНИЯ per-колонке (clst 7 / day·stat·kg·v·mol·request 8 / прочее 10) +
@@ -1577,9 +1698,15 @@ export function FlowSandboxGrid() {
     if (rows.length > 0) flowRowsCache = rows;
   }, [rows]);
 
-  // Реалтайм: правки других клиентов прилетают строками — применяем по версии.
+  // Реалтайм: правки других клиентов прилетают строками — применяем по версии; + удалённые
+  // (мусорные/перенесённые OFF при подгрузке) убираем у всех.
   useWsEvent<FlowChangedEvent>('flow_changed', (event) => {
     applyServerRows((event.rows ?? []) as unknown as FlowSandboxRow[]);
+    const del = event.deleted;
+    if (Array.isArray(del) && del.length > 0) {
+      const gone = new Set(del);
+      setRows((prev) => prev.filter((r) => !gone.has(r.id)));
+    }
   });
 
   // Положить запись в историю: новый шаг обнуляет «повтор» (как везде).
@@ -1625,36 +1752,49 @@ export function FlowSandboxGrid() {
         const viewRow = viewRows[displayRow];
         if (!spec || !viewRow) continue;
         const oldVal = viewRow[spec.id] ?? null; // spec.id — колонка данных, не row_version
-        const newVal = extractValue(spec, value, oldVal);
+        let newVal = extractValue(spec, value, oldVal);
         if (newVal === oldVal) continue;
         // Read-only колонки (PR / Q / % / коды / числа выгрузки) — НЕ писать ни вставкой,
         // ни протяжкой. Авто-PR (внутренняя запись при смене TO) идёт мимо этого пути.
         if (spec.editable !== true) continue;
         // Выпадашки принимают ТОЛЬКО валидные значения — нельзя «впихнуть» мола в STAT
-        // или мусор в DAY вставкой/протяжкой: STAT из своего списка, DAY — пусто/OFF/дата.
+        // или мусор в DAY вставкой/протяжкой: STAT — из допустимых ПО СТРОКЕ, DAY — пусто/OFF/дата.
+        let statManualNext: number | null = null; // !=null → правка stat: 0 возврат к авто / 1 липкий
         if (spec.kind === 'dropdown') {
           const v = String(newVal ?? '');
-          if (v !== '' && !(spec.options ?? []).includes(v)) continue;
-          // Карточка ВГХ открывается ТОЛЬКО при реальном конфликте с нормой:
-          //  • снять расчётный «в пусто» (мало/мет_ок/масловоз/прекурсор) → карточка;
-          //  • поставить «мало», когда норма ПРОЙДЕНА (строка сейчас не «мало») → карточка
-          //    (надо поднять MIN QTY, чтобы заказ считался недобором);
-          //  • поставить другой расчётный (мет_ок/масловоз/прекурсор) руками → карточка
-          //    (их ставит только расчёт; в выпадашке их нет, это защита от вставки).
-          // НЕ открывается: смена расчётного на РУЧНОЙ (заявка/отказ/…) — разрешена сразу;
-          // «мало» когда уже «мало» — no-op; снятие РУЧНОГО — разрешено (расчёт включится сам).
           if (spec.id === 'stat') {
+            // ФИНАЛЬНАЯ модель STAT (юзер 2026-06-07):
+            //  • снятие/Delete ('') → stat_manual=0 → возврат к АВТО-ярлыку (заявка/мало/мет_ок/
+            //    масловоз/пусто). Заявку-9002+КХП и любой авто-ярлык «в пусто» так не убрать — авто
+            //    мгновенно вернёт его (то самое «снял → снова заявка/масловоз»).
+            //  • значение НЕ из допустимых по строке (мет_ок/масловоз/прекурсор + заявка на авто-
+            //    строке) — руками не ставится (отсекаем).
+            //  • «мало» = валидируемый возврат: только при реальном недоборе → возврат к расчёту;
+            //    иначе карточка ВГХ (поправить транспортную норму).
+            //  • прочее допустимое (заявка на обычной / вопрос / самовывоз / отказ / неликвиды) —
+            //    липкий ручной (stat_manual=1, перекрывает расчёт).
             const cur = String(viewRow.stat ?? '').trim();
-            const curIsAuto = (FLOW_STAT_AUTO as readonly string[]).includes(cur);
-            const openCard =
-              (v === '' && curIsAuto) || // снять расчётный
-              (v === 'мало' && cur !== 'мало') || // поставить «мало» при пройденной норме
-              ((FLOW_STAT_AUTO as readonly string[]).includes(v) && v !== 'мало'); // мет_ок/масловоз/прекурсор руками
-            if (v === 'мало' && cur === 'мало') continue; // уже «мало» — ничего не делаем
-            if (openCard) {
-              setStatCard({ noNum: String(viewRow.no_num ?? ''), mat: String(viewRow.mat ?? ''), uom: String(viewRow.uom ?? '') });
+            const allowed = statOptionsForRow(viewRow);
+            if (v === '') {
+              statManualNext = 0;
+            } else if (v === 'мало') {
+              // «мало» проверяем РАНЬШЕ списка: при реальном недоборе → возврат к расчёту;
+              // иначе подсказка-карточка (в т.ч. при вставке мало на строку с пройденной нормой).
+              if (cur === 'мало') continue; // уже «мало»
+              if (statMetaById.get(viewRow.id)?.undershoot) {
+                newVal = ''; // недобор подтверждён → снять липкий, показать расчётное «мало»
+                statManualNext = 0;
+              } else {
+                openVghCard(viewRow, 'Норма пройдена — «мало» поставить нельзя. Поправьте транспортную норму.');
+                continue;
+              }
+            } else if (!allowed.includes(v)) {
               continue;
+            } else {
+              statManualNext = 1;
             }
+          } else if (v !== '' && !(spec.options ?? []).includes(v)) {
+            continue;
           }
         } else if (spec.kind === 'day') {
           const v = String(newVal ?? '');
@@ -1695,6 +1835,13 @@ export function FlowSandboxGrid() {
         after.set(viewRow.id, { ...(after.get(viewRow.id) ?? {}), [spec.id]: newVal });
         const prevBefore = before.get(viewRow.id) ?? {};
         if (!(spec.id in prevBefore)) before.set(viewRow.id, { ...prevBefore, [spec.id]: oldVal });
+        // Правка статуса → stat_manual = statManualNext (1 — липкий держим поверх расчёта;
+        // 0 — возврат к авто-ярлыку). Снял липкий → авто-расчёт снова ведёт строку.
+        if (spec.id === 'stat' && statManualNext != null) {
+          after.set(viewRow.id, { ...(after.get(viewRow.id) ?? {}), stat_manual: statManualNext });
+          const pb = before.get(viewRow.id) ?? {};
+          if (!('stat_manual' in pb)) before.set(viewRow.id, { ...pb, stat_manual: viewRow.stat_manual ?? 0 });
+        }
         // Авто-PR: смена склада-получателя → исходный склад в PR; вернули в исходный → PR очистить.
         if (spec.id === 'to_wh') {
           const oldTo = String(oldVal ?? '');
@@ -1717,7 +1864,20 @@ export function FlowSandboxGrid() {
       pushHistory({ kind: 'cells', before, after });
       syncEdits(after); // → сервер + реалтайм всем
     },
-    [viewRows, writeCells, pushHistory, syncEdits, molByWarehouse, molByKey],
+    [viewRows, writeCells, pushHistory, syncEdits, molByWarehouse, molByKey, openVghCard, statMetaById, statOptionsForRow],
+  );
+
+  // Двойной клик (Enter) по НОМЕНКЛАТУРЕ (NO.№) → карточка изменения материала (без плашки).
+  // MAT — НЕ здесь: у неё свой read-only оверлей со «своими данными» (Создал/Выгружен/…).
+  const onCellActivated = useCallback(
+    (cell: Item) => {
+      const [col, row] = cell;
+      const spec = FLOW_COLUMNS[col];
+      const r = viewRows[row];
+      if (!spec || !r) return;
+      if (spec.id === 'no_num') openVghCard(r);
+    },
+    [viewRows, openVghCard],
   );
 
   const onCellEdited = useCallback(
@@ -1779,46 +1939,40 @@ export function FlowSandboxGrid() {
     });
   }, []);
 
-  // Удаление выбранных строк с записью в историю (снимаем их позиции в источнике).
-  const deleteRows = useCallback(
-    (ids: ReadonlySet<number>) => {
-      if (ids.size === 0) return;
-      const removed: { index: number; row: FlowSandboxRow }[] = [];
-      rowsRef.current.forEach((r, index) => {
-        if (ids.has(r.id)) removed.push({ index, row: r });
-      });
-      removeRowsByIds(ids);
-      pushHistory({ kind: 'delete', removed });
+  // Удаление выделенных строк — ТОЛЬКО OFF (день='OFF'), НАВСЕГДА: сервер удаляет
+  // (`flow_workflow_delete`, активные строки защищены) и рассылает `deleted` всем. Не-OFF
+  // в выделении игнорируем. Без истории — необратимо (юзер: «удалил OFF → стирается совсем»).
+  // Выделять OFF удобно кликом/протяжкой по колонке КЛАСТЕРА (работает как «номера строк»).
+  const deleteOffRows = useCallback(
+    (displayRows: Iterable<number>): boolean => {
+      const ids: number[] = [];
+      for (const r of displayRows) {
+        const vr = viewRows[r];
+        if (vr && String(vr.day_wk ?? '').toUpperCase() === 'OFF') ids.push(vr.id);
+      }
+      if (ids.length === 0) return false;
+      const gone = new Set(ids);
+      setRows((prev) => prev.filter((row) => !gone.has(row.id))); // оптимистично
       setSelection(emptySelection());
+      void flowWorkflowDelete(api, ids).catch(() => { /* офлайн — WS/перезагрузка догонит */ });
+      return true;
     },
-    [removeRowsByIds, pushHistory],
+    [viewRows],
   );
 
-  const deleteSelectedRows = useCallback(() => {
-    const ids = new Set<number>();
-    for (const r of selection.rows) {
-      const vr = viewRows[r];
-      if (vr) ids.add(vr.id);
-    }
-    deleteRows(ids);
-  }, [selection, viewRows, deleteRows]);
+  const deleteSelectedRows = useCallback(() => { deleteOffRows(selection.rows); }, [selection, deleteOffRows]);
 
-  // Клавиша Delete/Backspace: выделены СТРОКИ — удаляем их (с историей); иначе —
-  // стандартная очистка ячеек Glide, которая идёт через applyEdits (тоже в истории).
+  // Клавиша Delete/Backspace: выделены СТРОКИ — удаляем OFF на сервере; иначе —
+  // стандартная очистка ячеек Glide, которая идёт через applyEdits (в истории).
   const handleDelete = useCallback(
     (sel: GridSelection): GridSelection | boolean => {
       if (sel.rows.length > 0) {
-        const ids = new Set<number>();
-        for (const r of sel.rows) {
-          const vr = viewRows[r];
-          if (vr) ids.add(vr.id);
-        }
-        deleteRows(ids);
+        deleteOffRows(sel.rows);
         return false;
       }
       return true;
     },
-    [viewRows, deleteRows],
+    [deleteOffRows],
   );
 
   // Отмена/повтор: применяем обратную/прямую сторону последней записи. Правка идёт
@@ -1848,9 +2002,34 @@ export function FlowSandboxGrid() {
   }, [writeCells, syncEdits, removeRowsByIds, syncHistory]);
 
   // Glide шлёт сюда изменения выделения (клик/Shift/Ctrl). Запоминаем якорь+фокус
-  // одиночно выбранной колонки/строки (для drag и Shift+стрелок) и снимаем рамку
+  // одиночно выбранной колонки/строки/ячейки (для drag и Shift+стрелок) и снимаем рамку
   // «скопировано» при любой смене выделения.
   const handleSelectionChange = useCallback((sel: GridSelection) => {
+    // Клик/протяжка по колонке КЛАСТЕРА (col 0) → выделяем ЦЕЛЫЕ строки, но ТОЛЬКО OFF
+    // (их можно удалить с сервера). Не-OFF в диапазоне игнорируем → колонка CLST работает
+    // как «номера строк» для удаления OFF. (Выделение строго в col 0: width 1, x 0.)
+    const cur = sel.current;
+    if (cur && sel.columns.length === 0 && sel.rows.length === 0 && cur.range.x === 0 && cur.range.width === 1) {
+      const y = cur.range.y;
+      const h = cur.range.height;
+      let rowsSel = CompactSelection.empty();
+      let any = false;
+      for (let r = y; r < y + h; r++) {
+        const vr = viewRowsRef.current[r];
+        if (vr && String(vr.day_wk ?? '').toUpperCase() === 'OFF') { rowsSel = rowsSel.add(r); any = true; }
+      }
+      if (any) {
+        colAnchorRef.current = null; colFocusRef.current = null;
+        cellAnchorRef.current = null; cellFocusRef.current = null;
+        const first = rowsSel.first();
+        rowAnchorRef.current = h === 1 && first != null ? first : null;
+        rowFocusRef.current = rowAnchorRef.current;
+        setCopiedRegions([]);
+        setSelection({ columns: CompactSelection.empty(), rows: rowsSel, current: undefined });
+        return;
+      }
+      // нет OFF в выделении кластера → обычное выделение ячейки (ниже).
+    }
     if (sel.columns.length === 1 && sel.rows.length === 0) {
       const c = sel.columns.first() ?? null;
       colAnchorRef.current = c;
@@ -1866,6 +2045,17 @@ export function FlowSandboxGrid() {
     } else if (sel.rows.length === 0) {
       rowAnchorRef.current = null;
       rowFocusRef.current = null;
+    }
+    // Якорь ВЫДЕЛЕНИЯ ЯЧЕЕК: ставим на ОДИНОЧНОЙ ячейке (клик); диапазон (наш Shift+
+    // стрелки) якорь не сбрасывает; строка/колонка — сбрасывает.
+    if (cur && sel.columns.length === 0 && sel.rows.length === 0) {
+      if (cur.range.width === 1 && cur.range.height === 1) {
+        cellAnchorRef.current = [cur.cell[0], cur.cell[1]];
+        cellFocusRef.current = [cur.cell[0], cur.cell[1]];
+      }
+    } else if (!cur) {
+      cellAnchorRef.current = null;
+      cellFocusRef.current = null;
     }
     // Снимаем подсветку «скопировано» при ЛЮБОЙ смене выделения — после ухода
     // не должно оставаться помеченной области (правка юзера).
@@ -2001,6 +2191,35 @@ export function FlowSandboxGrid() {
         rows: CompactSelection.fromSingleSelection([Math.min(a, focus), Math.max(a, focus) + 1]),
         current: undefined,
       });
+      return;
+    }
+    // Shift+стрелки по ЯЧЕЙКАМ — расширяем ВЫДЕЛЕНИЕ-ДИАПАЗОН САМИ (нативное поведение Glide
+    // «прыгало» без выделения). Якорь = ячейка клика; фокус двигаем; контролируемый scrollTo.
+    if (
+      cellAnchorRef.current !== null &&
+      cellFocusRef.current !== null &&
+      (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+    ) {
+      e.cancel();
+      const lastRow = viewRowsRef.current.length - 1;
+      const lastCol = FLOW_COLUMNS.length - 1;
+      const [ac, ar] = cellAnchorRef.current;
+      let [fc, fr] = cellFocusRef.current;
+      if (e.key === 'ArrowDown') fr = Math.min(lastRow, fr + 1);
+      else if (e.key === 'ArrowUp') fr = Math.max(0, fr - 1);
+      else if (e.key === 'ArrowRight') fc = Math.min(lastCol, fc + 1);
+      else fc = Math.max(0, fc - 1);
+      cellFocusRef.current = [fc, fr];
+      setSelection({
+        columns: CompactSelection.empty(),
+        rows: CompactSelection.empty(),
+        current: {
+          cell: [fc, fr],
+          range: { x: Math.min(ac, fc), y: Math.min(ar, fr), width: Math.abs(fc - ac) + 1, height: Math.abs(fr - ar) + 1 },
+          rangeStack: [],
+        },
+      });
+      gridRef.current?.scrollTo(fc, fr, 'both', 0, 0);
     }
   }, [undo, redo]);
 
@@ -2664,6 +2883,7 @@ export function FlowSandboxGrid() {
             getCellContent={getCellContent}
             onCellEdited={onCellEdited}
             onCellsEdited={onCellsEdited}
+            onCellActivated={onCellActivated}
             onPaste={handlePaste}
             onDelete={handleDelete}
             onHeaderMenuClick={handleHeaderMenuClick}
@@ -2732,6 +2952,29 @@ export function FlowSandboxGrid() {
             )}
           </>
         )}
+        {/* Транспортная норма по выделению (одна номенклатура + один отправитель/получатель):
+            сколько кол-ва не хватает до нормы — просто и с толерансом ×1.5. */}
+        {selNorm && (
+          <>
+            <span className="text-black/25">·</span>
+            <span className="rounded bg-accent-clay/15 px-1.5 py-px text-[11px] font-semibold text-[#8A4B2E]">
+              норма {selNorm.minQty.toLocaleString('ru-RU', { maximumFractionDigits: 3 })} {selNorm.uom}
+            </span>
+            <span>
+              не хватает{' '}
+              <span className="tabular-nums font-semibold text-[#2A2925]">
+                {selNorm.needPlain.toLocaleString('ru-RU', { maximumFractionDigits: 3 })} {selNorm.uom}
+              </span>
+            </span>
+            <span className="text-black/25">·</span>
+            <span>
+              с толерансом{' '}
+              <span className="tabular-nums font-semibold text-[#2A2925]">
+                {selNorm.needTol.toLocaleString('ru-RU', { maximumFractionDigits: 3 })} {selNorm.uom}
+              </span>
+            </span>
+          </>
+        )}
         {/* Объём — справа: «Показано X из Y» (фильтр) либо «Y строк». */}
         <span className="ml-auto">
           {filtered ? (
@@ -2797,13 +3040,13 @@ export function FlowSandboxGrid() {
       />
       <ContactActionDialog request={contactReq} onClose={() => setContactReq(null)} />
 
-      {/* Карточка ВГХ для смены расчётного STAT: правят MIN QTY → норма пересчитается →
-          статус («мало»/«мет_ок») сменится у всех реалтайм. (Снять расчётный в ячейке нельзя.) */}
+      {/* Единая карточка номенклатуры: двойной клик по номенклатуре (без плашки) ИЛИ конфликт
+          расчётного статуса (с жёлтой плашкой). Правка нормы (MIN QTY) → пересчёт статуса у всех. */}
       <VghEditCard
-        noNum={statCard?.noNum ?? null}
-        seed={statCard ? { mat: statCard.mat, uom: statCard.uom } : null}
-        note="Статус «мало»/«мет_ок» — расчётный по транспортной норме. Снять в ячейке нельзя: поправьте MIN QTY ниже — статус пересчитается у всех."
-        onClose={() => setStatCard(null)}
+        noNum={vghCard?.noNum ?? null}
+        seed={vghCard ? { mat: vghCard.mat, uom: vghCard.uom } : null}
+        note={vghCard?.note}
+        onClose={() => setVghCard(null)}
       />
 
       {/* Окно-предупреждение по МОЛ: чужой склад / договор истёк / дата вне срока договора. */}

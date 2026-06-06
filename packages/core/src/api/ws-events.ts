@@ -109,6 +109,11 @@ export const WS_EVENT_TYPES = {
    * формирования. `rows` — изменённые строки; `full:true` — клиенту перечитать лист.
    */
   VGH_STAGING_CHANGED: 'vgh_staging_changed',
+  /**
+   * Завершён прогон выгрузки заказов (раздел LOG) — `run` с итогами (кто/когда/
+   * сколько). Клиенты с открытым LOG добавляют запись сверху реалтайм.
+   */
+  FLOW_IMPORT_LOGGED: 'flow_import_logged',
 } as const;
 
 export type WsEventType = (typeof WS_EVENT_TYPES)[keyof typeof WS_EVENT_TYPES];
@@ -180,10 +185,12 @@ export interface BaseChangedEvent extends WsServerEvent {
   diff_count?: number | null;
 }
 
-/** Строки «Потока» изменены — рассылка актуальных строк (по id, с row_version). */
+/** Строки «Потока» изменены — рассылка актуальных строк (по id, с row_version) +
+ *  опц. id удалённых строк (мусорные/перенесённые OFF при подгрузке). */
 export interface FlowChangedEvent extends WsServerEvent {
   type: 'flow_changed';
   rows: Array<{ id: number; row_version: number; [key: string]: unknown }>;
+  deleted?: number[];
 }
 
 /** Сменён общий месяц формирования «Потока» — у всех обновить месяц + CLST. */
@@ -214,6 +221,25 @@ export interface VghStagingChangedEvent extends WsServerEvent {
   type: 'vgh_staging_changed';
   rows?: Array<{ no_num: string; row_version: number; [key: string]: unknown }>;
   full?: boolean;
+}
+
+/** Завершён прогон выгрузки заказов — запись журнала (раздел LOG) для live-добавления. */
+export interface FlowImportLoggedEvent extends WsServerEvent {
+  type: 'flow_import_logged';
+  run: {
+    id: number;
+    login: string;
+    full_name: string;
+    started_at: string;
+    finished_at: string;
+    received: number;
+    inserted: number;
+    updated: number;
+    off_marked: number;
+    reappeared: number;
+    to_changed: number;
+    staging_upserted: number;
+  };
 }
 
 export interface PersonsChangedEvent extends WsServerEvent {

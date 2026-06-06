@@ -22,6 +22,7 @@ export {
   type FlowPlanMonthChangedEvent,
   type VghChangedEvent,
   type VghStagingChangedEvent,
+  type FlowImportLoggedEvent,
   type WarehousesChangedEvent,
   type PersonsChangedEvent,
   type DesktopKickedEvent,

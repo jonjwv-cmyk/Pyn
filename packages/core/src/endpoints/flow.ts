@@ -14,6 +14,8 @@ export interface FlowRow {
   pr: string;
   day_wk: string;
   stat: string;
+  /** Флаг «статус задан/снят руками»: 0 — авто (полный расчёт на клиенте), 1 — ручной (держим как есть). */
+  stat_manual: number;
   time_at: string;
   // % в БД НЕ хранится — производное (1 − qty/chg), считаем на клиенте (livePct).
   q: string;
@@ -67,6 +69,15 @@ export async function flowWorkflowEdit(
     conflicts: Array.isArray(wire.conflicts) ? wire.conflicts : [],
     rows: Array.isArray(wire.rows) ? wire.rows : [],
   };
+}
+
+/**
+ * Удалить строки формирования по id — сервер удаляет ТОЛЬКО OFF-строки (активные
+ * защищены). Рассылает `flow_changed{deleted}` всем. Возвращает реально удалённые id.
+ */
+export async function flowWorkflowDelete(client: ApiClient, ids: number[]): Promise<number[]> {
+  const wire = await client.call<{ deleted?: number[] }>('flow_workflow_delete', { ids });
+  return Array.isArray(wire.deleted) ? wire.deleted : [];
 }
 
 /**
@@ -150,6 +161,26 @@ export interface FlowImportResult {
   inserted: number;
   off: number;
   reappeared: number;
+  /** Сколько строк сменили склад-получатель (для журнала LOG). */
+  to_changed: number;
+  staging_upserted: number;
+}
+
+/** Запись журнала прогона выгрузки заказов (раздел LOG): кто/когда + итоги. */
+export interface FlowImportRun {
+  id: number;
+  login: string;
+  full_name: string;
+  /** Момент нажатия «Выгрузка заказов» (ISO) — включает прогон VBS/SAP. */
+  started_at: string;
+  /** Момент полного завершения пересчёта на сервере (ISO). */
+  finished_at: string;
+  received: number;
+  inserted: number;
+  updated: number;
+  off_marked: number;
+  reappeared: number;
+  to_changed: number;
   staging_upserted: number;
 }
 
@@ -185,15 +216,30 @@ export function parseOrdersTsv(tsv: string): FlowImportRow[] {
   return out;
 }
 
-/** Отправить разобранную выгрузку заказов на воркер (E2E через VPS). */
-export async function flowImport(client: ApiClient, rows: FlowImportRow[]): Promise<FlowImportResult> {
-  const wire = await client.call<Partial<FlowImportResult>>('flow_import', { rows });
+/**
+ * Отправить разобранную выгрузку заказов на воркер (E2E через VPS). `startedAt` —
+ * ISO-момент нажатия кнопки на клиенте (включает прогон VBS/SAP); сервер пишет его
+ * в журнал прогона (раздел LOG) как начало, конец = завершение пересчёта.
+ */
+export async function flowImport(
+  client: ApiClient,
+  rows: FlowImportRow[],
+  startedAt?: string,
+): Promise<FlowImportResult> {
+  const wire = await client.call<Partial<FlowImportResult>>('flow_import', { rows, started_at: startedAt });
   return {
     received: Number(wire.received) || 0,
     updated: Number(wire.updated) || 0,
     inserted: Number(wire.inserted) || 0,
     off: Number(wire.off) || 0,
     reappeared: Number(wire.reappeared) || 0,
+    to_changed: Number(wire.to_changed) || 0,
     staging_upserted: Number(wire.staging_upserted) || 0,
   };
+}
+
+/** Прочитать журнал прогонов выгрузки (новые сверху) для раздела LOG. */
+export async function flowImportRunsGet(client: ApiClient, limit?: number): Promise<FlowImportRun[]> {
+  const wire = await client.call<{ runs?: FlowImportRun[] }>('flow_import_runs_get', limit ? { limit } : {});
+  return Array.isArray(wire.runs) ? wire.runs : [];
 }

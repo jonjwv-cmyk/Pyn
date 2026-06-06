@@ -13,7 +13,12 @@ import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
  * действие/VBS-исходник берём из реестра «Таблиц» (`get_macro_bundle`) — VBS не
  * дублируем. Windows-only (cscript+SAP); на Mac — подсказка.
  */
-export function FlowOrderUploadButton(): JSX.Element {
+export function FlowOrderUploadButton({
+  onRunningChange,
+}: {
+  /** Сообщает родителю (FlowScreen) о старте/завершении прогона — для окна-блокировки. */
+  onRunningChange?: (running: boolean) => void;
+} = {}): JSX.Element {
   const { t } = useTranslation();
   const { files } = useTablesRegistry();
 
@@ -41,7 +46,10 @@ export function FlowOrderUploadButton(): JSX.Element {
       setMsg('Только на Windows (нужен SAP)');
       return;
     }
+    // Момент нажатия — начало прогона (включает VBS/SAP); для журнала LOG + окна-блокировки.
+    const startedAt = new Date().toISOString();
     setBusy(true);
+    onRunningChange?.(true);
     setMsg(null);
     try {
       const bundle = await getMacroBundle(api, {
@@ -64,12 +72,13 @@ export function FlowOrderUploadButton(): JSX.Element {
         setMsg('Пустая выгрузка');
         return;
       }
-      const r = await flowImport(api, rows);
+      const r = await flowImport(api, rows, startedAt);
       setMsg(`Готово: +${r.inserted} нов · ${r.updated} правок · ${r.off} снято`);
     } catch (e) {
       setMsg(`Ошибка: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
     } finally {
       setBusy(false);
+      onRunningChange?.(false);
     }
   };
 

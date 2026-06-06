@@ -4,6 +4,7 @@ import {
   DataEditor,
   type DataEditorRef,
   GridCellKind,
+  type DrawCellCallback,
   type DrawHeaderCallback,
   type EditableGridCell,
   type GridCell,
@@ -37,19 +38,39 @@ import { FlowSearchPanel, type FlowSearchGroup } from '@/components/flow/FlowSea
 import { applyVghChanged } from '@/lib/vgh-repo';
 import {
   VGH_COLUMNS,
+  autoWeightByUom,
   computeVolume,
+  fmtFixed,
   fmtSmart,
+  fmtVolume,
+  isPieceUom,
+  numToEdit,
+  vghDefaultCompare,
   vghReady,
   vghTransferred,
   vghText,
+  type VghColId,
   type VghColumnSpec,
   type VghStagingView,
 } from './vgh-staging.fixtures';
 
-const BASE_FONT = 12;
-const HEADER_FONT = 12;
+// Шрифт как в Потоке-формировании: дефолт значений 10px; «схожие» колонки — тем же кеглем,
+// что в формировании (КГ↔KG / V↔V = 8px), остальные — стандарт 10; жирные FR/КГ/V.
+const BASE_FONT = 10;
+const HEADER_FONT = 10;
 const BASE_ROW_HEIGHT = 22;
 const BASE_HPAD = 6;
+
+/** Кегль значения колонки (px при 100%) — совпадающие с формированием КГ/V мельче (8). */
+const VGH_COL_FONT_PX: Partial<Record<VghColId, number>> = { weight_kg: 8, volume: 8 };
+function vghColFontPx(id: VghColId): number {
+  return VGH_COL_FONT_PX[id] ?? BASE_FONT;
+}
+/** Жирные значения — как в формировании (склад-отправитель, КГ, V). */
+const VGH_BOLD_COLS = new Set<VghColId>(['fr', 'weight_kg', 'volume']);
+function vghValueFontStyle(id: VghColId, zoom: number): string {
+  return `${VGH_BOLD_COLS.has(id) ? '600 ' : ''}${Math.round(vghColFontPx(id) * zoom)}px`;
+}
 const MAX_DISTINCT = 2000;
 const SEARCH_CAP_PER_COL = 50;
 const SEARCH_HL_BUFFER = 150;
@@ -62,6 +83,44 @@ const EDIT_LOCK_HOLD_MS = 8000;
 
 const GRID_FONT_FAMILY = FLOW_GRID_THEME.fontFamily ?? 'Inter, sans-serif';
 const MEASURE_CTX = document.createElement('canvas').getContext('2d');
+
+/** Минимальная ширина «резиновой» колонки ТЕХ-ИМЯ — ýже не даём (дальше горизонт. скролл). */
+const TECH_MIN_WIDTH = 200;
+
+/** Кэш числа строк переноса (ключ: шрифт+ширина+текст) — чтобы getRowHeight не мерил
+ *  одно и то же повторно при прокрутке. (Как в формировании.) */
+const WRAP_CACHE = new Map<string, number>();
+/** Сколько визуальных строк займёт текст в колонке шириной maxWidth (явные \n + мягкий
+ *  перенос по словам) — для «резиновой» колонки ТЕХ-ИМЯ (строка растёт под текст). */
+function countWrapLines(text: string, maxWidth: number, fontPx: number): number {
+  if (!text) return 1;
+  const ctx = MEASURE_CTX;
+  if (!ctx || maxWidth <= 0) return text.includes('\n') ? text.split('\n').length : 1;
+  const key = `${fontPx} ${Math.round(maxWidth)} ${text}`;
+  const cached = WRAP_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  ctx.font = `${fontPx}px ${GRID_FONT_FAMILY}`;
+  let total = 0;
+  for (const para of text.split('\n')) {
+    if (para === '') { total += 1; continue; }
+    const tokens = para.split(/(\s+)/);
+    let line = '';
+    let lines = 1;
+    for (const tok of tokens) {
+      const test = line + tok;
+      if (ctx.measureText(test).width > maxWidth && line.trim() !== '') {
+        lines += 1;
+        line = tok.replace(/^\s+/, '');
+      } else {
+        line = test;
+      }
+    }
+    total += lines;
+  }
+  if (WRAP_CACHE.size > 4000) WRAP_CACHE.clear();
+  WRAP_CACHE.set(key, total);
+  return total;
+}
 
 interface ColumnFilter {
   search: string;
@@ -90,9 +149,9 @@ function computeAutoWidths(rows: VghStagingView[], zoom: number): Record<string,
       out[spec.id] = spec.width;
       continue;
     }
-    ctx.font = `800 ${Math.round(HEADER_FONT * zoom)}px ${GRID_FONT_FAMILY}`;
+    ctx.font = `800 ${Math.round(vghColFontPx(spec.id) * zoom)}px ${GRID_FONT_FAMILY}`;
     let max = ctx.measureText(spec.title).width + 26; // место под значок меню
-    ctx.font = `${Math.round(BASE_FONT * zoom)}px ${GRID_FONT_FAMILY}`;
+    ctx.font = `${vghValueFontStyle(spec.id, zoom)} ${GRID_FONT_FAMILY}`;
     // Берём до 40 самых длинных по символам значений и мерим их пиксельно.
     const sample = rows
       .map((r) => vghText(r, spec.id))
@@ -136,12 +195,15 @@ function compareRows(a: VghStagingView, b: VghStagingView, spec: VghColumnSpec, 
  * компоненты формирования. Реалтайм по WS `vgh_staging_changed`; защита строки —
  * когда кто-то её редактирует (общий schedule_lock, resourceId `vgh_staging:{no_num}`).
  */
-export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => void }) {
+export function VghStagingGrid() {
   const [rows, setRows] = useState<VghStagingView[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [fontsReady, setFontsReady] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  // Ширина для РАСКЛАДКИ колонок (резиновый ТЕХ-ИМЯ) — с задержкой, чтобы при движении
+  // сайдбара канвас следовал live, а переразметка колонок шла раз по остановке (без прыжка).
+  const [layoutWidth, setLayoutWidth] = useState(0);
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
   const [sortLevels, setSortLevels] = useState<SortLevel[]>([]);
   const [filters, setFilters] = useState<Record<string, ColumnFilter>>({});
@@ -257,13 +319,19 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
   useEffect(() => {
     const el = measureRef.current;
     if (!el) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      setSize({ width: Math.floor(entry.contentRect.width), height: Math.floor(entry.contentRect.height) });
+      const w = Math.floor(entry.contentRect.width);
+      const h = Math.floor(entry.contentRect.height);
+      setSize({ width: w, height: h }); // live — канвас следует за окном
+      setLayoutWidth((prev) => (prev === 0 ? w : prev)); // первый раз сразу
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setLayoutWidth(w), 160); // дальше — по паузе движения
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => { if (timer) clearTimeout(timer); ro.disconnect(); };
   }, []);
 
   const colWidths = useMemo(
@@ -271,6 +339,16 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, fontsReady, zoom],
   );
+
+  // ТЕХ-ИМЯ — «резиновая» (как NOTE в формировании): добивает таблицу до края окна; остаток
+  // после прочих колонок. Мал → текст переносится (строка растёт), широко → показ как есть.
+  const techWidth = useMemo(() => {
+    const others = VGH_COLUMNS.reduce(
+      (sum, c) => (c.id === 'tech_name' ? sum : sum + Math.round((colWidths[c.id] ?? c.width) * zoom)),
+      0,
+    );
+    return Math.max(TECH_MIN_WIDTH, layoutWidth - others - 12); // -12: полоса/зазор
+  }, [layoutWidth, colWidths, zoom]);
 
   // Представление = фильтр показа + сортировка поверх источника.
   const viewRows = useMemo<VghStagingView[]>(() => {
@@ -305,6 +383,11 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
         });
         out = base;
       }
+    } else {
+      // Без пользовательской сортировки — дефолт ВГХ: FR → ЕИ (не штучное→штучное) → MAT.
+      const base = out === rows ? out.slice() : out;
+      base.sort(vghDefaultCompare);
+      out = base;
     }
     return out;
   }, [rows, filters, sortLevels]);
@@ -340,17 +423,18 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
         return {
           id: c.id,
           title: c.title,
-          width: Math.round((colWidths[c.id] ?? c.width) * zoom),
+          // ТЕХ-ИМЯ — резиновая (остаток до края окна), прочие — по авто-ширине × зум.
+          width: c.id === 'tech_name' ? techWidth : Math.round((colWidths[c.id] ?? c.width) * zoom),
           hasMenu: true,
           themeOverride: {
-            headerFontStyle: `800 ${Math.round(HEADER_FONT * zoom)}px`,
+            headerFontStyle: `800 ${Math.round(vghColFontPx(c.id) * zoom)}px`,
             ...(filtered
               ? { textHeader: '#B35E45', bgHeader: '#EFE2DA', bgHeaderHovered: '#EEDBD1', bgHeaderHasFocus: '#EEDDD4' }
               : {}),
           },
         };
       }),
-    [colWidths, filters, zoom],
+    [colWidths, filters, zoom, techWidth],
   );
 
   const getCellContent = useCallback(
@@ -376,23 +460,41 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
         };
       }
       if (spec.kind === 'number' || spec.kind === 'volume') {
-        const raw = spec.id === 'volume' ? rowData.volume : ((rowData as unknown as Record<string, unknown>)[spec.id] as number | null);
+        // Авто-значения по ЕИ (нельзя менять, чтобы не ошибиться): вес для Т/КГ/Г; MIN QTY=1
+        // для штучных. Показываем посчитанное и блокируем ячейку.
+        const autoW = spec.id === 'weight_kg' ? autoWeightByUom(rowData.uom) : null;
+        const autoMin = spec.id === 'min_qty' && isPieceUom(rowData.uom) ? 1 : null;
+        const auto = autoW != null ? autoW : autoMin;
+        const fieldRaw = spec.id === 'volume' ? rowData.volume : ((rowData as unknown as Record<string, unknown>)[spec.id] as number | null);
+        const raw = auto != null ? auto : fieldRaw;
         const empty = raw == null || raw === undefined;
         const num = empty ? NaN : Number(raw);
         const valid = Number.isFinite(num);
-        // КГ пусто → показываем подсказку (обратный счёт) серым, если есть.
-        let display = valid ? fmtSmart(num, spec.frac ?? 3) : '';
-        if (spec.id === 'weight_kg' && empty && rowData.weight_hint != null) {
-          display = `≈ ${fmtSmart(rowData.weight_hint, 3)}`;
-        }
+        // Объём — умно до первого значащего знака (чтобы не обнулить крошечные); Д/Ш/В — чисто
+        // мм (целые) умным показом без принудительных 4 знаков; КГ/MIN QTY — РОВНО 4 знака (фикс,
+        // вкл. авто-значения) единообразно по столбцу.
+        const dim = spec.id === 'len_mm' || spec.id === 'wid_mm' || spec.id === 'hgt_mm';
+        let display = valid
+          ? spec.id === 'volume'
+            ? fmtVolume(num)
+            : dim
+              ? fmtSmart(num)
+              : fmtFixed(num, spec.frac ?? 4)
+          : '';
+        // КГ пусто → подсказка (обратный счёт) серым, если есть и вес не авто.
+        const hint = auto == null && spec.id === 'weight_kg' && empty && rowData.weight_hint != null;
+        if (hint) display = `≈ ${fmtSmart(rowData.weight_hint, 3)}`;
+        const cellRo = ro || auto != null; // авто-значение по ЕИ — read-only
+        // Число-ячейка = ТЕКСТ со своим показом: редактор правит «чистое» значение запятой-
+        // десятич без разрядов, грид показывает отформатированное → ввод запятой работает.
         return {
-          kind: GridCellKind.Number,
-          data: valid ? num : undefined,
+          kind: GridCellKind.Text,
+          data: valid ? numToEdit(num) : '',
           displayData: display,
-          allowOverlay: !ro,
-          readonly: ro,
+          allowOverlay: !cellRo,
+          readonly: cellRo,
           contentAlign: 'right',
-          themeOverride: spec.id === 'weight_kg' && empty && rowData.weight_hint != null ? { textDark: '#9AA0A6' } : undefined,
+          themeOverride: { baseFontStyle: vghValueFontStyle(spec.id, zoom), ...(hint ? { textDark: '#9AA0A6' } : {}) },
         };
       }
       const txt = vghText(rowData, spec.id);
@@ -402,9 +504,12 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
         displayData: txt,
         allowOverlay: !ro,
         readonly: ro,
+        themeOverride: { baseFontStyle: vghValueFontStyle(spec.id, zoom) },
+        // ТЕХ-ИМЯ — резиновая: перенос текста по словам + многострочный редактор.
+        ...(spec.id === 'tech_name' ? { allowWrapping: true } : {}),
       };
     },
-    [viewRows, lockedByOthers],
+    [viewRows, lockedByOthers, zoom],
   );
 
   // — применение правок (валидация + защита строки + сервер + оптимистика) —
@@ -525,18 +630,6 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
     [selection, applyEdits],
   );
 
-  // Двойной клик по NO.№/MAT — открыть карточку правки базы ВГХ для этой номенклатуры.
-  const onCellActivated = useCallback(
-    (cellPos: Item) => {
-      const [col, row] = cellPos;
-      const spec = VGH_COLUMNS[col];
-      const rowData = viewRows[row];
-      if (!spec || !rowData) return;
-      if (spec.id === 'no_num' || spec.id === 'mat') onEditBase(String(rowData.no_num));
-    },
-    [viewRows, onEditBase],
-  );
-
   // — меню колонки (фильтр/сортировка) —
   const menuColId = menu ? VGH_COLUMNS[menu.colIndex]?.id : undefined;
   const menuFilter = menuColId ? filters[menuColId] : undefined;
@@ -648,6 +741,28 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
     [viewRows, lockedByOthers],
   );
 
+  // Разделитель между складами-отправителями (FR) — толстая ОПАКОВАЯ линия (2.5px, #1E1E1E)
+  // по верху первой строки группы FR, как граница кластера в Потоке. Опаковая (без alpha) →
+  // не копит цвет на hover-перерисовках. По умолчанию лист отсортирован FR→ЕИ→MAT, поэтому
+  // линии делят именно по отправителю. save/restore — чтобы цвет не утёк в соседние ячейки.
+  const drawCell = useCallback<DrawCellCallback>(
+    (args, drawContent) => {
+      drawContent();
+      const { ctx, rect, row } = args;
+      if (row <= 0) return;
+      const r = viewRows[row];
+      const prev = viewRows[row - 1];
+      if (!r || !prev) return;
+      if (String(prev.fr ?? '') !== String(r.fr ?? '')) {
+        ctx.save();
+        ctx.fillStyle = '#1E1E1E';
+        ctx.fillRect(rect.x, rect.y, rect.width, 2.5);
+        ctx.restore();
+      }
+    },
+    [viewRows],
+  );
+
   // Индикаторы шапки (стрелка меню на hover + сортировки) — как в формировании.
   const drawHeader = useCallback<DrawHeaderCallback>((args, drawContent) => {
     drawContent();
@@ -687,9 +802,23 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
   );
   const rowH = Math.round(BASE_ROW_HEIGHT * zoom);
 
+  // Высота строки: резиновая ТЕХ-ИМЯ переносится по ширине → растим строку под число строк.
+  const getRowHeight = useCallback(
+    (row: number): number => {
+      const r = viewRows[row];
+      const v = r ? r.tech_name : '';
+      if (typeof v !== 'string' || !v) return rowH;
+      const fontPx = Math.round(BASE_FONT * zoom);
+      const innerW = techWidth - 2 * Math.max(4, Math.round(BASE_HPAD * zoom));
+      const lines = countWrapLines(v, innerW, fontPx);
+      return lines <= 1 ? rowH : rowH + (lines - 1) * Math.round(fontPx * 1.3);
+    },
+    [viewRows, rowH, zoom, techWidth],
+  );
+
   const contentWidth = useMemo(
-    () => VGH_COLUMNS.reduce((s, c) => s + Math.round((colWidths[c.id] ?? c.width) * zoom), 0) + 12,
-    [colWidths, zoom],
+    () => VGH_COLUMNS.reduce((s, c) => s + (c.id === 'tech_name' ? techWidth : Math.round((colWidths[c.id] ?? c.width) * zoom)), 0) + 12,
+    [colWidths, zoom, techWidth],
   );
 
   const filtered = viewRows.length !== rows.length;
@@ -796,8 +925,8 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
             onCellEdited={onCellEdited}
             onCellsEdited={onCellsEdited}
             onPaste={handlePaste}
-            onCellActivated={onCellActivated}
             onHeaderMenuClick={handleHeaderMenuClick}
+            drawCell={drawCell}
             drawHeader={drawHeader}
             gridSelection={selection}
             onGridSelectionChange={setSelection}
@@ -806,8 +935,9 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
             getRowThemeOverride={getRowThemeOverride}
             getCellsForSelection
             rowMarkers="none"
+            freezeColumns={5}
             rangeSelect="multi-rect"
-            rowHeight={rowH}
+            rowHeight={getRowHeight}
             headerHeight={rowH}
             smoothScrollX
             smoothScrollY
@@ -816,9 +946,8 @@ export function VghStagingGrid({ onEditBase }: { onEditBase: (noNum: string) => 
         )}
       </div>
 
-      {/* Статус-строка снизу. */}
+      {/* Статус-строка снизу (только счётчик). */}
       <div className="flex shrink-0 items-center gap-3 border-t border-black/[0.06] px-4 py-1.5 text-[12px] text-[#6B6862]">
-        <span>Промежуточный лист — дозаполнение веса/габаритов. Чекбокс при наличии веса → перенос в базу ВГХ.</span>
         <span className="ml-auto">
           {filtered ? (
             <>Показано <span className="tabular-nums text-[#2A2925]">{viewRows.length}</span> из <span className="tabular-nums text-[#2A2925]">{rows.length}</span></>

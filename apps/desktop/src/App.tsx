@@ -9,6 +9,7 @@ import { useSelectionCopy } from '@/lib/use-selection-copy';
 import { ChatConversation, ChatList } from '@/components/chats';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { FlowScreen } from '@/components/flow';
+import { LogScreen } from '@/components/flow/LogScreen';
 import { VghScreen } from '@/components/vgh';
 import { MolScreen } from '@/components/mol';
 import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
@@ -973,6 +974,7 @@ export function App() {
               showAi={isAdminLike(session.role)}
               showFlow={isAdminLike(session.role)}
               showVgh={isAdminLike(session.role)}
+              showLog={isAdminLike(session.role)}
               onToggleCollapsed={() => setCollapsed((v) => !v)}
               onAiClick={() => useAiStore.getState().setOpen(true)}
               onSectionClick={setActiveSection}
@@ -1023,6 +1025,9 @@ export function App() {
                 Admin/developer-only через showVgh. Из этой базы реалтайм считаются
                 KG/V и тех-имя в формировании. */}
             {activeSection === 'vgh' && <VghScreen />}
+
+            {/* §log — раздел «LOG» (журнал прогонов выгрузки заказов). Admin/developer-only. */}
+            {activeSection === 'log' && <LogScreen />}
 
             {/* §design — Новости always-mounted, вынесены на подложку: шапка на
                 подложке + контент в WorkspaceCard (внутри NewsFeed). */}

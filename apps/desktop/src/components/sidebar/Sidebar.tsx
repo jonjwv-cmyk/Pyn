@@ -4,6 +4,7 @@ import {
   NAV_FEED,
   NAV_FLOW,
   NAV_VGH,
+  NAV_LOG,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
 } from '@/lib/nav-sections';
@@ -56,6 +57,8 @@ interface SidebarProps {
   showFlow: boolean;
   /** Показывать ли раздел «ВГХ» — тот же admin/developer-контур, что «Поток». */
   showVgh: boolean;
+  /** Показывать ли раздел «LOG» (журнал выгрузок) — тот же admin/developer-контур. */
+  showLog: boolean;
   onToggleCollapsed: () => void;
   onAiClick: () => void;
   onSectionClick: (id: NavSectionId) => void;
@@ -124,6 +127,7 @@ export function Sidebar({
   showAi,
   showFlow,
   showVgh,
+  showLog,
   onToggleCollapsed,
   onAiClick,
   onSectionClick,
@@ -319,6 +323,9 @@ export function Sidebar({
         {/* §vgh — раздел «ВГХ» (промежуточный лист дозаполнения вес/габариты +
             база ВГХ). Тот же admin/developer-контур, что «Поток». */}
         {showVgh && renderNavItem(NAV_VGH)}
+
+        {/* §log — раздел «LOG» (журнал прогонов выгрузки заказов). Тот же контур. */}
+        {showLog && renderNavItem(NAV_LOG)}
 
         {/* Группа «Лента»: Чаты, Новости. */}
         <NavGroupHeader label={t('sidebar.group_feed')} collapsed={collapsed} />

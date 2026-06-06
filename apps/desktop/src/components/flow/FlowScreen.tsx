@@ -1,12 +1,20 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { ScheduleLockAcquiredEvent, ScheduleLockReleasedEvent } from '@pyn/core';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { cn } from '@/lib/cn';
+import { useEditLock } from '@/lib/schedule/use-edit-lock';
+import { useWsEvent } from '@/lib/ws';
+import { sessionStore } from '@/lib/token-store';
 import { FlowSandboxGrid } from './FlowSandboxGrid';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
+import { FlowImportLockOverlay, type FlowImportRunner } from './FlowImportLockOverlay';
 
 /** Этапы плана: формирование → план → отчёт (как в Google-процессе). */
 type FlowStage = 'form' | 'plan' | 'report';
+
+/** Общий lock «идёт выгрузка заказов» — один на всех; держит инициатор, видят остальные. */
+const FLOW_IMPORT_LOCK = 'flow_import:running';
 
 /**
  * «Поток» (β) — раздел собственного табличного реестра (миграция с Google Sheets).
@@ -18,14 +26,33 @@ type FlowStage = 'form' | 'plan' | 'report';
 export function FlowScreen(): JSX.Element {
   const { t } = useTranslation();
   const [stage, setStage] = useState<FlowStage>('form');
+  // Окно-блокировка на время выгрузки заказов (пароль — у самой кнопки). Инициатор держит
+  // общий lock (heartbeat + авто-истечение при зависании); остальные видят, кто запустил.
+  const [selfRunning, setSelfRunning] = useState(false);
+  const [runner, setRunner] = useState<FlowImportRunner | null>(null);
+  const [myLogin, setMyLogin] = useState('');
+  useEffect(() => {
+    sessionStore.load().then((s) => { if (s?.user?.login) setMyLogin(s.user.login); }).catch(() => {});
+  }, []);
+  useEditLock(FLOW_IMPORT_LOCK, selfRunning);
+  useWsEvent<ScheduleLockAcquiredEvent>('schedule_lock_acquired', (e) => {
+    if (e.resource_id !== FLOW_IMPORT_LOCK || e.user_login === myLogin) return;
+    setRunner({
+      login: String(e.user_login || ''),
+      name: String(e.full_name || e.user_login || ''),
+      avatarUrl: String(e.avatar_url || ''),
+      avatarBlobKey: String(e.avatar_blob_key || ''),
+      avatarBlobNonce: String(e.avatar_blob_nonce || ''),
+    });
+  });
+  useWsEvent<ScheduleLockReleasedEvent>('schedule_lock_released', (e) => {
+    if (e.resource_id === FLOW_IMPORT_LOCK) setRunner(null);
+  });
   return (
-    <main className="flex flex-1 flex-col overflow-hidden">
+    <main className="relative flex flex-1 flex-col overflow-hidden">
       <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
         <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
           {t('sidebar.nav_flow')}
-        </span>
-        <span className="no-drag-region rounded-full border border-border-subtle px-1.5 py-px text-[10px] font-medium leading-none text-text-muted/80">
-          β
         </span>
         {/* Этапы плана. План/Отчёт — заглушки (следующий этап). */}
         <div className="no-drag-region ml-1 flex items-center gap-1">
@@ -37,12 +64,13 @@ export function FlowScreen(): JSX.Element {
         </div>
         {/* Контекстная кнопка текущего этапа. */}
         <div className="no-drag-region ml-auto flex items-center gap-2">
-          {stage === 'form' && <FlowOrderUploadButton />}
+          {stage === 'form' && <FlowOrderUploadButton onRunningChange={setSelfRunning} />}
         </div>
       </div>
       <WorkspaceCard>
         {stage === 'form' ? <FlowSandboxGrid /> : <StagePlaceholder stage={stage} />}
       </WorkspaceCard>
+      {runner && <FlowImportLockOverlay runner={runner} />}
     </main>
   );
 }

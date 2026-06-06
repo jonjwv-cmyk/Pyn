@@ -1,4 +1,4 @@
-import { Archive, CalendarRange, Database, MessageSquare, Newspaper, Scale, Workflow } from 'lucide-react';
+import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Scale, Workflow } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -49,6 +49,17 @@ export const NAV_VGH: NavSection = {
   id: 'vgh',
   get label() { return i18next.t('sidebar.nav_vgh'); },
   icon: Scale,
+};
+
+/**
+ * Раздел «LOG» — журнал прогонов выгрузки заказов (кто/когда запускал и итоги:
+ * новых/правок/снято OFF/смен складов/ВГХ + длительность). Тот же изолированный
+ * контур (admin/developer-only, флаг `showLog`); вне `NAV_SECTIONS`.
+ */
+export const NAV_LOG: NavSection = {
+  id: 'log',
+  get label() { return i18next.t('sidebar.nav_log'); },
+  icon: History,
 };
 
 // Группа «Лента».

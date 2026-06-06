@@ -1,24 +1,29 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
-import { Search } from 'lucide-react';
+import { Plus, Search } from 'lucide-react';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { useVghStore } from '@/lib/vgh-store';
 import { ensureVghLoaded } from '@/lib/vgh-repo';
 import { VghStagingGrid } from './VghStagingGrid';
-import { VghEditCard, type VghCardSeed } from './VghEditCard';
+import { VghEditCard } from './VghEditCard';
 import { fmtSmart } from './vgh-staging.fixtures';
 
+/** Карточка ВГХ: добавление новой ИЛИ правка существующей (по поиску). */
+type CardState = { mode: 'add' } | { mode: 'edit'; noNum: string } | null;
+
 /**
- * Раздел «ВГХ» — промежуточный лист дозаполнения вес-габаритов (наш Glide-грид) +
- * правка базы ВГХ через карточку. Виден только admin/developer (как «Поток»). Из
- * этой базы реалтайм считаются KG/V и тех-имя в формировании.
+ * Раздел «ВГХ» — промежуточный лист дозаполнения вес-габаритов (наш Glide-грид). Вес/
+ * габариты/норму правим прямо в колонках листа. Карточка изменения материала — для
+ * ДОБАВЛЕНИЯ («+ Материал») и для ПРАВКИ найденного через «Найти материал» (поиск по
+ * базе). Если в добавлении набрать существующую номенклатуру — данные подтянутся
+ * (защита от дублей, станет правкой). Виден только admin/developer.
  */
 export function VghScreen(): JSX.Element {
   const { t } = useTranslation();
-  const [card, setCard] = useState<{ noNum: string; seed?: VghCardSeed | null } | null>(null);
+  const [card, setCard] = useState<CardState>(null);
 
-  // База ВГХ нужна и для карточки, и для поиска по базе — грузим при входе в раздел.
+  // База ВГХ нужна для расчётов формирования, поиска и защиты от дублей — грузим при входе.
   useEffect(() => { void ensureVghLoaded(); }, []);
 
   return (
@@ -27,23 +32,31 @@ export function VghScreen(): JSX.Element {
         <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
           {t('sidebar.nav_vgh')}
         </span>
-        <span className="no-drag-region rounded-full border border-border-subtle px-1.5 py-px text-[10px] font-medium leading-none text-text-muted/80">
-          β
-        </span>
-        <span className="no-drag-region text-[12px] text-text-muted/70">Промежуточный лист · база</span>
-        <div className="no-drag-region ml-auto">
-          <VghBaseSearch onPick={(noNum) => setCard({ noNum })} />
+        <div className="no-drag-region ml-auto flex items-center gap-1.5">
+          <VghBaseSearch onPick={(noNum) => setCard({ mode: 'edit', noNum })} />
+          <button
+            type="button"
+            onClick={() => setCard({ mode: 'add' })}
+            className="flex h-6 items-center gap-1 rounded-md border border-border-subtle px-2 text-[12px] text-text-muted outline-none transition-colors hover:border-accent-clay/50 hover:text-text-secondary"
+          >
+            <Plus size={13} strokeWidth={1.75} />
+            Материал
+          </button>
         </div>
       </div>
       <WorkspaceCard>
-        <VghStagingGrid onEditBase={(noNum) => setCard({ noNum })} />
+        <VghStagingGrid />
       </WorkspaceCard>
-      <VghEditCard noNum={card?.noNum ?? null} seed={card?.seed ?? null} onClose={() => setCard(null)} />
+      <VghEditCard
+        noNum={card?.mode === 'edit' ? card.noNum : null}
+        addMode={card?.mode === 'add'}
+        onClose={() => setCard(null)}
+      />
     </main>
   );
 }
 
-/** Поиск по базе ВГХ (3.6к) → клик открывает карточку правки номенклатуры. */
+/** Поиск по базе ВГХ → клик открывает карточку ПРАВКИ номенклатуры. */
 function VghBaseSearch({ onPick }: { onPick: (noNum: string) => void }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -74,7 +87,7 @@ function VghBaseSearch({ onPick }: { onPick: (noNum: string) => void }): JSX.Ele
           className="flex h-6 items-center gap-1.5 rounded-md border border-border-subtle px-2 text-[12px] text-text-muted outline-none transition-colors hover:border-border-default hover:text-text-secondary"
         >
           <Search size={13} strokeWidth={1.75} />
-          Найти в базе ВГХ
+          Найти материал
         </button>
       </Popover.Trigger>
       <Popover.Portal>
