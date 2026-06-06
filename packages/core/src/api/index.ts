@@ -20,6 +20,8 @@ export {
   type BaseChangedEvent,
   type FlowChangedEvent,
   type FlowPlanMonthChangedEvent,
+  type VghChangedEvent,
+  type VghStagingChangedEvent,
   type WarehousesChangedEvent,
   type PersonsChangedEvent,
   type DesktopKickedEvent,

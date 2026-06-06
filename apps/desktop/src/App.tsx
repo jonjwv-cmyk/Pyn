@@ -9,6 +9,7 @@ import { useSelectionCopy } from '@/lib/use-selection-copy';
 import { ChatConversation, ChatList } from '@/components/chats';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { FlowScreen } from '@/components/flow';
+import { VghScreen } from '@/components/vgh';
 import { MolScreen } from '@/components/mol';
 import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
 import { initPersons, refreshPersonsFromServer } from '@/lib/persons-repo';
@@ -971,6 +972,7 @@ export function App() {
               badges={sidebarBadges}
               showAi={isAdminLike(session.role)}
               showFlow={isAdminLike(session.role)}
+              showVgh={isAdminLike(session.role)}
               onToggleCollapsed={() => setCollapsed((v) => !v)}
               onAiClick={() => useAiStore.getState().setOpen(true)}
               onSectionClick={setActiveSection}
@@ -1016,6 +1018,11 @@ export function App() {
                 данных. Conditional render (admin/developer-only через showFlow в
                 Sidebar). Существующие «Таблицы»/Google не затрагивает. */}
             {activeSection === 'flow' && <FlowScreen />}
+
+            {/* §vgh — раздел «ВГХ» (промежуточный лист + база вес-габаритов).
+                Admin/developer-only через showVgh. Из этой базы реалтайм считаются
+                KG/V и тех-имя в формировании. */}
+            {activeSection === 'vgh' && <VghScreen />}
 
             {/* §design — Новости always-mounted, вынесены на подложку: шапка на
                 подложке + контент в WorkspaceCard (внутри NewsFeed). */}

@@ -98,6 +98,17 @@ export const WS_EVENT_TYPES = {
    * всем: клиенты обновляют выбранный месяц (+ аватар автора) и пересчитывают CLST.
    */
   FLOW_PLAN_MONTH_CHANGED: 'flow_plan_month_changed',
+  /**
+   * База ВГХ (вес/габариты/объём/тех-имя) изменена — правка карточки или перенос
+   * из промежуточного листа. Шлёт актуальные строки базы; клиенты обновляют стор
+   * (→ пересчёт KG/V и тех-имени в формировании реалтайм).
+   */
+  VGH_CHANGED: 'vgh_changed',
+  /**
+   * Промежуточный лист ВГХ изменён — правки грида / перенос / пересбор из
+   * формирования. `rows` — изменённые строки; `full:true` — клиенту перечитать лист.
+   */
+  VGH_STAGING_CHANGED: 'vgh_staging_changed',
 } as const;
 
 export type WsEventType = (typeof WS_EVENT_TYPES)[keyof typeof WS_EVENT_TYPES];
@@ -190,6 +201,19 @@ export interface WarehousesChangedEvent extends WsServerEvent {
   version?: string;
   updated_by?: string;
   updated_by_name?: string;
+}
+
+/** База ВГХ изменена — рассылка актуальных строк базы (по no_num, с row_version). */
+export interface VghChangedEvent extends WsServerEvent {
+  type: 'vgh_changed';
+  rows: Array<{ no_num: string; row_version: number; [key: string]: unknown }>;
+}
+
+/** Промежуточный лист ВГХ изменён — изменённые строки (`rows`) или сигнал перечитать (`full`). */
+export interface VghStagingChangedEvent extends WsServerEvent {
+  type: 'vgh_staging_changed';
+  rows?: Array<{ no_num: string; row_version: number; [key: string]: unknown }>;
+  full?: boolean;
 }
 
 export interface PersonsChangedEvent extends WsServerEvent {

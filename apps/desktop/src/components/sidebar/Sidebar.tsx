@@ -3,6 +3,7 @@ import type { Role } from '@pyn/core';
 import {
   NAV_FEED,
   NAV_FLOW,
+  NAV_VGH,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
 } from '@/lib/nav-sections';
@@ -53,6 +54,8 @@ interface SidebarProps {
    * кнопка ИИ, чтобы рабочие пользователи не видели незавершённый раздел.
    */
   showFlow: boolean;
+  /** Показывать ли раздел «ВГХ» — тот же admin/developer-контур, что «Поток». */
+  showVgh: boolean;
   onToggleCollapsed: () => void;
   onAiClick: () => void;
   onSectionClick: (id: NavSectionId) => void;
@@ -120,6 +123,7 @@ export function Sidebar({
   badges,
   showAi,
   showFlow,
+  showVgh,
   onToggleCollapsed,
   onAiClick,
   onSectionClick,
@@ -311,6 +315,10 @@ export function Sidebar({
             Google Sheets). Виден только admin/developer на время разработки —
             изолирован от рабочего раздела «Таблицы»/Google. */}
         {showFlow && renderNavItem(NAV_FLOW)}
+
+        {/* §vgh — раздел «ВГХ» (промежуточный лист дозаполнения вес/габариты +
+            база ВГХ). Тот же admin/developer-контур, что «Поток». */}
+        {showVgh && renderNavItem(NAV_VGH)}
 
         {/* Группа «Лента»: Чаты, Новости. */}
         <NavGroupHeader label={t('sidebar.group_feed')} collapsed={collapsed} />

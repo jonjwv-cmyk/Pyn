@@ -1,4 +1,4 @@
-import { Archive, CalendarRange, Database, MessageSquare, Newspaper, Workflow } from 'lucide-react';
+import { Archive, CalendarRange, Database, MessageSquare, Newspaper, Scale, Workflow } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -37,6 +37,18 @@ export const NAV_FLOW: NavSection = {
   id: 'flow',
   get label() { return i18next.t('sidebar.nav_flow'); },
   icon: Workflow,
+};
+
+/**
+ * Раздел «ВГХ» (вес-габаритные характеристики) — промежуточный лист дозаполнения
+ * веса/габаритов/объёма/MIN QTY/тех-имени + правка базы ВГХ. Тот же изолированный
+ * контур, что «Поток» (admin/developer-only, флаг `showVgh`); вне `NAV_SECTIONS`.
+ * Из этой базы реалтайм считаются KG/V и тех-имя в формировании.
+ */
+export const NAV_VGH: NavSection = {
+  id: 'vgh',
+  get label() { return i18next.t('sidebar.nav_vgh'); },
+  icon: Scale,
 };
 
 // Группа «Лента».
