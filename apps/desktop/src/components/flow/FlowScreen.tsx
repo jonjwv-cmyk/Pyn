@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ScheduleLockAcquiredEvent, ScheduleLockReleasedEvent } from '@pyn/core';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
@@ -33,12 +33,23 @@ export function FlowScreen(): JSX.Element {
   const [selfRunning, setSelfRunning] = useState(false);
   const [runner, setRunner] = useState<FlowImportRunner | null>(null);
   const [myLogin, setMyLogin] = useState('');
+  const myLoginRef = useRef('');
   useEffect(() => {
-    sessionStore.load().then((s) => { if (s?.user?.login) setMyLogin(s.user.login); }).catch(() => {});
+    sessionStore
+      .load()
+      .then((s) => {
+        if (s?.user?.login) {
+          setMyLogin(s.user.login);
+          myLoginRef.current = s.user.login;
+        }
+      })
+      .catch(() => {});
   }, []);
   useEditLock(FLOW_IMPORT_LOCK, selfRunning);
   useWsEvent<ScheduleLockAcquiredEvent>('schedule_lock_acquired', (e) => {
-    if (e.resource_id !== FLOW_IMPORT_LOCK || e.user_login === myLogin) return;
+    // Сверяем с myLoginRef (всегда актуален, не зависит от async-загрузки сессии) —
+    // иначе своё же событие могло сесть как «чужой» и залипнуть в индикаторе/блокировке.
+    if (e.resource_id !== FLOW_IMPORT_LOCK || e.user_login === myLoginRef.current) return;
     setRunner({
       login: String(e.user_login || ''),
       name: String(e.full_name || e.user_login || ''),
@@ -50,8 +61,14 @@ export function FlowScreen(): JSX.Element {
   useWsEvent<ScheduleLockReleasedEvent>('schedule_lock_released', (e) => {
     if (e.resource_id === FLOW_IMPORT_LOCK) setRunner(null);
   });
-  // Кто сейчас гонит выгрузку (другой по WS-локу ИЛИ я сам) — для мягкого индикатора;
-  // на время прогона лист «только просмотр» (readOnly), чтобы перезапись не съела правку.
+  // Подстраховка: индикатор чужой выгрузки сам гаснет, если событие «снят» потерялось
+  // (через 4 мин прогон точно завершён) — чтобы ничего не залипало.
+  useEffect(() => {
+    if (!runner) return;
+    const t = window.setTimeout(() => setRunner(null), 4 * 60 * 1000);
+    return () => window.clearTimeout(t);
+  }, [runner]);
+  // Кто сейчас гонит выгрузку (другой по WS-локу ИЛИ я сам) — для мягкого индикатора.
   const me = users.find((u) => u.login === myLogin);
   const selfRunner: FlowImportRunner | null = selfRunning
     ? {
@@ -63,7 +80,6 @@ export function FlowScreen(): JSX.Element {
       }
     : null;
   const activeRunner = runner ?? selfRunner;
-  const importRunning = selfRunning || runner != null;
   return (
     <main className="relative flex flex-1 flex-col overflow-hidden">
       <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
@@ -87,7 +103,7 @@ export function FlowScreen(): JSX.Element {
         </div>
       </div>
       <WorkspaceCard>
-        {stage === 'form' ? <FlowSandboxGrid readOnly={importRunning} /> : <StagePlaceholder stage={stage} />}
+        {stage === 'form' ? <FlowSandboxGrid /> : <StagePlaceholder stage={stage} />}
       </WorkspaceCard>
     </main>
   );

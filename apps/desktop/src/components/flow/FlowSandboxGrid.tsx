@@ -621,9 +621,7 @@ function statFilterRank(stat: string): number {
  */
 let flowRowsCache: FlowSandboxRow[] | null = null;
 
-export function FlowSandboxGrid({ readOnly = false }: { readOnly?: boolean } = {}): JSX.Element {
-  // readOnly — на время выгрузки заказов: лист «только просмотр» (правки/удаление/
-  // редакторы заблокированы), чтобы прогон не затёр чью-то правку. См. FlowScreen.
+export function FlowSandboxGrid(): JSX.Element {
   // Стартуем из кэша (мгновенно) если он есть; иначе пусто + спиннер до первой загрузки.
   const [rows, setRows] = useState<FlowSandboxRow[]>(() => flowRowsCache ?? []);
   const [loading, setLoading] = useState(() => flowRowsCache === null);
@@ -1727,7 +1725,6 @@ export function FlowSandboxGrid({ readOnly = false }: { readOnly?: boolean } = {
   // для отмены; ячейки без реального изменения значения пропускаем (чистая история).
   const applyEdits = useCallback(
     (edits: readonly { location: Item; value: EditableGridCell }[]) => {
-      if (readOnly) return; // идёт выгрузка заказов — лист только для просмотра
       const after = new Map<number, FlowRowPatch>();
       const before = new Map<number, FlowRowPatch>();
       // МОЛ, заехавший протяжкой/вставкой на склад, где человек не МОЛ — НЕ пишем,
@@ -1867,21 +1864,20 @@ export function FlowSandboxGrid({ readOnly = false }: { readOnly?: boolean } = {
       pushHistory({ kind: 'cells', before, after });
       syncEdits(after); // → сервер + реалтайм всем
     },
-    [readOnly, viewRows, writeCells, pushHistory, syncEdits, molByWarehouse, molByKey, openVghCard, statMetaById, statOptionsForRow],
+    [viewRows, writeCells, pushHistory, syncEdits, molByWarehouse, molByKey, openVghCard, statMetaById, statOptionsForRow],
   );
 
   // Двойной клик (Enter) по НОМЕНКЛАТУРЕ (NO.№) → карточка изменения материала (без плашки).
   // MAT — НЕ здесь: у неё свой read-only оверлей со «своими данными» (Создал/Выгружен/…).
   const onCellActivated = useCallback(
     (cell: Item) => {
-      if (readOnly) return; // идёт выгрузка — редакторы/карточки не открываем
       const [col, row] = cell;
       const spec = FLOW_COLUMNS[col];
       const r = viewRows[row];
       if (!spec || !r) return;
       if (spec.id === 'no_num') openVghCard(r);
     },
-    [readOnly, viewRows, openVghCard],
+    [viewRows, openVghCard],
   );
 
   const onCellEdited = useCallback(
@@ -1964,13 +1960,12 @@ export function FlowSandboxGrid({ readOnly = false }: { readOnly?: boolean } = {
     [viewRows],
   );
 
-  const deleteSelectedRows = useCallback(() => { if (readOnly) return; deleteOffRows(selection.rows); }, [readOnly, selection, deleteOffRows]);
+  const deleteSelectedRows = useCallback(() => { deleteOffRows(selection.rows); }, [selection, deleteOffRows]);
 
   // Клавиша Delete/Backspace: выделены СТРОКИ — удаляем OFF на сервере; иначе —
   // стандартная очистка ячеек Glide, которая идёт через applyEdits (в истории).
   const handleDelete = useCallback(
     (sel: GridSelection): GridSelection | boolean => {
-      if (readOnly) return false; // идёт выгрузка — лист только для просмотра
       if (sel.rows.length > 0) {
         deleteOffRows(sel.rows);
         return false;
@@ -2001,13 +1996,12 @@ export function FlowSandboxGrid({ readOnly = false }: { readOnly?: boolean } = {
       }
       return true;
     },
-    [readOnly, deleteOffRows, applyEdits],
+    [deleteOffRows, applyEdits],
   );
 
   // Отмена/повтор: применяем обратную/прямую сторону последней записи. Правка идёт
   // через тот же writeCells/remove — в Фазе 1 здесь же уйдёт серверный патч.
   const undo = useCallback(() => {
-    if (readOnly) return; // идёт выгрузка — правки заблокированы
     const entry = undoRef.current.pop();
     if (!entry) return;
     if (entry.kind === 'cells') {
@@ -2018,10 +2012,9 @@ export function FlowSandboxGrid({ readOnly = false }: { readOnly?: boolean } = {
     // Выделение НЕ сбрасываем — после «назад» отменённые ячейки остаются
     // выделенными (как в Google/Excel), панель снизу не слетает.
     syncHistory();
-  }, [readOnly, writeCells, syncEdits, reinsertRows, syncHistory]);
+  }, [writeCells, syncEdits, reinsertRows, syncHistory]);
 
   const redo = useCallback(() => {
-    if (readOnly) return; // идёт выгрузка — правки заблокированы
     const entry = redoRef.current.pop();
     if (!entry) return;
     if (entry.kind === 'cells') {
@@ -2030,7 +2023,7 @@ export function FlowSandboxGrid({ readOnly = false }: { readOnly?: boolean } = {
     } else removeRowsByIds(new Set(entry.removed.map((x) => x.row.id)));
     undoRef.current.push(entry);
     syncHistory();
-  }, [readOnly, writeCells, syncEdits, removeRowsByIds, syncHistory]);
+  }, [writeCells, syncEdits, removeRowsByIds, syncHistory]);
 
   // Glide шлёт сюда изменения выделения (клик/Shift/Ctrl). Запоминаем якорь+фокус
   // одиночно выбранной колонки/строки/ячейки (для drag и Shift+стрелок) и снимаем рамку

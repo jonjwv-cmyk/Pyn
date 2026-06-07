@@ -29,18 +29,6 @@ function fmtDuration(startedAt: string, finishedAt: string): string {
 }
 
 
-/** Одна цифра-итог прогона: значение + подпись (скрыта, если 0). */
-function Stat({ n, label, tone }: { n: number; label: string; tone?: 'good' | 'warn' | 'muted' }): JSX.Element | null {
-  if (!n) return null;
-  const color = tone === 'good' ? 'text-emerald-600' : tone === 'warn' ? 'text-rose-600' : 'text-text-secondary';
-  return (
-    <span className="flex items-baseline gap-1 whitespace-nowrap">
-      <span className={`text-[13px] font-semibold tabular-nums ${color}`}>{n}</span>
-      <span className="text-[11px] text-text-muted/80">{label}</span>
-    </span>
-  );
-}
-
 /**
  * Раздел «LOG» — журнал прогонов выгрузки заказов: кто/когда запускал и итоги
  * (новых/правок/снято OFF/вернулось/смен складов/в ВГХ) + длительность от нажатия
@@ -92,63 +80,50 @@ export function LogScreen(): JSX.Element {
               const dur = fmtDuration(r.started_at, r.finished_at);
               const delta = r.total_after - r.total_before;
               const hasTotals = r.total_before > 0 || r.total_after > 0;
-              const noChanges =
-                !r.inserted && !r.reappeared && !r.off_marked && !r.deleted && !r.to_changed && !r.staging_upserted;
+              // «Тихий» прогон — формирование не изменилось и в ВГХ ничего не подтянулось.
+              const quiet = delta === 0 && !r.staging_upserted;
               return (
                 <div
                   key={r.id}
-                  className="flex items-start gap-3 rounded-lg border border-border-subtle bg-bg-surface/40 px-3 py-2"
+                  className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-border-subtle bg-bg-surface/40 px-3 py-2"
                 >
-                  {/* Аватар со статусом (presence) — на обе строки. */}
-                  <span className="relative mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center">
+                  {/* Кто · что · дата-время · сколько грузилось */}
+                  <span className="relative flex h-7 w-7 shrink-0 items-center justify-center">
                     <Avatar
                       initials={user?.initials || computeInitials(name)}
-                      size={32}
+                      size={28}
                       login={r.login || undefined}
                       avatarUrl={user?.avatarUrl}
                       avatarBlobKey={user?.avatarBlobKey ?? undefined}
                       avatarBlobNonce={user?.avatarBlobNonce ?? undefined}
                     />
-                    <PresenceDot state={presence} size={10} ringClass="ring-bg-surface" className="absolute -bottom-0.5 -right-0.5" />
+                    <PresenceDot state={presence} size={9} ringClass="ring-bg-surface" className="absolute -bottom-0.5 -right-0.5" />
                   </span>
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    {/* Строка 1: кто · что · дата-время · сколько грузилось */}
-                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                      <span className="max-w-[220px] truncate text-[13px] font-medium text-text-strong" title={name}>
-                        {name}
+                  <span className="max-w-[180px] truncate text-[12.5px] font-medium text-text-strong" title={name}>
+                    {name}
+                  </span>
+                  <span className="shrink-0 text-[11px] text-text-muted/70">· Выгрузка заказов</span>
+                  <span className="shrink-0 text-[11px] text-text-muted/80">{formatDateRu(r.started_at)}</span>
+                  {dur && <span className="shrink-0 text-[11px] text-text-secondary">· за {dur}</span>}
+                  {/* было N → стало M (±Δ) · ВГХ +N — без отдельного «новых» (дублировал Δ). */}
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-0.5 tabular-nums">
+                    {hasTotals && (
+                      <span className="text-[11.5px]">
+                        <span className="text-text-muted/70">было </span>
+                        <span className="text-text-muted/80">{r.total_before}</span>
+                        <span className="text-text-muted/50"> → стало </span>
+                        <span className="font-semibold text-text-strong">{r.total_after}</span>
+                        {delta !== 0 && (
+                          <span className={delta > 0 ? 'text-emerald-600' : 'text-rose-600'}>
+                            {' '}({delta > 0 ? '+' : ''}{delta})
+                          </span>
+                        )}
                       </span>
-                      <span className="text-[12px] text-text-secondary">· Выгрузка заказов</span>
-                      <span className="text-[11px] text-text-muted/80">{formatDateRu(r.started_at)}</span>
-                      {dur && <span className="text-[11px] text-text-secondary">· за {dur}</span>}
-                    </div>
-                    {/* Строка 2: Формирование было → стало (Δ) + что изменилось */}
-                    <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
-                      {hasTotals && (
-                        <span className="text-[11.5px] tabular-nums">
-                          <span className="text-text-muted/70">Формирование </span>
-                          <span className="text-text-muted/80">{r.total_before}</span>
-                          <span className="text-text-muted/50"> → </span>
-                          <span className="font-semibold text-text-strong">{r.total_after}</span>
-                          {delta !== 0 && (
-                            <span className={delta > 0 ? 'text-emerald-600' : 'text-rose-600'}>
-                              {' '}({delta > 0 ? '+' : ''}{delta})
-                            </span>
-                          )}
-                        </span>
-                      )}
-                      {noChanges ? (
-                        <span className="text-[11px] text-text-muted/70">· без изменений</span>
-                      ) : (
-                        <>
-                          <Stat n={r.inserted} label="новых" tone="good" />
-                          <Stat n={r.reappeared} label="вернулось" tone="good" />
-                          <Stat n={r.off_marked} label="в OFF" tone="warn" />
-                          <Stat n={r.deleted} label="удалено" tone="warn" />
-                          <Stat n={r.to_changed} label="смен складов" />
-                          <Stat n={r.staging_upserted} label="новых ВГХ" />
-                        </>
-                      )}
-                    </div>
+                    )}
+                    {r.staging_upserted > 0 && (
+                      <span className="text-[11.5px] text-text-secondary">ВГХ +{r.staging_upserted}</span>
+                    )}
+                    {quiet && <span className="text-[11px] text-text-muted/70">без изменений</span>}
                   </div>
                 </div>
               );

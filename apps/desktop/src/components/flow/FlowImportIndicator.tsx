@@ -16,8 +16,8 @@ export interface FlowImportRunner {
 /**
  * Мягкий индикатор «идёт выгрузка заказов» в шапке раздела «Поток» (НЕ окно-блок):
  * аватар СО СТАТУСОМ (из единого presence — как везде) + ФИО инициатора + «Выгрузка
- * заказов» + лоадер. Все видят, кто запустил, и продолжают работать — на время прогона
- * лист становится «только просмотр» (FlowScreen → FlowSandboxGrid readOnly).
+ * заказов» + лоадер. Все видят, кто запустил, и при этом продолжают работать как обычно
+ * (лист НЕ блокируется; редкий конфликт правки с прогоном разрешает сервер).
  */
 export function FlowImportIndicator({ runner }: { runner: FlowImportRunner }): JSX.Element {
   const initials = computeInitials(runner.name || runner.login);
@@ -27,7 +27,7 @@ export function FlowImportIndicator({ runner }: { runner: FlowImportRunner }): J
       className="no-drag-region flex items-center gap-1.5 rounded-full border border-border-subtle bg-bg-surface/60 py-0.5 pl-0.5 pr-2.5"
       role="status"
       aria-live="polite"
-      title={`${runner.name || runner.login} — идёт выгрузка заказов (лист только для просмотра)`}
+      title={`${runner.name || runner.login} — идёт выгрузка заказов`}
     >
       <span className="relative flex h-5 w-5 shrink-0 items-center justify-center">
         <Avatar
