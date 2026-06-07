@@ -190,6 +190,11 @@ export function Sidebar({
   const collapsedWidth = computeCollapsedWidth(sections);
   const width = collapsed ? collapsedWidth : EXPANDED_WIDTH;
 
+  // «Рабочее» раскладываем по частоте: График и Хранилище достаём поимённо, чтобы
+  // расставить их в новом порядке (График — над Google-таблицами, Хранилище — внизу).
+  const navSchedule = NAV_WORKSPACE_BEFORE_TABLES.find((s) => s.id === 'proba');
+  const navVault = NAV_WORKSPACE_BEFORE_TABLES.find((s) => s.id === 'vault');
+
   // Один пункт nav с учётом dynamic badge'а (merge из `sections`).
   const renderNavItem = (section: NavSection, textOnly = false) => {
     const merged = sections.find((s) => s.id === section.id) ?? section;
@@ -291,21 +296,19 @@ export function Sidebar({
       <div className="h-2 shrink-0" />
 
       <nav className="flex flex-col gap-0.5 px-1.5">
-        {/* Primary-группа без заголовка (Хранилище, График, Google-таблицы, МОЛ)
-            — основное не подписываем, как в Linear/Claude. */}
-        {NAV_WORKSPACE_BEFORE_TABLES.map((s) => renderNavItem(s))}
-        {/* Google-таблицы — внутри «Рабочее», между Хранилище/График и МОЛ.
-            Каждая таблица — свой nav-item с hover-flyout справа со вкладками. */}
-        <TableNavItems
-          collapsed={collapsed}
-          activeSection={activeSection}
-          onPick={(sectionId, fileId, tabName) => {
-            setActiveTable(fileId, tabName);
-            onSectionClick(sectionId);
-          }}
-        />
-        {/* «База» — пункт с hover-флайаутом листов (МОЛы / Склады), как у
-            Google-таблиц. Выбор листа → setBaseTab + переход в раздел. */}
+        {/* Порядок по ЧАСТОТЕ работы (юзер 2026-06-07): ежедневный «Поток»-контур наверху,
+            ежемесячное/архивное — ниже. Поток → ВГХ → База → ЛОГ → График → Google-таблицы
+            (ОТИФ/Workflow) → Хранилище. Заголовков нет — основное не подписываем (Linear). */}
+
+        {/* §flow-β — «Поток» (собственный табличный реестр, миграция с Google Sheets):
+            каждый день формируем план/отчёт — главный раздел. admin/developer-only. */}
+        {showFlow && renderNavItem(NAV_FLOW)}
+
+        {/* §vgh — «ВГХ» (вес/габариты): прямая связь с «Потоком», работаем часто. */}
+        {showVgh && renderNavItem(NAV_VGH)}
+
+        {/* «База» (Контакты/МОЛы / Склады) — частые проверки в течение дня + при «Потоке».
+            Пункт с hover-флайаутом листов; выбор листа → setBaseTab + переход. */}
         <BaseNavRow
           collapsed={collapsed}
           active={activeSection === 'mol'}
@@ -316,17 +319,25 @@ export function Sidebar({
           }}
         />
 
-        {/* §flow-β — раздел «Поток» (собственный табличный реестр, миграция с
-            Google Sheets). Виден только admin/developer на время разработки —
-            изолирован от рабочего раздела «Таблицы»/Google. */}
-        {showFlow && renderNavItem(NAV_FLOW)}
-
-        {/* §vgh — раздел «ВГХ» (промежуточный лист дозаполнения вес/габариты +
-            база ВГХ). Тот же admin/developer-контур, что «Поток». */}
-        {showVgh && renderNavItem(NAV_VGH)}
-
-        {/* §log — раздел «LOG» (журнал прогонов выгрузки заказов). Тот же контур. */}
+        {/* §log — «LOG» (журнал прогонов выгрузки): глянуть по ходу дня. admin-контур. */}
         {showLog && renderNavItem(NAV_LOG)}
+
+        {/* «График» — реже, на месяц (если вопросы). */}
+        {navSchedule && renderNavItem(navSchedule)}
+
+        {/* Google-таблицы (Workflow / OTIF5): ОТИФ — закрытие месяца; ниже частых разделов.
+            Каждая таблица — свой nav-item с hover-flyout справа со вкладками. */}
+        <TableNavItems
+          collapsed={collapsed}
+          activeSection={activeSection}
+          onPick={(sectionId, fileId, tabName) => {
+            setActiveTable(fileId, tabName);
+            onSectionClick(sectionId);
+          }}
+        />
+
+        {/* «Хранилище» — вспомогательное, внизу рабочей группы. */}
+        {navVault && renderNavItem(navVault)}
 
         {/* Группа «Лента»: Чаты, Новости. */}
         <NavGroupHeader label={t('sidebar.group_feed')} collapsed={collapsed} />

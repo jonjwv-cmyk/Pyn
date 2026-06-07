@@ -293,6 +293,10 @@ export function parseMol(
   s: string,
 ): { color: string; fio: string; until: string; phone: string } | null {
   if (!s || !s.trim()) return null;
+  // «Нет МОЛа» — в данных могло прийти как «⚠️НЕТ МОЛа⚠️» (со смайликами). Нормализуем
+  // в чистый текст «Нет МОЛа» (без эмодзи) — чтобы фильтр/копирование/поиск показывали
+  // ровно то же, что грид (статус = ЦВЕТ пилюли, не смайлик).
+  if (/нет\s*мол/i.test(s)) return { color: '#E5484D', fio: 'Нет МОЛа', until: '', phone: '' };
   let rest = s;
   let color = '#9AA0A6';
   for (const emoji of Object.keys(MOL_DOT)) {

@@ -3,8 +3,9 @@ import * as Popover from '@radix-ui/react-popover';
 import { CalendarDays, ChevronDown, Loader2, Lock } from 'lucide-react';
 import { ApiError, flowPlanMonthSet, scheduleMonthsList, type FlowPlanMonth } from '@pyn/core';
 import { api } from '@/lib/api';
-import { useUsersStore } from '@/lib/stores';
+import { useUsersStore, usePresenceStore } from '@/lib/stores';
 import { Avatar } from '@/components/ui/Avatar';
+import { PresenceDot } from '@/components/ui/PresenceDot';
 import { useFormatYek } from '@/lib/hooks/use-format-yek';
 import { useScheduleMonthsMeta, monthKey } from '@/lib/schedule/use-schedule-sync';
 import { MONTH_NAMES_RU } from '@/lib/schedule/compute';
@@ -63,6 +64,9 @@ export function FlowMonthPicker({ year, month, info, onChanged }: FlowMonthPicke
     () => (info.updatedBy ? users.find((u) => u.login === info.updatedBy) : undefined),
     [users, info.updatedBy],
   );
+  // Статус присутствия выбравшего — из единого источника (как у всех аватаров приложения).
+  const chooserPresence =
+    usePresenceStore((s) => (info.updatedBy ? s.byLogin[info.updatedBy]?.status : undefined)) ?? 'offline';
   const chosenAt = useFormatYek(info.updatedAt || undefined);
 
   // Какие месяцы вообще ЕСТЬ в графике (есть запись schedule_state) — один запрос на
@@ -186,15 +190,22 @@ export function FlowMonthPicker({ year, month, info, onChanged }: FlowMonthPicke
             {MONTH_NAMES_RU[month - 1]} {year}
           </span>
           {chooser ? (
-            <Avatar
-              initials={chooser.initials}
-              size={16}
-              login={chooser.login}
-              avatarUrl={chooser.avatarUrl}
-              avatarBlobKey={chooser.avatarBlobKey}
-              avatarBlobNonce={chooser.avatarBlobNonce}
-              className="ml-0.5"
-            />
+            <span className="relative ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+              <Avatar
+                initials={chooser.initials}
+                size={16}
+                login={chooser.login}
+                avatarUrl={chooser.avatarUrl}
+                avatarBlobKey={chooser.avatarBlobKey}
+                avatarBlobNonce={chooser.avatarBlobNonce}
+              />
+              <PresenceDot
+                state={chooserPresence}
+                size={6}
+                ringClass="ring-[#FDFDFB]"
+                className="absolute -bottom-0.5 -right-0.5"
+              />
+            </span>
           ) : (
             <ChevronDown size={12} className="text-text-muted" strokeWidth={1.75} />
           )}

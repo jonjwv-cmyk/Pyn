@@ -1045,27 +1045,33 @@ export function FlowSandboxGrid(): JSX.Element {
     [applyFlowView],
   );
 
-  // Сбросить вид активного режима к виду по умолчанию (фильтры/сортировка/масштаб → пусто).
-  const handleViewReset = useCallback(() => {
-    applyFlowView(EMPTY_FLOW_VIEW); // живое → пусто, lastViewJsonRef → EMPTY (save-эффект промолчит)
-    const login = myLoginRef.current;
-    if (viewModeRef.current === 'personal') {
-      clearPersonalView(login);
-      setHasPersonalView(false);
-    } else {
-      if (sharedSaveTimerRef.current != null) {
-        window.clearTimeout(sharedSaveTimerRef.current);
-        sharedSaveTimerRef.current = null;
+  // Сбросить вид к стандарту (снять все фильтры/сортировку/масштаб) — отдельно для СЕБЯ
+  // (личный) и для ВСЕХ (общий, broadcast). Если сбрасываемый режим сейчас активен —
+  // применяем пустой вид сразу; иначе только чистим источник (свой/серверный).
+  const handleViewReset = useCallback(
+    (target: FlowViewMode) => {
+      const login = myLoginRef.current;
+      if (target === 'personal') {
+        clearPersonalView(login);
+        setHasPersonalView(false);
+        if (viewModeRef.current === 'personal') applyFlowView(EMPTY_FLOW_VIEW);
+      } else {
+        if (sharedSaveTimerRef.current != null) {
+          window.clearTimeout(sharedSaveTimerRef.current);
+          sharedSaveTimerRef.current = null;
+        }
+        if (viewModeRef.current === 'shared') applyFlowView(EMPTY_FLOW_VIEW);
+        void flowViewSet(api, '')
+          .then((res) => {
+            sharedValueRef.current = res.value;
+            setHasSharedView(false);
+            setSharedAuthor({ updatedBy: res.updatedBy, updatedByName: res.updatedByName, updatedAt: res.updatedAt });
+          })
+          .catch(() => undefined);
       }
-      void flowViewSet(api, '')
-        .then((res) => {
-          sharedValueRef.current = res.value;
-          setHasSharedView(false);
-          setSharedAuthor({ updatedBy: res.updatedBy, updatedByName: res.updatedByName, updatedAt: res.updatedAt });
-        })
-        .catch(() => undefined);
-    }
-  }, [applyFlowView]);
+    },
+    [applyFlowView],
+  );
 
   // Чистим debounce-таймер общего вида при размонтировании.
   useEffect(

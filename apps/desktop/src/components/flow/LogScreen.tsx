@@ -8,7 +8,7 @@ import { api } from '@/lib/api';
 import { useWsEvent } from '@/lib/ws';
 import { useUsersStore, usePresenceStore } from '@/lib/stores';
 import { computeInitials } from '@/lib/initials';
-import { formatDateRu } from './flow-sandbox.fixtures';
+import { formatFullYek } from '@/lib/format-time';
 
 /** «YYYY-MM-DD HH:MM:SS» (UTC, без Z от сервера) ИЛИ ISO → миллисекунды UTC. */
 function parseUtcMs(s: string): number {
@@ -106,7 +106,8 @@ export function LogScreen(): JSX.Element {
                         {name}
                       </span>
                       <span className="text-[12px] text-text-secondary">· Выгрузка заказов</span>
-                      <span className="text-[11px] text-text-muted/80">{formatDateRu(r.started_at)}</span>
+                      {/* Время по Екатеринбургу — единый принцип всего приложения. */}
+                      <span className="text-[11px] text-text-muted/80">{formatFullYek(r.started_at)}</span>
                       {dur && <span className="text-[11px] text-text-secondary">· за {dur}</span>}
                     </div>
                     {/* Строка 2: было N → стало M (±Δ) · ВГХ +N (НОВЫЕ номенклатуры этого прогона). */}
