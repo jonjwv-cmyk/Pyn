@@ -71,7 +71,7 @@ export function FlowViewSwitch({
         <Popover.Content
           align="start"
           sideOffset={6}
-          className="z-30 w-[232px] rounded-lg border border-white/[0.08] bg-bg-elevated p-1.5 text-text-primary shadow-2xl outline-none"
+          className="z-30 w-[256px] rounded-lg border border-white/[0.08] bg-bg-elevated p-1.5 text-text-primary shadow-2xl outline-none"
         >
           {/* Общий — синхронный серверный вид; под ним «кто поставил». */}
           <ModeRow
@@ -81,7 +81,8 @@ export function FlowViewSwitch({
             onClick={() => switchTo('shared')}
           >
             {showAuthor && (
-              <div className="mt-0.5 truncate pl-[26px] text-[10.5px] leading-snug text-text-muted/80">
+              // Полное ФИО + дата-время по Екб — во всю ширину (под иконкой), переносим, НЕ режем.
+              <div className="mt-1 whitespace-normal break-words text-[10.5px] leading-snug text-text-muted/80">
                 {authorName}
                 {setAt ? ` · ${setAt}` : ''}
               </div>
