@@ -21,8 +21,10 @@ export const NAV_WORKSPACE_BEFORE_TABLES: NavSection[] = [
 ];
 
 // Группа «Рабочее» — после Google-таблиц.
+// «База» (Контакты/Склады) — один из трёх дневных «героев» → цветная иконка (blue,
+// семья Поток-teal / ВГХ-violet / База-blue). Остальное — нейтральное + подсветка выбора.
 export const NAV_WORKSPACE_AFTER_TABLES: NavSection[] = [
-  { id: 'mol', get label() { return i18next.t('sidebar.nav_base'); }, icon: Database },
+  { id: 'mol', get label() { return i18next.t('sidebar.nav_base'); }, icon: Database, iconColor: 'text-blue-400' },
 ];
 
 /**
@@ -37,7 +39,9 @@ export const NAV_FLOW: NavSection = {
   id: 'flow',
   get label() { return i18next.t('sidebar.nav_flow'); },
   icon: Waves,
-  iconColor: 'text-amber-400',
+  // Флагман «Поток» = teal (вода/поток — под иконку Waves); прохладная семья с ВГХ-violet
+  // и База-blue, чётко контрастирует с тёплой clay-подсветкой активной вкладки.
+  iconColor: 'text-teal-400',
 };
 
 /**

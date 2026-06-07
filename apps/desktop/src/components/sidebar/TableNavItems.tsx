@@ -27,19 +27,19 @@ interface TableNavItemsProps {
 }
 
 /**
- * Иконки + цвет для часто используемых таблиц (по raw-title, uppercase) —
- * чтобы выделить их в списке. Остальные таблицы — серый FileSpreadsheet.
- *   • Workflow — работа с планом, заказы, недовозы → ClipboardList (синий).
- *   • OTIF5 — метрика OTIF (On Time In Full) → Target (зелёный).
+ * Узнаваемые иконки для таблиц (по raw-title, uppercase). ЦВЕТ убран: ОТИФ/Workflow —
+ * не дневные «герои» (месяц/легаси), поэтому нейтральные + только подсветка активной
+ * вкладки (договорённость: цвет иконки — только у важных дневных разделов Поток/ВГХ/База).
+ *   • Workflow → ClipboardList, OTIF5 → Target (оба нейтральные). Прочие → FileSpreadsheet.
  */
-const TABLE_ICONS: Record<string, { Icon: LucideIcon; color: string }> = {
-  WORKFLOW: { Icon: ClipboardList, color: 'text-sky-400' },
-  OTIF5: { Icon: Target, color: 'text-emerald-400' },
+const TABLE_ICONS: Record<string, LucideIcon> = {
+  WORKFLOW: ClipboardList,
+  OTIF5: Target,
 };
 
 function tableIconFor(rawTitle: string): { Icon: LucideIcon; iconColor: string | null } {
-  const cfg = TABLE_ICONS[(rawTitle || '').toUpperCase()];
-  return cfg ? { Icon: cfg.Icon, iconColor: cfg.color } : { Icon: FileSpreadsheet, iconColor: null };
+  const Icon = TABLE_ICONS[(rawTitle || '').toUpperCase()];
+  return { Icon: Icon ?? FileSpreadsheet, iconColor: null };
 }
 
 /**
