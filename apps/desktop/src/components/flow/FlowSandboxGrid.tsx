@@ -1167,28 +1167,33 @@ export function FlowSandboxGrid(): JSX.Element {
 
   // Представление = фильтр показа + сортировка поверх источника (с ЖИВЫМ CLST).
   // Если ни фильтра, ни сортировки — отдаём массив liveRows без копий.
-  const viewRows = useMemo<FlowSandboxRow[]>(() => {
-    let out: FlowSandboxRow[] = liveRows;
-    // Активные фильтры + спеки колонок. Фильтр сверяет ОТФОРМАТИРОВАННОЕ значение
-    // (как в таблице — проценты/даты/числа), а не сырьё: «что видишь, то и фильтруешь».
-    const active = Object.entries(filters)
-      .filter(([, f]) => f.search.trim() !== '' || f.excluded.size > 0)
-      .map(([colId, f]) => ({ spec: FLOW_COLUMNS.find((c) => c.id === colId), f }))
-      .filter((x): x is { spec: FlowColumnSpec; f: ColumnFilter } => x.spec !== undefined);
-    // Под-фильтры MAT (скрытые поля материала) — ещё несколько условий И, по форматированному значению.
-    const matActive = FLOW_MAT_SUBFIELDS.map((sf) => ({ sf, f: matFilter[sf.id] })).filter(
-      (x): x is { sf: (typeof FLOW_MAT_SUBFIELDS)[number]; f: FlowMatSubState } =>
-        x.f !== undefined && (x.f.search.trim() !== '' || x.f.excluded.size > 0),
-    );
-    // Фильтр ORD: заказ берётся целиком; если у него отмечены конкретные позиции — только они.
-    const ordActive = ordFilter.orders.size > 0;
-    const ordRestricted = new Set<string>();
-    for (const k of ordFilter.positions) {
-      const i = k.indexOf('|');
-      if (i >= 0) ordRestricted.add(k.slice(0, i));
-    }
-    if (active.length > 0 || matActive.length > 0 || ordActive) {
-      out = liveRows.filter(
+  // Каскадные фильтры (как Гугл-таблицы): применяет ВСЕ активные фильтры, опц. ИСКЛЮЧАЯ
+  // фильтр одной колонки (exceptCol) / MAT-подполей (exceptMat) / ORD (exceptOrd) — чтобы
+  // список значений ЕЁ меню считался по строкам, прошедшим ОСТАЛЬНЫЕ фильтры, а не по всей
+  // таблице. Без исключений = обычный фильтр показа (для viewRows). Фильтр сверяет
+  // ОТФОРМАТИРОВАННОЕ значение (как в таблице), а не сырьё: «что видишь, то и фильтруешь».
+  const rowsFiltered = useCallback(
+    (opts?: { exceptCol?: string; exceptMat?: boolean; exceptOrd?: boolean }): FlowSandboxRow[] => {
+      const active = Object.entries(filters)
+        .filter(([colId, f]) => colId !== opts?.exceptCol && (f.search.trim() !== '' || f.excluded.size > 0))
+        .map(([colId, f]) => ({ spec: FLOW_COLUMNS.find((c) => c.id === colId), f }))
+        .filter((x): x is { spec: FlowColumnSpec; f: ColumnFilter } => x.spec !== undefined);
+      const matActive = opts?.exceptMat
+        ? []
+        : FLOW_MAT_SUBFIELDS.map((sf) => ({ sf, f: matFilter[sf.id] })).filter(
+            (x): x is { sf: (typeof FLOW_MAT_SUBFIELDS)[number]; f: FlowMatSubState } =>
+              x.f !== undefined && (x.f.search.trim() !== '' || x.f.excluded.size > 0),
+          );
+      const ordActive = !opts?.exceptOrd && ordFilter.orders.size > 0;
+      const ordRestricted = new Set<string>();
+      if (ordActive) {
+        for (const k of ordFilter.positions) {
+          const i = k.indexOf('|');
+          if (i >= 0) ordRestricted.add(k.slice(0, i));
+        }
+      }
+      if (active.length === 0 && matActive.length === 0 && !ordActive) return liveRows;
+      return liveRows.filter(
         (row) =>
           active.every(({ spec, f }) => {
             const v = flowFilterText(spec, row);
@@ -1209,7 +1214,12 @@ export function FlowSandboxGrid(): JSX.Element {
               (!ordRestricted.has(String(row.ord ?? '')) ||
                 ordFilter.positions.has(`${row.ord ?? ''}|${row.it ?? ''}`)))),
       );
-    }
+    },
+    [liveRows, filters, matFilter, ordFilter],
+  );
+
+  const viewRows = useMemo<FlowSandboxRow[]>(() => {
+    let out: FlowSandboxRow[] = rowsFiltered();
     // Умная сортировка: уровни в порядке выбора (первый — главный ключ, далее вторичные).
     if (sortLevels.length > 0) {
       const levels = sortLevels
@@ -1236,7 +1246,7 @@ export function FlowSandboxGrid(): JSX.Element {
       out = base;
     }
     return out;
-  }, [liveRows, filters, matFilter, ordFilter, sortLevels]);
+  }, [rowsFiltered, sortLevels, liveRows]);
 
   // Активен ли «умный» фильтр MAT (любое под-поле) — для индикатора заголовка + funnel.
   const matFilterActive = useMemo(
@@ -1384,7 +1394,9 @@ export function FlowSandboxGrid(): JSX.Element {
       return null; // прочие колонки — по алфавиту
     };
     const ranks = new Map<string, number>();
-    for (const r of liveRows) {
+    // Каскад: значения ЭТОЙ колонки считаем по строкам, прошедшим ОСТАЛЬНЫЕ фильтры
+    // (исключая её собственный) — а не по всей таблице. Как в Гугл-таблицах.
+    for (const r of rowsFiltered({ exceptCol: spec.id })) {
       const label = flowFilterText(spec, r);
       if (!ranks.has(label)) ranks.set(label, rankOf(r) ?? 0);
       if (ranks.size >= MAX_DISTINCT) break;
@@ -1397,7 +1409,7 @@ export function FlowSandboxGrid(): JSX.Element {
       }
       return a.localeCompare(b, 'ru', { numeric: true });
     });
-  }, [menu, liveRows]);
+  }, [menu, rowsFiltered]);
 
   // Уникальные значения каждого под-поля MAT — чек-листы «умного» фильтра (считаем только
   // когда открыто меню MAT). Значения отформатированы (даты по-русски); даты сортируем
@@ -1408,7 +1420,7 @@ export function FlowSandboxGrid(): JSX.Element {
     const maps: Record<FlowMatSubId, Map<string, string>> = {
       mat: new Map(), created_by: new Map(), load_dt: new Map(), time_at: new Map(), mat_full: new Map(),
     };
-    for (const r of rows) {
+    for (const r of rowsFiltered({ exceptMat: true })) {
       for (const sf of FLOW_MAT_SUBFIELDS) {
         const m = maps[sf.id];
         if (m.size >= MAX_DISTINCT) continue;
@@ -1427,7 +1439,7 @@ export function FlowSandboxGrid(): JSX.Element {
         .map(([label]) => label);
     }
     return out;
-  }, [menu, rows]);
+  }, [menu, rowsFiltered]);
 
   // Заказы и их позиции для «умного» фильтра ORD (когда открыто меню ORD): заказы по
   // номеру (числом), позиции каждого — тоже по номеру.
