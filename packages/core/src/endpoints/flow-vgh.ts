@@ -116,17 +116,7 @@ export async function flowVghStagingEdit(
   };
 }
 
-/**
- * Пересобрать промежуточный лист из формирования (номенклатуры активных заказов
- * без веса в базе + вес-подсказка). Ручной ввод НЕ затирается. Сервер шлёт
- * `vgh_staging_changed`. (admin)
- */
-export async function flowVghStagingRefresh(
-  client: ApiClient,
-): Promise<{ upserted: number; candidates: number }> {
-  const wire = await client.call<{ upserted?: number; candidates?: number }>(
-    'flow_vgh_staging_refresh',
-    {},
-  );
-  return { upserted: Number(wire.upserted) || 0, candidates: Number(wire.candidates) || 0 };
-}
+// Ручной «Пересобрать» (flow_vgh_staging_refresh) убран из клиента 2026-06-07: лист ВГХ
+// и так пересобирается автоматически на КАЖДОЙ выгрузке заказов (flow_import →
+// refreshStagingFromWorkflow), а вручную в лист не добавляют — кнопка дублировала авто-логику.
+// Серверный эндпоинт временно оставлен для обратной совместимости с уже опубликованным EXE.

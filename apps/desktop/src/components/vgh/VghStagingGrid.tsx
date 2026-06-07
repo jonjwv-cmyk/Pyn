@@ -13,12 +13,11 @@ import {
   type Item,
   type Rectangle,
 } from '@glideapps/glide-data-grid';
-import { ArrowDownUp, RefreshCw, Lock } from 'lucide-react';
+import { ArrowDownUp, Lock } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import {
   flowVghStagingGet,
   flowVghStagingEdit,
-  flowVghStagingRefresh,
   type VghEdit,
   type VghRow,
   type VghStagingRow,
@@ -198,7 +197,6 @@ function compareRows(a: VghStagingView, b: VghStagingView, spec: VghColumnSpec, 
 export function VghStagingGrid() {
   const [rows, setRows] = useState<VghStagingView[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [fontsReady, setFontsReady] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
   // Ширина для РАСКЛАДКИ колонок (резиновый ТЕХ-ИМЯ) — с задержкой, чтобы при движении
@@ -835,19 +833,6 @@ export function VghStagingGrid() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      const res = await flowVghStagingRefresh(api);
-      await load();
-      setToast(`Список пересобран из формирования (${res.upserted})`);
-    } catch {
-      setToast('Не удалось пересобрать список');
-    } finally {
-      setRefreshing(false);
-    }
-  }, [load]);
-
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[#FDFDFB]">
       {/* Тулбар: масштаб · поиск · сортировка · пересбор. */}
@@ -880,17 +865,6 @@ export function VghStagingGrid() {
           <ArrowDownUp size={13} strokeWidth={1.75} />
           Сортировка
         </button>
-        <div className="h-5 w-px bg-black/[0.08]" />
-        <button
-          type="button"
-          onClick={handleRefresh}
-          disabled={refreshing}
-          title="Пересобрать список из формирования (что нужно дозаполнить)"
-          className="flex h-6 items-center gap-1 rounded-md border border-black/10 px-2 text-[12px] text-[#6B6862] transition-colors hover:border-black/30 hover:text-[#0A0A0A] disabled:opacity-50"
-        >
-          <RefreshCw size={13} strokeWidth={1.75} className={refreshing ? 'animate-spin' : ''} />
-          Пересобрать
-        </button>
         {visibleLocked && (
           <span className="ml-auto flex items-center gap-1 text-[12px] text-[#8A8782]">
             <Lock size={12} strokeWidth={1.75} />
@@ -906,11 +880,9 @@ export function VghStagingGrid() {
           </div>
         )}
         {!loading && rows.length === 0 && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 text-[13px] text-[#6B6862]">
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-[13px] text-[#6B6862]">
             <span>Список пуст — всё, что нужно для формирования, уже есть в базе ВГХ.</span>
-            <button type="button" onClick={handleRefresh} className="rounded-md border border-black/15 px-2.5 py-1 text-[12px] hover:border-black/30 hover:text-[#0A0A0A]">
-              Пересобрать из формирования
-            </button>
+            <span className="text-[12px] text-[#9A9792]">Пополняется автоматически при выгрузке заказов.</span>
           </div>
         )}
         {size.width > 0 && size.height > 0 && (
