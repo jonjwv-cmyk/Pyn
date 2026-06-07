@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { useWsEvent } from '@/lib/ws';
 import { useUsersStore, usePresenceStore } from '@/lib/stores';
 import { computeInitials } from '@/lib/initials';
+import { formatDateRu } from './flow-sandbox.fixtures';
 
 /** «YYYY-MM-DD HH:MM:SS» (UTC, без Z от сервера) ИЛИ ISO → миллисекунды UTC. */
 function parseUtcMs(s: string): number {
@@ -27,22 +28,6 @@ function fmtDuration(startedAt: string, finishedAt: string): string {
   return m > 0 ? `${m} мин ${sec} с` : `${sec} с`;
 }
 
-/** Локальные «DD.MM» / «HH:MM» из серверного «YYYY-MM-DD HH:MM:SS» (UTC). */
-function pad2(n: number): string {
-  return String(n).padStart(2, '0');
-}
-function hhmm(s: string): string {
-  const ms = parseUtcMs(s);
-  if (!Number.isFinite(ms)) return '';
-  const d = new Date(ms);
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-}
-function ddmm(s: string): string {
-  const ms = parseUtcMs(s);
-  if (!Number.isFinite(ms)) return '';
-  const d = new Date(ms);
-  return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}`;
-}
 
 /** Одна цифра-итог прогона: значение + подпись (скрыта, если 0). */
 function Stat({ n, label, tone }: { n: number; label: string; tone?: 'good' | 'warn' | 'muted' }): JSX.Element | null {
@@ -108,60 +93,62 @@ export function LogScreen(): JSX.Element {
               const delta = r.total_after - r.total_before;
               const hasTotals = r.total_before > 0 || r.total_after > 0;
               const noChanges =
-                !r.inserted && !r.updated && !r.to_changed && !r.off_marked && !r.reappeared && !r.deleted;
+                !r.inserted && !r.reappeared && !r.off_marked && !r.deleted && !r.to_changed && !r.staging_upserted;
               return (
                 <div
                   key={r.id}
-                  className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-border-subtle bg-bg-surface/40 px-3 py-1.5"
+                  className="flex items-start gap-3 rounded-lg border border-border-subtle bg-bg-surface/40 px-3 py-2"
                 >
-                  <span className="relative flex h-7 w-7 shrink-0 items-center justify-center">
+                  {/* Аватар со статусом (presence) — на обе строки. */}
+                  <span className="relative mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center">
                     <Avatar
                       initials={user?.initials || computeInitials(name)}
-                      size={28}
+                      size={32}
                       login={r.login || undefined}
                       avatarUrl={user?.avatarUrl}
                       avatarBlobKey={user?.avatarBlobKey ?? undefined}
                       avatarBlobNonce={user?.avatarBlobNonce ?? undefined}
                     />
-                    <PresenceDot state={presence} size={9} ringClass="ring-bg-surface" className="absolute -bottom-0.5 -right-0.5" />
+                    <PresenceDot state={presence} size={10} ringClass="ring-bg-surface" className="absolute -bottom-0.5 -right-0.5" />
                   </span>
-                  <span className="max-w-[150px] truncate text-[12.5px] font-medium text-text-strong" title={name}>
-                    {name}
-                  </span>
-                  <span className="shrink-0 text-[11px] text-text-muted/70">· Выгрузка заказов</span>
-                  <span
-                    className="shrink-0 text-[11px] tabular-nums text-text-muted/80"
-                    title={`запуск ${r.started_at} → конец ${r.finished_at}`}
-                  >
-                    {ddmm(r.started_at)} {hhmm(r.started_at)}→{hhmm(r.finished_at)}
-                  </span>
-                  {dur && <span className="shrink-0 text-[11px] text-text-secondary">{dur}</span>}
-                  {hasTotals && (
-                    <span className="shrink-0 text-[11.5px] tabular-nums">
-                      <span className="text-text-muted/80">{r.total_before}</span>
-                      <span className="text-text-muted/50"> → </span>
-                      <span className="font-semibold text-text-strong">{r.total_after}</span>
-                      {delta !== 0 && (
-                        <span className={delta > 0 ? 'text-emerald-600' : 'text-rose-600'}>
-                          {' '}({delta > 0 ? '+' : ''}{delta})
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    {/* Строка 1: кто · что · дата-время · сколько грузилось */}
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="max-w-[220px] truncate text-[13px] font-medium text-text-strong" title={name}>
+                        {name}
+                      </span>
+                      <span className="text-[12px] text-text-secondary">· Выгрузка заказов</span>
+                      <span className="text-[11px] text-text-muted/80">{formatDateRu(r.started_at)}</span>
+                      {dur && <span className="text-[11px] text-text-secondary">· за {dur}</span>}
+                    </div>
+                    {/* Строка 2: Формирование было → стало (Δ) + что изменилось */}
+                    <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+                      {hasTotals && (
+                        <span className="text-[11.5px] tabular-nums">
+                          <span className="text-text-muted/70">Формирование </span>
+                          <span className="text-text-muted/80">{r.total_before}</span>
+                          <span className="text-text-muted/50"> → </span>
+                          <span className="font-semibold text-text-strong">{r.total_after}</span>
+                          {delta !== 0 && (
+                            <span className={delta > 0 ? 'text-emerald-600' : 'text-rose-600'}>
+                              {' '}({delta > 0 ? '+' : ''}{delta})
+                            </span>
+                          )}
                         </span>
                       )}
-                    </span>
-                  )}
-                  <div className="ml-auto flex flex-wrap items-center justify-end gap-x-2.5 gap-y-0.5">
-                    {noChanges ? (
-                      <span className="whitespace-nowrap text-[11px] text-text-muted/70">без изменений</span>
-                    ) : (
-                      <>
-                        <Stat n={r.inserted} label="новых" tone="good" />
-                        <Stat n={r.deleted} label="удалено" tone="warn" />
-                        <Stat n={r.to_changed} label="смен складов" />
-                        <Stat n={r.off_marked} label="снято OFF" tone="warn" />
-                        <Stat n={r.reappeared} label="вернулось" tone="good" />
-                        <Stat n={r.updated} label="правок" />
-                        <Stat n={r.staging_upserted} label="в ВГХ" />
-                      </>
-                    )}
+                      {noChanges ? (
+                        <span className="text-[11px] text-text-muted/70">· без изменений</span>
+                      ) : (
+                        <>
+                          <Stat n={r.inserted} label="новых" tone="good" />
+                          <Stat n={r.reappeared} label="вернулось" tone="good" />
+                          <Stat n={r.off_marked} label="в OFF" tone="warn" />
+                          <Stat n={r.deleted} label="удалено" tone="warn" />
+                          <Stat n={r.to_changed} label="смен складов" />
+                          <Stat n={r.staging_upserted} label="новых ВГХ" />
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
