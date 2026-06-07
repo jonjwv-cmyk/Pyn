@@ -133,6 +133,53 @@ export async function flowPlanMonthSet(
 }
 
 /**
+ * «Вид» раздела «Поток» (фильтры / сортировка / порядок / масштаб) — UI-слой НАД
+ * данными: строки таблицы не меняет (как filter-views в Google-таблицах). ОБЩИЙ вид
+ * хранится на сервере и синхронен всем; `value` — непрозрачная JSON-строка вида (клиент
+ * сам сериализует/разбирает её), пусто — вида нет (по умолчанию). `updatedBy` — кто
+ * последний менял (для аватара). Личный вид живёт в localStorage клиента, сюда не ходит.
+ */
+export interface FlowView {
+  /** JSON-строка состояния вида. Пустая строка — общий вид сброшен (по умолчанию). */
+  value: string;
+  updatedBy: string;
+  updatedByName: string;
+  updatedAt: string;
+}
+
+interface FlowViewWire {
+  value?: string;
+  updated_by?: string;
+  updated_by_name?: string;
+  updated_at?: string;
+}
+
+function wireToFlowView(wire: FlowViewWire): FlowView {
+  return {
+    value: typeof wire.value === 'string' ? wire.value : '',
+    updatedBy: wire.updated_by ?? '',
+    updatedByName: wire.updated_by_name ?? '',
+    updatedAt: wire.updated_at ?? '',
+  };
+}
+
+/** Прочитать общий вид раздела «Поток». Не задан → `value` пустой. */
+export async function flowViewGet(client: ApiClient): Promise<FlowView> {
+  const wire = await client.call<FlowViewWire>('flow_view_get', {});
+  return wireToFlowView(wire);
+}
+
+/**
+ * Сохранить/сбросить общий вид (admin). `value` — JSON-строка вида (пустая строка =
+ * сброс к виду по умолчанию). Сервер пишет автора и рассылает `flow_view_changed` всем
+ * (клиенты в режиме «Общий» применяют вид + обновляют аватар автора). Чисто UI.
+ */
+export async function flowViewSet(client: ApiClient, value: string): Promise<FlowView> {
+  const wire = await client.call<FlowViewWire>('flow_view_set', { value });
+  return wireToFlowView(wire);
+}
+
+/**
  * Приём выгрузки заказов: приложение запускает VBS «Выгрузка заказов» (SAP→TSV),
  * парсит TSV (`parseOrdersTsv`) и шлёт строки сюда СВОИМ E2E-каналом (через
  * корп-прокси если есть → слепой VPS → воркер). Сервер корректирует (111→0111,

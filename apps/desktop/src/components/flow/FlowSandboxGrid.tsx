@@ -37,9 +37,12 @@ import {
   flowWorkflowDelete,
   flowPlanMonthGet,
   flowPlanMonthSet,
+  flowViewGet,
+  flowViewSet,
   type FlowChangedEvent,
   type FlowPlanMonth,
   type FlowPlanMonthChangedEvent,
+  type FlowViewChangedEvent,
   type VghChangedEvent,
   type VghRow,
   type WarehouseCluster,
@@ -58,6 +61,24 @@ import { useMolStore } from '@/lib/stores';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
 import { FlowMonthPicker } from './FlowMonthPicker';
+import { FlowViewSwitch } from './FlowViewSwitch';
+import {
+  serializeFlowView,
+  deserializeFlowView,
+  canonicalFlowViewJson,
+  parseFlowView,
+  isEmptyFlowViewJson,
+  readPersonalView,
+  writePersonalView,
+  clearPersonalView,
+  readViewMode,
+  writeViewMode,
+  EMPTY_FLOW_VIEW,
+  EMPTY_FLOW_VIEW_JSON,
+  type FlowViewMode,
+  type FlowViewState,
+} from './flow-view';
+import { sessionStore } from '@/lib/token-store';
 import { useScheduleMonthsMeta, monthKey } from '@/lib/schedule/use-schedule-sync';
 import {
   FLOW_COLUMNS,
@@ -873,6 +894,187 @@ export function FlowSandboxGrid(): JSX.Element {
       updatedAt: event.updated_at ?? '',
     });
   });
+
+  // ── Виды «Общий / Личный» (filter-views, как в Google-таблицах) ────────────
+  // Состояние вида (filters/matFilter/ordFilter/sortLevels/zoom выше) можно держать в
+  // ДВУХ источниках: ЛИЧНЫЙ (localStorage, приватно) и ОБЩИЙ (сервер, синхронно всем,
+  // с аватаром автора). Переключатель меняет только ИСТОЧНИК; движок фильтрации/сортировки
+  // (rowsFiltered/viewRows) — один и тот же. По умолчанию — Общий. Данные таблицы вид НЕ трогает.
+  const [viewMode, setViewMode] = useState<FlowViewMode>('shared');
+  const viewModeRef = useRef<FlowViewMode>('shared');
+  viewModeRef.current = viewMode;
+  const [sharedAuthor, setSharedAuthor] = useState<{ updatedBy: string; updatedByName: string; updatedAt: string }>({
+    updatedBy: '',
+    updatedByName: '',
+    updatedAt: '',
+  });
+  const [hasSharedView, setHasSharedView] = useState(false);
+  const [hasPersonalView, setHasPersonalView] = useState(false);
+  const myLoginRef = useRef('');
+  // Канонический JSON последнего применённого/сохранённого вида — чтобы не пере-сохранять
+  // на каждый ре-рендер и не зациклить (эхо собственного сохранения, приходящее по WS).
+  const lastViewJsonRef = useRef(EMPTY_FLOW_VIEW_JSON);
+  const viewHydratedRef = useRef(false);
+  const sharedValueRef = useRef(''); // JSON-строка общего вида ('' — не задан)
+  const sharedSaveTimerRef = useRef<number | null>(null);
+
+  // Применить вид к живому состоянию грида (Общий/Личный — один движок). lastViewJsonRef
+  // ставим ДО setState — тогда последующий save-эффект увидит «не изменилось» и не пере-сохранит.
+  const applyFlowView = useCallback((state: FlowViewState) => {
+    const live = deserializeFlowView(state);
+    lastViewJsonRef.current = canonicalFlowViewJson(serializeFlowView(live));
+    setFilters(live.filters);
+    setMatFilter(live.matFilter);
+    setOrdFilter(live.ordFilter);
+    setSortLevels(live.sortLevels);
+    setZoom(live.zoom);
+    setSelection(emptySelection());
+  }, []);
+
+  // Сохранить общий вид на сервер (debounce — лишние записи на CF free tier дороги). На
+  // ответе обновляем автора (становлюсь я). Best-effort: вид уже применён локально.
+  const scheduleSharedSave = useCallback((json: string) => {
+    if (sharedSaveTimerRef.current != null) window.clearTimeout(sharedSaveTimerRef.current);
+    sharedSaveTimerRef.current = window.setTimeout(() => {
+      sharedSaveTimerRef.current = null;
+      const value = isEmptyFlowViewJson(json) ? '' : json;
+      void flowViewSet(api, value)
+        .then((res) => {
+          sharedValueRef.current = res.value;
+          setHasSharedView(res.value !== '');
+          setSharedAuthor({ updatedBy: res.updatedBy, updatedByName: res.updatedByName, updatedAt: res.updatedAt });
+        })
+        .catch(() => undefined);
+    }, 600);
+  }, []);
+
+  // Гидрация на маунте: режим + личный вид (localStorage) + общий вид (сервер) → применяем активный.
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      let login = '';
+      try {
+        const s = await sessionStore.load();
+        login = s?.user?.login ?? '';
+      } catch {
+        /* нет сессии — личный вид недоступен, остаётся общий */
+      }
+      if (!alive) return;
+      myLoginRef.current = login;
+      const mode = readViewMode(login);
+      setViewMode(mode);
+      viewModeRef.current = mode;
+      const personal = readPersonalView(login);
+      setHasPersonalView(personal != null);
+      // Общий вид грузим всегда (нужен для аватара + переключения); применяем — если активен он.
+      let sharedState: FlowViewState | null = null;
+      try {
+        const sv = await flowViewGet(api);
+        if (!alive) return;
+        sharedValueRef.current = sv.value;
+        setHasSharedView(sv.value !== '');
+        setSharedAuthor({ updatedBy: sv.updatedBy, updatedByName: sv.updatedByName, updatedAt: sv.updatedAt });
+        sharedState = sv.value ? parseFlowView(sv.value) : null;
+      } catch {
+        /* сервер недоступен — общий вид пустой */
+      }
+      if (!alive) return;
+      const active = mode === 'personal' ? personal : sharedState;
+      if (active) applyFlowView(active);
+      else lastViewJsonRef.current = EMPTY_FLOW_VIEW_JSON;
+      viewHydratedRef.current = true;
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [applyFlowView]);
+
+  // Любое изменение вида (фильтр/сорт/масштаб) → сохраняем в АКТИВНЫЙ источник. Гидрацию и
+  // собственное применение пропускаем (json совпадёт с lastViewJsonRef → no-op).
+  useEffect(() => {
+    if (!viewHydratedRef.current) return;
+    const state = serializeFlowView({ filters, matFilter, ordFilter, sortLevels, zoom });
+    const json = canonicalFlowViewJson(state);
+    if (json === lastViewJsonRef.current) return;
+    lastViewJsonRef.current = json;
+    if (viewModeRef.current === 'personal') {
+      const login = myLoginRef.current;
+      if (isEmptyFlowViewJson(json)) {
+        clearPersonalView(login);
+        setHasPersonalView(false);
+      } else {
+        writePersonalView(login, state);
+        setHasPersonalView(true);
+      }
+    } else {
+      scheduleSharedSave(json);
+    }
+  }, [filters, matFilter, ordFilter, sortLevels, zoom, scheduleSharedSave]);
+
+  // Реалтайм: кто-то изменил ОБЩИЙ вид. Всегда обновляем автора/наличие; ПРИМЕНЯЕМ только
+  // если я сейчас в режиме «Общий» и это НЕ моё эхо (свои изменения уже применены локально —
+  // не «прыгаем» и не сбрасываем выделение).
+  useWsEvent<FlowViewChangedEvent>('flow_view_changed', (e) => {
+    const value = String(e.value ?? '');
+    const by = e.updated_by ?? '';
+    sharedValueRef.current = value;
+    setHasSharedView(value !== '');
+    setSharedAuthor({ updatedBy: by, updatedByName: e.updated_by_name ?? '', updatedAt: e.updated_at ?? '' });
+    if (viewModeRef.current !== 'shared' || by === myLoginRef.current) return;
+    const state = value ? parseFlowView(value) : EMPTY_FLOW_VIEW;
+    const incomingJson = canonicalFlowViewJson(serializeFlowView(deserializeFlowView(state)));
+    if (incomingJson === lastViewJsonRef.current) return; // уже ровно такой — выделение не трогаем
+    applyFlowView(state);
+  });
+
+  // Переключить режим вида (Общий ↔ Личный) — применяем вид целевого источника + помним выбор.
+  const handleViewModeChange = useCallback(
+    (mode: FlowViewMode) => {
+      const login = myLoginRef.current;
+      writeViewMode(login, mode);
+      setViewMode(mode);
+      viewModeRef.current = mode;
+      if (mode === 'personal') {
+        const personal = readPersonalView(login);
+        setHasPersonalView(personal != null);
+        applyFlowView(personal ?? EMPTY_FLOW_VIEW);
+      } else {
+        applyFlowView(sharedValueRef.current ? parseFlowView(sharedValueRef.current) : EMPTY_FLOW_VIEW);
+      }
+    },
+    [applyFlowView],
+  );
+
+  // Сбросить вид активного режима к виду по умолчанию (фильтры/сортировка/масштаб → пусто).
+  const handleViewReset = useCallback(() => {
+    applyFlowView(EMPTY_FLOW_VIEW); // живое → пусто, lastViewJsonRef → EMPTY (save-эффект промолчит)
+    const login = myLoginRef.current;
+    if (viewModeRef.current === 'personal') {
+      clearPersonalView(login);
+      setHasPersonalView(false);
+    } else {
+      if (sharedSaveTimerRef.current != null) {
+        window.clearTimeout(sharedSaveTimerRef.current);
+        sharedSaveTimerRef.current = null;
+      }
+      void flowViewSet(api, '')
+        .then((res) => {
+          sharedValueRef.current = res.value;
+          setHasSharedView(false);
+          setSharedAuthor({ updatedBy: res.updatedBy, updatedByName: res.updatedByName, updatedAt: res.updatedAt });
+        })
+        .catch(() => undefined);
+    }
+  }, [applyFlowView]);
+
+  // Чистим debounce-таймер общего вида при размонтировании.
+  useEffect(
+    () => () => {
+      if (sharedSaveTimerRef.current != null) window.clearTimeout(sharedSaveTimerRef.current);
+    },
+    [],
+  );
+
   const [size, setSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   // Ширина для РАСКЛАДКИ колонок (резиновый NOTE) — обновляется с задержкой: при движении
   // сайдбара live `size` двигает канвас (прокрутка), а переразметку колонок делаем ОДИН
@@ -2921,6 +3123,16 @@ export function FlowSandboxGrid(): JSX.Element {
             кто выбрал; нельзя прошлый месяц и месяц без «дней без доставки». */}
         <div className="h-5 w-px bg-black/[0.08]" />
         <FlowMonthPicker year={planYear} month={planMonth} info={planMonthInfo} onChanged={applyPlanMonth} />
+        {/* Вид «Общий / Личный» (filter-views): Общий — серверный, виден всем, с аватаром
+            автора; Личный — приватный (localStorage). Меняет только источник состояния вида. */}
+        <FlowViewSwitch
+          mode={viewMode}
+          onModeChange={handleViewModeChange}
+          sharedAuthor={sharedAuthor}
+          hasSharedView={hasSharedView}
+          hasPersonalView={hasPersonalView}
+          onReset={handleViewReset}
+        />
         {selectedRowCount > 0 && (
           <div className="ml-auto flex items-center gap-2 text-[12px] text-[#6B6862]">
             <span className="tabular-nums text-[#2A2925]">Выбрано строк: {selectedRowCount}</span>

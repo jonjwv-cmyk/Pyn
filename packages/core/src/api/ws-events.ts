@@ -99,6 +99,12 @@ export const WS_EVENT_TYPES = {
    */
   FLOW_PLAN_MONTH_CHANGED: 'flow_plan_month_changed',
   /**
+   * Раздел «Поток» — изменён ОБЩИЙ вид (фильтры/сортировка/масштаб, flow_view_set).
+   * Шлётся всем: клиенты в режиме «Общий» применяют вид и обновляют аватар автора.
+   * Чисто UI — строки таблицы не трогает.
+   */
+  FLOW_VIEW_CHANGED: 'flow_view_changed',
+  /**
    * База ВГХ (вес/габариты/объём/тех-имя) изменена — правка карточки или перенос
    * из промежуточного листа. Шлёт актуальные строки базы; клиенты обновляют стор
    * (→ пересчёт KG/V и тех-имени в формировании реалтайм).
@@ -198,6 +204,16 @@ export interface FlowPlanMonthChangedEvent extends WsServerEvent {
   type: 'flow_plan_month_changed';
   year: number;
   month: number;
+  updated_by: string;
+  updated_by_name: string;
+  updated_at: string;
+}
+
+/** Изменён общий «вид» (фильтры/сортировка/масштаб) «Потока» — у всех применить +
+ *  обновить аватар автора. `value` — JSON-строка вида (пусто — вид сброшен). Чисто UI. */
+export interface FlowViewChangedEvent extends WsServerEvent {
+  type: 'flow_view_changed';
+  value: string;
   updated_by: string;
   updated_by_name: string;
   updated_at: string;

@@ -20,6 +20,7 @@ export {
   type BaseChangedEvent,
   type FlowChangedEvent,
   type FlowPlanMonthChangedEvent,
+  type FlowViewChangedEvent,
   type VghChangedEvent,
   type VghStagingChangedEvent,
   type FlowImportLoggedEvent,
