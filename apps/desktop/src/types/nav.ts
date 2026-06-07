@@ -27,6 +27,9 @@ export interface NavSection {
   id: NavSectionId;
   label: string;
   icon: LucideIcon;
+  /** Постоянный цвет иконки (Tailwind-класс) — акцент раздела, как у Google-табов
+   *  (TableNavItems). Не задан — стандартное поведение (clay при active). */
+  iconColor?: string;
   /** Кол-во непрочитанных / новых элементов. 0 — не показывать badge. */
   badge?: number;
 }

@@ -1015,19 +1015,25 @@ export function App() {
                 storage-store держит currentPath между mount'ами. */}
             {activeSection === 'vault' && <StorageScreen />}
 
-            {/* §flow-β — раздел «Поток» (собственный табличный реестр, миграция
-                с Google Sheets). Песочница Фазы 0: спайк движка Glide на тестовых
-                данных. Conditional render (admin/developer-only через showFlow в
-                Sidebar). Существующие «Таблицы»/Google не затрагивает. */}
-            {activeSection === 'flow' && <FlowScreen />}
-
-            {/* §vgh — раздел «ВГХ» (промежуточный лист + база вес-габаритов).
-                Admin/developer-only через showVgh. Из этой базы реалтайм считаются
-                KG/V и тех-имя в формировании. */}
-            {activeSection === 'vgh' && <VghScreen />}
-
-            {/* §log — раздел «LOG» (журнал прогонов выгрузки заказов). Admin/developer-only. */}
-            {activeSection === 'log' && <LogScreen />}
+            {/* §flow/vgh/log — собственный табличный контур. ALWAYS-MOUNTED (display-toggle)
+                как Новости/Таблицы/МОЛ: гриды не пересоздаются при возврате в раздел —
+                мгновенный switch, scroll/состояние держатся в DOM, реалтайм-WS держит
+                свежесть (как График/Чаты/Новости). Только admin/developer (isAdminLike). */}
+            {isAdminLike(session.role) && (
+              <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'flow' ? 'flex' : 'none' }}>
+                <FlowScreen />
+              </div>
+            )}
+            {isAdminLike(session.role) && (
+              <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'vgh' ? 'flex' : 'none' }}>
+                <VghScreen />
+              </div>
+            )}
+            {isAdminLike(session.role) && (
+              <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'log' ? 'flex' : 'none' }}>
+                <LogScreen />
+              </div>
+            )}
 
             {/* §design — Новости always-mounted, вынесены на подложку: шапка на
                 подложке + контент в WorkspaceCard (внутри NewsFeed). */}

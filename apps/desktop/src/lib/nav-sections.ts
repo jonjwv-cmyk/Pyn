@@ -1,4 +1,4 @@
-import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Scale, Workflow } from 'lucide-react';
+import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Scale, Waves } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -36,7 +36,8 @@ export const NAV_WORKSPACE_AFTER_TABLES: NavSection[] = [
 export const NAV_FLOW: NavSection = {
   id: 'flow',
   get label() { return i18next.t('sidebar.nav_flow'); },
-  icon: Workflow,
+  icon: Waves,
+  iconColor: 'text-amber-400',
 };
 
 /**
@@ -49,6 +50,7 @@ export const NAV_VGH: NavSection = {
   id: 'vgh',
   get label() { return i18next.t('sidebar.nav_vgh'); },
   icon: Scale,
+  iconColor: 'text-violet-400',
 };
 
 /**

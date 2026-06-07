@@ -522,6 +522,34 @@ function blankLastCmp(a: unknown, b: unknown): number {
   return x.localeCompare(y, 'ru', { numeric: true });
 }
 
+/** T-карта складов-получателей (как WF_SORT гугл-скрипта): код «825Т» сортируется как
+ *  8025, но СТРОГО ПЕРЕД обычным «8025» (вторичный признак 0<1). Кириллица и латиница «Т». */
+const TO_T_SORT_MAP: Record<string, number> = {
+  '821Т': 8021, '825Т': 8025, '824Т': 8024, '823Т': 8023, '806Т': 8006,
+  '821T': 8021, '825T': 8025, '824T': 8024, '823T': 8023, '806T': 8006,
+};
+/** Ключ сортировки склада (TO/FR): [число, 0=Т-код / 1=обычный, норм-строка]. Порт `toKey_`. */
+function whSortKey(raw: string): [number, number, string] {
+  const norm = String(raw ?? '').trim().replace(/\s+/g, '').toUpperCase();
+  const mapped = TO_T_SORT_MAP[norm];
+  if (mapped != null) return [mapped, 0, norm];
+  const m = norm.match(/-?\d+/);
+  if (m) return [parseInt(m[0], 10), 1, norm];
+  return [1e15, 1, norm];
+}
+/** Сравнение складов по WF_SORT-ключу (число → Т-код перед обычным → строка). */
+function cmpWh(a: string, b: string): number {
+  const ka = whSortKey(a);
+  const kb = whSortKey(b);
+  return ka[0] - kb[0] || ka[1] - kb[1] || ka[2].localeCompare(kb[2], 'ru');
+}
+/** Кол-во по ВОЗРАСТАНИЮ; пустые/нечисло — в конец. */
+function cmpQtyAsc(a: number | null, b: number | null): number {
+  const av = a == null || !Number.isFinite(a) ? Infinity : a;
+  const bv = b == null || !Number.isFinite(b) ? Infinity : b;
+  return av - bv;
+}
+
 /** Сортировка по ОДНОЙ колонке (из меню заголовка). «Умно» для составных:
  *  ORD — иерархия заказ→позиция (числом); MAT — по названию, пустые в конец;
  *  числа — числом; прочее — естественное сравнение (числа в тексте по значению). */
@@ -581,6 +609,23 @@ function clstSortKey(clst: string): number {
   const w = WD_RANK[wd] ?? 8;
   const c = cl === 'ВЫЕЗД' ? 0 : cl === 'КХП' ? 1 : 2; // НТМК (без суффикса) — последним в дне
   return w * 10 + c;
+}
+
+/**
+ * Порядок формирования ПО УМОЛЧАНИЮ (без ручной сортировки колонкой) — полный WF_SORT:
+ * CLST → получатель TO (T-карта: 825Т перед 8025) → материал MAT (пустые в конец, A-Я) →
+ * ОТПРАВИТЕЛЬ FR → кол-во QTY по возрастанию. FR добавлен (юзер 2026-06): чтобы один
+ * материал от ОДНОГО склада-отправителя шёл подряд, а не вперемешку по qty с разных
+ * складов (упор на получатель+материал, но без потери группировки источника).
+ */
+function defaultSortCompare(a: FlowSandboxRow, b: FlowSandboxRow): number {
+  return (
+    clstSortKey(a.clst) - clstSortKey(b.clst) ||
+    cmpWh(a.to_wh, b.to_wh) ||
+    blankLastCmp(a.mat, b.mat) ||
+    cmpWh(a.fr, b.fr) ||
+    cmpQtyAsc(a.qty, b.qty)
+  );
 }
 
 /** Порядок значений DAY в фильтре: пусто → off → new → даты ХРОНОЛОГИЧЕСКИ (как в календаре). */
@@ -1182,12 +1227,12 @@ export function FlowSandboxGrid(): JSX.Element {
         out = base;
       }
     } else {
-      // Без пользовательской сортировки — группировка по CLST: «Нет» вверху, далее ПО
-      // ДНЯМ недели (ПН→ПТ), внутри дня ВЫЕЗД → КХП → НТМК. Сорт стабилен (ES2019+) →
-      // внутри группы сохраняется снимочный под-порядок (TO/MAT/…). «Нет» и каждый
-      // (день·кластер) — отдельный блок с разделителем (разделитель по смене clst).
+      // Без пользовательской сортировки — ПОЛНЫЙ порядок WF_SORT (CLST → получатель TO →
+      // материал MAT → ОТПРАВИТЕЛЬ FR → кол-во QTY), см. defaultSortCompare. «Нет» и каждый
+      // (день·кластер) — отдельный блок (разделитель по смене clst). Детерминирован, не
+      // зависит от снимочного под-порядка — новые заказы встают на своё место.
       const base = out === liveRows ? out.slice() : out;
-      base.sort((a, b) => clstSortKey(a.clst) - clstSortKey(b.clst));
+      base.sort(defaultSortCompare);
       out = base;
     }
     return out;

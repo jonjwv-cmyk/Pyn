@@ -203,6 +203,7 @@ export function Sidebar({
         badge={merged.badge}
         onClick={() => onSectionClick(merged.id)}
         textOnly={textOnly}
+        iconColor={merged.iconColor}
       />
     );
   };

@@ -12,6 +12,8 @@ interface NavItemProps {
   onClick: () => void;
   /** Текстовый пункт без иконки (Лента: Чаты/Новости) — текст виден и в collapsed. */
   textOnly?: boolean;
+  /** Постоянный цвет иконки (Tailwind-класс) — акцент раздела, как у Google-табов. */
+  iconColor?: string;
 }
 
 /**
@@ -27,7 +29,7 @@ interface NavItemProps {
  * В collapsed mode компонент обёрнут в Radix Tooltip — при hover подпись
  * раздела справа от иконки, не перекрытая курсором.
  */
-export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, textOnly = false }: NavItemProps) {
+export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, textOnly = false, iconColor }: NavItemProps) {
   const showBadge = badge !== undefined && badge > 0;
 
   const button = (
@@ -49,7 +51,7 @@ export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, 
           <Icon
             className={cn(
               'h-[18px] w-[18px] transition-colors',
-              active ? 'text-accent-clay' : 'text-text-primary group-hover:text-text-strong',
+              iconColor ?? (active ? 'text-accent-clay' : 'text-text-primary group-hover:text-text-strong'),
             )}
             strokeWidth={1.75}
           />
