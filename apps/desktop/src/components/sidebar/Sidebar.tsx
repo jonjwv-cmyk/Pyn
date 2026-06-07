@@ -209,6 +209,7 @@ export function Sidebar({
         onClick={() => onSectionClick(merged.id)}
         textOnly={textOnly}
         iconColor={merged.iconColor}
+        muted={merged.muted}
       />
     );
   };

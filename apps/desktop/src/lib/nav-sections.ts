@@ -16,7 +16,8 @@ import type { NavSection } from '@/types/nav';
 
 // Группа «Рабочее» — до Google-таблиц.
 export const NAV_WORKSPACE_BEFORE_TABLES: NavSection[] = [
-  { id: 'vault', get label() { return i18next.t('sidebar.nav_storage');  }, icon: Archive },
+  // Хранилище — приглушённое (уходящий/вспомогательный раздел, не мешает глазу).
+  { id: 'vault', get label() { return i18next.t('sidebar.nav_storage');  }, icon: Archive, muted: true },
   { id: 'proba', get label() { return i18next.t('sidebar.nav_schedule'); }, icon: CalendarRange },
 ];
 

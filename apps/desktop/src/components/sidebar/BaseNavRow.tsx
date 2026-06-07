@@ -106,8 +106,9 @@ const BaseTrigger = React.forwardRef<HTMLButtonElement, BaseTriggerProps>(
         <span className="flex h-7 w-7 shrink-0 items-center justify-start">
           <Database
             className={cn(
-              'h-[18px] w-[18px] transition-colors',
-              active ? 'text-accent-clay' : 'text-text-primary group-hover:text-text-strong',
+              // «База» — один из дневных «героев» → постоянный цвет (blue), как Поток-teal /
+              // ВГХ-violet (через NavItem.iconColor). Здесь свой рендер, поэтому цвет тут же.
+              'h-[18px] w-[18px] transition-colors text-blue-400',
             )}
             strokeWidth={1.75}
           />

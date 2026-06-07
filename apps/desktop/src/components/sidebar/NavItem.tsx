@@ -14,6 +14,9 @@ interface NavItemProps {
   textOnly?: boolean;
   /** Постоянный цвет иконки (Tailwind-класс) — акцент раздела, как у Google-табов. */
   iconColor?: string;
+  /** Приглушённый («сероватый, как бы не активный») вид — для уходящих разделов
+   *  (Хранилище/Workflow): не мешают глазу. На hover/active светлеют как обычно. */
+  muted?: boolean;
 }
 
 /**
@@ -29,7 +32,7 @@ interface NavItemProps {
  * В collapsed mode компонент обёрнут в Radix Tooltip — при hover подпись
  * раздела справа от иконки, не перекрытая курсором.
  */
-export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, textOnly = false, iconColor }: NavItemProps) {
+export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, textOnly = false, iconColor, muted = false }: NavItemProps) {
   const showBadge = badge !== undefined && badge > 0;
 
   const button = (
@@ -37,9 +40,9 @@ export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, 
       type="button"
       onClick={onClick}
       className={cn(
-        'group flex h-8 w-full items-center gap-1.5 rounded-md px-1.5',
-        'text-text-primary transition-colors',
-        'hover:bg-bg-hover hover:text-text-strong',
+        'group flex h-8 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors',
+        'hover:bg-bg-hover',
+        muted ? 'text-text-muted/55 hover:text-text-secondary' : 'text-text-primary hover:text-text-strong',
         active && 'bg-bg-selected text-text-strong',
       )}
     >
@@ -51,7 +54,12 @@ export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, 
           <Icon
             className={cn(
               'h-[18px] w-[18px] transition-colors',
-              iconColor ?? (active ? 'text-accent-clay' : 'text-text-primary group-hover:text-text-strong'),
+              iconColor ??
+                (active
+                  ? 'text-accent-clay'
+                  : muted
+                    ? 'text-text-muted/45 group-hover:text-text-secondary'
+                    : 'text-text-primary group-hover:text-text-strong'),
             )}
             strokeWidth={1.75}
           />

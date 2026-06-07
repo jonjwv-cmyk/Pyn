@@ -105,6 +105,8 @@ function TableNavRow({
   const displayName = customTableName(file.title);
   const shortName = customTableShortName(file.title);
   const { Icon, iconColor } = tableIconFor(file.title);
+  // Workflow — почти не используется (скоро уберём) → приглушённый «сероватый» вид, не мешает.
+  const muted = (file.title || '').toUpperCase() === 'WORKFLOW';
 
   // Клик по таблице → открываем её запомненный лист (если ещё существует),
   // иначе первый. «Где были — туда и попадём».
@@ -129,6 +131,7 @@ function TableNavRow({
             active={active}
             onClick={pickActive}
             iconColor={iconColor}
+            muted={muted}
           />
         ) : (
           <ExpandedTableTrigger
@@ -137,6 +140,7 @@ function TableNavRow({
             onClick={pickActive}
             Icon={Icon}
             iconColor={iconColor}
+            muted={muted}
           />
         )}
       </HoverCard.Trigger>
@@ -191,19 +195,21 @@ type ExpandedTriggerProps = TriggerProps & {
   Icon: LucideIcon;
   /** Постоянный цвет иконки (highlight частых таблиц); null = серый дефолт. */
   iconColor: string | null;
+  /** Приглушённый («сероватый») вид — для уходящих таблиц (Workflow). */
+  muted?: boolean;
 };
 
 const ExpandedTableTrigger = React.forwardRef<HTMLButtonElement, ExpandedTriggerProps>(
-  function ExpandedTableTrigger({ active, label, Icon, iconColor, className, ...rest }, ref) {
+  function ExpandedTableTrigger({ active, label, Icon, iconColor, muted = false, className, ...rest }, ref) {
     return (
       <button
         ref={ref}
         type="button"
         {...rest}
         className={cn(
-          'group flex h-8 w-full items-center gap-1.5 rounded-md px-1.5',
-          'text-text-primary outline-none transition-colors',
-          'hover:bg-bg-hover hover:text-text-strong',
+          'group flex h-8 w-full items-center gap-1.5 rounded-md px-1.5 outline-none transition-colors',
+          'hover:bg-bg-hover',
+          muted ? 'text-text-muted/55 hover:text-text-secondary' : 'text-text-primary hover:text-text-strong',
           active && 'bg-bg-selected text-text-strong',
           className,
         )}
@@ -213,10 +219,13 @@ const ExpandedTableTrigger = React.forwardRef<HTMLButtonElement, ExpandedTrigger
             className={cn(
               'h-[18px] w-[18px] transition-colors',
               // Active — clay (единообразно с остальной навигацией). Inactive —
-              // постоянный highlight-цвет (если задан) либо серый дефолт.
+              // постоянный highlight-цвет (если задан), приглушённый (muted) либо серый дефолт.
               active
                 ? 'text-accent-clay'
-                : iconColor ?? 'text-text-primary group-hover:text-text-strong',
+                : iconColor ??
+                  (muted
+                    ? 'text-text-muted/45 group-hover:text-text-secondary'
+                    : 'text-text-primary group-hover:text-text-strong'),
             )}
             strokeWidth={1.75}
           />
@@ -236,9 +245,9 @@ const ExpandedTableTrigger = React.forwardRef<HTMLButtonElement, ExpandedTrigger
  */
 const CollapsedTextPill = React.forwardRef<
   HTMLButtonElement,
-  TriggerProps & { iconColor: string | null }
+  TriggerProps & { iconColor: string | null; muted?: boolean }
 >(
-  function CollapsedTextPill({ label, active, iconColor, className, ...rest }, ref) {
+  function CollapsedTextPill({ label, active, iconColor, muted = false, className, ...rest }, ref) {
     return (
       <button
         ref={ref}
@@ -261,9 +270,11 @@ const CollapsedTextPill = React.forwardRef<
           // НЕ серый bg-bg-hover). Без цвета (дефолтные таблицы) — серый + hover.
           active
             ? 'bg-bg-selected text-accent-clay'
-            : iconColor
-              ? cn(iconColor, 'hover:bg-bg-hover')
-              : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+            : muted
+              ? 'text-text-muted/50 hover:bg-bg-hover hover:text-text-secondary'
+              : iconColor
+                ? cn(iconColor, 'hover:bg-bg-hover')
+                : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
           className,
         )}
       >
