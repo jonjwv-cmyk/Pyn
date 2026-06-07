@@ -325,8 +325,8 @@ export function Sidebar({
         {/* «График» — реже, на месяц (если вопросы). */}
         {navSchedule && renderNavItem(navSchedule)}
 
-        {/* Google-таблицы (Workflow / OTIF5): ОТИФ — закрытие месяца; ниже частых разделов.
-            Каждая таблица — свой nav-item с hover-flyout справа со вкладками. */}
+        {/* Google-таблицы: ОТИФ5 (закрытие месяца) — сверху, Workflow (почти не используется,
+            скоро уберём) — ниже (сортировка внутри TableNavItems). Hover-flyout со вкладками. */}
         <TableNavItems
           collapsed={collapsed}
           activeSection={activeSection}

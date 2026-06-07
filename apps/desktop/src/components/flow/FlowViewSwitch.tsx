@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { Check, ChevronDown, ListFilter, RotateCcw } from 'lucide-react';
+import { Check, ChevronDown, ListFilter, RotateCcw, User, Users } from 'lucide-react';
 import { useFormatYek } from '@/lib/hooks/use-format-yek';
 import type { FlowViewMode } from './flow-view';
 
@@ -13,9 +13,9 @@ interface FlowViewSwitchProps {
   sharedAuthor: { updatedBy: string; updatedByName: string; updatedAt: string };
   /** Есть ли непустой ОБЩИЙ вид (показ автора + доступность «Сбросить общий»). */
   hasSharedView: boolean;
-  /** Есть ли непустой ЛИЧНЫЙ вид (доступность «Сбросить себе»). */
+  /** Есть ли непустой ЛИЧНЫЙ вид (доступность «Сбросить личный»). */
   hasPersonalView: boolean;
-  /** Сбросить вид к стандарту (снять все фильтры/сортировку) для себя или для всех. */
+  /** Сбросить вид к стандарту (снять все фильтры/сортировку) — личный или общий. */
   onReset: (target: FlowViewMode) => void;
 }
 
@@ -25,7 +25,7 @@ interface FlowViewSwitchProps {
  *   • Общий  — синхронный, на сервере, виден всем; кто поставил — ФИО + дата по Екб.
  *   • Личный — приватный, в localStorage, виден только себе.
  * Кнопка называется «Вид» и показывает текущий режим (Общий/Личный) — не нужно раскрывать,
- * чтобы вспомнить. В выпадашке 4 пункта: Общий · Личный · Сбросить себе · Сбросить общий.
+ * чтобы вспомнить. В выпадашке 4 пункта: Общий · Личный · Сбросить личный · Сбросить общий.
  */
 export function FlowViewSwitch({
   mode,
@@ -74,23 +74,33 @@ export function FlowViewSwitch({
           className="z-30 w-[232px] rounded-lg border border-white/[0.08] bg-bg-elevated p-1.5 text-text-primary shadow-2xl outline-none"
         >
           {/* Общий — синхронный серверный вид; под ним «кто поставил». */}
-          <ModeRow active={mode === 'shared'} emoji="👥" label="Общий" onClick={() => switchTo('shared')}>
+          <ModeRow
+            active={mode === 'shared'}
+            icon={<Users size={14} strokeWidth={1.75} />}
+            label="Общий"
+            onClick={() => switchTo('shared')}
+          >
             {showAuthor && (
-              <div className="mt-0.5 pl-[26px] text-[10.5px] leading-snug text-text-muted/80">
-                поставил(а) {authorName}
+              <div className="mt-0.5 truncate pl-[26px] text-[10.5px] leading-snug text-text-muted/80">
+                {authorName}
                 {setAt ? ` · ${setAt}` : ''}
               </div>
             )}
           </ModeRow>
 
           {/* Личный — приватный вид (localStorage), виден только себе. */}
-          <ModeRow active={mode === 'personal'} emoji="👤" label="Личный" onClick={() => switchTo('personal')} />
+          <ModeRow
+            active={mode === 'personal'}
+            icon={<User size={14} strokeWidth={1.75} />}
+            label="Личный"
+            onClick={() => switchTo('personal')}
+          />
 
           <div className="mx-1 my-1 h-px bg-white/[0.07]" />
 
-          {/* Сброс к стандарту (снять все фильтры/сортировку) — себе или всем. */}
+          {/* Сброс к стандарту (снять все фильтры/сортировку) — личный или общий. */}
           <ResetRow
-            label="Сбросить себе"
+            label="Сбросить личный"
             disabled={!hasPersonalView}
             title="Снять все фильтры и сортировку в вашем личном виде"
             onClick={() => reset('personal')}
@@ -109,16 +119,16 @@ export function FlowViewSwitch({
   );
 }
 
-/** Строка выбора режима: смайлик + название + галка активного (+ опц. под-строка автора). */
+/** Строка выбора режима: иконка + название + галка активного (+ опц. под-строка автора). */
 function ModeRow({
   active,
-  emoji,
+  icon,
   label,
   onClick,
   children,
 }: {
   active: boolean;
-  emoji: string;
+  icon: ReactNode;
   label: string;
   onClick: () => void;
   children?: ReactNode;
@@ -133,7 +143,9 @@ function ModeRow({
       ].join(' ')}
     >
       <div className="flex items-center gap-2">
-        <span className="w-[18px] text-center text-[13px] leading-none">{emoji}</span>
+        <span className={['flex w-[18px] justify-center', active ? 'text-accent-clay' : 'text-text-muted'].join(' ')}>
+          {icon}
+        </span>
         <span className={['text-[12.5px]', active ? 'font-semibold text-accent-clay' : 'text-text-primary'].join(' ')}>
           {label}
         </span>
@@ -144,7 +156,7 @@ function ModeRow({
   );
 }
 
-/** Строка сброса вида (себе / общий) — снять все фильтры и сортировку к стандарту. */
+/** Строка сброса вида (личный / общий) — снять все фильтры и сортировку к стандарту. */
 function ResetRow({
   label,
   disabled,
@@ -164,7 +176,9 @@ function ResetRow({
       title={title}
       className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-[12px] text-text-secondary outline-none transition-colors hover:bg-white/[0.06] hover:text-text-strong disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-text-secondary"
     >
-      <RotateCcw size={13} strokeWidth={1.75} className="ml-0.5 text-text-muted" />
+      <span className="flex w-[18px] justify-center text-text-muted">
+        <RotateCcw size={13} strokeWidth={1.75} />
+      </span>
       {label}
     </button>
   );

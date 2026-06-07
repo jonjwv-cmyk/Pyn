@@ -42,8 +42,21 @@ function tableIconFor(rawTitle: string): { Icon: LucideIcon; iconColor: string |
   return cfg ? { Icon: cfg.Icon, iconColor: cfg.color } : { Icon: FileSpreadsheet, iconColor: null };
 }
 
+/**
+ * Порядок таблиц в сайдбаре (юзер 2026-06-07): ОТИФ5 — живая метрика, закрытие месяца —
+ * выше; Workflow почти не используется (скоро уберём) — ниже. Прочие таблицы — между, в
+ * порядке реестра. Это только ПОКАЗ (onPick по file.id), сам реестр не трогаем.
+ */
+const TABLE_SORT_PRIORITY: Record<string, number> = { OTIF5: 0, WORKFLOW: 100 };
+
+function tableSortKey(file: TableFile): number {
+  return TABLE_SORT_PRIORITY[(file.title || '').toUpperCase()] ?? 50;
+}
+
 export function TableNavItems({ collapsed, activeSection, onPick }: TableNavItemsProps) {
   const { files, loading } = useTablesRegistry();
+  // Стабильная сортировка (V8) — таблицы с равным ключом сохраняют порядок реестра.
+  const orderedFiles = [...files].sort((a, b) => tableSortKey(a) - tableSortKey(b));
 
   if (loading && files.length === 0) {
     return (
@@ -57,7 +70,7 @@ export function TableNavItems({ collapsed, activeSection, onPick }: TableNavItem
 
   return (
     <>
-      {files.map((file) => (
+      {orderedFiles.map((file) => (
         <TableNavRow
           key={file.id}
           file={file}
