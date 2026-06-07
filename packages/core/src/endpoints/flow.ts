@@ -164,6 +164,10 @@ export interface FlowImportResult {
   /** Сколько строк сменили склад-получатель (для журнала LOG). */
   to_changed: number;
   staging_upserted: number;
+  /** Сколько строк было в формировании до прогона / стало после / удалено (подчищено). */
+  total_before: number;
+  total_after: number;
+  deleted: number;
 }
 
 /** Запись журнала прогона выгрузки заказов (раздел LOG): кто/когда + итоги. */
@@ -182,6 +186,10 @@ export interface FlowImportRun {
   reappeared: number;
   to_changed: number;
   staging_upserted: number;
+  /** Было в формировании до прогона / стало после / удалено (подчищено) — для строки LOG. */
+  total_before: number;
+  total_after: number;
+  deleted: number;
 }
 
 /**
@@ -235,6 +243,9 @@ export async function flowImport(
     reappeared: Number(wire.reappeared) || 0,
     to_changed: Number(wire.to_changed) || 0,
     staging_upserted: Number(wire.staging_upserted) || 0,
+    total_before: Number(wire.total_before) || 0,
+    total_after: Number(wire.total_after) || 0,
+    deleted: Number(wire.deleted) || 0,
   };
 }
 

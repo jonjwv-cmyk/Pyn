@@ -15,9 +15,12 @@ import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
  */
 export function FlowOrderUploadButton({
   onRunningChange,
+  blocked = false,
 }: {
-  /** Сообщает родителю (FlowScreen) о старте/завершении прогона — для окна-блокировки. */
+  /** Сообщает родителю (FlowScreen) о старте/завершении прогона — для индикатора/блокировки листа. */
   onRunningChange?: (running: boolean) => void;
+  /** Кто-то ДРУГОЙ уже гонит выгрузку (общий lock) — кнопка заблокирована, параллельно нельзя. */
+  blocked?: boolean;
 } = {}): JSX.Element {
   const { t } = useTranslation();
   const { files } = useTablesRegistry();
@@ -73,7 +76,9 @@ export function FlowOrderUploadButton({
         return;
       }
       const r = await flowImport(api, rows, startedAt);
-      setMsg(`Готово: +${r.inserted} нов · ${r.updated} правок · ${r.off} снято`);
+      setMsg(
+        `Готово: было ${r.total_before} → стало ${r.total_after} · +${r.inserted} нов · ${r.deleted} удал · ${r.off} OFF`,
+      );
     } catch (e) {
       setMsg(`Ошибка: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
     } finally {
@@ -83,7 +88,7 @@ export function FlowOrderUploadButton({
   };
 
   const onClick = (): void => {
-    if (!found || busy) return;
+    if (!found || busy || blocked) return;
     if (found.action.requiresPassword) setPwOpen(true);
     else void run();
   };
@@ -94,8 +99,14 @@ export function FlowOrderUploadButton({
       <button
         type="button"
         onClick={onClick}
-        disabled={!found || busy}
-        title={found ? 'Выгрузить заказы из SAP в формирование' : 'Действие выгрузки не найдено в реестре «Таблиц»'}
+        disabled={!found || busy || blocked}
+        title={
+          blocked
+            ? 'Идёт выгрузка заказов (другой пользователь)'
+            : found
+              ? 'Выгрузить заказы из SAP в формирование'
+              : 'Действие выгрузки не найдено в реестре «Таблиц»'
+        }
         className="no-drag-region flex h-6 items-center gap-1.5 rounded-md border border-border-subtle px-2 text-[12px] text-text-secondary outline-none transition-colors hover:border-border-default hover:text-text-strong disabled:opacity-50"
       >
         {busy ? (

@@ -6,9 +6,10 @@ import { cn } from '@/lib/cn';
 import { useEditLock } from '@/lib/schedule/use-edit-lock';
 import { useWsEvent } from '@/lib/ws';
 import { sessionStore } from '@/lib/token-store';
+import { useUsersStore } from '@/lib/stores';
 import { FlowSandboxGrid } from './FlowSandboxGrid';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
-import { FlowImportLockOverlay, type FlowImportRunner } from './FlowImportLockOverlay';
+import { FlowImportIndicator, type FlowImportRunner } from './FlowImportIndicator';
 
 /** Этапы плана: формирование → план → отчёт (как в Google-процессе). */
 type FlowStage = 'form' | 'plan' | 'report';
@@ -25,6 +26,7 @@ const FLOW_IMPORT_LOCK = 'flow_import:running';
  */
 export function FlowScreen(): JSX.Element {
   const { t } = useTranslation();
+  const users = useUsersStore((s) => s.users);
   const [stage, setStage] = useState<FlowStage>('form');
   // Окно-блокировка на время выгрузки заказов (пароль — у самой кнопки). Инициатор держит
   // общий lock (heartbeat + авто-истечение при зависании); остальные видят, кто запустил.
@@ -48,6 +50,20 @@ export function FlowScreen(): JSX.Element {
   useWsEvent<ScheduleLockReleasedEvent>('schedule_lock_released', (e) => {
     if (e.resource_id === FLOW_IMPORT_LOCK) setRunner(null);
   });
+  // Кто сейчас гонит выгрузку (другой по WS-локу ИЛИ я сам) — для мягкого индикатора;
+  // на время прогона лист «только просмотр» (readOnly), чтобы перезапись не съела правку.
+  const me = users.find((u) => u.login === myLogin);
+  const selfRunner: FlowImportRunner | null = selfRunning
+    ? {
+        login: myLogin,
+        name: me?.fullName || myLogin,
+        avatarUrl: me?.avatarUrl,
+        avatarBlobKey: me?.avatarBlobKey ?? undefined,
+        avatarBlobNonce: me?.avatarBlobNonce ?? undefined,
+      }
+    : null;
+  const activeRunner = runner ?? selfRunner;
+  const importRunning = selfRunning || runner != null;
   return (
     <main className="relative flex flex-1 flex-col overflow-hidden">
       <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
@@ -62,15 +78,17 @@ export function FlowScreen(): JSX.Element {
           <StageArrow />
           <StageSeg label="Отчёт" active={stage === 'report'} disabled onClick={() => setStage('report')} />
         </div>
-        {/* Контекстная кнопка текущего этапа. */}
+        {/* Мягкий индикатор выгрузки (кто запустил) + контекстная кнопка этапа. */}
         <div className="no-drag-region ml-auto flex items-center gap-2">
-          {stage === 'form' && <FlowOrderUploadButton onRunningChange={setSelfRunning} />}
+          {activeRunner && <FlowImportIndicator runner={activeRunner} />}
+          {stage === 'form' && (
+            <FlowOrderUploadButton onRunningChange={setSelfRunning} blocked={runner != null} />
+          )}
         </div>
       </div>
       <WorkspaceCard>
-        {stage === 'form' ? <FlowSandboxGrid /> : <StagePlaceholder stage={stage} />}
+        {stage === 'form' ? <FlowSandboxGrid readOnly={importRunning} /> : <StagePlaceholder stage={stage} />}
       </WorkspaceCard>
-      {runner && <FlowImportLockOverlay runner={runner} />}
     </main>
   );
 }
