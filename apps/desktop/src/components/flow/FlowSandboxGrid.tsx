@@ -35,11 +35,13 @@ import {
   flowWorkflowGet,
   flowWorkflowEdit,
   flowWorkflowDelete,
+  flowDeliveriesGet,
   flowPlanMonthGet,
   flowPlanMonthSet,
   flowViewGet,
   flowViewSet,
   type FlowChangedEvent,
+  type FlowDeliveriesChangedEvent,
   type FlowPlanMonth,
   type FlowPlanMonthChangedEvent,
   type FlowViewChangedEvent,
@@ -1365,6 +1367,42 @@ export function FlowSandboxGrid(): JSX.Element {
     return changed ? next : rows;
   }, [rows, whById, planMeta, vghByKey, statMetaById]);
 
+  // «Формирование = только позиции БЕЗ активной поставки» (модель якорь+поставки):
+  // позиция, попавшая в план («Сформировать план» / ручная вставка), из формирования
+  // исчезает — это ВИД, строка-якорь не удаляется. Удалили поставку (резерв) →
+  // позиция возвращается. Держим карту id поставки → якорь `ord|it` (реалтайм).
+  const [dlvAnchorById, setDlvAnchorById] = useState<Map<number, string>>(() => new Map());
+  useEffect(() => {
+    let alive = true;
+    void flowDeliveriesGet(api)
+      .then((dlv) => {
+        if (!alive) return;
+        setDlvAnchorById(new Map(dlv.map((d) => [d.id, `${d.ord}|${d.it}`] as const)));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+  useWsEvent<FlowDeliveriesChangedEvent>('flow_deliveries_changed', (e) => {
+    setDlvAnchorById((prev) => {
+      const next = new Map(prev);
+      for (const id of Array.isArray(e.deleted) ? e.deleted : []) next.delete(Number(id));
+      for (const r of Array.isArray(e.rows) ? e.rows : []) {
+        const id = Number(r.id);
+        if (Number((r as { reserved?: number }).reserved) === 1) next.delete(id);
+        else next.set(id, `${String((r as { ord?: unknown }).ord ?? '')}|${String((r as { it?: unknown }).it ?? '')}`);
+      }
+      return next;
+    });
+  });
+  const activeDlvAnchors = useMemo(() => new Set(dlvAnchorById.values()), [dlvAnchorById]);
+  // Видимые строки формирования: без позиций с активной поставкой (они в Плане).
+  const visibleRows = useMemo<FlowSandboxRow[]>(() => {
+    if (activeDlvAnchors.size === 0) return liveRows;
+    return liveRows.filter((r) => !activeDlvAnchors.has(`${r.ord}|${r.it}`));
+  }, [liveRows, activeDlvAnchors]);
+
   // Допустимые РУЧНЫЕ значения STAT по строке (для пунктов выпадашки И валидации в applyEdits).
   // Универсальные маркеры (вопрос/самовывоз/отказ/неликвиды) — на любой строке. «заявка» руками —
   // только на строках БЕЗ авто-правила (не 9002 / не масловоз/прекурсор): на авто-строках ярлык
@@ -1409,8 +1447,8 @@ export function FlowSandboxGrid(): JSX.Element {
           if (i >= 0) ordRestricted.add(k.slice(0, i));
         }
       }
-      if (active.length === 0 && matActive.length === 0 && !ordActive) return liveRows;
-      return liveRows.filter(
+      if (active.length === 0 && matActive.length === 0 && !ordActive) return visibleRows;
+      return visibleRows.filter(
         (row) =>
           active.every(({ spec, f }) => {
             const v = flowFilterText(spec, row);
@@ -1432,7 +1470,7 @@ export function FlowSandboxGrid(): JSX.Element {
                 ordFilter.positions.has(`${row.ord ?? ''}|${row.it ?? ''}`)))),
       );
     },
-    [liveRows, filters, matFilter, ordFilter],
+    [visibleRows, filters, matFilter, ordFilter],
   );
 
   // АКТУАЛЬНЫЙ порядок (живой пересорт на каждое изменение) — эталон для кнопки
@@ -1446,7 +1484,7 @@ export function FlowSandboxGrid(): JSX.Element {
         .map((lv) => ({ spec: FLOW_COLUMNS.find((c) => c.id === lv.colId), dir: lv.dir }))
         .filter((x): x is { spec: FlowColumnSpec; dir: 'asc' | 'desc' } => x.spec !== undefined);
       if (levels.length > 0) {
-        const base = out === liveRows ? out.slice() : out;
+        const base = out === visibleRows ? out.slice() : out;
         base.sort((a, b) => {
           for (const { spec, dir } of levels) {
             const c = compareRows(a, b, spec, dir);
@@ -1461,12 +1499,12 @@ export function FlowSandboxGrid(): JSX.Element {
       // материал MAT → ОТПРАВИТЕЛЬ FR → кол-во QTY), см. defaultSortCompare. «Нет» и каждый
       // (день·кластер) — отдельный блок (разделитель по смене clst). Детерминирован, не
       // зависит от снимочного под-порядка — новые заказы встают на своё место.
-      const base = out === liveRows ? out.slice() : out;
+      const base = out === visibleRows ? out.slice() : out;
       base.sort(defaultSortCompare);
       out = base;
     }
     return out;
-  }, [rowsFiltered, sortLevels, liveRows]);
+  }, [rowsFiltered, sortLevels, visibleRows]);
 
   // ПОКАЗАННЫЙ порядок — замороженный: строки держат места, где были на момент
   // последней пересортировки; правки их не двигают. Новые id (нет в карте порядка)

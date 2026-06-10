@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { CalendarPlus, RefreshCw } from 'lucide-react';
-import { flowPlanForm, flowWorkflowGet } from '@pyn/core';
+import { flowDeliveriesGet, flowPlanForm, flowWorkflowGet } from '@pyn/core';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { MONTH_ABBR_RU } from './flow-sandbox.fixtures';
@@ -25,16 +25,19 @@ export function FlowPlanFormButton(): JSX.Element {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }, []);
 
-  /** Даты из колонки DAY формирования (сколько строк ждёт каждую дату). */
+  /** Даты из колонки DAY формирования (сколько строк ждёт каждую дату).
+   *  Позиции с уже АКТИВНОЙ поставкой не считаем — они в плане, повторно не соберутся. */
   const loadDates = (): void => {
     setDates(null);
     setMsg('');
-    void flowWorkflowGet(api)
-      .then((rows) => {
+    void Promise.all([flowWorkflowGet(api), flowDeliveriesGet(api)])
+      .then(([rows, dlv]) => {
+        const planned = new Set(dlv.map((d) => `${d.ord}|${d.it}`));
         const byDate = new Map<string, number>();
         for (const r of rows) {
           const d = (r.day_wk || '').trim();
           if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+          if (planned.has(`${r.ord}|${r.it}`)) continue;
           byDate.set(d, (byDate.get(d) ?? 0) + 1);
         }
         const list = [...byDate.entries()]
