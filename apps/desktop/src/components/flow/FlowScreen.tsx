@@ -8,6 +8,8 @@ import { useWsEvent } from '@/lib/ws';
 import { sessionStore } from '@/lib/token-store';
 import { useUsersStore } from '@/lib/stores';
 import { FlowSandboxGrid } from './FlowSandboxGrid';
+import { FlowPlanGrid } from './FlowPlanGrid';
+import { FlowPlanFormButton } from './FlowPlanFormButton';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
 import { FlowImportIndicator, type FlowImportRunner } from './FlowImportIndicator';
 
@@ -86,11 +88,11 @@ export function FlowScreen(): JSX.Element {
         <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
           {t('sidebar.nav_flow')}
         </span>
-        {/* Этапы плана. План/Отчёт — заглушки (следующий этап). */}
+        {/* Этапы плана. Отчёт — заглушка (следующий этап). */}
         <div className="no-drag-region ml-1 flex items-center gap-1">
           <StageSeg label="Формирование" active={stage === 'form'} onClick={() => setStage('form')} />
           <StageArrow />
-          <StageSeg label="План" active={stage === 'plan'} disabled onClick={() => setStage('plan')} />
+          <StageSeg label="План" active={stage === 'plan'} onClick={() => setStage('plan')} />
           <StageArrow />
           <StageSeg label="Отчёт" active={stage === 'report'} disabled onClick={() => setStage('report')} />
         </div>
@@ -100,10 +102,17 @@ export function FlowScreen(): JSX.Element {
           {stage === 'form' && (
             <FlowOrderUploadButton onRunningChange={setSelfRunning} blocked={runner != null} />
           )}
+          {stage === 'plan' && <FlowPlanFormButton />}
         </div>
       </div>
       <WorkspaceCard>
-        {stage === 'form' ? <FlowSandboxGrid /> : <StagePlaceholder stage={stage} />}
+        {stage === 'form' ? (
+          <FlowSandboxGrid />
+        ) : stage === 'plan' ? (
+          <FlowPlanGrid />
+        ) : (
+          <StagePlaceholder stage={stage} />
+        )}
       </WorkspaceCard>
     </main>
   );

@@ -54,6 +54,9 @@ export interface FlowSandboxRow {
   created_by: string; // W CREATEDBY — кто создал (GROKHOVSKIJ = авто)
   load_dt: string; // X LOADDT — дата создания заказа
   chg: number | null; // Y CHG — исходное количество
+  approved_by?: string; // «кто согласовал» — поле якоря (правится из любого вида: план/отчёт)
+  off_schedule?: number; // доставка вне графика (0/1)
+  split_level?: number; // уровень дробления поставки (0=основная; 1..3 — отдельные внутри fr+to)
   row_version?: number; // версия строки (оптимистичная блокировка, реалтайм)
 }
 

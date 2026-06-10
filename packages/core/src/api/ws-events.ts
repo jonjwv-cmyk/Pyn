@@ -99,6 +99,11 @@ export const WS_EVENT_TYPES = {
    */
   FLOW_PLAN_MONTH_CHANGED: 'flow_plan_month_changed',
   /**
+   * Раздел «Поток», этап «План» — поставки изменены (сформирован план / правка /
+   * резерв). Сервер шлёт актуальные строки + id скрытых (резерв); клиент применяет по id.
+   */
+  FLOW_DELIVERIES_CHANGED: 'flow_deliveries_changed',
+  /**
    * Раздел «Поток» — изменён ОБЩИЙ вид (фильтры/сортировка/масштаб, flow_view_set).
    * Шлётся всем: клиенты в режиме «Общий» применяют вид и обновляют аватар автора.
    * Чисто UI — строки таблицы не трогает.
@@ -195,6 +200,14 @@ export interface BaseChangedEvent extends WsServerEvent {
  *  опц. id удалённых строк (мусорные/перенесённые OFF при подгрузке). */
 export interface FlowChangedEvent extends WsServerEvent {
   type: 'flow_changed';
+  rows: Array<{ id: number; row_version: number; [key: string]: unknown }>;
+  deleted?: number[];
+}
+
+/** Поставки «Потока» (этап План) изменены — актуальные строки (по id, с row_version) +
+ *  опц. id убранных в резерв (клиент скрывает их из плана). */
+export interface FlowDeliveriesChangedEvent extends WsServerEvent {
+  type: 'flow_deliveries_changed';
   rows: Array<{ id: number; row_version: number; [key: string]: unknown }>;
   deleted?: number[];
 }

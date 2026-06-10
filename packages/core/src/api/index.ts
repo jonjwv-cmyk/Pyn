@@ -19,6 +19,7 @@ export {
   type PresenceChangeEvent,
   type BaseChangedEvent,
   type FlowChangedEvent,
+  type FlowDeliveriesChangedEvent,
   type FlowPlanMonthChangedEvent,
   type FlowViewChangedEvent,
   type VghChangedEvent,
