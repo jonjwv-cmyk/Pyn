@@ -839,6 +839,14 @@ export function FlowSandboxGrid(): JSX.Element {
   });
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
   const [sortLevels, setSortLevels] = useState<SortLevel[]>([]);
+  // «Замороженный» порядок показа: правка строки (смена склада/даты/статуса) НЕ
+  // пересортировывает таблицу сразу — строка остаётся на месте, с ней можно работать
+  // дальше. Пересортировка — явная: кнопка «Сортировка» (или смена уровней сортировки
+  // в меню колонки / применение вида). null — порядок не зафиксирован (захватим из
+  // ближайшего полного сорта). Новые строки (выгрузка/чужие вставки) встают в СВОЙ
+  // блок (рядом с тем же соседом, что и при живом сорте), не дёргая остальных.
+  const orderMapRef = useRef<Map<number, number> | null>(null);
+  const [orderEpoch, setOrderEpoch] = useState(0);
   const [filters, setFilters] = useState<Record<string, ColumnFilter>>({});
   // «Умный» фильтр MAT: отдельные под-фильтры по скрытым полям материала (название/
   // создал/даты/тех-имя), условия объединяются И. Вне общего `filters` — там свой UI.
@@ -923,6 +931,7 @@ export function FlowSandboxGrid(): JSX.Element {
   const applyFlowView = useCallback((state: FlowViewState) => {
     const live = deserializeFlowView(state);
     lastViewJsonRef.current = canonicalFlowViewJson(serializeFlowView(live));
+    orderMapRef.current = null; // вид задаёт сортировку явно → применяем свежий порядок
     setFilters(live.filters);
     setMatFilter(live.matFilter);
     setOrdFilter(live.ordFilter);
@@ -1426,7 +1435,10 @@ export function FlowSandboxGrid(): JSX.Element {
     [liveRows, filters, matFilter, ordFilter],
   );
 
-  const viewRows = useMemo<FlowSandboxRow[]>(() => {
+  // АКТУАЛЬНЫЙ порядок (живой пересорт на каждое изменение) — эталон для кнопки
+  // «Сортировка» и вставки новых строк. Показ идёт через viewRows (замороженный
+  // порядок) ниже — чтобы правка не «уносила» строку из-под рук.
+  const sortedRows = useMemo<FlowSandboxRow[]>(() => {
     let out: FlowSandboxRow[] = rowsFiltered();
     // Умная сортировка: уровни в порядке выбора (первый — главный ключ, далее вторичные).
     if (sortLevels.length > 0) {
@@ -1455,6 +1467,62 @@ export function FlowSandboxGrid(): JSX.Element {
     }
     return out;
   }, [rowsFiltered, sortLevels, liveRows]);
+
+  // ПОКАЗАННЫЙ порядок — замороженный: строки держат места, где были на момент
+  // последней пересортировки; правки их не двигают. Новые id (нет в карте порядка)
+  // встают рядом с тем же «соседом сверху-снизу», что и при живом сорте — выгрузка
+  // раскладывает новые заказы по своим блокам, не трогая остальных.
+  const viewRows = useMemo<FlowSandboxRow[]>(() => {
+    void orderEpoch; // зависимость: «Сортировка» сбрасывает карту и форсит пересбор
+    const om = orderMapRef.current;
+    if (!om) {
+      orderMapRef.current = new Map(sortedRows.map((r, i) => [r.id, i]));
+      return sortedRows;
+    }
+    const known: FlowSandboxRow[] = [];
+    // Новые строки группируем по якорю — ИЗВЕСТНОМУ соседу, идущему сразу ПОСЛЕ них
+    // в актуальном порядке; хвост без якоря — в конец.
+    const beforeAnchor = new Map<number, FlowSandboxRow[]>();
+    const tail: FlowSandboxRow[] = [];
+    let pending: FlowSandboxRow[] = [];
+    for (const r of sortedRows) {
+      if (om.has(r.id)) {
+        known.push(r);
+        if (pending.length > 0) {
+          beforeAnchor.set(r.id, pending);
+          pending = [];
+        }
+      } else pending.push(r);
+    }
+    if (pending.length > 0) tail.push(...pending);
+    known.sort((a, b) => (om.get(a.id) ?? 0) - (om.get(b.id) ?? 0));
+    if (beforeAnchor.size === 0 && tail.length === 0) return known;
+    const out: FlowSandboxRow[] = [];
+    for (const r of known) {
+      const pre = beforeAnchor.get(r.id);
+      if (pre) out.push(...pre);
+      out.push(r);
+    }
+    out.push(...tail);
+    return out;
+  }, [sortedRows, orderEpoch]);
+
+  // Порядок «устарел» (показ ≠ актуальный сорт) → кнопка «Сортировка» подсвечивается.
+  const orderStale = useMemo(() => {
+    if (viewRows === sortedRows || viewRows.length !== sortedRows.length) return viewRows !== sortedRows;
+    for (let i = 0; i < viewRows.length; i++) {
+      if (viewRows[i]?.id !== sortedRows[i]?.id) return true;
+    }
+    return false;
+  }, [viewRows, sortedRows]);
+
+  /** Явная пересортировка (кнопка «Сортировка»): применить актуальный порядок и
+   *  зафиксировать его как новый замороженный. */
+  const applySortNow = useCallback(() => {
+    orderMapRef.current = null;
+    setOrderEpoch((e) => e + 1);
+    setSelection(emptySelection());
+  }, []);
 
   // Активен ли «умный» фильтр MAT (любое под-поле) — для индикатора заголовка + funnel.
   const matFilterActive = useMemo(
@@ -2529,6 +2597,7 @@ export function FlowSandboxGrid(): JSX.Element {
   /** Задать сортировку колонки: если колонка уже в списке — меняем её направление
    *  (позиция/приоритет сохраняется), иначе добавляем В КОНЕЦ (станет следующим ключом). */
   const applyColumnSort = useCallback((colId: string, dir: 'asc' | 'desc') => {
+    orderMapRef.current = null; // явная смена сортировки → свежий порядок сразу
     setSortLevels((prev) => {
       const idx = prev.findIndex((l) => l.colId === colId);
       if (idx >= 0) {
@@ -2542,11 +2611,13 @@ export function FlowSandboxGrid(): JSX.Element {
   }, []);
   /** Убрать сортировку конкретной колонки (остальные уровни сохраняются). */
   const clearColumnSort = useCallback((colId: string) => {
+    orderMapRef.current = null;
     setSortLevels((prev) => prev.filter((l) => l.colId !== colId));
     setSelection(emptySelection());
   }, []);
-  /** Сбросить ВСЮ умную сортировку — возврат к исходному порядку (кнопка в панели). */
+  /** Сбросить ВСЮ умную сортировку — возврат к порядку WF_SORT (кнопка «×» в панели). */
   const clearAllSorts = useCallback(() => {
+    orderMapRef.current = null;
     setSortLevels([]);
     setSelection(emptySelection());
   }, []);
@@ -3104,26 +3175,47 @@ export function FlowSandboxGrid(): JSX.Element {
           replaceResult={replaceResult}
           dimmed={searchDimmed}
         />
-        {/* Умная сортировка: копится из сорта по колонкам/заказам в порядке выбора.
-            Кнопка светится, пока сортировка активна; клик — СБРОС к исходному порядку. */}
-        <button
-          type="button"
-          onClick={clearAllSorts}
-          disabled={sortLevels.length === 0}
-          title={
-            sortLevels.length > 0
-              ? `Сортировка: ${sortSummary} — нажмите, чтобы сбросить`
-              : 'Сортировка — задаётся в меню колонки / фильтре заказов'
-          }
-          className={`flex h-6 items-center gap-1 rounded-md border px-1.5 text-[12px] transition-all ${
-            sortLevels.length > 0
-              ? 'border-accent-clay/70 text-[#0A0A0A] shadow-[0_0_7px_rgba(217,119,87,0.45)]'
-              : 'cursor-default border-black/10 text-[#6B6862]/45'
-          }`}
-        >
-          <ArrowDownUp size={13} strokeWidth={1.75} />
-          Сортировка
-        </button>
+        {/* «Сортировка» = применить актуальный порядок. Правки строк таблицу НЕ
+            пересортировывают (строка остаётся под руками); когда показ разошёлся с
+            актуальным сортом — кнопка горит янтарным. «×» рядом — сброс умной
+            сортировки (уровни из меню колонок) к порядку WF_SORT. */}
+        <div className="flex items-center">
+          <button
+            type="button"
+            onClick={applySortNow}
+            title={
+              orderStale
+                ? `Есть строки не на своих местах — нажмите, чтобы пересортировать${
+                    sortLevels.length > 0 ? `\nСортировка: ${sortSummary}` : ''
+                  }`
+                : sortLevels.length > 0
+                  ? `Порядок актуален. Сортировка: ${sortSummary}`
+                  : 'Порядок актуален (WF_SORT). Правки не двигают строки до нажатия'
+            }
+            className={`flex h-6 items-center gap-1 rounded-md border px-1.5 text-[12px] transition-all ${
+              orderStale
+                ? 'border-[#C2620E]/70 text-[#0A0A0A] shadow-[0_0_8px_rgba(194,98,14,0.5)]'
+                : sortLevels.length > 0
+                  ? 'border-accent-clay/70 text-[#0A0A0A]'
+                  : 'border-black/10 text-[#6B6862]'
+            } ${sortLevels.length > 0 ? 'rounded-r-none border-r-0' : ''}`}
+          >
+            <ArrowDownUp size={13} strokeWidth={1.75} />
+            Сортировка
+          </button>
+          {sortLevels.length > 0 && (
+            <button
+              type="button"
+              onClick={clearAllSorts}
+              title={`Сбросить умную сортировку (${sortSummary}) — вернуть порядок WF_SORT`}
+              className={`flex h-6 w-5 items-center justify-center rounded-r-md border text-[12px] text-[#6B6862] transition-colors hover:text-danger ${
+                orderStale ? 'border-[#C2620E]/70' : 'border-accent-clay/70'
+              }`}
+            >
+              ×
+            </button>
+          )}
+        </div>
         {/* Месяц ФОРМИРОВАНИЯ — общий для всех (сервер помнит, реалтайм). По нему
             считается CLST. Смена под паролем (как «скрипты»); рядом аватар того,
             кто выбрал; нельзя прошлый месяц и месяц без «дней без доставки». */}
