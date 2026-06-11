@@ -13,6 +13,8 @@ import {
 import { Trash2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
+import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
+import { useWarehousesStore } from '@/lib/warehouses-store';
 import {
   flowDeliveriesGet,
   flowDeliveriesEdit,
@@ -52,11 +54,13 @@ interface PlanColSpec {
 
 const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'date', title: 'ДАТА', width: 78 },
+  { id: 'fix', title: 'ФИКС', width: 60 },
   { id: 'dlv', title: 'ПОСТАВКА', width: 112 },
   { id: 'trz', title: 'ТЗ', width: 86, editable: true },
   { id: 'order', title: 'ЗАКАЗ', width: 112 },
   { id: 'fr', title: 'FR', width: 52 },
   { id: 'to', title: 'СП', width: 52 },
+  { id: 'clst', title: 'CLST', width: 86 },
   { id: 'mol', title: 'МОЛ', width: 150 },
   { id: 'approved', title: 'СОГЛАСОВАЛ', width: 130, editable: true },
   { id: 'mat', title: 'МАТЕРИАЛ', width: 280 },
@@ -71,6 +75,37 @@ const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'note', title: 'КОММЕНТАРИЙ', width: 230 },
   { id: 'flag', title: 'ПРОВЕРКА', width: 92 },
 ];
+
+/** Отчёт — те же поставки, но только зафиксированные + отметки выполнения. */
+const REPORT_COLS: readonly PlanColSpec[] = [
+  { id: 'date', title: 'ДАТА', width: 78 },
+  { id: 'fix', title: 'ФИКС', width: 60 },
+  { id: 'dlv', title: 'ПОСТАВКА', width: 112 },
+  { id: 'order', title: 'ЗАКАЗ', width: 112 },
+  { id: 'fr', title: 'FR', width: 52 },
+  { id: 'to', title: 'СП', width: 52 },
+  { id: 'clst', title: 'CLST', width: 86 },
+  { id: 'mol', title: 'МОЛ', width: 150 },
+  { id: 'mat', title: 'МАТЕРИАЛ', width: 280 },
+  { id: 'uom', title: 'ЕИ', width: 42 },
+  { id: 'qty', title: 'КОЛ-ВО', width: 86 },
+  { id: 'kg', title: 'КГ', width: 86 },
+  { id: 'v', title: 'V', width: 64 },
+  { id: 'exp1', title: 'ЭКСП. 1', width: 118, editable: true },
+  { id: 'exp2', title: 'ЭКСП. 2', width: 118, editable: true },
+  { id: 'vehicle', title: 'МАШИНА', width: 104, editable: true },
+  { id: 'ride', title: 'ID', width: 58, editable: true },
+  { id: 'done', title: 'СТАТУС ВЫП.', width: 100, editable: true },
+  { id: 'reason', title: 'ПРИЧИНА', width: 130, editable: true },
+  { id: 'note', title: 'КОММЕНТАРИЙ', width: 230 },
+  { id: 'flag', title: 'ПРОВЕРКА', width: 92 },
+];
+
+/** Причины невывоза (ТЗ §5.1) — зеркало серверного списка. */
+const FAIL_REASONS = ['нет на складе', 'мало', 'брак', 'приёмка', 'входной контроль',
+  'отказ цеха', 'перенос', 'нет МОЛа', 'иное'] as const;
+
+const PLAN_RENDERERS = [flowDropdownRenderer];
 
 /** Дата плана YYYY-MM-DD → «12 июня» (короткий показ в колонке). */
 function fmtPlanDate(s: string): string {
@@ -91,7 +126,8 @@ function parseQty(raw: string): number | null {
 let planDlvCache: FlowDeliveryRow[] | null = null;
 let planAnchorsCache: FlowRow[] | null = null;
 
-export function FlowPlanGrid(): JSX.Element {
+export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): JSX.Element {
+  const COLS = mode === 'report' ? REPORT_COLS : PLAN_COLS;
   const [rows, setRows] = useState<FlowDeliveryRow[]>(() => planDlvCache ?? []);
   const [anchors, setAnchors] = useState<FlowRow[]>(() => planAnchorsCache ?? []);
   const [loading, setLoading] = useState(() => planDlvCache === null);
@@ -101,6 +137,8 @@ export function FlowPlanGrid(): JSX.Element {
   });
   const [msg, setMsg] = useState('');
 
+  // CLST: кластер/день доставки склада-получателя из живой базы складов.
+  const whById = useWarehousesStore((st) => st.byId);
   // База ВГХ — живые КГ/V (КГ = кол-во × вес на 1 ЕИ; V = кол-во × объём).
   const vghByKey = useVghStore((s) => s.byKey);
   useEffect(() => {
@@ -179,17 +217,20 @@ export function FlowPlanGrid(): JSX.Element {
   }, [anchors]);
 
   // Порядок показа: день плана → группа сборки → номер поставки → материал.
+  // Отчёт — только ЗАФИКСИРОВАННЫЕ строки, свежий день СВЕРХУ (работают по дню).
   const viewRows = useMemo(() => {
-    const out = rows.slice();
+    const out = (mode === 'report' ? rows.filter((r) => Number(r.fixation_id) > 0) : rows.slice());
     out.sort(
       (a, b) =>
-        (a.plan_date || '').localeCompare(b.plan_date || '') ||
+        (mode === 'report'
+          ? (b.plan_date || '').localeCompare(a.plan_date || '')
+          : (a.plan_date || '').localeCompare(b.plan_date || '')) ||
         (a.grp || '').localeCompare(b.grp || '', 'ru') ||
         (a.dlv || '').localeCompare(b.dlv || '') ||
         (a.mat || '').localeCompare(b.mat || '', 'ru'),
     );
     return out;
-  }, [rows]);
+  }, [rows, mode]);
 
   // Проверка ошибок (эталон buildPlanDupGh_ / buildPlanAggByG_): по SAP-номерам.
   const flagById = useMemo(() => {
@@ -231,8 +272,8 @@ export function FlowPlanGrid(): JSX.Element {
   }, [rows]);
 
   const columns = useMemo<GridColumn[]>(
-    () => PLAN_COLS.map((c) => ({ id: c.id, title: c.title, width: c.width })),
-    [],
+    () => COLS.map((c) => ({ id: c.id, title: c.title, width: c.width })),
+    [COLS],
   );
 
   const cellText = useCallback(
@@ -241,6 +282,20 @@ export function FlowPlanGrid(): JSX.Element {
       switch (spec.id) {
         case 'date':
           return fmtPlanDate(r.plan_date);
+        case 'fix': {
+          const b = Number(r.batch_seq) || 0;
+          return b === 0 ? '' : b === 1 ? 'план' : `доп ${b}`;
+        }
+        case 'clst': {
+          const wh = whById.get(r.to_wh);
+          const day = wh && Number(wh.in_schedule) === 1 ? wh.delivery_day : null;
+          if (!day) return 'Нет';
+          return wh?.cluster === 'ВЫЕЗД' || wh?.cluster === 'КХП' ? `${day} ${wh.cluster}` : day;
+        }
+        case 'done':
+          return r.done_stat || '';
+        case 'reason':
+          return r.fail_reason || '';
         case 'dlv':
           return (r.dlv || '').trim() ? `${r.dlv}${(r.dlv_pos || '').trim() ? `|${r.dlv_pos}` : ''}` : 'черновик';
         case 'trz':
@@ -287,15 +342,29 @@ export function FlowPlanGrid(): JSX.Element {
           return '';
       }
     },
-    [anchorByKey, vghByKey, flagById],
+    [anchorByKey, vghByKey, flagById, whById],
   );
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
-      const spec = PLAN_COLS[col];
+      const spec = COLS[col];
       const r = viewRows[row];
       if (!spec || !r) {
         return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
+      }
+      if (spec.id === 'done' || spec.id === 'reason') {
+        // Отметки отчёта — выпадашки (ТЗ §5.1): статус вып. + причина невывоза.
+        const cell: FlowDropdownCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: true,
+          copyData: spec.id === 'done' ? r.done_stat || '' : r.fail_reason || '',
+          data: {
+            kind: 'flow-dropdown',
+            value: spec.id === 'done' ? r.done_stat || '' : r.fail_reason || '',
+            options: spec.id === 'done' ? ['', 'увезли', 'не увезли'] : ['', ...FAIL_REASONS],
+          },
+        };
+        return cell;
       }
       const text = cellText(spec, r);
       const editable = !!spec.editable;
@@ -308,7 +377,7 @@ export function FlowPlanGrid(): JSX.Element {
         contentAlign: spec.id === 'qty' || spec.id === 'kg' || spec.id === 'v' ? 'right' : 'left',
       };
     },
-    [viewRows, cellText],
+    [viewRows, cellText, COLS],
   );
 
   /** Применить серверные строки поставок (ответ правки/конфликта). */
@@ -329,9 +398,37 @@ export function FlowPlanGrid(): JSX.Element {
   const onCellEdited = useCallback(
     (cell: Item, newValue: EditableGridCell) => {
       const [col, row] = cell;
-      const spec = PLAN_COLS[col];
+      const spec = COLS[col];
       const r = viewRows[row];
-      if (!spec || !r || !spec.editable || newValue.kind !== GridCellKind.Text) return;
+      if (!spec || !r || !spec.editable) return;
+      // Отметки отчёта приходят из выпадашки (custom cell).
+      if (newValue.kind === GridCellKind.Custom) {
+        const d = (newValue as FlowDropdownCell).data;
+        if (!d || d.kind !== 'flow-dropdown') return;
+        const v = d.value;
+        const fields: Record<string, string | number | null> = {};
+        if (spec.id === 'done') {
+          fields.done_stat = v;
+          if (v !== 'не увезли' && r.fail_reason) fields.fail_reason = ''; // причина только при «не увезли»
+        } else if (spec.id === 'reason') {
+          if (v && r.done_stat !== 'не увезли') {
+            setMsg('Причина — только при статусе «не увезли»');
+            return;
+          }
+          fields.fail_reason = v;
+        } else return;
+        setMsg('');
+        setRows((prev) => {
+          const next = prev.map((x) => (x.id === r.id ? ({ ...x, ...fields } as FlowDeliveryRow) : x));
+          planDlvCache = next;
+          return next;
+        });
+        void flowDeliveriesEdit(api, [{ id: r.id, row_version: r.row_version, fields }]).then((res) =>
+          applyServerDlv(res.rows),
+        );
+        return;
+      }
+      if (newValue.kind !== GridCellKind.Text) return;
       const raw = String(newValue.data ?? '').trim();
 
       if (spec.id === 'approved') {
@@ -365,6 +462,10 @@ export function FlowPlanGrid(): JSX.Element {
       // Поля самой поставки. Кол-во валидируем ДО оптимистичного показа.
       const fields: Record<string, string | number | null> = {};
       if (spec.id === 'qty') {
+        if (Number(r.fixation_id) > 0) {
+          setMsg('Состав зафиксирован — кол-во не меняется (свободны машина/экспедиторы/ID)');
+          return;
+        }
         const n = raw === '' ? null : parseQty(raw);
         if (raw !== '' && (n == null || n < 0)) {
           setMsg(`«${raw}» — не число`);
@@ -401,13 +502,42 @@ export function FlowPlanGrid(): JSX.Element {
       const flag = flagById.get(r.id) ?? '';
       if (flag === 'ERROR') return { bgCell: '#FBE3E0', textDark: '#8A1F11' };
       if (flag === 'DUPLICATE') return { bgCell: '#FCEFD9', textDark: '#7A4B0F' };
+      if (mode === 'report') {
+        if (r.done_stat === 'увезли') return { bgCell: '#EAF5EA' };
+        if (r.done_stat === 'не увезли') return { bgCell: '#FBEAE7' };
+      }
       if (!(r.dlv || '').trim()) return { textDark: '#5A5752' };
       return undefined;
     },
-    [viewRows, flagById],
+    [viewRows, flagById, mode],
   );
 
   const selectedCount = selection.rows.length;
+  /** Массовая отметка отчёта (ТЗ §5.1): одно значение на все выделенные строки,
+   *  БЕЗ привязки к складу — выбрал → протянулось. Причина чистится при «увезли». */
+  const massMark = useCallback(
+    (done: 'увезли' | 'не увезли', reason: string) => {
+      const targets: FlowDeliveryRow[] = [];
+      for (const idx of selection.rows) {
+        const r = viewRows[idx];
+        if (r) targets.push(r);
+      }
+      if (targets.length === 0) return;
+      setMsg('');
+      const fields = { done_stat: done, fail_reason: done === 'не увезли' ? reason : '' };
+      setRows((prev) => {
+        const ids = new Set(targets.map((t) => t.id));
+        const next = prev.map((x) => (ids.has(x.id) ? ({ ...x, ...fields } as FlowDeliveryRow) : x));
+        planDlvCache = next;
+        return next;
+      });
+      void flowDeliveriesEdit(
+        api,
+        targets.map((t) => ({ id: t.id, row_version: t.row_version, fields })),
+      ).then((res) => applyServerDlv(res.rows));
+    },
+    [selection, viewRows, applyServerDlv],
+  );
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];
     for (const idx of selection.rows) {
@@ -450,14 +580,48 @@ export function FlowPlanGrid(): JSX.Element {
           {draftCount > 0 ? ` · черновиков ${draftCount}` : ''}
         </span>
         <span className="text-[#6B6862]/60">
-          МОЛ · согласовал · комментарий — с позиции формирования (общие для всех видов)
+          {mode === 'report'
+            ? 'Отчёт — зафиксированные поставки: отметьте «увезли / не увезли» (+причина)'
+            : 'МОЛ · согласовал · комментарий — с позиции формирования (общие для всех видов)'}
         </span>
         {msg && (
           <span className="max-w-[300px] truncate text-[11px] text-danger" title={msg}>
             {msg}
           </span>
         )}
-        {selectedCount > 0 && (
+        {selectedCount > 0 && mode === 'report' && (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
+            <button
+              type="button"
+              onClick={() => massMark('увезли', '')}
+              className="rounded-md border border-black/10 px-2 py-0.5 text-[#1F7A33] transition-colors hover:border-[#1F7A33]/50"
+            >
+              Увезли
+            </button>
+            <select
+              defaultValue=""
+              onChange={(e) => {
+                if (e.target.value) {
+                  massMark('не увезли', e.target.value);
+                  e.target.value = '';
+                }
+              }}
+              className="h-6 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#8A1F11] outline-none"
+              title="Не увезли — выбрать причину и протянуть на все выделенные"
+            >
+              <option value="" disabled>
+                Не увезли…
+              </option>
+              {FAIL_REASONS.map((fr) => (
+                <option key={fr} value={fr}>
+                  {fr}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {selectedCount > 0 && mode === 'plan' && (
           <div className="ml-auto flex items-center gap-2">
             <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
             <button
@@ -478,11 +642,15 @@ export function FlowPlanGrid(): JSX.Element {
             Загрузка плана…
           </div>
         )}
-        {!loading && rows.length === 0 && (
+        {!loading && viewRows.length === 0 && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-[13px] text-[#6B6862]">
-            <span className="text-[14px] font-medium text-[#2A2925]">План пуст</span>
+            <span className="text-[14px] font-medium text-[#2A2925]">
+              {mode === 'report' ? 'Отчёт пуст' : 'План пуст'}
+            </span>
             <span>
-              Проставьте даты в колонке DAY формирования и нажмите «Сформировать план».
+              {mode === 'report'
+                ? 'Зафиксируйте план на день (кнопка «Зафиксировать» на этапе План).'
+                : 'Проставьте даты в колонке DAY формирования и нажмите «Сформировать план».'}
             </span>
           </div>
         )}
@@ -498,6 +666,7 @@ export function FlowPlanGrid(): JSX.Element {
             gridSelection={selection}
             onGridSelectionChange={setSelection}
             getRowThemeOverride={getRowThemeOverride}
+            customRenderers={PLAN_RENDERERS}
             getCellsForSelection
             rowMarkers="none"
             freezeColumns={2}

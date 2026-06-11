@@ -117,6 +117,27 @@ export interface FlowPlanFormResult {
 }
 
 /**
+ * «Зафиксировать» план на день: замораживает состав (первая фиксация даты =
+ * батч 1 «план», повторные = 2+ «дополнение»). После — свободны только
+ * машина/экспедиторы/ID и отметки отчёта. Ошибка `nothing_to_fix` — на дате
+ * нет незафиксированных строк.
+ */
+export async function flowPlanFix(
+  client: ApiClient,
+  date: string,
+): Promise<{ fixationId: number; batchSeq: number; fixed: number }> {
+  const wire = await client.call<{ fixation_id?: number; batch_seq?: number; fixed?: number }>(
+    'flow_plan_fix',
+    { date },
+  );
+  return {
+    fixationId: Number(wire.fixation_id) || 0,
+    batchSeq: Number(wire.batch_seq) || 0,
+    fixed: Number(wire.fixed) || 0,
+  };
+}
+
+/**
  * «Сформировать план»: собрать строки формирования с day_wk = date → черновые
  * поставки (группировка отправитель+получатель+уровень). Дата — только сегодня
  * или будущее; ошибки: `invalid_date` / `date_in_past`.

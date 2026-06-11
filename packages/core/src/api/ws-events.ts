@@ -103,6 +103,8 @@ export const WS_EVENT_TYPES = {
    * резерв). Сервер шлёт актуальные строки + id скрытых (резерв); клиент применяет по id.
    */
   FLOW_DELIVERIES_CHANGED: 'flow_deliveries_changed',
+  /** План на день зафиксирован (батч 1 = план, 2+ = дополнение). */
+  FLOW_PLAN_FIXED: 'flow_plan_fixed',
   /**
    * Раздел «Поток», вкладка «Транспорт» — строки «машина на день» изменены
    * (вставка из буфера / правка / добавление / удаление).
@@ -217,6 +219,19 @@ export interface FlowDeliveriesChangedEvent extends WsServerEvent {
   type: 'flow_deliveries_changed';
   rows: Array<{ id: number; row_version: number; [key: string]: unknown }>;
   deleted?: number[];
+}
+
+/** План на день зафиксирован — состав заморожен (строки прилетают отдельным
+ *  flow_deliveries_changed; это событие — для тоста/журнала). */
+export interface FlowPlanFixedEvent extends WsServerEvent {
+  type: 'flow_plan_fixed';
+  date: string;
+  fixation_id: number;
+  batch_seq: number;
+  fixed: number;
+  by: string;
+  by_name: string;
+  at: string;
 }
 
 /** Строки «машина на день» (Транспорт) изменены — актуальные строки + опц. id удалённых. */

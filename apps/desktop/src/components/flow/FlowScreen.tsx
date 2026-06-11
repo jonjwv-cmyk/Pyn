@@ -10,6 +10,8 @@ import { useUsersStore } from '@/lib/stores';
 import { FlowSandboxGrid } from './FlowSandboxGrid';
 import { FlowPlanGrid } from './FlowPlanGrid';
 import { FlowPlanFormButton } from './FlowPlanFormButton';
+import { FlowPlanFixButton } from './FlowPlanFixButton';
+import { FlowZmVlButton } from './FlowZmVlButton';
 import { FlowTransportGrid } from './FlowTransportGrid';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
 import { FlowImportIndicator, type FlowImportRunner } from './FlowImportIndicator';
@@ -97,7 +99,7 @@ export function FlowScreen(): JSX.Element {
           <StageArrow />
           <StageSeg label="Транспорт" active={stage === 'transport'} onClick={() => setStage('transport')} />
           <StageArrow />
-          <StageSeg label="Отчёт" active={stage === 'report'} disabled onClick={() => setStage('report')} />
+          <StageSeg label="Отчёт" active={stage === 'report'} onClick={() => setStage('report')} />
         </div>
         {/* Мягкий индикатор выгрузки (кто запустил) + контекстная кнопка этапа. */}
         <div className="no-drag-region ml-auto flex items-center gap-2">
@@ -105,7 +107,13 @@ export function FlowScreen(): JSX.Element {
           {stage === 'form' && (
             <FlowOrderUploadButton onRunningChange={setSelfRunning} blocked={runner != null} />
           )}
-          {stage === 'plan' && <FlowPlanFormButton />}
+          {stage === 'plan' && (
+            <>
+              <FlowPlanFormButton />
+              <FlowPlanFixButton />
+            </>
+          )}
+          {stage === 'report' && <FlowZmVlButton />}
         </div>
       </div>
       <WorkspaceCard>
@@ -116,7 +124,7 @@ export function FlowScreen(): JSX.Element {
         ) : stage === 'transport' ? (
           <FlowTransportGrid />
         ) : (
-          <StagePlaceholder stage={stage} />
+          <FlowPlanGrid mode="report" />
         )}
       </WorkspaceCard>
     </main>

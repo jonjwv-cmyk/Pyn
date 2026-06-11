@@ -248,6 +248,7 @@ export {
   flowDeliveriesEdit,
   flowDeliveriesDelete,
   flowPlanForm,
+  flowPlanFix,
   type FlowDeliveryRow,
   type FlowDeliveryEdit,
   type FlowPlanFormResult,
