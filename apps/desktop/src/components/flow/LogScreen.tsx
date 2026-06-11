@@ -1,6 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { flowImportRunsGet, type FlowImportRun, type FlowImportLoggedEvent } from '@pyn/core';
+import {
+  flowImportRunsGet,
+  flowScriptRunsGet,
+  type FlowImportRun,
+  type FlowImportLoggedEvent,
+  type FlowScriptRun,
+  type FlowScriptLoggedEvent,
+} from '@pyn/core';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { Avatar } from '@/components/ui/Avatar';
 import { PresenceDot } from '@/components/ui/PresenceDot';
@@ -38,6 +45,7 @@ function fmtDuration(startedAt: string, finishedAt: string): string {
 export function LogScreen(): JSX.Element {
   const { t } = useTranslation();
   const [runs, setRuns] = useState<FlowImportRun[]>([]);
+  const [scriptRuns, setScriptRuns] = useState<FlowScriptRun[]>([]);
   const [loading, setLoading] = useState(true);
   const users = useUsersStore((s) => s.users);
   // Presence — из единого источника (как у всех аватаров): статус-точка на аватаре прогона.
@@ -45,19 +53,48 @@ export function LogScreen(): JSX.Element {
 
   useEffect(() => {
     let alive = true;
-    flowImportRunsGet(api)
-      .then((list) => { if (alive) setRuns(list); })
+    Promise.all([flowImportRunsGet(api), flowScriptRunsGet(api).catch(() => [])])
+      .then(([imp, scr]) => {
+        if (!alive) return;
+        setRuns(imp);
+        setScriptRuns(scr);
+      })
       .catch(() => { /* пусто — покажем 0 записей */ })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []);
 
-  // Реалтайм: завершённый прогон — добавляем сверху (если ещё нет по id).
+  // Реалтайм: завершённый прогон выгрузки — добавляем сверху (если ещё нет по id).
   useWsEvent<FlowImportLoggedEvent>('flow_import_logged', (e) => {
     const run = e.run as unknown as FlowImportRun;
     if (!run || !run.id) return;
     setRuns((prev) => (prev.some((r) => r.id === run.id) ? prev : [run, ...prev]));
   });
+  // Реалтайм: нажата кнопка-скрипт — добавляем строку сверху.
+  useWsEvent<FlowScriptLoggedEvent>('flow_script_logged', (e) => {
+    const w = e.run;
+    if (!w || !w.id) return;
+    const run: FlowScriptRun = {
+      id: Number(w.id), scriptId: String(w.script_id || ''),
+      login: String(w.login || ''), fullName: String(w.full_name || ''), at: String(w.at || ''),
+    };
+    setScriptRuns((prev) => (prev.some((r) => r.id === run.id) ? prev : [run, ...prev]));
+  });
+
+  // Единая лента: выгрузки заказов + нажатия кнопок-скриптов, новые сверху (по времени).
+  const SCRIPT_LABEL: Record<string, string> = {
+    obd: 'OBD · выгрузка заказов', zmvl: 'zm_vl · сверка', sed: 'СЭД', mols: 'МОЛы',
+  };
+  const timeline = useMemo(() => {
+    const items: Array<
+      | { kind: 'import'; ts: number; run: FlowImportRun }
+      | { kind: 'script'; ts: number; run: FlowScriptRun }
+    > = [];
+    for (const r of runs) items.push({ kind: 'import', ts: parseUtcMs(r.started_at), run: r });
+    for (const r of scriptRuns) items.push({ kind: 'script', ts: parseUtcMs(r.at), run: r });
+    items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    return items;
+  }, [runs, scriptRuns]);
 
   return (
     <main className="flex flex-1 flex-col overflow-hidden">
@@ -69,11 +106,44 @@ export function LogScreen(): JSX.Element {
       <WorkspaceCard>
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-2">
           {loading && <div className="py-8 text-center text-[13px] text-text-muted">Загрузка журнала…</div>}
-          {!loading && runs.length === 0 && (
-            <div className="py-8 text-center text-[13px] text-text-muted">Выгрузок ещё не было.</div>
+          {!loading && timeline.length === 0 && (
+            <div className="py-8 text-center text-[13px] text-text-muted">Записей ещё не было.</div>
           )}
           <div className="flex flex-col gap-1.5">
-            {runs.map((r) => {
+            {timeline.map((item) => {
+              // Нажатие кнопки-скрипта — компактная строка (кто · что · когда).
+              if (item.kind === 'script') {
+                const s = item.run;
+                const u = users.find((x) => x.login === s.login);
+                const nm = s.fullName || s.login || '—';
+                const pres = presenceByLogin[s.login]?.status ?? 'offline';
+                return (
+                  <div
+                    key={`s${s.id}`}
+                    className="flex items-center gap-3 rounded-lg border border-border-subtle bg-bg-surface/40 px-3 py-1.5"
+                  >
+                    <span className="relative flex h-7 w-7 shrink-0 items-center justify-center">
+                      <Avatar
+                        initials={u?.initials || computeInitials(nm)}
+                        size={28}
+                        login={s.login || undefined}
+                        avatarUrl={u?.avatarUrl}
+                        avatarBlobKey={u?.avatarBlobKey ?? undefined}
+                        avatarBlobNonce={u?.avatarBlobNonce ?? undefined}
+                      />
+                      <PresenceDot state={pres} size={9} ringClass="ring-bg-surface" className="absolute -bottom-0.5 -right-0.5" />
+                    </span>
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="max-w-[220px] truncate text-[13px] font-medium text-text-strong" title={nm}>
+                        {nm}
+                      </span>
+                      <span className="text-[12px] text-accent-clay">· {SCRIPT_LABEL[s.scriptId] ?? s.scriptId}</span>
+                      <span className="text-[11px] text-text-muted/80">{formatFullYek(s.at)}</span>
+                    </div>
+                  </div>
+                );
+              }
+              const r = item.run;
               const user = users.find((u) => u.login === r.login);
               const name = r.full_name || r.login || '—';
               const presence = presenceByLogin[r.login]?.status ?? 'offline';
