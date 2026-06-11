@@ -107,6 +107,8 @@ export const WS_EVENT_TYPES = {
   FLOW_PLAN_FIXED: 'flow_plan_fixed',
   /** Нажата кнопка-скрипт (OBD/zm_vl/СЭД/МОЛы) — подсветка у всех + кто нажал. */
   FLOW_SCRIPT_PRESSED: 'flow_script_pressed',
+  /** Нажатие кнопки-скрипта записано в журнал LOG — добавить строку сверху. */
+  FLOW_SCRIPT_LOGGED: 'flow_script_logged',
   /**
    * Раздел «Поток», вкладка «Транспорт» — строки «машина на день» изменены
    * (вставка из буфера / правка / добавление / удаление).
@@ -243,6 +245,12 @@ export interface FlowScriptPressedEvent extends WsServerEvent {
   by: string;
   by_name: string;
   at: string;
+}
+
+/** Нажатие кнопки-скрипта записано в журнал LOG (строка сверху). */
+export interface FlowScriptLoggedEvent extends WsServerEvent {
+  type: 'flow_script_logged';
+  run: { id: number; script_id: string; login: string; full_name: string; at: string };
 }
 
 /** Строки «машина на день» (Транспорт) изменены — актуальные строки + опц. id удалённых. */

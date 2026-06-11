@@ -5,7 +5,6 @@ import {
   NAV_FLOW,
   NAV_VGH,
   NAV_TRANSPORT,
-  NAV_SCRIPTS,
   NAV_LOG,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
@@ -18,6 +17,7 @@ import { refreshWarehousesFromServer } from '@/lib/warehouses-repo';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { usePresenceStore, useUiStateStore } from '@/lib/stores';
 import type { NavSection, NavSectionId } from '@/types/nav';
+import { FlowScriptButtons } from './FlowScriptButtons';
 import { SessionExpiryPill } from './SessionExpiryPill';
 import { SidebarHeader } from './SidebarHeader';
 import { NavItem } from './NavItem';
@@ -303,8 +303,9 @@ export function Sidebar({
             ежемесячное/архивное — ниже. Поток → ВГХ → База → ЛОГ → График → Google-таблицы
             (ОТИФ/Workflow) → Хранилище. Заголовков нет — основное не подписываем (Linear). */}
 
-        {/* §scripts — «Скрипты» (4 кнопки прогонов: OBD/zm_vl/СЭД/МОЛы). */}
-        {showFlow && renderNavItem(NAV_SCRIPTS)}
+        {/* §scripts — 4 кнопки прогонов прямо в сайдбаре (OBD/zm_vl/СЭД/МОЛы),
+            свечение при работе + аватар запустившего. Не отдельный экран (юзер 2026-06-11). */}
+        {showFlow && <FlowScriptButtons collapsed={collapsed} />}
 
         {/* Секция «Работа» (юзер 2026-06-11): рабочие разделы под заголовком;
             при свёрнутом сайдбаре — тонкая линия-разделитель. */}

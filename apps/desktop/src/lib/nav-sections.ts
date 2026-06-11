@@ -1,4 +1,4 @@
-import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Scale, Truck, Waves, Zap } from 'lucide-react';
+import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Scale, Truck, Waves } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -56,16 +56,6 @@ export const NAV_VGH: NavSection = {
   get label() { return i18next.t('sidebar.nav_vgh'); },
   icon: Scale,
   iconColor: 'text-violet-400',
-};
-
-/**
- * Раздел «Скрипты» — 4 кнопки прогонов данных (OBD / zm_vl / СЭД / МОЛы),
- * подсветка «кто нажал». Admin-only контур, вне `NAV_SECTIONS`.
- */
-export const NAV_SCRIPTS: NavSection = {
-  id: 'scripts',
-  get label() { return i18next.t('sidebar.nav_scripts', 'Скрипты'); },
-  icon: Zap,
 };
 
 /**

@@ -328,6 +328,30 @@ export async function flowScriptPress(client: ApiClient, id: FlowScriptId): Prom
   return { id: wire.id ?? id, by: wire.by ?? '', byName: wire.by_name ?? '', at: wire.at ?? '' };
 }
 
+/** Запись журнала нажатия кнопки-скрипта (раздел LOG). */
+export interface FlowScriptRun {
+  id: number;
+  scriptId: string;
+  login: string;
+  fullName: string;
+  at: string;
+}
+
+/** Журнал нажатий кнопок-скриптов (раздел LOG, новые сверху). */
+export async function flowScriptRunsGet(client: ApiClient, limit?: number): Promise<FlowScriptRun[]> {
+  const wire = await client.call<{ runs?: Array<{ id?: number; script_id?: string; login?: string; full_name?: string; at?: string }> }>(
+    'flow_script_runs_get',
+    limit ? { limit } : {},
+  );
+  return (wire.runs ?? []).map((r) => ({
+    id: Number(r.id) || 0,
+    scriptId: r.script_id ?? '',
+    login: r.login ?? '',
+    fullName: r.full_name ?? '',
+    at: r.at ?? '',
+  }));
+}
+
 /** Последние нажатия всех кнопок (подсветка при входе в раздел). */
 export async function flowScriptPressesGet(client: ApiClient): Promise<FlowScriptPress[]> {
   const wire = await client.call<{ presses?: Array<{ id?: string; by?: string; by_name?: string; at?: string }> }>(
