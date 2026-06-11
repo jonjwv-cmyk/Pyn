@@ -933,7 +933,10 @@ export function FlowSandboxGrid(): JSX.Element {
   const applyFlowView = useCallback((state: FlowViewState) => {
     const live = deserializeFlowView(state);
     lastViewJsonRef.current = canonicalFlowViewJson(serializeFlowView(live));
-    orderMapRef.current = null; // вид задаёт сортировку явно → применяем свежий порядок
+    // Порядок НЕ сбрасываем: вид (Общий/Личный, чужие обновления по WS, гидрация)
+    // не должен пересортировывать таблицу под руками — иначе правка склада «улетает»
+    // при первом же чужом изменении вида. Пересорт ТОЛЬКО кнопкой «Сортировка» и
+    // явным кликом сортировки в меню колонки; кнопка лишь загорается янтарным.
     setFilters(live.filters);
     setMatFilter(live.matFilter);
     setOrdFilter(live.ordFilter);
