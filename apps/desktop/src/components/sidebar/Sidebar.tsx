@@ -5,6 +5,7 @@ import {
   NAV_FLOW,
   NAV_VGH,
   NAV_TRANSPORT,
+  NAV_SCRIPTS,
   NAV_LOG,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
@@ -301,6 +302,19 @@ export function Sidebar({
         {/* Порядок по ЧАСТОТЕ работы (юзер 2026-06-07): ежедневный «Поток»-контур наверху,
             ежемесячное/архивное — ниже. Поток → ВГХ → База → ЛОГ → График → Google-таблицы
             (ОТИФ/Workflow) → Хранилище. Заголовков нет — основное не подписываем (Linear). */}
+
+        {/* §scripts — «Скрипты» (4 кнопки прогонов: OBD/zm_vl/СЭД/МОЛы). */}
+        {showFlow && renderNavItem(NAV_SCRIPTS)}
+
+        {/* Секция «Работа» (юзер 2026-06-11): рабочие разделы под заголовком;
+            при свёрнутом сайдбаре — тонкая линия-разделитель. */}
+        {showFlow && (collapsed ? (
+          <div className="mx-2 my-1 h-px bg-border-subtle/60" />
+        ) : (
+          <div className="px-2 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wider text-text-muted/50">
+            Работа
+          </div>
+        ))}
 
         {/* §flow-β — «Поток» (собственный табличный реестр, миграция с Google Sheets):
             каждый день формируем план/отчёт — главный раздел. admin/developer-only. */}

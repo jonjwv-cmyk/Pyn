@@ -20,6 +20,9 @@ export interface FlowDropdownData {
   readonly kind: 'flow-dropdown';
   readonly value: string;
   readonly options: readonly string[];
+  /** Подписи пунктов (параллельно options): в списке «уровень 1», в ячейке «1».
+   *  Не задано — показываем сами значения. */
+  readonly labels?: readonly string[];
   /** Разрешить СВОЙ текст: сверху поле ввода (Enter коммитит, печать фильтрует
    *  список). Для колонок «выбери из частых ИЛИ напиши своё» (РАБОТА транспорта). */
   readonly allowCustom?: boolean;
@@ -35,7 +38,7 @@ function FlowDropdownEditor({
   value: FlowDropdownCell;
   onFinishedEditing: (newValue?: FlowDropdownCell) => void;
 }) {
-  const { options, value, allowCustom } = cell.data;
+  const { options, value, labels, allowCustom } = cell.data;
   const [query, setQuery] = useState('');
   const commit = (v: string) => onFinishedEditing({ ...cell, data: { ...cell.data, value: v } });
   // Свой ввод фильтрует список (как поиск); Enter коммитит набранный текст.
@@ -68,6 +71,7 @@ function FlowDropdownEditor({
       <div className="flex min-h-0 flex-col overflow-y-auto">
         {shown.map((o) => {
           const selected = o === value;
+          const label = labels?.[options.indexOf(o)] ?? o;
           return (
             <button
               type="button"
@@ -79,7 +83,7 @@ function FlowDropdownEditor({
                 selected ? 'bg-accent-clay/25 text-text-strong' : 'text-text-primary hover:bg-accent-clay/20',
               )}
             >
-              {o === '' ? '(пусто)' : o}
+              {label === '' ? '(пусто)' : label}
             </button>
           );
         })}

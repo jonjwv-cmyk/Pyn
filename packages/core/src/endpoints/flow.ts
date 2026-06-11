@@ -308,3 +308,36 @@ export async function flowImportRunsGet(client: ApiClient, limit?: number): Prom
   const wire = await client.call<{ runs?: FlowImportRun[] }>('flow_import_runs_get', limit ? { limit } : {});
   return Array.isArray(wire.runs) ? wire.runs : [];
 }
+
+/** Кнопки-скрипты раздела «Скрипты»: OBD / zm_vl / СЭД / МОЛы. */
+export type FlowScriptId = 'obd' | 'zmvl' | 'sed' | 'mols';
+
+export interface FlowScriptPress {
+  id: string;
+  by: string;
+  byName: string;
+  at: string;
+}
+
+/** Нажать кнопку скрипта (фиксируется кто/когда; прогоны подключатся позже). */
+export async function flowScriptPress(client: ApiClient, id: FlowScriptId): Promise<FlowScriptPress> {
+  const wire = await client.call<{ id?: string; by?: string; by_name?: string; at?: string }>(
+    'flow_script_press',
+    { id },
+  );
+  return { id: wire.id ?? id, by: wire.by ?? '', byName: wire.by_name ?? '', at: wire.at ?? '' };
+}
+
+/** Последние нажатия всех кнопок (подсветка при входе в раздел). */
+export async function flowScriptPressesGet(client: ApiClient): Promise<FlowScriptPress[]> {
+  const wire = await client.call<{ presses?: Array<{ id?: string; by?: string; by_name?: string; at?: string }> }>(
+    'flow_script_presses_get',
+    {},
+  );
+  return (wire.presses ?? []).map((p) => ({
+    id: p.id ?? '',
+    by: p.by ?? '',
+    byName: p.by_name ?? '',
+    at: p.at ?? '',
+  }));
+}

@@ -105,6 +105,8 @@ export const WS_EVENT_TYPES = {
   FLOW_DELIVERIES_CHANGED: 'flow_deliveries_changed',
   /** План на день зафиксирован (батч 1 = план, 2+ = дополнение). */
   FLOW_PLAN_FIXED: 'flow_plan_fixed',
+  /** Нажата кнопка-скрипт (OBD/zm_vl/СЭД/МОЛы) — подсветка у всех + кто нажал. */
+  FLOW_SCRIPT_PRESSED: 'flow_script_pressed',
   /**
    * Раздел «Поток», вкладка «Транспорт» — строки «машина на день» изменены
    * (вставка из буфера / правка / добавление / удаление).
@@ -229,6 +231,15 @@ export interface FlowPlanFixedEvent extends WsServerEvent {
   fixation_id: number;
   batch_seq: number;
   fixed: number;
+  by: string;
+  by_name: string;
+  at: string;
+}
+
+/** Нажата кнопка-скрипт — у всех подсветить + показать кто/когда. */
+export interface FlowScriptPressedEvent extends WsServerEvent {
+  type: 'flow_script_pressed';
+  id: string;
   by: string;
   by_name: string;
   at: string;

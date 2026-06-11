@@ -1924,11 +1924,14 @@ export function FlowSandboxGrid(): JSX.Element {
         const value = spec.id === 'split_level' ? (Number(raw) > 0 ? String(raw) : '') : String(raw ?? '');
         // STAT — пункты ПО СТРОКЕ (statOptionsForRow): авто-ярлык не предлагаем руками.
         const options = spec.id === 'stat' ? statOptionsForRow(rowData) : (spec.options ?? []);
+        // УР: в списке «уровень N», в ячейке — чистая цифра; пустого пункта нет
+        // (снять уровень = Delete по ячейке → 0).
+        const labels = spec.id === 'split_level' ? options.map((o) => `уровень ${o}`) : undefined;
         return {
           kind: GridCellKind.Custom,
           allowOverlay: spec.editable === true,
           copyData: value,
-          data: { kind: 'flow-dropdown', value, options },
+          data: { kind: 'flow-dropdown', value, options, labels },
         } satisfies FlowDropdownCell;
       }
       if (
@@ -2169,9 +2172,10 @@ export function FlowSandboxGrid(): JSX.Element {
               statManualNext = 1;
             }
           } else if (spec.id === 'split_level') {
-            // УР хранится ЧИСЛОМ (0=пусто). Невалидное — отсекаем.
-            if (v !== '' && !['1', '2', '3'].includes(v)) continue;
-            newVal = v === '' ? 0 : Number(v);
+            // УР хранится ЧИСЛОМ (0=пусто; Delete снимает). Допустимо 1..10.
+            const n = v === '' ? 0 : Number(v);
+            if (!Number.isInteger(n) || n < 0 || n > 10) continue;
+            newVal = n;
             if (newVal === (Number(viewRow.split_level) || 0)) continue;
           } else if (v !== '' && !(spec.options ?? []).includes(v)) {
             continue;

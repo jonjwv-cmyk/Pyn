@@ -141,7 +141,8 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   // внутри связки отправитель+получатель). Скрипт создания поставок гонит SAP
   // МНОГОУРОВНЕВО: сначала база, затем уровень 1, 2, 3 — заказ дробится на разные
   // поставки под разные машины. Группировка плана: fr+to+уровень (flow_plan_form).
-  { id: 'split_level', title: 'УР', width: 44, kind: 'dropdown', options: ['', '1', '2', '3'], editable: true },
+  { id: 'split_level', title: 'УР', width: 44, kind: 'dropdown',
+    options: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], editable: true },
   { id: 'no_num', title: 'NO. №', width: 86, kind: 'text' },
   { id: 'mat', title: 'MAT', width: 210, kind: 'mat' },
   { id: 'uom', title: 'UoM', width: 50, kind: 'text' },
