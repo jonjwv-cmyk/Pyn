@@ -1920,7 +1920,8 @@ export function FlowSandboxGrid(): JSX.Element {
         } satisfies FlowToCell;
       }
       if (spec.kind === 'dropdown') {
-        const value = String(raw ?? '');
+        // УР: 0 — основная поставка, показываем ПУСТО (выбрать «0» нельзя — это дефолт).
+        const value = spec.id === 'split_level' ? (Number(raw) > 0 ? String(raw) : '') : String(raw ?? '');
         // STAT — пункты ПО СТРОКЕ (statOptionsForRow): авто-ярлык не предлагаем руками.
         const options = spec.id === 'stat' ? statOptionsForRow(rowData) : (spec.options ?? []);
         return {
@@ -2167,6 +2168,11 @@ export function FlowSandboxGrid(): JSX.Element {
             } else {
               statManualNext = 1;
             }
+          } else if (spec.id === 'split_level') {
+            // УР хранится ЧИСЛОМ (0=пусто). Невалидное — отсекаем.
+            if (v !== '' && !['1', '2', '3'].includes(v)) continue;
+            newVal = v === '' ? 0 : Number(v);
+            if (newVal === (Number(viewRow.split_level) || 0)) continue;
           } else if (v !== '' && !(spec.options ?? []).includes(v)) {
             continue;
           }
