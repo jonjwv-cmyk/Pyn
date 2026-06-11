@@ -10,11 +10,12 @@ import { useUsersStore } from '@/lib/stores';
 import { FlowSandboxGrid } from './FlowSandboxGrid';
 import { FlowPlanGrid } from './FlowPlanGrid';
 import { FlowPlanFormButton } from './FlowPlanFormButton';
+import { FlowTransportGrid } from './FlowTransportGrid';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
 import { FlowImportIndicator, type FlowImportRunner } from './FlowImportIndicator';
 
-/** Этапы плана: формирование → план → отчёт (как в Google-процессе). */
-type FlowStage = 'form' | 'plan' | 'report';
+/** Этапы плана: формирование → план → транспорт → отчёт (как в Google-процессе). */
+type FlowStage = 'form' | 'plan' | 'transport' | 'report';
 
 /** Общий lock «идёт выгрузка заказов» — один на всех; держит инициатор, видят остальные. */
 const FLOW_IMPORT_LOCK = 'flow_import:running';
@@ -94,6 +95,8 @@ export function FlowScreen(): JSX.Element {
           <StageArrow />
           <StageSeg label="План" active={stage === 'plan'} onClick={() => setStage('plan')} />
           <StageArrow />
+          <StageSeg label="Транспорт" active={stage === 'transport'} onClick={() => setStage('transport')} />
+          <StageArrow />
           <StageSeg label="Отчёт" active={stage === 'report'} disabled onClick={() => setStage('report')} />
         </div>
         {/* Мягкий индикатор выгрузки (кто запустил) + контекстная кнопка этапа. */}
@@ -110,6 +113,8 @@ export function FlowScreen(): JSX.Element {
           <FlowSandboxGrid />
         ) : stage === 'plan' ? (
           <FlowPlanGrid />
+        ) : stage === 'transport' ? (
+          <FlowTransportGrid />
         ) : (
           <StagePlaceholder stage={stage} />
         )}

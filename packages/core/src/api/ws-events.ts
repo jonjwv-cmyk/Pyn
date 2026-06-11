@@ -104,6 +104,13 @@ export const WS_EVENT_TYPES = {
    */
   FLOW_DELIVERIES_CHANGED: 'flow_deliveries_changed',
   /**
+   * Раздел «Поток», вкладка «Транспорт» — строки «машина на день» изменены
+   * (вставка из буфера / правка / добавление / удаление).
+   */
+  FLOW_TRANSPORT_CHANGED: 'flow_transport_changed',
+  /** База машин (flow_vehicles) изменена — карточка/вставка. */
+  FLOW_VEHICLES_CHANGED: 'flow_vehicles_changed',
+  /**
    * Раздел «Поток» — изменён ОБЩИЙ вид (фильтры/сортировка/масштаб, flow_view_set).
    * Шлётся всем: клиенты в режиме «Общий» применяют вид и обновляют аватар автора.
    * Чисто UI — строки таблицы не трогает.
@@ -210,6 +217,19 @@ export interface FlowDeliveriesChangedEvent extends WsServerEvent {
   type: 'flow_deliveries_changed';
   rows: Array<{ id: number; row_version: number; [key: string]: unknown }>;
   deleted?: number[];
+}
+
+/** Строки «машина на день» (Транспорт) изменены — актуальные строки + опц. id удалённых. */
+export interface FlowTransportChangedEvent extends WsServerEvent {
+  type: 'flow_transport_changed';
+  rows: Array<{ id: number; row_version: number; [key: string]: unknown }>;
+  deleted?: number[];
+}
+
+/** База машин изменена — актуальные строки (по garage_no). */
+export interface FlowVehiclesChangedEvent extends WsServerEvent {
+  type: 'flow_vehicles_changed';
+  rows: Array<{ garage_no: string; row_version: number; [key: string]: unknown }>;
 }
 
 /** Сменён общий месяц формирования «Потока» — у всех обновить месяц + CLST. */

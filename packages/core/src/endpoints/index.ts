@@ -254,6 +254,23 @@ export {
 } from './flow-plan';
 
 export {
+  flowVehiclesGet,
+  flowVehiclesUpsert,
+  flowTransportGet,
+  flowTransportPaste,
+  flowTransportEdit,
+  flowTransportAdd,
+  flowTransportDelete,
+  parseTransportPaste,
+  FLOW_TRANSPORT_STATUSES,
+  type FlowVehicle,
+  type FlowTransportRow,
+  type FlowTransportPasteRow,
+  type FlowTransportPasteResult,
+  type FlowTransportEdit,
+} from './flow-transport';
+
+export {
   flowVghGet,
   flowVghEdit,
   flowVghStagingGet,
