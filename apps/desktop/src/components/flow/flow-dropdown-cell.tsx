@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   drawTextCell,
   GridCellKind,
@@ -19,11 +20,14 @@ export interface FlowDropdownData {
   readonly kind: 'flow-dropdown';
   readonly value: string;
   readonly options: readonly string[];
+  /** Разрешить СВОЙ текст: сверху поле ввода (Enter коммитит, печать фильтрует
+   *  список). Для колонок «выбери из частых ИЛИ напиши своё» (РАБОТА транспорта). */
+  readonly allowCustom?: boolean;
 }
 
 export type FlowDropdownCell = CustomCell<FlowDropdownData>;
 
-/** Редактор-список опций в стиле меню колонки. */
+/** Редактор-список опций в стиле меню колонки (+опц. свой ввод сверху). */
 function FlowDropdownEditor({
   value: cell,
   onFinishedEditing,
@@ -31,29 +35,55 @@ function FlowDropdownEditor({
   value: FlowDropdownCell;
   onFinishedEditing: (newValue?: FlowDropdownCell) => void;
 }) {
-  const { options, value } = cell.data;
+  const { options, value, allowCustom } = cell.data;
+  const [query, setQuery] = useState('');
+  const commit = (v: string) => onFinishedEditing({ ...cell, data: { ...cell.data, value: v } });
+  // Свой ввод фильтрует список (как поиск); Enter коммитит набранный текст.
+  const q = query.trim().toLowerCase();
+  const shown = allowCustom && q !== '' ? options.filter((o) => o.toLowerCase().includes(q)) : options;
   // Прозрачный список: хром (тёмный фон, 12px скругление, тень, рамка, padding)
   // даёт КОНТЕЙНЕР оверлея через styleOverride ниже — иначе скруглённый поповер
   // сидел бы на квадратной светлой подложке контейнера Glide.
   return (
-    <div className="flex w-full flex-col text-text-secondary">
-      {options.map((o) => {
-        const selected = o === value;
-        return (
-          <button
-            type="button"
-            key={o}
-            onClick={() => onFinishedEditing({ ...cell, data: { ...cell.data, value: o } })}
-            className={cn(
-              // Без галочки — выбранный просто подсвечен clay (компактнее).
-              'w-full truncate rounded px-2 py-1 text-left text-[12px] transition-colors',
-              selected ? 'bg-accent-clay/25 text-text-strong' : 'text-text-primary hover:bg-accent-clay/20',
-            )}
-          >
-            {o === '' ? '(пусто)' : o}
-          </button>
-        );
-      })}
+    <div className="flex max-h-[320px] w-full flex-col text-text-secondary">
+      {allowCustom && (
+        <input
+          autoFocus
+          defaultValue={value}
+          placeholder="Своя работа… (Enter)"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commit((e.target as HTMLInputElement).value.trim());
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              onFinishedEditing(undefined);
+            }
+            e.stopPropagation();
+          }}
+          className="mx-1 mb-1 h-7 shrink-0 rounded-md border border-white/10 bg-transparent px-2 text-[12px] text-text-primary outline-none placeholder:text-text-muted/50 focus:border-accent-clay/60"
+        />
+      )}
+      <div className="flex min-h-0 flex-col overflow-y-auto">
+        {shown.map((o) => {
+          const selected = o === value;
+          return (
+            <button
+              type="button"
+              key={o}
+              onClick={() => commit(o)}
+              className={cn(
+                // Без галочки — выбранный просто подсвечен clay (компактнее).
+                'w-full shrink-0 truncate rounded px-2 py-1 text-left text-[12px] transition-colors',
+                selected ? 'bg-accent-clay/25 text-text-strong' : 'text-text-primary hover:bg-accent-clay/20',
+              )}
+            >
+              {o === '' ? '(пусто)' : o}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

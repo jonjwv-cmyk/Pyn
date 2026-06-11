@@ -10,7 +10,7 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { ClipboardPaste, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { ClipboardPaste, Plus, Printer, RefreshCw, Trash2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import * as Popover from '@radix-ui/react-popover';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
@@ -35,6 +35,7 @@ import { formatMobilePhone } from '@/lib/mol-format';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import { MONTH_ABBR_RU } from './flow-sandbox.fixtures';
 import { VehicleCard } from './VehicleCard';
+import { FlowTransportPrint } from './FlowTransportPrint';
 
 /**
  * Вкладка «Транспорт» — реестр «машина на день» (эталон — лист 🚚 Google-файла).
@@ -129,6 +130,9 @@ export function FlowTransportGrid(): JSX.Element {
   const [addGarage, setAddGarage] = useState('');
   const [cardGarage, setCardGarage] = useState<string | null>(null); // карточка машины (null — закрыта)
   const pendingAddRef = useRef<{ date: string; garage: string } | null>(null);
+  // Печать листа на день: открытый поповер выбора дня + активный запрос печати.
+  const [printOpen, setPrintOpen] = useState(false);
+  const [printReq, setPrintReq] = useState<{ date: string; mode: 'dialog' | 'save' } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -201,6 +205,20 @@ export function FlowTransportGrid(): JSX.Element {
   }, [rows]);
 
   const dayCount = useMemo(() => new Set(rows.map((r) => r.tdate)).size, [rows]);
+
+  // Статистика РАБОТ по всей истории: частые (3+ раз) — в выпадашку, порядок по
+  // числовому префиксу (0.1 → 1.1 → 8.2). Свой текст вводится прямо в редакторе.
+  const workOptions = useMemo(() => {
+    const cnt = new Map<string, number>();
+    for (const r of rows) {
+      const w = (r.work || '').trim();
+      if (w) cnt.set(w, (cnt.get(w) ?? 0) + 1);
+    }
+    return [...cnt.entries()]
+      .filter(([, n]) => n >= 3)
+      .map(([w]) => w)
+      .sort((a, b) => workKey(a) - workKey(b) || a.localeCompare(b, 'ru'));
+  }, [rows]);
 
   const columns = useMemo<GridColumn[]>(
     () => TR_COLS.map((c) => ({ id: c.id, title: c.title, width: c.width })),
@@ -280,6 +298,16 @@ export function FlowTransportGrid(): JSX.Element {
         };
         return cell;
       }
+      if (spec.id === 'work') {
+        // РАБОТА — частые задания из статистики + свой текст (поле сверху, Enter).
+        const cell: FlowDropdownCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: true,
+          copyData: r.work || '',
+          data: { kind: 'flow-dropdown', value: r.work || '', options: workOptions, allowCustom: true },
+        };
+        return cell;
+      }
       const text = cellText(spec, r, row);
       const editable = !!spec.editable;
       // Правки пишем сырьём (телефон — raw цифры), показ — форматированный.
@@ -298,7 +326,7 @@ export function FlowTransportGrid(): JSX.Element {
         contentAlign: ['cap', 'max', 'len', 'wid', 'hei'].includes(spec.id) ? 'right' : 'left',
       };
     },
-    [viewRows, cellText, vehByGarage],
+    [viewRows, cellText, vehByGarage, workOptions],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -521,6 +549,65 @@ export function FlowTransportGrid(): JSX.Element {
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
+        {/* Печать листа на день: выбор дня → системная печать или PDF. */}
+        <Popover.Root open={printOpen} onOpenChange={setPrintOpen}>
+          <Popover.Trigger asChild>
+            <button
+              type="button"
+              disabled={busy || rows.length === 0}
+              title="Печать листа транспорта на день"
+              className="flex h-6 items-center gap-1.5 rounded-md border border-black/10 px-2 text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:opacity-50"
+            >
+              <Printer size={13} strokeWidth={1.75} />
+              Печать
+            </button>
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Content
+              align="start"
+              sideOffset={6}
+              className="z-50 w-[230px] rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-lg"
+            >
+              <div className="px-1 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-text-muted/70">
+                Лист на день
+              </div>
+              <div className="flex max-h-[260px] flex-col gap-0.5 overflow-y-auto">
+                {[...new Set(rows.map((r) => r.tdate))]
+                  .sort((a, b) => b.localeCompare(a))
+                  .slice(0, 14)
+                  .map((d) => (
+                    <div key={d} className="flex items-center justify-between gap-1 rounded-md px-2 py-0.5 hover:bg-bg-deep">
+                      <span className="text-[12px] text-text-secondary">{fmtDay(d)}</span>
+                      <span className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          title="Системная печать"
+                          onClick={() => {
+                            setPrintOpen(false);
+                            setPrintReq({ date: d, mode: 'dialog' });
+                          }}
+                          className="rounded border border-border-subtle px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:border-accent-clay/60 hover:text-text-strong"
+                        >
+                          Печать
+                        </button>
+                        <button
+                          type="button"
+                          title="Сохранить PDF"
+                          onClick={() => {
+                            setPrintOpen(false);
+                            setPrintReq({ date: d, mode: 'save' });
+                          }}
+                          className="rounded border border-border-subtle px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:border-accent-clay/60 hover:text-text-strong"
+                        >
+                          PDF
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </Popover.Content>
+          </Popover.Portal>
+        </Popover.Root>
         <span className="tabular-nums">
           {rows.length} строк · {dayCount} дней · {vehicles.length} машин в базе
         </span>
@@ -581,6 +668,18 @@ export function FlowTransportGrid(): JSX.Element {
           />
         )}
       </div>
+      {printReq && (
+        <FlowTransportPrint
+          date={printReq.date}
+          mode={printReq.mode}
+          rows={viewRows.filter((r) => r.tdate === printReq.date)}
+          vehByGarage={vehByGarage}
+          onDone={(ok, error) => {
+            setPrintReq(null);
+            setMsg(ok ? `Лист на ${fmtDay(printReq.date)} отправлен на печать` : `Печать: ${error ?? 'ошибка'}`);
+          }}
+        />
+      )}
       {cardGarage !== null && (
         <VehicleCard
           garageNo={cardGarage}
