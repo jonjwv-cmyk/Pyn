@@ -11,6 +11,7 @@ import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { FlowScreen } from '@/components/flow';
 import { LogScreen } from '@/components/flow/LogScreen';
 import { VghScreen } from '@/components/vgh';
+import { TransportScreen } from '@/components/flow/TransportScreen';
 import { MolScreen } from '@/components/mol';
 import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
 import { initPersons, refreshPersonsFromServer } from '@/lib/persons-repo';
@@ -1027,6 +1028,11 @@ export function App() {
             {isAdminLike(session.role) && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'vgh' ? 'flex' : 'none' }}>
                 <VghScreen />
+              </div>
+            )}
+            {isAdminLike(session.role) && (
+              <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'transport' ? 'flex' : 'none' }}>
+                <TransportScreen />
               </div>
             )}
             {isAdminLike(session.role) && (

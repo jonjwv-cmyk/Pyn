@@ -3,6 +3,7 @@ import {
   CompactSelection,
   DataEditor,
   GridCellKind,
+  type DataEditorRef,
   type EditableGridCell,
   type GridCell,
   type GridColumn,
@@ -10,13 +11,13 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { ClipboardPaste, Plus, Printer, RefreshCw, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ClipboardPaste, History, Plus, Printer, RefreshCw, Search, Trash2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import * as Popover from '@radix-ui/react-popover';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import {
-  FLOW_TRANSPORT_STATUSES,
+  flowDeliveriesGet,
   flowTransportAdd,
   flowTransportDelete,
   flowTransportEdit,
@@ -24,12 +25,14 @@ import {
   flowTransportPaste,
   flowVehiclesGet,
   parseTransportPaste,
+  type FlowDeliveryRow,
   type FlowTransportChangedEvent,
   type FlowTransportRow,
   type FlowVehicle,
   type FlowVehiclesChangedEvent,
 } from '@pyn/core';
 import { api } from '@/lib/api';
+import { cn } from '@/lib/cn';
 import { useWsEvent } from '@/lib/ws';
 import { formatMobilePhone } from '@/lib/mol-format';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
@@ -38,71 +41,131 @@ import { VehicleCard } from './VehicleCard';
 import { FlowTransportPrint } from './FlowTransportPrint';
 
 /**
- * Вкладка «Транспорт» — реестр «машина на день» (эталон — лист 🚚 Google-файла).
- * Показ «без мусора»: машинные колонки (ВЫЕЗД/ГОС№/тип/модель/тн/габариты/телефон)
- * считаются из БАЗЫ МАШИН (flow_vehicles, ключ — гаражный №), а не из формул листа.
+ * Раздел «Транспорт» — реестр «машина на день» (эталон — лист 🚚). Показ «без
+ * мусора»: машинные колонки считаются из БАЗЫ МАШИН (ключ — гаражный №).
  *
- * Вставка из буфера — шаблон выгрузки КАК ЕСТЬ (29 колонок): наполняет базу машин
- * + строки дня; повторная вставка того же дня обновляет, не дублирует; на НОВУЮ
- * дату постоянные «0.*»-машины (0.1 ФУРГОН КХП / 0.2 БОРТ КХП) добавляются сами.
- *
- * «Добавить» — машина на дату по гаражному №; если машины нет в базе — карточка
- * заполнения (водитель ищется в базе контактов), затем строка добавляется.
+ * По слову юзера (2026-06-11): МАРКА (тип техники из модели, полная модель — по
+ * двойному клику), время без ведущих нулей (8:00-20:00), СТАТУС без «(пусто)»
+ * (снять = Delete; Размещен — зелёная строка, Отклонен/Отмена — красная), колонка
+ * ЦВЕТ возвращена, ТИП переносится по словам, РАБОТА целиком по ширине,
+ * РЕЙС — история из отчёта (кто возил, склады ОТ/СП план-факт). Правки/добавление
+ * только в пределах 7 дней назад (старое — read-only архив, защита и на сервере).
  */
 
 interface TrColSpec {
   id: string;
   title: string;
-  width: number;
   editable?: boolean;
 }
 
 const TR_COLS: readonly TrColSpec[] = [
-  { id: 'date', title: 'ДАТА', width: 84 },
-  { id: 'garage', title: '№', width: 56, editable: true },
-  { id: 'out', title: 'ВЫЕЗД', width: 60 },
-  { id: 'gos', title: 'ГОС. №', width: 94 },
-  { id: 'model', title: 'МОДЕЛЬ', width: 150 },
-  { id: 'vtype', title: 'ТИП', width: 150 },
-  { id: 'cap', title: 'ТН', width: 58 },
-  { id: 'max', title: 'ДОП.ТН', width: 64 },
-  { id: 'len', title: 'Д', width: 50 },
-  { id: 'wid', title: 'Ш', width: 50 },
-  { id: 'hei', title: 'В', width: 50 },
-  { id: 'work', title: 'РАБОТА', width: 250, editable: true },
-  { id: 'time', title: '⏰', width: 100, editable: true },
-  { id: 'status', title: 'СТАТУС', width: 96, editable: true },
-  { id: 'comment', title: 'КОМЕНТ.', width: 170, editable: true },
-  { id: 'driver', title: 'ВОДИТЕЛЬ', width: 210, editable: true },
-  { id: 'phone', title: 'СОТ.', width: 130, editable: true },
-  { id: 'exp', title: 'ЭКСПЕДИТОРЫ', width: 150, editable: true },
-  { id: 'ot', title: 'ОТ', width: 56, editable: true },
-  { id: 'sp', title: 'СП', width: 56, editable: true },
-  { id: 'order', title: 'ЗАКАЗ', width: 116, editable: true },
+  { id: 'date', title: 'ДАТА' },
+  { id: 'brand', title: 'МАРКА' },
+  { id: 'garage', title: '№', editable: true },
+  { id: 'out', title: 'ВЫЕЗД' },
+  { id: 'gos', title: 'ГОС. №' },
+  { id: 'color', title: 'ЦВЕТ' },
+  { id: 'vtype', title: 'ТИП' },
+  { id: 'max', title: 'ДОП.ТН' },
+  { id: 'cap', title: 'ТН' },
+  { id: 'len', title: 'Д' },
+  { id: 'wid', title: 'Ш' },
+  { id: 'hei', title: 'В' },
+  { id: 'work', title: 'РАБОТА', editable: true },
+  { id: 'time', title: 'ВРЕМЯ', editable: true },
+  { id: 'status', title: 'СТАТУС', editable: true },
+  { id: 'comment', title: 'КОМЕНТ.', editable: true },
+  { id: 'driver', title: 'ВОДИТЕЛЬ', editable: true },
+  { id: 'phone', title: 'СОТ.', editable: true },
+  { id: 'trip', title: 'РЕЙС' },
 ];
 
-/** YYYY-MM-DD → «8 июня» (короткий показ). */
+/** Порядок статусов в выпадашке — по слову юзера; «(пусто)» НЕТ (снять = Delete). */
+const STATUS_ORDER = ['Размещен', 'Отклонен', 'Отмена', 'Новый', 'Открыт'] as const;
+
+/** Известные марки техники (канонический регистр). Порядок не важен — матч по токену. */
+const BRANDS = [
+  'КамАЗ', 'ЗИЛ', 'МАЗ', 'КрАЗ', 'УРАЛ', 'ГАЗ', 'АМКОДОР', 'ЛТМ', 'SDLG', 'МТЗ',
+  'UMG', 'JCB', 'HOWO', 'SHACMAN', 'MAN', 'VOLVO', 'SCANIA', 'ISUZU', 'HYUNDAI',
+  'ПАЗ', 'КАВЗ', 'НЕФАЗ', 'FAW', 'DONGFENG',
+];
+const BRAND_BY_KEY = new Map(BRANDS.map((b) => [b.toUpperCase().replace(/-/g, ''), b] as const));
+
+/**
+ * МАРКА из полной модели: универсально — первый «словесный» токен без цифр,
+ * сведённый к каноническому написанию по словарю (КамАЗ 6520-06 → КамАЗ,
+ * «АМКОДОР-332С4-01» → АМКОДОР, «534С» → 534С как есть). Цифры юзеру не важны.
+ */
+export function vehicleBrand(model: string): string {
+  const tokens = (model || '').trim().split(/[\s,]+/).filter(Boolean);
+  for (const t of tokens) {
+    // токен может быть «АМКОДОР-332С4» — берём буквенную голову до цифры
+    const head = t.split(/(?=\d)/)[0]?.replace(/[-–—]+$/, '') ?? '';
+    const key = head.toUpperCase().replace(/-/g, '');
+    if (key.length >= 2) {
+      const known = BRAND_BY_KEY.get(key);
+      if (known) return known;
+      if (!/\d/.test(head) && /^[A-ZА-ЯЁ]+$/i.test(head) && head.length >= 3) return head.toUpperCase();
+    }
+  }
+  return tokens[0] ?? '';
+}
+
+/** YYYY-MM-DD → «8 июня». */
 function fmtDay(s: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || '');
   if (!m) return s || '';
   return `${parseInt(m[3] ?? '1', 10)} ${MONTH_ABBR_RU[parseInt(m[2] ?? '1', 10) - 1] ?? ''}`;
 }
 
-/** Ключ сортировки РАБОТЫ по числовому префиксу: «0.1…» < «1.1…» < «2.4…» < «10…». */
+/** «08:00-20:00» → «8:00-20:00» (ведущие нули из показа убраны). */
+function fmtTimeRange(s: string): string {
+  return (s || '').replace(/(^|[^\d])0(\d:)/g, '$1$2');
+}
+
+/** Ключ сортировки РАБОТЫ по числовому префиксу. */
 function workKey(w: string): number {
   const m = /^(\d+)(?:\.(\d+))?/.exec((w || '').trim());
   if (!m) return 9_000_000;
   return Number(m[1]) * 1000 + Number(m[2] ?? 0);
 }
 
-/** кг → тонны для показа (пусто если нет). */
-function tons(kg: number | null | undefined): string {
-  return kg == null || !Number.isFinite(kg) ? '' : fmtSmart(kg / 1000, 3);
-}
+const tons = (kg: number | null | undefined): string =>
+  kg == null || !Number.isFinite(kg) ? '' : fmtSmart(kg / 1000, 3);
+const meters = (mm: number | null | undefined): string =>
+  mm == null || !Number.isFinite(mm) ? '' : fmtSmart(mm / 1000, 2);
 
-/** мм → метры для показа. */
-function meters(mm: number | null | undefined): string {
-  return mm == null || !Number.isFinite(mm) ? '' : fmtSmart(mm / 1000, 2);
+const isoToday = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+/** Граница правок: сегодня − 7 дней (старое — read-only архив; зеркало серверного guard). */
+const editCutoff = (): string => {
+  const d = new Date();
+  d.setDate(d.getDate() - 7);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+/** Ключ сортировки склада: Т-код перед обычным (824Т → 8024), как формирование. */
+function whKey(code: string): string {
+  const s = (code || '').trim().toUpperCase().replace(/T/g, 'Т');
+  const m = /^(\d{3})Т$/.exec(s);
+  return m ? `${m[1]}0` : s; // 824Т → «8240» < «8024»? нет: «8240» > «8024». Нужен спец-ключ:
+}
+/** Сравнение складов: по числу, Т-код раньше обычного того же куста (824Т → 8024). */
+function cmpWh(a: string, b: string): number {
+  const norm = (x: string) => x.trim().toUpperCase().replace(/T/g, 'Т');
+  const A = norm(a);
+  const B = norm(b);
+  // Пары «824Т ↔ 8024»: Т-код считаем тем же числом 8024, но с приоритетом (раньше).
+  const baseOf = (x: string) => {
+    const mT = /^(\d{3})Т$/.exec(x);
+    if (mT) return Number(`80${(mT[1] ?? '').slice(1)}`);
+    const mN = /^(\d{4})$/.exec(x);
+    return mN ? Number(mN[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  const tFirst = (x: string) => (/^\d{3}Т$/.test(x) ? 0 : 1);
+  return baseOf(A) - baseOf(B) || tFirst(A) - tFirst(B) || A.localeCompare(B, 'ru');
 }
 
 const TR_RENDERERS = [flowDropdownRenderer];
@@ -121,18 +184,21 @@ export function FlowTransportGrid(): JSX.Element {
     columns: CompactSelection.empty(),
     rows: CompactSelection.empty(),
   });
-  // «Добавить машину»: поповер с датой+гаражным; карточка открывается, если машины нет.
+  // Поиск + фильтры (статус-чипы, день).
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(() => new Set());
+  const [dayFilter, setDayFilter] = useState('');
+  // «Добавить машину»: дата (наш мини-календарь) + гаражный; карточка при отсутствии в базе.
   const [addOpen, setAddOpen] = useState(false);
-  const [addDate, setAddDate] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  });
+  const [addDate, setAddDate] = useState(isoToday);
   const [addGarage, setAddGarage] = useState('');
-  const [cardGarage, setCardGarage] = useState<string | null>(null); // карточка машины (null — закрыта)
+  const [cardGarage, setCardGarage] = useState<string | null>(null);
   const pendingAddRef = useRef<{ date: string; garage: string } | null>(null);
-  // Печать листа на день: открытый поповер выбора дня + активный запрос печати.
+  // Печать (превью-окно) + РЕЙС-поповер.
+  const [printDay, setPrintDay] = useState<string | null>(null);
   const [printOpen, setPrintOpen] = useState(false);
-  const [printReq, setPrintReq] = useState<{ date: string; mode: 'dialog' | 'save' } | null>(null);
+  const [trip, setTrip] = useState<{ row: FlowTransportRow; x: number; y: number } | null>(null);
+  const gridRef = useRef<DataEditorRef | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -191,9 +257,76 @@ export function FlowTransportGrid(): JSX.Element {
     return m;
   }, [vehicles]);
 
-  // Порядок: свежий день СВЕРХУ; внутри дня — по числовому префиксу РАБОТЫ (как эталон).
+  const cellText = useCallback(
+    (specId: string, r: FlowTransportRow): string => {
+      const veh = vehByGarage.get(r.garage_no);
+      switch (specId) {
+        case 'date':
+          return fmtDay(r.tdate);
+        case 'brand':
+          return veh?.model ? vehicleBrand(veh.model) : '';
+        case 'garage':
+          return r.garage_no || '';
+        case 'out':
+          return r.garage_no ? (veh ? (veh.ban ? 'НЕТ' : 'ДА') : '?') : '';
+        case 'gos':
+          return veh?.gos_no ?? '';
+        case 'color':
+          return veh?.color ?? '';
+        case 'vtype':
+          return veh?.vtype ?? '';
+        case 'max':
+          return tons(veh?.max_mass_kg);
+        case 'cap':
+          return tons(veh?.capacity_kg);
+        case 'len':
+          return meters(veh?.len_mm);
+        case 'wid':
+          return meters(veh?.wid_mm);
+        case 'hei':
+          return meters(veh?.hei_mm);
+        case 'work':
+          return r.work || '';
+        case 'time':
+          return fmtTimeRange(r.time_range);
+        case 'status':
+          return r.status || '';
+        case 'comment':
+          return r.comment || '';
+        case 'driver':
+          return r.driver || (veh?.driver ?? '');
+        case 'phone': {
+          const p = r.driver_phone || (veh?.driver_phone ?? '');
+          return p ? formatMobilePhone(p) : '';
+        }
+        case 'trip':
+          return '⟲';
+        default:
+          return '';
+      }
+    },
+    [vehByGarage],
+  );
+
+  // Порядок: свежий день сверху, внутри дня по номеру работы; + поиск/фильтры.
   const viewRows = useMemo(() => {
-    const out = rows.slice();
+    const q = search.trim().toLowerCase();
+    const out = rows.filter((r) => {
+      if (dayFilter && r.tdate !== dayFilter) return false;
+      if (statusFilter.size > 0 && !statusFilter.has(r.status || '')) return false;
+      if (q) {
+        const veh = vehByGarage.get(r.garage_no);
+        const hay = [
+          r.garage_no, veh?.model, veh?.gos_no, veh?.vtype, veh?.color, r.work,
+          r.time_range, r.status, r.comment, r.driver || veh?.driver, r.driver_phone || veh?.driver_phone,
+          r.order_no, fmtDay(r.tdate),
+        ]
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
     out.sort(
       (a, b) =>
         (b.tdate || '').localeCompare(a.tdate || '') ||
@@ -202,12 +335,12 @@ export function FlowTransportGrid(): JSX.Element {
         a.id - b.id,
     );
     return out;
-  }, [rows]);
+  }, [rows, search, statusFilter, dayFilter, vehByGarage]);
 
   const dayCount = useMemo(() => new Set(rows.map((r) => r.tdate)).size, [rows]);
+  const allDays = useMemo(() => [...new Set(rows.map((r) => r.tdate))].sort((a, b) => b.localeCompare(a)), [rows]);
 
-  // Статистика РАБОТ по всей истории: частые (3+ раз) — в выпадашку, порядок по
-  // числовому префиксу (0.1 → 1.1 → 8.2). Свой текст вводится прямо в редакторе.
+  // Частые РАБОТЫ (3+ раз) — выпадашка + свой текст.
   const workOptions = useMemo(() => {
     const cnt = new Map<string, number>();
     for (const r of rows) {
@@ -220,113 +353,107 @@ export function FlowTransportGrid(): JSX.Element {
       .sort((a, b) => workKey(a) - workKey(b) || a.localeCompare(b, 'ru'));
   }, [rows]);
 
+  // Авто-ширина «как формирование»: замер уникальных значений колонок (12px Inter),
+  // клампы; РАБОТА и ТИП вписываются целиком (ТИП дополнительно переносится).
+  const colWidths = useMemo(() => {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const widths = new Map<string, number>();
+    if (!ctx) return widths;
+    ctx.font = '12px "Inter Variable", system-ui, sans-serif';
+    const sample = viewRows.length > 0 ? viewRows : rows;
+    for (const spec of TR_COLS) {
+      const uniq = new Set<string>();
+      uniq.add(spec.title);
+      for (const r of sample) uniq.add(cellText(spec.id, r));
+      let max = 0;
+      for (const v of uniq) max = Math.max(max, ctx.measureText(v).width);
+      const pad = 18;
+      const cap = spec.id === 'vtype' ? 170 : spec.id === 'work' ? 420 : spec.id === 'comment' ? 260 : 340;
+      widths.set(spec.id, Math.min(cap, Math.max(40, Math.ceil(max + pad))));
+    }
+    return widths;
+  }, [viewRows, rows, cellText]);
+
   const columns = useMemo<GridColumn[]>(
-    () => TR_COLS.map((c) => ({ id: c.id, title: c.title, width: c.width })),
-    [],
+    () => TR_COLS.map((c) => ({ id: c.id, title: c.title, width: colWidths.get(c.id) ?? 80 })),
+    [colWidths],
   );
 
-  const cellText = useCallback(
-    (spec: TrColSpec, r: FlowTransportRow, rowIdx: number): string => {
+  // ТИП переносится по словам: строка выше, если тип не влез в ширину колонки.
+  const getRowHeight = useCallback(
+    (row: number): number => {
+      const r = viewRows[row];
+      if (!r) return 22;
       const veh = vehByGarage.get(r.garage_no);
-      switch (spec.id) {
-        case 'date': {
-          // Дата — один раз на блок дня (как разделитель), внутри блока пусто.
-          const prev = viewRows[rowIdx - 1];
-          return !prev || prev.tdate !== r.tdate ? fmtDay(r.tdate) : '';
-        }
-        case 'garage':
-          return r.garage_no || '';
-        case 'out':
-          return r.garage_no ? (veh ? (veh.ban ? 'НЕТ' : 'ДА') : '?') : '';
-        case 'gos':
-          return veh?.gos_no ?? '';
-        case 'model':
-          return veh?.model ?? '';
-        case 'vtype':
-          return veh?.vtype ?? '';
-        case 'cap':
-          return tons(veh?.capacity_kg);
-        case 'max':
-          return tons(veh?.max_mass_kg);
-        case 'len':
-          return meters(veh?.len_mm);
-        case 'wid':
-          return meters(veh?.wid_mm);
-        case 'hei':
-          return meters(veh?.hei_mm);
-        case 'work':
-          return r.work || '';
-        case 'time':
-          return r.time_range || '';
-        case 'status':
-          return r.status || '';
-        case 'comment':
-          return r.comment || '';
-        case 'driver':
-          return r.driver || (veh?.driver ?? '');
-        case 'phone': {
-          const p = r.driver_phone || (veh?.driver_phone ?? '');
-          return p ? formatMobilePhone(p) : '';
-        }
-        case 'exp':
-          return r.expeditors || '';
-        case 'ot':
-          return r.ot || '';
-        case 'sp':
-          return r.sp || '';
-        case 'order':
-          return r.order_no || '';
-        default:
-          return '';
-      }
+      const vt = veh?.vtype ?? '';
+      const w = colWidths.get('vtype') ?? 150;
+      return vt.length * 6.4 > w - 16 ? 34 : 22; // ~6.4px/симв при 12px
     },
-    [vehByGarage, viewRows],
+    [viewRows, vehByGarage, colWidths],
   );
+
+  const cutoff = editCutoff();
+  const rowLocked = useCallback((r: FlowTransportRow) => r.tdate < cutoff, [cutoff]);
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
       const spec = TR_COLS[col];
       const r = viewRows[row];
       if (!spec || !r) return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
+      const locked = rowLocked(r);
       if (spec.id === 'status') {
-        // СТАТУС — выпадашка СТРОГО как в эталоне (пусто + 5 значений).
         const cell: FlowDropdownCell = {
           kind: GridCellKind.Custom,
-          allowOverlay: true,
+          allowOverlay: !locked,
           copyData: r.status || '',
-          data: { kind: 'flow-dropdown', value: r.status || '', options: ['', ...FLOW_TRANSPORT_STATUSES] },
+          data: { kind: 'flow-dropdown', value: r.status || '', options: STATUS_ORDER },
         };
         return cell;
       }
       if (spec.id === 'work') {
-        // РАБОТА — частые задания из статистики + свой текст (поле сверху, Enter).
         const cell: FlowDropdownCell = {
           kind: GridCellKind.Custom,
-          allowOverlay: true,
+          allowOverlay: !locked,
           copyData: r.work || '',
           data: { kind: 'flow-dropdown', value: r.work || '', options: workOptions, allowCustom: true },
         };
         return cell;
       }
-      const text = cellText(spec, r, row);
-      const editable = !!spec.editable;
-      // Правки пишем сырьём (телефон — raw цифры), показ — форматированный.
+      const text = cellText(spec.id, r);
+      if (spec.id === 'brand') {
+        // МАРКА: показ — тип техники; полная модель — по двойному клику (read-only оверлей).
+        const veh = vehByGarage.get(r.garage_no);
+        return {
+          kind: GridCellKind.Text,
+          data: veh?.model ?? '',
+          displayData: text,
+          allowOverlay: true,
+          readonly: true,
+        };
+      }
+      if (spec.id === 'vtype') {
+        return { kind: GridCellKind.Text, data: text, displayData: text, allowOverlay: false, allowWrapping: true };
+      }
+      const editable = !!spec.editable && !locked;
       const rawData =
         spec.id === 'phone'
           ? r.driver_phone || (vehByGarage.get(r.garage_no)?.driver_phone ?? '')
           : spec.id === 'driver'
             ? r.driver || (vehByGarage.get(r.garage_no)?.driver ?? '')
-            : text;
+            : spec.id === 'time'
+              ? r.time_range
+              : text;
       return {
         kind: GridCellKind.Text,
         data: rawData,
         displayData: text,
         allowOverlay: editable,
         readonly: !editable,
-        contentAlign: ['cap', 'max', 'len', 'wid', 'hei'].includes(spec.id) ? 'right' : 'left',
+        contentAlign: ['max', 'cap', 'len', 'wid', 'hei'].includes(spec.id) ? 'right' : spec.id === 'trip' ? 'center' : 'left',
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -345,8 +472,11 @@ export function FlowTransportGrid(): JSX.Element {
       const [col, row] = cell;
       const spec = TR_COLS[col];
       const r = viewRows[row];
-      if (!spec || !r || !spec.editable) return;
-
+      if (!spec || !r) return;
+      if (rowLocked(r)) {
+        setMsg('Старше 7 дней — архив, правки заблокированы');
+        return;
+      }
       let value = '';
       if (newValue.kind === GridCellKind.Custom) {
         const d = (newValue as FlowDropdownCell).data;
@@ -364,10 +494,6 @@ export function FlowTransportGrid(): JSX.Element {
         comment: 'comment',
         driver: 'driver',
         phone: 'driver_phone',
-        exp: 'expeditors',
-        ot: 'ot',
-        sp: 'sp',
-        order: 'order_no',
       };
       const field = fieldByCol[spec.id];
       if (!field) return;
@@ -381,23 +507,35 @@ export function FlowTransportGrid(): JSX.Element {
         (res) => applyServerRows(res.rows),
       );
     },
-    [viewRows, applyServerRows],
+    [viewRows, applyServerRows, rowLocked],
   );
 
-  // Подсветка по статусу + разделение дней (верх блока чуть темнее заголовочно).
-  const getRowThemeOverride = useCallback(
-    (row: number): Partial<Theme> | undefined => {
+  // РЕЙС: двойной клик/Enter по колонке — поповер истории (план+факт из отчёта).
+  const onCellActivated = useCallback(
+    ([col, row]: Item) => {
+      const spec = TR_COLS[col];
       const r = viewRows[row];
-      if (!r) return undefined;
-      if (r.status === 'Отклонен' || r.status === 'Отмена') return { textDark: '#9B9892', bgCell: '#F6F5F2' };
-      if (r.status === 'Размещен') return { bgCell: '#EAF5EA' };
-      if (r.status === 'Новый') return { bgCell: '#FCF3E3' };
-      return undefined;
+      if (!spec || !r || spec.id !== 'trip' || !r.garage_no) return;
+      const b = gridRef.current?.getBounds(col, row);
+      if (b) setTrip({ row: r, x: b.x + b.width / 2, y: b.y + b.height });
     },
     [viewRows],
   );
 
-  // «Вставить из буфера» — шаблон как есть; разбор у нас, итог тостом.
+  // Подкраска по статусу (юзер): Размещен — зелёная; Отклонен/Отмена — красная;
+  // Новый/Открыт — без подкраски. Архив (старше 7 дней) — слегка приглушён.
+  const getRowThemeOverride = useCallback(
+    (row: number): Partial<Theme> | undefined => {
+      const r = viewRows[row];
+      if (!r) return undefined;
+      if (r.status === 'Размещен') return { bgCell: '#EAF5EA' };
+      if (r.status === 'Отклонен' || r.status === 'Отмена') return { bgCell: '#FBE7E4', textDark: '#7A2A1D' };
+      if (rowLocked(r)) return { textDark: '#8C8983' };
+      return undefined;
+    },
+    [viewRows, rowLocked],
+  );
+
   const pasteFromClipboard = useCallback(() => {
     if (busy) return;
     setBusy(true);
@@ -407,7 +545,7 @@ export function FlowTransportGrid(): JSX.Element {
       .then(async (tsv) => {
         const parsed = parseTransportPaste(tsv);
         if (parsed.length === 0) {
-          setMsg('В буфере не нашёл строк шаблона (ДАТА + колонки листа)');
+          setMsg('В буфере не нашёл строк шаблона (пришли образец — подгоню разбор)');
           return;
         }
         const res = await flowTransportPaste(api, parsed);
@@ -420,38 +558,41 @@ export function FlowTransportGrid(): JSX.Element {
       .finally(() => setBusy(false));
   }, [busy]);
 
-  // «Добавить машину» на дату: есть в базе → строка; нет → карточка → повтор.
-  const runAdd = useCallback(
-    (date: string, garage: string) => {
-      setBusy(true);
-      setMsg('');
-      void flowTransportAdd(api, { date, garageNo: garage })
-        .then(() => {
+  const runAdd = useCallback((date: string, garage: string) => {
+    setBusy(true);
+    setMsg('');
+    void flowTransportAdd(api, { date, garageNo: garage })
+      .then(() => {
+        setAddOpen(false);
+        setAddGarage('');
+        setMsg(`Машина ${garage} добавлена на ${fmtDay(date)}`);
+      })
+      .catch((e) => {
+        const t = e instanceof Error ? e.message : String(e);
+        if (t.includes('vehicle_not_found')) {
+          pendingAddRef.current = { date, garage };
+          setCardGarage(garage);
           setAddOpen(false);
-          setAddGarage('');
-          setMsg(`Машина ${garage} добавлена на ${fmtDay(date)}`);
-        })
-        .catch((e) => {
-          const t = e instanceof Error ? e.message : String(e);
-          if (t.includes('vehicle_not_found')) {
-            // Машины нет в базе → карточка; после сохранения добавим строку сами.
-            pendingAddRef.current = { date, garage };
-            setCardGarage(garage);
-            setAddOpen(false);
-          } else setMsg(`Ошибка: ${t.slice(0, 80)}`);
-        })
-        .finally(() => setBusy(false));
-    },
-    [],
-  );
+        } else if (t.includes('date_too_old')) setMsg('Дата старше 7 дней — добавлять нельзя');
+        else setMsg(`Ошибка: ${t.slice(0, 80)}`);
+      })
+      .finally(() => setBusy(false));
+  }, []);
 
   const selectedCount = selection.rows.length;
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];
+    let lockedHit = false;
     for (const idx of selection.rows) {
       const r = viewRows[idx];
-      if (r) ids.push(r.id);
+      if (!r) continue;
+      if (rowLocked(r)) {
+        lockedHit = true;
+        continue;
+      }
+      ids.push(r.id);
     }
+    if (lockedHit) setMsg('Часть строк старше 7 дней — они не удаляются (архив)');
     if (ids.length === 0) return;
     setRows((prev) => {
       const drop = new Set(ids);
@@ -461,7 +602,7 @@ export function FlowTransportGrid(): JSX.Element {
     });
     setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
     void flowTransportDelete(api, ids).catch(() => undefined);
-  }, [selection, viewRows]);
+  }, [selection, viewRows, rowLocked]);
 
   const measureRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -480,12 +621,12 @@ export function FlowTransportGrid(): JSX.Element {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[#FDFDFB]">
-      <div className="flex shrink-0 items-center gap-3 border-b border-black/[0.06] px-4 py-1.5 text-[12px] text-[#6B6862]">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-black/[0.06] px-4 py-1.5 text-[12px] text-[#6B6862]">
         <button
           type="button"
           onClick={pasteFromClipboard}
           disabled={busy}
-          title="Вставить выгрузку из буфера (шаблон листа как есть) — машины уйдут в базу, строки в дни"
+          title="Вставить выгрузку из буфера — машины уйдут в базу, строки в дни (старше 7 дней пропускаются)"
           className="flex h-6 items-center gap-1.5 rounded-md border border-black/10 px-2 text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:opacity-50"
         >
           {busy ? (
@@ -511,19 +652,10 @@ export function FlowTransportGrid(): JSX.Element {
             <Popover.Content
               align="start"
               sideOffset={6}
-              className="z-50 w-[230px] rounded-lg border border-border-subtle bg-bg-surface p-3 shadow-lg"
+              className="z-50 w-[248px] rounded-lg border border-border-subtle bg-bg-surface p-3 shadow-lg"
             >
               <div className="flex flex-col gap-2">
-                <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wide text-text-muted/70">
-                  Дата
-                  <input
-                    type="date"
-                    value={addDate}
-                    min={addDate}
-                    onChange={(e) => setAddDate(e.target.value)}
-                    className="h-7 rounded-md border border-border-subtle bg-transparent px-2 text-[12px] text-text-primary outline-none focus:border-accent-clay/60"
-                  />
-                </label>
+                <FlowMiniCalendar value={addDate} minDate={cutoff} onChange={setAddDate} />
                 <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wide text-text-muted/70">
                   Гаражный №
                   <input
@@ -549,13 +681,13 @@ export function FlowTransportGrid(): JSX.Element {
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
-        {/* Печать листа на день: выбор дня → системная печать или PDF. */}
+        {/* Печать: превью-окно листа на день (как График — видишь, что уйдёт на бумагу). */}
         <Popover.Root open={printOpen} onOpenChange={setPrintOpen}>
           <Popover.Trigger asChild>
             <button
               type="button"
               disabled={busy || rows.length === 0}
-              title="Печать листа транспорта на день"
+              title="Печать листа транспорта на день (с предпросмотром)"
               className="flex h-6 items-center gap-1.5 rounded-md border border-black/10 px-2 text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:opacity-50"
             >
               <Printer size={13} strokeWidth={1.75} />
@@ -566,53 +698,88 @@ export function FlowTransportGrid(): JSX.Element {
             <Popover.Content
               align="start"
               sideOffset={6}
-              className="z-50 w-[230px] rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-lg"
+              className="z-50 w-[200px] rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-lg"
             >
               <div className="px-1 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-text-muted/70">
                 Лист на день
               </div>
               <div className="flex max-h-[260px] flex-col gap-0.5 overflow-y-auto">
-                {[...new Set(rows.map((r) => r.tdate))]
-                  .sort((a, b) => b.localeCompare(a))
-                  .slice(0, 14)
-                  .map((d) => (
-                    <div key={d} className="flex items-center justify-between gap-1 rounded-md px-2 py-0.5 hover:bg-bg-deep">
-                      <span className="text-[12px] text-text-secondary">{fmtDay(d)}</span>
-                      <span className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          title="Системная печать"
-                          onClick={() => {
-                            setPrintOpen(false);
-                            setPrintReq({ date: d, mode: 'dialog' });
-                          }}
-                          className="rounded border border-border-subtle px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:border-accent-clay/60 hover:text-text-strong"
-                        >
-                          Печать
-                        </button>
-                        <button
-                          type="button"
-                          title="Сохранить PDF"
-                          onClick={() => {
-                            setPrintOpen(false);
-                            setPrintReq({ date: d, mode: 'save' });
-                          }}
-                          className="rounded border border-border-subtle px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:border-accent-clay/60 hover:text-text-strong"
-                        >
-                          PDF
-                        </button>
-                      </span>
-                    </div>
-                  ))}
+                {allDays.slice(0, 14).map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => {
+                      setPrintOpen(false);
+                      setPrintDay(d);
+                    }}
+                    className="rounded-md px-2 py-1 text-left text-[12px] text-text-secondary transition-colors hover:bg-bg-deep hover:text-text-strong"
+                  >
+                    {fmtDay(d)}
+                  </button>
+                ))}
               </div>
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
+        {/* Поиск + фильтры. */}
+        <div className="flex h-6 items-center gap-1 rounded-md border border-black/10 px-1.5">
+          <Search size={12} strokeWidth={1.75} className="text-[#6B6862]/70" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Поиск…"
+            className="w-[130px] bg-transparent text-[12px] text-[#0A0A0A] outline-none placeholder:text-[#6B6862]/50"
+          />
+          {search && (
+            <button type="button" onClick={() => setSearch('')} className="text-[#6B6862] hover:text-[#0A0A0A]">
+              ×
+            </button>
+          )}
+        </div>
+        <select
+          value={dayFilter}
+          onChange={(e) => setDayFilter(e.target.value)}
+          className="h-6 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#3F3D38] outline-none"
+          title="Фильтр по дню"
+        >
+          <option value="">Все дни</option>
+          {allDays.map((d) => (
+            <option key={d} value={d}>
+              {fmtDay(d)}
+            </option>
+          ))}
+        </select>
+        <div className="flex items-center gap-1">
+          {STATUS_ORDER.map((st) => {
+            const on = statusFilter.has(st);
+            return (
+              <button
+                key={st}
+                type="button"
+                onClick={() =>
+                  setStatusFilter((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(st)) next.delete(st);
+                    else next.add(st);
+                    return next;
+                  })
+                }
+                title={`Фильтр: ${st}`}
+                className={cn(
+                  'rounded-full border px-1.5 py-[1px] text-[11px] transition-colors',
+                  on ? 'border-accent-clay/70 text-[#0A0A0A]' : 'border-black/10 text-[#6B6862]/70 hover:text-[#3F3D38]',
+                )}
+              >
+                {st}
+              </button>
+            );
+          })}
+        </div>
         <span className="tabular-nums">
-          {rows.length} строк · {dayCount} дней · {vehicles.length} машин в базе
+          {viewRows.length}/{rows.length} строк · {dayCount} дней · {vehicles.length} машин
         </span>
         {msg && (
-          <span className="max-w-[340px] truncate text-[11px] text-[#6B6862]" title={msg}>
+          <span className="max-w-[300px] truncate text-[11px] text-[#6B6862]" title={msg}>
             {msg}
           </span>
         )}
@@ -636,14 +803,15 @@ export function FlowTransportGrid(): JSX.Element {
             Загрузка транспорта…
           </div>
         )}
-        {!loading && rows.length === 0 && (
+        {!loading && viewRows.length === 0 && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-[13px] text-[#6B6862]">
-            <span className="text-[14px] font-medium text-[#2A2925]">Транспорта пока нет</span>
-            <span>Скопируйте выгрузку и нажмите «Вставить из буфера» — машины уйдут в базу сами.</span>
+            <span className="text-[14px] font-medium text-[#2A2925]">Пусто</span>
+            <span>Вставьте выгрузку из буфера или снимите фильтры.</span>
           </div>
         )}
         {size.width > 0 && size.height > 0 && (
           <DataEditor
+            ref={gridRef}
             theme={gridTheme}
             width={size.width}
             height={size.height}
@@ -651,33 +819,40 @@ export function FlowTransportGrid(): JSX.Element {
             rows={viewRows.length}
             getCellContent={getCellContent}
             onCellEdited={onCellEdited}
+            onCellActivated={onCellActivated}
             gridSelection={selection}
             onGridSelectionChange={setSelection}
             getRowThemeOverride={getRowThemeOverride}
             customRenderers={TR_RENDERERS}
             getCellsForSelection
             rowMarkers="none"
-            freezeColumns={2}
+            freezeColumns={3}
             rowSelect="multi"
             columnSelect="none"
             rangeSelect="rect"
-            rowHeight={22}
+            rowHeight={getRowHeight}
             headerHeight={22}
             smoothScrollX
             smoothScrollY
           />
         )}
       </div>
-      {printReq && (
+      {trip && (
+        <TransportTripCard
+          row={trip.row}
+          x={trip.x}
+          y={trip.y}
+          onClose={() => setTrip(null)}
+        />
+      )}
+      {printDay && (
         <FlowTransportPrint
-          date={printReq.date}
-          mode={printReq.mode}
-          rows={viewRows.filter((r) => r.tdate === printReq.date)}
+          date={printDay}
+          rows={rows
+            .filter((r) => r.tdate === printDay)
+            .sort((a, b) => workKey(a.work) - workKey(b.work) || a.id - b.id)}
           vehByGarage={vehByGarage}
-          onDone={(ok, error) => {
-            setPrintReq(null);
-            setMsg(ok ? `Лист на ${fmtDay(printReq.date)} отправлен на печать` : `Печать: ${error ?? 'ошибка'}`);
-          }}
+          onClose={() => setPrintDay(null)}
         />
       )}
       {cardGarage !== null && (
@@ -686,7 +861,6 @@ export function FlowTransportGrid(): JSX.Element {
           vehicle={vehByGarage.get(cardGarage) ?? null}
           onClose={() => setCardGarage(null)}
           onSaved={(veh) => {
-            // Обновляем базу локально и, если карточку открыло «Добавить», доводим добавление.
             setVehicles((prev) => {
               const byKey = new Map(prev.map((v) => [v.garage_no, v] as const));
               byKey.set(veh.garage_no, veh);
@@ -706,3 +880,188 @@ export function FlowTransportGrid(): JSX.Element {
     </div>
   );
 }
+
+/**
+ * Мини-календарь в стиле приложения (вместо нативного date-input): месяц листается,
+ * даты раньше `minDate` задизейблены (защита 7 дней). Переиспользуемый.
+ */
+export function FlowMiniCalendar({
+  value,
+  minDate,
+  onChange,
+}: {
+  value: string;
+  minDate?: string;
+  onChange: (iso: string) => void;
+}): JSX.Element {
+  const init = /^\d{4}-(\d{2})/.exec(value);
+  const [ym, setYm] = useState(() => ({
+    y: init ? Number(value.slice(0, 4)) : new Date().getFullYear(),
+    m: init ? Number(value.slice(5, 7)) : new Date().getMonth() + 1,
+  }));
+  const first = new Date(ym.y, ym.m - 1, 1);
+  const startWd = (first.getDay() + 6) % 7; // ПН=0
+  const daysIn = new Date(ym.y, ym.m, 0).getDate();
+  const cells: (number | null)[] = [
+    ...Array.from({ length: startWd }, () => null),
+    ...Array.from({ length: daysIn }, (_, i) => i + 1),
+  ];
+  const iso = (d: number) => `${ym.y}-${String(ym.m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  return (
+    <div className="rounded-md border border-border-subtle p-2">
+      <div className="mb-1 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => setYm((p) => (p.m === 1 ? { y: p.y - 1, m: 12 } : { y: p.y, m: p.m - 1 }))}
+          className="rounded p-0.5 text-text-muted hover:text-text-strong"
+        >
+          <ChevronLeft size={14} />
+        </button>
+        <span className="text-[12px] font-medium text-text-strong">
+          {MONTH_ABBR_RU[ym.m - 1]} {ym.y}
+        </span>
+        <button
+          type="button"
+          onClick={() => setYm((p) => (p.m === 12 ? { y: p.y + 1, m: 1 } : { y: p.y, m: p.m + 1 }))}
+          className="rounded p-0.5 text-text-muted hover:text-text-strong"
+        >
+          <ChevronRight size={14} />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 gap-[2px] text-center text-[10px] text-text-muted/60">
+        {['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'].map((w) => (
+          <span key={w}>{w}</span>
+        ))}
+      </div>
+      <div className="mt-0.5 grid grid-cols-7 gap-[2px]">
+        {cells.map((d, i) => {
+          if (d === null) return <span key={`e${i}`} />;
+          const dIso = iso(d);
+          const disabled = !!minDate && dIso < minDate;
+          const selected = dIso === value;
+          return (
+            <button
+              key={dIso}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(dIso)}
+              className={cn(
+                'rounded py-[2px] text-[11px] tabular-nums transition-colors',
+                selected
+                  ? 'bg-accent-clay/25 font-semibold text-text-strong'
+                  : disabled
+                    ? 'cursor-default text-text-muted/30'
+                    : 'text-text-secondary hover:bg-accent-clay/15 hover:text-text-strong',
+              )}
+            >
+              {d}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * РЕЙС — история машины за день из ОТЧЁТА: по зафиксированным поставкам с
+ * ID == гаражный №: экспедиторы + склады ОТ/СП (план и факт). Склад зелёный,
+ * если ХОТЬ ОДНА его поставка «увезли»; серый — всё отменено/не увезено.
+ */
+function TransportTripCard({
+  row,
+  x,
+  y,
+  onClose,
+}: {
+  row: FlowTransportRow;
+  x: number;
+  y: number;
+  onClose: () => void;
+}): JSX.Element {
+  const [dlv, setDlv] = useState<FlowDeliveryRow[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void flowDeliveriesGet(api, { planDate: row.tdate })
+      .then((rows) => {
+        if (alive) setDlv(rows.filter((d) => Number(d.fixation_id) > 0 && (d.ride_id || '').trim() === row.garage_no));
+      })
+      .catch(() => {
+        if (alive) setDlv([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [row]);
+
+  const { exps, fromWhs, toWhs } = useMemo(() => {
+    const e = new Set<string>();
+    const from = new Map<string, boolean>(); // склад → есть «увезли»
+    const to = new Map<string, boolean>();
+    for (const d of dlv ?? []) {
+      if (d.exp1) e.add(d.exp1);
+      if (d.exp2) e.add(d.exp2);
+      const ok = d.done_stat === 'увезли';
+      if ((d.fr || '').trim()) from.set(d.fr, (from.get(d.fr) ?? false) || ok);
+      if ((d.to_wh || '').trim()) to.set(d.to_wh, (to.get(d.to_wh) ?? false) || ok);
+    }
+    const sortEntries = (m: Map<string, boolean>) => [...m.entries()].sort((a, b) => cmpWh(a[0], b[0]));
+    return { exps: [...e], fromWhs: sortEntries(from), toWhs: sortEntries(to) };
+  }, [dlv]);
+
+  const pill = ([wh, ok]: [string, boolean]) => (
+    <span
+      key={wh}
+      className={cn(
+        'rounded-full border px-1.5 py-[1px] text-[11px] tabular-nums',
+        ok ? 'border-[#1F7A33]/50 bg-[#EAF5EA] text-[#1F7A33]' : 'border-black/15 bg-black/[0.04] text-[#8C8983]',
+      )}
+    >
+      {wh}
+    </span>
+  );
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div
+        className="fixed z-50 w-[280px] -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-surface p-3 shadow-xl"
+        style={{ left: x, top: y + 4 }}
+      >
+        <div className="flex items-center gap-1.5 text-[12px] font-medium text-text-strong">
+          <History size={13} strokeWidth={1.75} className="text-accent-clay" />
+          Машина {row.garage_no} · {fmtDay(row.tdate)}
+        </div>
+        {dlv === null && <div className="mt-2 text-[12px] text-text-muted">Загрузка…</div>}
+        {dlv !== null && dlv.length === 0 && (
+          <div className="mt-2 text-[12px] text-text-muted">
+            В отчёте нет зафиксированных поставок с ID {row.garage_no} на этот день.
+          </div>
+        )}
+        {dlv !== null && dlv.length > 0 && (
+          <div className="mt-2 flex flex-col gap-2 text-[12px] text-text-secondary">
+            {exps.length > 0 && (
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-text-muted/60">Экспедиторы</div>
+                <div>{exps.join(', ')}</div>
+              </div>
+            )}
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-text-muted/60">ОТ (склады-отправители)</div>
+              <div className="mt-0.5 flex flex-wrap gap-1">{fromWhs.map(pill)}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-text-muted/60">СП (получатели)</div>
+              <div className="mt-0.5 flex flex-wrap gap-1">{toWhs.map(pill)}</div>
+            </div>
+            <div className="text-[10px] text-text-muted/60">
+              зелёный — увезли · серый — отменено/не увезено · {dlv.length} поставок
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+void whKey; // (резерв: ключ склада для будущих сортировок)

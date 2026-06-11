@@ -4,6 +4,7 @@ import {
   NAV_FEED,
   NAV_FLOW,
   NAV_VGH,
+  NAV_TRANSPORT,
   NAV_LOG,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
@@ -307,6 +308,7 @@ export function Sidebar({
 
         {/* §vgh — «ВГХ» (вес/габариты): прямая связь с «Потоком», работаем часто. */}
         {showVgh && renderNavItem(NAV_VGH)}
+        {showVgh && renderNavItem(NAV_TRANSPORT)}
 
         {/* «База» (Контакты/МОЛы / Склады) — частые проверки в течение дня + при «Потоке».
             Пункт с hover-флайаутом листов; выбор листа → setBaseTab + переход. */}

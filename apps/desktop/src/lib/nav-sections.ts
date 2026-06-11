@@ -1,4 +1,4 @@
-import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Scale, Waves } from 'lucide-react';
+import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Scale, Truck, Waves } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -56,6 +56,17 @@ export const NAV_VGH: NavSection = {
   get label() { return i18next.t('sidebar.nav_vgh'); },
   icon: Scale,
   iconColor: 'text-violet-400',
+};
+
+/**
+ * Раздел «Транспорт» — реестр «машина на день» (база машин + лист дня, эталон —
+ * лист 🚚). Тот же изолированный контур, что «Поток» (admin/developer-only); вне
+ * `NAV_SECTIONS`. Вынесен из вкладок Потока в отдельный пункт (юзер 2026-06-11).
+ */
+export const NAV_TRANSPORT: NavSection = {
+  id: 'transport',
+  get label() { return i18next.t('sidebar.nav_transport', 'Транспорт'); },
+  icon: Truck,
 };
 
 /**
