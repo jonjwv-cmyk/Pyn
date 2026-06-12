@@ -174,11 +174,18 @@ export function VghEditCard({ noNum, addMode = false, seed, note, onClose }: Vgh
   const effWeight = autoW != null ? autoW : parseNum(form.weight_kg);
   const effMinQty = minLocked ? 1 : parseNum(form.min_qty);
 
-  // Добавление НОВОЙ: обязательны номенклатура + наименование + ЕИ + вес + ≥1 склад-отправитель.
-  // Правка/дубль — без обязательных (данные уже есть).
+  // Вес на 1 ЕИ ОБЯЗАН быть > 0 (юзер 2026-06-12, п.10): нулевой вес (все нули до и после
+  // запятой) запрещён и при добавлении, и при правке. Авто-вес по ЕИ (Т/КГ/Г) всегда > 0.
+  const weightValid = effWeight != null && effWeight > 0;
+  // Показ ошибки на поле веса — только когда вводится руками и юзер ввёл нулевое/некорректное.
+  const weightInvalid = autoW == null && form.weight_kg.trim() !== '' && !weightValid;
+
+  // Добавление НОВОЙ: обязательны номенклатура + наименование + ЕИ + вес>0 + ≥1 склад-отправитель.
+  // Правка/дубль — данные уже есть, но вес>0 проверяем всегда (запрет нулевого веса).
   const canSave =
-    editing ||
-    (editNoNum !== '' && form.mat.trim() !== '' && form.uom.trim() !== '' && effWeight != null && whList.length > 0);
+    weightValid &&
+    (editing ||
+      (editNoNum !== '' && form.mat.trim() !== '' && form.uom.trim() !== '' && whList.length > 0));
 
   const save = async (): Promise<void> => {
     if (!editNoNum || saving || !canSave) return;
@@ -255,6 +262,8 @@ export function VghEditCard({ noNum, addMode = false, seed, note, onClose }: Vgh
                     onChange={(v) => set('weight_kg', v)}
                     mono
                     required={!editing}
+                    invalid={weightInvalid}
+                    hint={weightInvalid ? 'не может быть 0' : undefined}
                     autoFocus={!addMode && !note}
                     placeholder={seed?.weightHint != null ? `≈ ${fmtSmart(seed.weightHint, 3)}` : undefined}
                   />
@@ -418,7 +427,7 @@ function FieldLabel({ label, hint }: { label: string; hint?: string }): JSX.Elem
 }
 
 function Field({
-  label, value, onChange, placeholder, mono = false, autoFocus = false, required = false,
+  label, value, onChange, placeholder, mono = false, autoFocus = false, required = false, invalid = false, hint,
 }: {
   label: string;
   value: string;
@@ -427,11 +436,13 @@ function Field({
   mono?: boolean;
   autoFocus?: boolean;
   required?: boolean;
+  invalid?: boolean;
+  hint?: string;
 }): JSX.Element {
   const empty = required && value.trim() === '';
   return (
     <div>
-      <FieldLabel label={required ? `${label} *` : label} />
+      <FieldLabel label={required ? `${label} *` : label} hint={hint} />
       <input
         type="text"
         value={value}
@@ -444,7 +455,7 @@ function Field({
           // Редактируемые поля обводим НАШИМ (clay) цветом — заметнее, что меняемо (юзер 2026-06-07).
           'w-full rounded border bg-bg-surface px-2 py-1.5 text-[12.5px] text-text-primary outline-none',
           'placeholder:text-text-muted/60 focus:border-accent-clay/60',
-          empty ? 'border-accent-clay/55' : 'border-accent-clay/30',
+          invalid ? 'border-danger/60' : empty ? 'border-accent-clay/55' : 'border-accent-clay/30',
           mono && 'font-mono tabular-nums',
         )}
       />

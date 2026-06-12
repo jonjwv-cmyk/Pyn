@@ -26,11 +26,11 @@ import { formatFullYek } from '@/lib/format-time';
  *  • свёрнутый сайдбар — компактные иконки 2×2.
  */
 
-const SCRIPTS: { id: FlowScriptId; title: string; icon: typeof Download }[] = [
-  { id: 'obd', title: 'OBD', icon: Download },
-  { id: 'zmvl', title: 'zm_vl', icon: DatabaseZap },
-  { id: 'sed', title: 'СЭД', icon: FileText },
-  { id: 'mols', title: 'МОЛы', icon: Users },
+const SCRIPTS: { id: FlowScriptId; title: string; desc: string; icon: typeof Download }[] = [
+  { id: 'obd', title: 'OBD', desc: 'Синхронизация открытых поставок', icon: Download },
+  { id: 'zmvl', title: 'zm_vl', desc: 'Синхронизация реестра поставок', icon: DatabaseZap },
+  { id: 'sed', title: 'СЭД', desc: 'Синхронизация с СЭД', icon: FileText },
+  { id: 'mols', title: 'МОЛы', desc: 'Синхронизация МОЛов', icon: Users },
 ];
 
 /** Сколько держим «свечение работы» после нажатия (стаб; реальный прогон снимет раньше/событием). */
@@ -97,7 +97,7 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
   return (
     <div className={cn('px-1.5', collapsed ? 'py-1' : 'pb-1 pt-0.5')}>
       <div className="grid grid-cols-2 gap-1">
-        {SCRIPTS.map(({ id, title, icon: Icon }) => {
+        {SCRIPTS.map(({ id, title, desc, icon: Icon }) => {
           const p = presses.get(id);
           const who = p ? userByLogin.get(p.by) : undefined;
           const isRunning = running.has(id);
@@ -115,7 +115,7 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
                     ? 'border-accent-clay/80 bg-accent-clay/15 text-text-strong shadow-[0_0_10px_rgba(217,119,87,0.55)] animate-pulse'
                     : 'border-border-subtle text-text-secondary hover:border-border-default hover:text-text-strong',
                 )}
-                title={collapsed ? title : undefined}
+                title={collapsed ? `${title} — ${desc}` : desc}
               >
                 <Icon size={collapsed ? 14 : 13} strokeWidth={1.75} />
                 {!collapsed && <span className="truncate text-[11px] font-medium">{title}</span>}

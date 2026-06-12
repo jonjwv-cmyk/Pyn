@@ -11,7 +11,6 @@ import { FlowSandboxGrid } from './FlowSandboxGrid';
 import { FlowPlanGrid } from './FlowPlanGrid';
 import { FlowPlanFormButton } from './FlowPlanFormButton';
 import { FlowPlanFixButton } from './FlowPlanFixButton';
-import { FlowZmVlButton } from './FlowZmVlButton';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
 import { FlowImportIndicator, type FlowImportRunner } from './FlowImportIndicator';
 
@@ -110,7 +109,8 @@ export function FlowScreen(): JSX.Element {
               <FlowPlanFixButton />
             </>
           )}
-          {stage === 'report' && <FlowZmVlButton />}
+          {/* Кнопка «Сверка zm_vl» убрана из Отчёта (юзер 2026-06-12, п.7): её роль теперь
+              выполняет кнопка-скрипт zm_vl в сайдбаре. Компонент FlowZmVlButton оставлен. */}
         </div>
       </div>
       <WorkspaceCard>
