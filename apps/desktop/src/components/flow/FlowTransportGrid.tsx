@@ -532,6 +532,7 @@ export function FlowTransportGrid(): JSX.Element {
         displayData: text,
         allowOverlay: editable,
         readonly: !editable,
+        allowWrapping: spec.id === 'comment', // КОМЕНТ. переносится по словам (строка 36px вмещает 2)
         contentAlign: ['max', 'cap', 'len', 'wid', 'hei'].includes(spec.id) ? 'right' : spec.id === 'trip' ? 'center' : 'left',
         themeOverride: smallFont,
       };
