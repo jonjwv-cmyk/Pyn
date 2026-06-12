@@ -5,7 +5,7 @@ import type { FlowTransportRow, FlowVehicle } from '@pyn/core';
 import { formatMobilePhone } from '@/lib/mol-format';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import { MONTH_ABBR_RU } from './flow-sandbox.fixtures';
-import { vehicleBrand } from './FlowTransportGrid';
+import { vehicleBrand, timeRange12hLines } from './FlowTransportGrid';
 
 /**
  * Печать листа «Транспорт на день» — С ПРЕВЬЮ (как График): открывается окно с
@@ -150,6 +150,7 @@ export function FlowTransportPrint({
                 const veh = vehByGarage.get(r.garage_no);
                 const off = r.status === 'Отклонен' || r.status === 'Отмена';
                 const phone = r.driver_phone || veh?.driver_phone || '';
+                const timeLines = timeRange12hLines(r.time_range);
                 return (
                   <tr key={r.id} className={off ? 'tr-off' : undefined}>
                     <td>{veh?.model ? vehicleBrand(veh.model) : ''}</td>
@@ -159,7 +160,17 @@ export function FlowTransportPrint({
                       {veh?.capacity_kg != null ? fmtSmart(veh.capacity_kg / 1000, 2) : ''}
                     </td>
                     <td>{r.work}</td>
-                    <td>{(r.time_range || '').replace(/(^|[^\d])0(\d:)/g, '$1$2')}</td>
+                    <td>
+                      {timeLines ? (
+                        <>
+                          {timeLines[0]}
+                          <br />
+                          {timeLines[1]}
+                        </>
+                      ) : (
+                        (r.time_range || '').replace(/(^|[^\d])0(\d:)/g, '$1$2')
+                      )}
+                    </td>
                     <td>{r.status}</td>
                     <td>{r.driver || veh?.driver || ''}</td>
                     <td>{phone ? formatMobilePhone(phone) : ''}</td>

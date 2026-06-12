@@ -86,6 +86,11 @@ const TR_COLS: readonly TrColSpec[] = [
 /** Порядок статусов в выпадашке — по слову юзера; «(пусто)» НЕТ (снять = Delete). */
 const STATUS_ORDER = ['Размещен', 'Отклонен', 'Отмена', 'Новый', 'Открыт'] as const;
 
+/** Менее значимые колонки — мельче шрифтом (юзер 2026-06-12 п.6): марка/цвет/тип/
+ *  тоннаж (обе) и габариты Д/Ш/В. Остальные (№/работа/время/статус/коммент/водитель) — крупнее. */
+const SMALL_COLS = new Set(['brand', 'color', 'vtype', 'max', 'cap', 'len', 'wid', 'hei']);
+const SMALL_FONT = '10.5px';
+
 /** Известные марки техники (канонический регистр). Порядок не важен — матч по токену. */
 const BRANDS = [
   'КамАЗ', 'ЗИЛ', 'МАЗ', 'КрАЗ', 'УРАЛ', 'ГАЗ', 'АМКОДОР', 'ЛТМ', 'SDLG', 'МТЗ',
@@ -126,11 +131,26 @@ function fmtTimeRange(s: string): string {
   return (s || '').replace(/(^|[^\d])0(\d:)/g, '$1$2');
 }
 
-/** «08:00-20:00» → «8:00\n20:00» (две строки: начало сверху, конец снизу; юзер п.6). */
+/** «20:00» → «8:00 pm» (24-часовое хранение → 12-часовой показ). */
+function to12h(hm: string): string {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hm.trim());
+  if (!m) return hm.trim();
+  let h = Number(m[1]);
+  const ampm = h < 12 ? 'am' : 'pm';
+  h %= 12;
+  if (h === 0) h = 12;
+  return `${h}:${m[2]} ${ampm}`;
+}
+/** «08:00-20:00» (хранение 24ч) → ['8:00 am','8:00 pm'] (показ/печать 12ч); null если не диапазон. */
+export function timeRange12hLines(s: string): [string, string] | null {
+  const m = /^\s*(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})\s*$/.exec(s || '');
+  if (!m) return null;
+  return [to12h(m[1] ?? ''), to12h(m[2] ?? '')];
+}
+/** Для ячейки грида: две строки 12ч (или одной строкой 24ч без ведущих нулей, если не диапазон). */
 function fmtTimeTwoLine(s: string): string {
-  const clean = fmtTimeRange(s);
-  const m = /^(.*?)\s*[-–—]\s*(.*)$/.exec(clean);
-  return m ? `${m[1]}\n${m[2]}` : clean;
+  const lines = timeRange12hLines(s);
+  return lines ? `${lines[0]}\n${lines[1]}` : fmtTimeRange(s);
 }
 
 /** Ключ сортировки РАБОТЫ по числовому префиксу. */
@@ -198,6 +218,7 @@ export function FlowTransportGrid(): JSX.Element {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<Set<string>>(() => new Set());
   const [dayFilter, setDayFilter] = useState('');
+  const [dayPickerOpen, setDayPickerOpen] = useState(false);
   // «Добавить машину»: дата (наш мини-календарь) + гаражный; карточка при отсутствии в базе.
   const [addOpen, setAddOpen] = useState(false);
   const [addDate, setAddDate] = useState(isoToday);
@@ -391,13 +412,14 @@ export function FlowTransportGrid(): JSX.Element {
     const ctx = canvas.getContext('2d');
     const widths = new Map<string, number>();
     if (!ctx) return widths;
-    ctx.font = '12px "Inter Variable", system-ui, sans-serif';
     const sample = viewRows.length > 0 ? viewRows : rows;
     for (const spec of TR_COLS) {
+      // Заголовок меряем шрифтом шапки (600 12px — жирный шире); значения — шрифтом тела колонки.
+      ctx.font = '600 12px "Inter Variable", system-ui, sans-serif';
+      let max = ctx.measureText(spec.title).width;
+      ctx.font = `${SMALL_COLS.has(spec.id) ? SMALL_FONT : '12px'} "Inter Variable", system-ui, sans-serif`;
       const uniq = new Set<string>();
-      uniq.add(spec.title);
       for (const r of sample) uniq.add(cellText(spec.id, r));
-      let max = 0;
       for (const v of uniq) max = Math.max(max, ctx.measureText(v).width);
       const pad = 18;
       const cap = spec.id === 'vtype' ? 170 : spec.id === 'work' ? 420 : spec.id === 'comment' ? 260 : 340;
@@ -406,9 +428,14 @@ export function FlowTransportGrid(): JSX.Element {
     return widths;
   }, [viewRows, rows, cellText]);
 
+  // Колонка ДАТА показывается ТОЛЬКО в режиме «Все дни»: когда выбран конкретный день
+  // (через календарь-фильтр), дата и так в шапке-фильтре → колонку прячем (юзер 2026-06-12 п.6).
+  const showDate = dayFilter === '';
+  const cols = useMemo(() => (showDate ? TR_COLS : TR_COLS.filter((c) => c.id !== 'date')), [showDate]);
+
   const columns = useMemo<GridColumn[]>(
-    () => TR_COLS.map((c) => ({ id: c.id, title: c.title, width: colWidths.get(c.id) ?? 80 })),
-    [colWidths],
+    () => cols.map((c) => ({ id: c.id, title: c.title, width: colWidths.get(c.id) ?? 80 })),
+    [cols, colWidths],
   );
 
   // Высота строки фиксирована и выше обычной: вмещает ВОДИТЕЛЬ (ФИО + СОТ под ним) и
@@ -420,7 +447,7 @@ export function FlowTransportGrid(): JSX.Element {
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
-      const spec = TR_COLS[col];
+      const spec = cols[col];
       const r = viewRows[row];
       if (!spec || !r) return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
       const locked = rowLocked(r);
@@ -443,6 +470,7 @@ export function FlowTransportGrid(): JSX.Element {
         return cell;
       }
       const text = cellText(spec.id, r);
+      const smallFont = SMALL_COLS.has(spec.id) ? { baseFontStyle: SMALL_FONT } : undefined;
       if (spec.id === 'brand') {
         // МАРКА: показ — тип техники; полная модель — по двойному клику (read-only оверлей).
         const veh = vehByGarage.get(r.garage_no);
@@ -452,10 +480,18 @@ export function FlowTransportGrid(): JSX.Element {
           displayData: text,
           allowOverlay: true,
           readonly: true,
+          themeOverride: smallFont,
         };
       }
       if (spec.id === 'vtype') {
-        return { kind: GridCellKind.Text, data: text, displayData: text, allowOverlay: false, allowWrapping: true };
+        return {
+          kind: GridCellKind.Text,
+          data: text,
+          displayData: text,
+          allowOverlay: false,
+          allowWrapping: true,
+          themeOverride: smallFont,
+        };
       }
       if (spec.id === 'driver') {
         // ВОДИТЕЛЬ: ФИО + СОТ под ним; двойной клик → поиск по базе водителей.
@@ -496,9 +532,10 @@ export function FlowTransportGrid(): JSX.Element {
         allowOverlay: editable,
         readonly: !editable,
         contentAlign: ['max', 'cap', 'len', 'wid', 'hei'].includes(spec.id) ? 'right' : spec.id === 'trip' ? 'center' : 'left',
+        themeOverride: smallFont,
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions, cols],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -515,7 +552,7 @@ export function FlowTransportGrid(): JSX.Element {
   const onCellEdited = useCallback(
     (cell: Item, newValue: EditableGridCell) => {
       const [col, row] = cell;
-      const spec = TR_COLS[col];
+      const spec = cols[col];
       const r = viewRows[row];
       if (!spec || !r) return;
       if (rowLocked(r)) {
@@ -566,19 +603,19 @@ export function FlowTransportGrid(): JSX.Element {
         (res) => applyServerRows(res.rows),
       );
     },
-    [viewRows, applyServerRows, rowLocked],
+    [viewRows, applyServerRows, rowLocked, cols],
   );
 
   // РЕЙС: двойной клик/Enter по колонке — поповер истории (план+факт из отчёта).
   const onCellActivated = useCallback(
     ([col, row]: Item) => {
-      const spec = TR_COLS[col];
+      const spec = cols[col];
       const r = viewRows[row];
       if (!spec || !r || spec.id !== 'trip' || !r.garage_no) return;
       const b = gridRef.current?.getBounds(col, row);
       if (b) setTrip({ row: r, x: b.x + b.width / 2, y: b.y + b.height });
     },
-    [viewRows],
+    [viewRows, cols],
   );
 
   // Подкраска по статусу (юзер): Размещен — зелёная; Отклонен/Отмена — красная;
@@ -795,19 +832,53 @@ export function FlowTransportGrid(): JSX.Element {
             </button>
           )}
         </div>
-        <select
-          value={dayFilter}
-          onChange={(e) => setDayFilter(e.target.value)}
-          className="h-6 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#3F3D38] outline-none"
-          title="Фильтр по дню"
-        >
-          <option value="">Все дни</option>
-          {allDays.map((d) => (
-            <option key={d} value={d}>
-              {fmtDay(d)}
-            </option>
-          ))}
-        </select>
+        {/* Выбор дня — наш календарь (юзер 2026-06-12 п.5). «Все дни» сбрасывает фильтр. */}
+        <Popover.Root open={dayPickerOpen} onOpenChange={setDayPickerOpen}>
+          <Popover.Trigger asChild>
+            <button
+              type="button"
+              title="Выбрать день (календарь)"
+              className={cn(
+                'flex h-6 items-center gap-1 rounded-md border px-2 text-[12px] outline-none transition-colors',
+                dayFilter
+                  ? 'border-accent-clay/70 text-[#0A0A0A]'
+                  : 'border-black/10 text-[#3F3D38] hover:border-black/25',
+              )}
+            >
+              {dayFilter ? fmtDay(dayFilter) : 'Все дни'}
+            </button>
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Content
+              align="start"
+              sideOffset={6}
+              className="z-50 w-[248px] rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-lg"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setDayFilter('');
+                  setDayPickerOpen(false);
+                }}
+                className={cn(
+                  'mb-2 h-7 w-full rounded-md border text-[12px] transition-colors',
+                  dayFilter
+                    ? 'border-border-subtle text-text-secondary hover:border-border-default'
+                    : 'border-accent-clay/60 text-text-strong',
+                )}
+              >
+                Все дни
+              </button>
+              <FlowMiniCalendar
+                value={dayFilter || allDays[0] || isoToday()}
+                onChange={(iso) => {
+                  setDayFilter(iso);
+                  setDayPickerOpen(false);
+                }}
+              />
+            </Popover.Content>
+          </Popover.Portal>
+        </Popover.Root>
         <div className="flex items-center gap-1">
           {STATUS_ORDER.map((st) => {
             const on = statusFilter.has(st);
@@ -882,7 +953,7 @@ export function FlowTransportGrid(): JSX.Element {
             customRenderers={TR_RENDERERS}
             getCellsForSelection
             rowMarkers="none"
-            freezeColumns={3}
+            freezeColumns={showDate ? 3 : 2}
             rowSelect="multi"
             columnSelect="none"
             rangeSelect="rect"

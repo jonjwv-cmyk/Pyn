@@ -180,10 +180,18 @@ export function VghEditCard({ noNum, addMode = false, seed, note, onClose }: Vgh
   // Показ ошибки на поле веса — только когда вводится руками и юзер ввёл нулевое/некорректное.
   const weightInvalid = autoW == null && form.weight_kg.trim() !== '' && !weightValid;
 
+  // MIN QTY (транспортная норма) НЕЛЬЗЯ случайно ОБНУЛИТЬ при правке (юзер 2026-06-12): было
+  // ненулевое → стало нулевое/пусто = запрет (защита от затирания). Было нулевое/пусто → оставить
+  // нулевым можно. Применимо к ручной норме (штучные = 1, не редактируются).
+  const origMinQty = base?.min_qty ?? null;
+  const minQtyWipe =
+    !minLocked && origMinQty != null && origMinQty > 0 && (effMinQty == null || effMinQty <= 0);
+
   // Добавление НОВОЙ: обязательны номенклатура + наименование + ЕИ + вес>0 + ≥1 склад-отправитель.
-  // Правка/дубль — данные уже есть, но вес>0 проверяем всегда (запрет нулевого веса).
+  // Правка/дубль — данные уже есть, но вес>0 и не-обнуление нормы проверяем всегда.
   const canSave =
     weightValid &&
+    !minQtyWipe &&
     (editing ||
       (editNoNum !== '' && form.mat.trim() !== '' && form.uom.trim() !== '' && whList.length > 0));
 
@@ -285,7 +293,15 @@ export function VghEditCard({ noNum, addMode = false, seed, note, onClose }: Vgh
                 {minLocked ? (
                   <ReadField label="Транспортная норма" value="1" mono />
                 ) : (
-                  <Field label="Транспортная норма" value={form.min_qty} onChange={(v) => set('min_qty', v)} mono autoFocus={!addMode && !!note} />
+                  <Field
+                    label="Транспортная норма"
+                    value={form.min_qty}
+                    onChange={(v) => set('min_qty', v)}
+                    mono
+                    invalid={minQtyWipe}
+                    hint={minQtyWipe ? 'нельзя обнулить' : undefined}
+                    autoFocus={!addMode && !!note}
+                  />
                 )}
               </div>
               <ReadField label="Тех-имя" value={form.tech_name || '—'} />
