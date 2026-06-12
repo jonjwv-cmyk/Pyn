@@ -68,6 +68,8 @@ const TR_COLS: readonly TrColSpec[] = [
   // МАРКА сверху + ЦВЕТ кузова снизу (одна ячейка); № гаражный (жирный) + ГОС. № снизу (одна ячейка).
   { id: 'brand', title: 'МАРКА' },
   { id: 'garage', title: '№ · ГОС' },
+  // РЕЙС — сразу после №·ГОС и в закреплённой зоне (юзер 2026-06-12 п.R3.3).
+  { id: 'trip', title: 'РЕЙС' },
   { id: 'out', title: 'ВЫЕЗД' },
   { id: 'vtype', title: 'ТИП' },
   { id: 'max', title: 'ДОП.ТН' },
@@ -81,16 +83,17 @@ const TR_COLS: readonly TrColSpec[] = [
   { id: 'comment', title: 'КОМЕНТ.', editable: true },
   // ВОДИТЕЛЬ — ФИО + СОТ под ним (отдельной колонки СОТ. больше нет; юзер 2026-06-12 п.6).
   { id: 'driver', title: 'ВОДИТЕЛЬ', editable: true },
-  { id: 'trip', title: 'РЕЙС' },
 ];
 
 /** Порядок статусов в выпадашке — по слову юзера; «(пусто)» НЕТ (снять = Delete). */
 const STATUS_ORDER = ['Размещен', 'Отклонен', 'Отмена', 'Новый', 'Открыт'] as const;
 
-/** Менее значимые колонки — мельче шрифтом (юзер 2026-06-12 п.6): марка/цвет/тип/
- *  тоннаж (обе) и габариты Д/Ш/В. Остальные (№/работа/время/статус/коммент/водитель) — крупнее. */
+/** Шрифт как в Формировании: стандарт 10px на всю таблицу, второстепенные колонки — 8px
+ *  (юзер 2026-06-12: марка/№гос/тип/доп.тн/тн/Д/Ш/В мельче). Марка и №·ГОС — стек-ячейки
+ *  (рисуют свой 8px), здесь — текстовые второстепенные. */
 const SMALL_COLS = new Set(['vtype', 'max', 'cap', 'len', 'wid', 'hei']);
-const SMALL_FONT = '10.5px';
+const STD_FONT = '10px';
+const SMALL_FONT = '8px';
 
 /** Известные марки техники (канонический регистр). Порядок не важен — матч по токену. */
 const BRANDS = [
@@ -320,9 +323,9 @@ export function FlowTransportGrid(): JSX.Element {
     out.sort((a, b) => a.fio.localeCompare(b.fio, 'ru'));
     return out;
   }, [persons]);
-  const driverColorByFio = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const o of driverOptions) m.set(o.fio, o.color);
+  const driverByFio = useMemo(() => {
+    const m = new Map<string, FlowDriverOption>();
+    for (const o of driverOptions) m.set(o.fio, o);
     return m;
   }, [driverOptions]);
 
@@ -430,20 +433,23 @@ export function FlowTransportGrid(): JSX.Element {
     const widths = new Map<string, number>();
     if (!ctx) return widths;
     const sample = viewRows.length > 0 ? viewRows : rows;
+    // Стек-ячейки (марка+цвет, №·гос) рисуются мелким (8px) — меряем тем же.
+    const isSmallFont = (id: string) => SMALL_COLS.has(id) || id === 'garage' || id === 'brand';
     for (const spec of TR_COLS) {
-      // Заголовок меряем шрифтом шапки (600 12px — жирный шире); значения — шрифтом тела колонки.
-      ctx.font = '600 12px "Inter Variable", system-ui, sans-serif';
+      // Заголовок меряем шрифтом шапки (600 11px); значения — шрифтом тела колонки (10/8px).
+      ctx.font = '600 11px "Inter Variable", system-ui, sans-serif';
       let max = ctx.measureText(spec.title).width;
-      ctx.font = `${SMALL_COLS.has(spec.id) ? SMALL_FONT : '12px'} "Inter Variable", system-ui, sans-serif`;
+      ctx.font = `${isSmallFont(spec.id) ? SMALL_FONT : STD_FONT} "Inter Variable", system-ui, sans-serif`;
       const uniq = new Set<string>();
       for (const r of sample) uniq.add(cellText(spec.id, r));
       // Объединённые ячейки — учесть и нижнюю строку (ГОС у гаражного, ЦВЕТ у марки).
       if (spec.id === 'garage') for (const r of sample) uniq.add(cellText('gos', r));
       else if (spec.id === 'brand') for (const r of sample) uniq.add(cellText('color', r));
       for (const v of uniq) max = Math.max(max, ctx.measureText(v).width);
-      const pad = 18;
-      const cap = spec.id === 'vtype' ? 170 : spec.id === 'work' ? 420 : spec.id === 'comment' ? 260 : 340;
-      widths.set(spec.id, Math.min(cap, Math.max(40, Math.ceil(max + pad))));
+      // Плотная подгонка по тексту (юзер: «много пустот» → меньше pad/мин-ширины).
+      const pad = 12;
+      const cap = spec.id === 'vtype' ? 150 : spec.id === 'work' ? 380 : spec.id === 'comment' ? 240 : spec.id === 'driver' ? 220 : 300;
+      widths.set(spec.id, Math.min(cap, Math.max(32, Math.ceil(max + pad))));
     }
     return widths;
   }, [viewRows, rows, cellText]);
@@ -490,7 +496,8 @@ export function FlowTransportGrid(): JSX.Element {
         return cell;
       }
       const text = cellText(spec.id, r);
-      const smallFont = SMALL_COLS.has(spec.id) ? { baseFontStyle: SMALL_FONT } : undefined;
+      // Шрифт значения: стандарт 10px, второстепенные — 8px (как в Формировании).
+      const fontOverride = { baseFontStyle: SMALL_COLS.has(spec.id) ? SMALL_FONT : STD_FONT };
       if (spec.id === 'brand') {
         // МАРКА (сверху) + ЦВЕТ кузова (снизу) — одна ячейка (юзер 2026-06-12).
         const veh = vehByGarage.get(r.garage_no);
@@ -498,7 +505,7 @@ export function FlowTransportGrid(): JSX.Element {
           kind: GridCellKind.Custom,
           allowOverlay: false,
           copyData: [text, veh?.color ?? ''].filter(Boolean).join(' · '),
-          data: { kind: 'flow-stack', top: text, bottom: veh?.color ?? '' },
+          data: { kind: 'flow-stack', top: text, bottom: veh?.color ?? '', small: true },
         };
         return cell;
       }
@@ -509,7 +516,7 @@ export function FlowTransportGrid(): JSX.Element {
           kind: GridCellKind.Custom,
           allowOverlay: false,
           copyData: [r.garage_no, veh?.gos_no ?? ''].filter(Boolean).join(' · '),
-          data: { kind: 'flow-stack', top: r.garage_no || '', bottom: veh?.gos_no ?? '', boldTop: true },
+          data: { kind: 'flow-stack', top: r.garage_no || '', bottom: veh?.gos_no ?? '', boldTop: true, small: true },
         };
         return cell;
       }
@@ -520,7 +527,7 @@ export function FlowTransportGrid(): JSX.Element {
           displayData: text,
           allowOverlay: false,
           allowWrapping: true,
-          themeOverride: smallFont,
+          themeOverride: fontOverride,
         };
       }
       if (spec.id === 'driver') {
@@ -537,7 +544,9 @@ export function FlowTransportGrid(): JSX.Element {
             driver,
             phone,
             phoneDisplay: phone ? formatMobilePhone(phone) : '',
-            color: driverColorByFio.get(driver) ?? '',
+            color: driverByFio.get(driver)?.color ?? '',
+            isMol: driverByFio.get(driver)?.isMol ?? false,
+            until: driverByFio.get(driver)?.until ?? '',
             drivers: driverOptions,
           },
         };
@@ -564,10 +573,10 @@ export function FlowTransportGrid(): JSX.Element {
         readonly: !editable,
         allowWrapping: spec.id === 'comment', // КОМЕНТ. переносится по словам (строка 36px вмещает 2)
         contentAlign: ['max', 'cap', 'len', 'wid', 'hei'].includes(spec.id) ? 'right' : spec.id === 'trip' ? 'center' : 'left',
-        themeOverride: smallFont,
+        themeOverride: fontOverride,
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions, driverColorByFio, cols],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions, driverByFio, cols],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -985,7 +994,7 @@ export function FlowTransportGrid(): JSX.Element {
             customRenderers={TR_RENDERERS}
             getCellsForSelection
             rowMarkers="none"
-            freezeColumns={showDate ? 3 : 2}
+            freezeColumns={showDate ? 4 : 3}
             rowSelect="multi"
             columnSelect="none"
             rangeSelect="multi-rect"

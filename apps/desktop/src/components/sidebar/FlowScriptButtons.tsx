@@ -97,7 +97,9 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
 
   return (
     <div className={cn('px-1.5', collapsed ? 'py-1' : 'pb-1 pt-0.5')}>
-      <div className="grid grid-cols-2 gap-1">
+      {/* Свёрнутый сайдбар — кнопки в ОДНУ колонку, чтобы тултип-подсказка справа выходила
+          ЗА ПРЕДЕЛЫ рейла (а не на соседнюю кнопку); развёрнутый — 2×2 (юзер 2026-06-12 R3.2). */}
+      <div className={cn('grid gap-1', collapsed ? 'grid-cols-1' : 'grid-cols-2')}>
         {SCRIPTS.map(({ id, title, desc, icon: Icon }) => {
           const p = presses.get(id);
           const who = p ? userByLogin.get(p.by) : undefined;
