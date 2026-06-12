@@ -309,8 +309,8 @@ export async function flowImportRunsGet(client: ApiClient, limit?: number): Prom
   return Array.isArray(wire.runs) ? wire.runs : [];
 }
 
-/** Кнопки-скрипты раздела «Скрипты»: OBD / zm_vl / СЭД / МОЛы. */
-export type FlowScriptId = 'obd' | 'zmvl' | 'sed' | 'mols';
+/** Кнопки-скрипты сайдбара: OBD / zm_vl / СЭД / МОЛы / Контакты / OTIF5. */
+export type FlowScriptId = 'obd' | 'zmvl' | 'sed' | 'mols' | 'contacts' | 'otif5';
 
 export interface FlowScriptPress {
   id: string;

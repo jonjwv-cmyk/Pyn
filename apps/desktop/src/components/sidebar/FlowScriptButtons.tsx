@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import * as Tooltip from '@radix-ui/react-tooltip';
-import { Download, DatabaseZap, FileText, Users } from 'lucide-react';
+import { Download, DatabaseZap, FileText, Users, BookUser, PackageCheck } from 'lucide-react';
+import { SidebarTooltip } from './SidebarTooltip';
 import {
   flowScriptPress,
   flowScriptPressesGet,
@@ -32,6 +32,8 @@ const SCRIPTS: { id: FlowScriptId; title: string; desc: string; icon: typeof Dow
   { id: 'zmvl', title: 'zm_vl', desc: 'Синхронизация реестра поставок', icon: DatabaseZap },
   { id: 'sed', title: 'СЭД', desc: 'Синхронизация с СЭД', icon: FileText },
   { id: 'mols', title: 'МОЛы', desc: 'Синхронизация МОЛов', icon: Users },
+  { id: 'contacts', title: 'Контакты', desc: 'Синхронизация базы Контактов', icon: BookUser },
+  { id: 'otif5', title: 'OTIF5', desc: 'Синхронизация поставок для OTIF5', icon: PackageCheck },
 ];
 
 /** Сколько держим «свечение работы» после нажатия (стаб; реальный прогон снимет раньше/событием). */
@@ -136,26 +138,9 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
           );
           return (
             <div key={id} className="relative">
-              {/* Свёрнутый сайдбар — подсказка как у пунктов навигации (Radix Tooltip справа,
-                  тот же стиль/отступ; меняется только текст = desc; юзер 2026-06-12). */}
-              {collapsed ? (
-                <Tooltip.Root>
-                  <Tooltip.Trigger asChild>{buttonEl}</Tooltip.Trigger>
-                  <Tooltip.Portal>
-                    <Tooltip.Content
-                      side="right"
-                      sideOffset={20}
-                      avoidCollisions={false}
-                      className="z-50 rounded-md bg-bg-deep px-2 py-1 text-[12px] text-text-strong shadow-lg"
-                    >
-                      {desc}
-                      <Tooltip.Arrow className="fill-bg-deep" />
-                    </Tooltip.Content>
-                  </Tooltip.Portal>
-                </Tooltip.Root>
-              ) : (
-                buttonEl
-              )}
+              {/* Свёрнутый сайдбар — ЕДИНАЯ подсказка сайдбара (тот же механизм/стиль/отступ,
+                  что у пунктов навигации Поток/Чаты/…; меняется только текст = desc). */}
+              {collapsed ? <SidebarTooltip label={desc}>{buttonEl}</SidebarTooltip> : buttonEl}
               {/* hover-карточка «кто запускал» — только в развёрнутом (в свёрнутом — тултип desc). */}
               {!collapsed && hover === id && p && (
                 <div className="absolute left-1/2 top-full z-50 mt-1 w-[180px] -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-xl">

@@ -1,7 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
-import * as Tooltip from '@radix-ui/react-tooltip';
 import { cn } from '@/lib/cn';
 import { Badge } from './Badge';
+import { SidebarTooltip } from './SidebarTooltip';
 
 interface NavItemProps {
   icon: LucideIcon;
@@ -102,19 +102,5 @@ export function NavItem({ icon: Icon, label, active, collapsed, badge, onClick, 
   // textOnly (Чаты/Новости) показывают подпись и в collapsed → тултип не нужен.
   if (!collapsed || textOnly) return button;
 
-  return (
-    <Tooltip.Root>
-      <Tooltip.Trigger asChild>{button}</Tooltip.Trigger>
-      <Tooltip.Portal>
-        <Tooltip.Content
-          side="right"
-          sideOffset={20}
-          className="z-50 rounded-md bg-bg-deep px-2 py-1 text-[12px] text-text-strong shadow-lg"
-        >
-          {label}
-          <Tooltip.Arrow className="fill-bg-deep" />
-        </Tooltip.Content>
-      </Tooltip.Portal>
-    </Tooltip.Root>
-  );
+  return <SidebarTooltip label={label}>{button}</SidebarTooltip>;
 }
