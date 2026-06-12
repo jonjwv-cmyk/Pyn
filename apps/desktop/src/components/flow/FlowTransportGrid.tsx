@@ -40,6 +40,7 @@ import { initPersons } from '@/lib/persons-repo';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import { MONTH_ABBR_RU } from './flow-sandbox.fixtures';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
+import { colZeroRowSelection } from './flow-grid-selection';
 import { VehicleCard } from './VehicleCard';
 import { FlowTransportPrint } from './FlowTransportPrint';
 
@@ -948,7 +949,7 @@ export function FlowTransportGrid(): JSX.Element {
             onCellEdited={onCellEdited}
             onCellActivated={onCellActivated}
             gridSelection={selection}
-            onGridSelectionChange={setSelection}
+            onGridSelectionChange={(sel) => setSelection(colZeroRowSelection(sel) ?? sel)}
             getRowThemeOverride={getRowThemeOverride}
             customRenderers={TR_RENDERERS}
             getCellsForSelection
@@ -956,7 +957,7 @@ export function FlowTransportGrid(): JSX.Element {
             freezeColumns={showDate ? 3 : 2}
             rowSelect="multi"
             columnSelect="none"
-            rangeSelect="rect"
+            rangeSelect="multi-rect"
             rowHeight={getRowHeight}
             headerHeight={22}
             smoothScrollX

@@ -14,6 +14,7 @@ import { Trash2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
+import { colZeroRowSelection } from './flow-grid-selection';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import {
   flowDeliveriesGet,
@@ -689,7 +690,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             getCellContent={getCellContent}
             onCellEdited={onCellEdited}
             gridSelection={selection}
-            onGridSelectionChange={setSelection}
+            onGridSelectionChange={(sel) => setSelection(colZeroRowSelection(sel) ?? sel)}
             getRowThemeOverride={getRowThemeOverride}
             customRenderers={PLAN_RENDERERS}
             getCellsForSelection
@@ -697,7 +698,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             freezeColumns={2}
             rowSelect="multi"
             columnSelect="none"
-            rangeSelect="rect"
+            rangeSelect="multi-rect"
             rowHeight={22}
             headerHeight={22}
             smoothScrollX
