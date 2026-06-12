@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import * as Tooltip from '@radix-ui/react-tooltip';
 import { Download, DatabaseZap, FileText, Users } from 'lucide-react';
 import {
   flowScriptPress,
@@ -101,39 +102,59 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
           const p = presses.get(id);
           const who = p ? userByLogin.get(p.by) : undefined;
           const isRunning = running.has(id);
+          const buttonEl = (
+            <button
+              type="button"
+              onClick={() => press(id)}
+              onMouseEnter={() => setHover(id)}
+              onMouseLeave={() => setHover((h) => (h === id ? null : h))}
+              className={cn(
+                'flex w-full items-center justify-center gap-1.5 rounded-md border transition-all',
+                collapsed ? 'h-7' : 'h-8 px-1.5',
+                isRunning
+                  ? 'border-accent-clay/80 bg-accent-clay/15 text-text-strong shadow-[0_0_10px_rgba(217,119,87,0.55)] animate-pulse'
+                  : 'border-border-subtle text-text-secondary hover:border-border-default hover:text-text-strong',
+              )}
+            >
+              <Icon size={collapsed ? 14 : 13} strokeWidth={1.75} />
+              {!collapsed && <span className="truncate text-[11px] font-medium">{title}</span>}
+              {/* мини-аватар последнего запустившего (угол кнопки) */}
+              {p && who && (
+                <Avatar
+                  initials={computeInitials(who.fullName || who.login)}
+                  size={collapsed ? 11 : 13}
+                  login={who.login}
+                  avatarUrl={who.avatarUrl}
+                  avatarBlobKey={who.avatarBlobKey ?? undefined}
+                  avatarBlobNonce={who.avatarBlobNonce ?? undefined}
+                  className="ml-auto"
+                />
+              )}
+            </button>
+          );
           return (
             <div key={id} className="relative">
-              <button
-                type="button"
-                onClick={() => press(id)}
-                onMouseEnter={() => setHover(id)}
-                onMouseLeave={() => setHover((h) => (h === id ? null : h))}
-                className={cn(
-                  'flex w-full items-center justify-center gap-1.5 rounded-md border transition-all',
-                  collapsed ? 'h-7' : 'h-8 px-1.5',
-                  isRunning
-                    ? 'border-accent-clay/80 bg-accent-clay/15 text-text-strong shadow-[0_0_10px_rgba(217,119,87,0.55)] animate-pulse'
-                    : 'border-border-subtle text-text-secondary hover:border-border-default hover:text-text-strong',
-                )}
-                title={collapsed ? `${title} — ${desc}` : desc}
-              >
-                <Icon size={collapsed ? 14 : 13} strokeWidth={1.75} />
-                {!collapsed && <span className="truncate text-[11px] font-medium">{title}</span>}
-                {/* мини-аватар последнего запустившего (угол кнопки) */}
-                {p && who && (
-                  <Avatar
-                    initials={computeInitials(who.fullName || who.login)}
-                    size={collapsed ? 11 : 13}
-                    login={who.login}
-                    avatarUrl={who.avatarUrl}
-                    avatarBlobKey={who.avatarBlobKey ?? undefined}
-                    avatarBlobNonce={who.avatarBlobNonce ?? undefined}
-                    className="ml-auto"
-                  />
-                )}
-              </button>
-              {/* hover-карточка: кто запускал, когда (поверх сайдбара) */}
-              {hover === id && p && (
+              {/* Свёрнутый сайдбар — подсказка как у пунктов навигации (Radix Tooltip справа,
+                  тот же стиль/отступ; меняется только текст = desc; юзер 2026-06-12). */}
+              {collapsed ? (
+                <Tooltip.Root>
+                  <Tooltip.Trigger asChild>{buttonEl}</Tooltip.Trigger>
+                  <Tooltip.Portal>
+                    <Tooltip.Content
+                      side="right"
+                      sideOffset={20}
+                      className="z-50 rounded-md bg-bg-deep px-2 py-1 text-[12px] text-text-strong shadow-lg"
+                    >
+                      {desc}
+                      <Tooltip.Arrow className="fill-bg-deep" />
+                    </Tooltip.Content>
+                  </Tooltip.Portal>
+                </Tooltip.Root>
+              ) : (
+                buttonEl
+              )}
+              {/* hover-карточка «кто запускал» — только в развёрнутом (в свёрнутом — тултип desc). */}
+              {!collapsed && hover === id && p && (
                 <div className="absolute left-1/2 top-full z-50 mt-1 w-[180px] -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-xl">
                   <div className="flex items-center gap-2">
                     <Avatar

@@ -34,12 +34,13 @@ import {
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useWsEvent } from '@/lib/ws';
-import { formatMobilePhone } from '@/lib/mol-format';
+import { formatMobilePhone, molStatusKind } from '@/lib/mol-format';
 import { usePersonsStore } from '@/lib/persons-store';
 import { initPersons } from '@/lib/persons-repo';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import { MONTH_ABBR_RU } from './flow-sandbox.fixtures';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
+import { flowStackRenderer, type FlowStackCell } from './flow-stack-cell';
 import { colZeroRowSelection } from './flow-grid-selection';
 import { VehicleCard } from './VehicleCard';
 import { FlowTransportPrint } from './FlowTransportPrint';
@@ -64,11 +65,10 @@ interface TrColSpec {
 
 const TR_COLS: readonly TrColSpec[] = [
   { id: 'date', title: 'ДАТА' },
+  // МАРКА сверху + ЦВЕТ кузова снизу (одна ячейка); № гаражный (жирный) + ГОС. № снизу (одна ячейка).
   { id: 'brand', title: 'МАРКА' },
-  { id: 'garage', title: '№', editable: true },
+  { id: 'garage', title: '№ · ГОС' },
   { id: 'out', title: 'ВЫЕЗД' },
-  { id: 'gos', title: 'ГОС. №' },
-  { id: 'color', title: 'ЦВЕТ' },
   { id: 'vtype', title: 'ТИП' },
   { id: 'max', title: 'ДОП.ТН' },
   { id: 'cap', title: 'ТН' },
@@ -89,7 +89,7 @@ const STATUS_ORDER = ['Размещен', 'Отклонен', 'Отмена', '�
 
 /** Менее значимые колонки — мельче шрифтом (юзер 2026-06-12 п.6): марка/цвет/тип/
  *  тоннаж (обе) и габариты Д/Ш/В. Остальные (№/работа/время/статус/коммент/водитель) — крупнее. */
-const SMALL_COLS = new Set(['brand', 'color', 'vtype', 'max', 'cap', 'len', 'wid', 'hei']);
+const SMALL_COLS = new Set(['vtype', 'max', 'cap', 'len', 'wid', 'hei']);
 const SMALL_FONT = '10.5px';
 
 /** Известные марки техники (канонический регистр). Порядок не важен — матч по токену. */
@@ -199,7 +199,7 @@ function cmpWh(a: string, b: string): number {
   return baseOf(A) - baseOf(B) || tFirst(A) - tFirst(B) || A.localeCompare(B, 'ru');
 }
 
-const TR_RENDERERS = [flowDropdownRenderer, flowDriverRenderer];
+const TR_RENDERERS = [flowDropdownRenderer, flowDriverRenderer, flowStackRenderer];
 
 // Кэш на сессию (мгновенный повторный вход, потом refetch + реалтайм).
 let trRowsCache: FlowTransportRow[] | null = null;
@@ -295,20 +295,36 @@ export function FlowTransportGrid(): JSX.Element {
     void initPersons();
   }, []);
   const driverOptions = useMemo<FlowDriverOption[]>(() => {
+    // Цвет статуса — как у МОЛ в формировании (зел/красн/серый).
+    const COLOR = { ok: '#3FB950', error: '#F85149', neutral: '#9AA0A6' } as const;
     const out: FlowDriverOption[] = [];
     for (const p of persons) {
-      if (!/водител/i.test(p.position || '')) continue;
+      // «водитель» как ОТДЕЛЬНОЕ слово (не часть «руководитель» и т.п.; юзер 2026-06-12):
+      // совпадение «водител» только в начале токена (предыдущий символ — не буква).
+      if (!/(?:^|[^а-яёa-z])водител/i.test(p.position || '')) continue;
       const phone = p.mobile || p.work || '';
+      // Ближайший срок «по дату» из складов (если человек МОЛ).
+      let until = '';
+      for (const w of p.warehouses) if (w.until && (!until || w.until < until)) until = w.until;
       out.push({
         fio: p.fio,
         position: p.position || '',
         phone,
         phoneDisplay: phone ? formatMobilePhone(phone) : '',
+        status: p.status || '',
+        color: COLOR[molStatusKind(p.status || '')],
+        isMol: p.isMol,
+        until,
       });
     }
     out.sort((a, b) => a.fio.localeCompare(b.fio, 'ru'));
     return out;
   }, [persons]);
+  const driverColorByFio = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of driverOptions) m.set(o.fio, o.color);
+    return m;
+  }, [driverOptions]);
 
   const cellText = useCallback(
     (specId: string, r: FlowTransportRow): string => {
@@ -421,6 +437,9 @@ export function FlowTransportGrid(): JSX.Element {
       ctx.font = `${SMALL_COLS.has(spec.id) ? SMALL_FONT : '12px'} "Inter Variable", system-ui, sans-serif`;
       const uniq = new Set<string>();
       for (const r of sample) uniq.add(cellText(spec.id, r));
+      // Объединённые ячейки — учесть и нижнюю строку (ГОС у гаражного, ЦВЕТ у марки).
+      if (spec.id === 'garage') for (const r of sample) uniq.add(cellText('gos', r));
+      else if (spec.id === 'brand') for (const r of sample) uniq.add(cellText('color', r));
       for (const v of uniq) max = Math.max(max, ctx.measureText(v).width);
       const pad = 18;
       const cap = spec.id === 'vtype' ? 170 : spec.id === 'work' ? 420 : spec.id === 'comment' ? 260 : 340;
@@ -473,16 +492,26 @@ export function FlowTransportGrid(): JSX.Element {
       const text = cellText(spec.id, r);
       const smallFont = SMALL_COLS.has(spec.id) ? { baseFontStyle: SMALL_FONT } : undefined;
       if (spec.id === 'brand') {
-        // МАРКА: показ — тип техники; полная модель — по двойному клику (read-only оверлей).
+        // МАРКА (сверху) + ЦВЕТ кузова (снизу) — одна ячейка (юзер 2026-06-12).
         const veh = vehByGarage.get(r.garage_no);
-        return {
-          kind: GridCellKind.Text,
-          data: veh?.model ?? '',
-          displayData: text,
-          allowOverlay: true,
-          readonly: true,
-          themeOverride: smallFont,
+        const cell: FlowStackCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: false,
+          copyData: [text, veh?.color ?? ''].filter(Boolean).join(' · '),
+          data: { kind: 'flow-stack', top: text, bottom: veh?.color ?? '' },
         };
+        return cell;
+      }
+      if (spec.id === 'garage') {
+        // Гаражный № (жирный, сверху) + ГОС. № (снизу) — одна ячейка (юзер 2026-06-12).
+        const veh = vehByGarage.get(r.garage_no);
+        const cell: FlowStackCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: false,
+          copyData: [r.garage_no, veh?.gos_no ?? ''].filter(Boolean).join(' · '),
+          data: { kind: 'flow-stack', top: r.garage_no || '', bottom: veh?.gos_no ?? '', boldTop: true },
+        };
+        return cell;
       }
       if (spec.id === 'vtype') {
         return {
@@ -508,6 +537,7 @@ export function FlowTransportGrid(): JSX.Element {
             driver,
             phone,
             phoneDisplay: phone ? formatMobilePhone(phone) : '',
+            color: driverColorByFio.get(driver) ?? '',
             drivers: driverOptions,
           },
         };
@@ -537,7 +567,7 @@ export function FlowTransportGrid(): JSX.Element {
         themeOverride: smallFont,
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions, cols],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions, driverColorByFio, cols],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
