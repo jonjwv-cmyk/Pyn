@@ -35,8 +35,11 @@ import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useWsEvent } from '@/lib/ws';
 import { formatMobilePhone } from '@/lib/mol-format';
+import { usePersonsStore } from '@/lib/persons-store';
+import { initPersons } from '@/lib/persons-repo';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import { MONTH_ABBR_RU } from './flow-sandbox.fixtures';
+import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { VehicleCard } from './VehicleCard';
 import { FlowTransportPrint } from './FlowTransportPrint';
 
@@ -75,8 +78,8 @@ const TR_COLS: readonly TrColSpec[] = [
   { id: 'time', title: 'ВРЕМЯ', editable: true },
   { id: 'status', title: 'СТАТУС', editable: true },
   { id: 'comment', title: 'КОМЕНТ.', editable: true },
+  // ВОДИТЕЛЬ — ФИО + СОТ под ним (отдельной колонки СОТ. больше нет; юзер 2026-06-12 п.6).
   { id: 'driver', title: 'ВОДИТЕЛЬ', editable: true },
-  { id: 'phone', title: 'СОТ.', editable: true },
   { id: 'trip', title: 'РЕЙС' },
 ];
 
@@ -121,6 +124,13 @@ function fmtDay(s: string): string {
 /** «08:00-20:00» → «8:00-20:00» (ведущие нули из показа убраны). */
 function fmtTimeRange(s: string): string {
   return (s || '').replace(/(^|[^\d])0(\d:)/g, '$1$2');
+}
+
+/** «08:00-20:00» → «8:00\n20:00» (две строки: начало сверху, конец снизу; юзер п.6). */
+function fmtTimeTwoLine(s: string): string {
+  const clean = fmtTimeRange(s);
+  const m = /^(.*?)\s*[-–—]\s*(.*)$/.exec(clean);
+  return m ? `${m[1]}\n${m[2]}` : clean;
 }
 
 /** Ключ сортировки РАБОТЫ по числовому префиксу. */
@@ -168,7 +178,7 @@ function cmpWh(a: string, b: string): number {
   return baseOf(A) - baseOf(B) || tFirst(A) - tFirst(B) || A.localeCompare(B, 'ru');
 }
 
-const TR_RENDERERS = [flowDropdownRenderer];
+const TR_RENDERERS = [flowDropdownRenderer, flowDriverRenderer];
 
 // Кэш на сессию (мгновенный повторный вход, потом refetch + реалтайм).
 let trRowsCache: FlowTransportRow[] | null = null;
@@ -256,6 +266,27 @@ export function FlowTransportGrid(): JSX.Element {
     for (const v of vehicles) m.set(v.garage_no, v);
     return m;
   }, [vehicles]);
+
+  // База контактов — кандидаты в водители (должность содержит «водитель»; юзер 2026-06-12 п.4).
+  const persons = usePersonsStore((s) => s.persons);
+  useEffect(() => {
+    void initPersons();
+  }, []);
+  const driverOptions = useMemo<FlowDriverOption[]>(() => {
+    const out: FlowDriverOption[] = [];
+    for (const p of persons) {
+      if (!/водител/i.test(p.position || '')) continue;
+      const phone = p.mobile || p.work || '';
+      out.push({
+        fio: p.fio,
+        position: p.position || '',
+        phone,
+        phoneDisplay: phone ? formatMobilePhone(phone) : '',
+      });
+    }
+    out.sort((a, b) => a.fio.localeCompare(b.fio, 'ru'));
+    return out;
+  }, [persons]);
 
   const cellText = useCallback(
     (specId: string, r: FlowTransportRow): string => {
@@ -380,18 +411,9 @@ export function FlowTransportGrid(): JSX.Element {
     [colWidths],
   );
 
-  // ТИП переносится по словам: строка выше, если тип не влез в ширину колонки.
-  const getRowHeight = useCallback(
-    (row: number): number => {
-      const r = viewRows[row];
-      if (!r) return 22;
-      const veh = vehByGarage.get(r.garage_no);
-      const vt = veh?.vtype ?? '';
-      const w = colWidths.get('vtype') ?? 150;
-      return vt.length * 6.4 > w - 16 ? 34 : 22; // ~6.4px/симв при 12px
-    },
-    [viewRows, vehByGarage, colWidths],
-  );
+  // Высота строки фиксирована и выше обычной: вмещает ВОДИТЕЛЬ (ФИО + СОТ под ним) и
+  // ВРЕМЯ в две строки (юзер 2026-06-12 п.6); ТИП-перенос на 2 слова тоже влезает.
+  const getRowHeight = useCallback((): number => 36, []);
 
   const cutoff = editCutoff();
   const rowLocked = useCallback((r: FlowTransportRow) => r.tdate < cutoff, [cutoff]);
@@ -435,15 +457,38 @@ export function FlowTransportGrid(): JSX.Element {
       if (spec.id === 'vtype') {
         return { kind: GridCellKind.Text, data: text, displayData: text, allowOverlay: false, allowWrapping: true };
       }
+      if (spec.id === 'driver') {
+        // ВОДИТЕЛЬ: ФИО + СОТ под ним; двойной клик → поиск по базе водителей.
+        const veh = vehByGarage.get(r.garage_no);
+        const driver = r.driver || (veh?.driver ?? '');
+        const phone = r.driver_phone || (veh?.driver_phone ?? '');
+        const cell: FlowDriverCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: !locked,
+          copyData: driver,
+          data: {
+            kind: 'flow-driver',
+            driver,
+            phone,
+            phoneDisplay: phone ? formatMobilePhone(phone) : '',
+            drivers: driverOptions,
+          },
+        };
+        return cell;
+      }
       const editable = !!spec.editable && !locked;
-      const rawData =
-        spec.id === 'phone'
-          ? r.driver_phone || (vehByGarage.get(r.garage_no)?.driver_phone ?? '')
-          : spec.id === 'driver'
-            ? r.driver || (vehByGarage.get(r.garage_no)?.driver ?? '')
-            : spec.id === 'time'
-              ? r.time_range
-              : text;
+      if (spec.id === 'time') {
+        // ВРЕМЯ в две строки: начало сверху, конец снизу (юзер 2026-06-12 п.6).
+        return {
+          kind: GridCellKind.Text,
+          data: r.time_range,
+          displayData: fmtTimeTwoLine(r.time_range),
+          allowOverlay: editable,
+          readonly: !editable,
+          allowWrapping: true,
+        };
+      }
+      const rawData = text;
       return {
         kind: GridCellKind.Text,
         data: rawData,
@@ -453,7 +498,7 @@ export function FlowTransportGrid(): JSX.Element {
         contentAlign: ['max', 'cap', 'len', 'wid', 'hei'].includes(spec.id) ? 'right' : spec.id === 'trip' ? 'center' : 'left',
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -477,6 +522,22 @@ export function FlowTransportGrid(): JSX.Element {
         setMsg('Старше 7 дней — архив, правки заблокированы');
         return;
       }
+      // ВОДИТЕЛЬ — особый случай: пишем ФИО + телефон ОДНОЙ правкой (телефон из базы водителей).
+      if (spec.id === 'driver' && newValue.kind === GridCellKind.Custom) {
+        const d = (newValue as FlowDriverCell).data;
+        if (!d || d.kind !== 'flow-driver') return;
+        const fields = { driver: d.driver, driver_phone: d.phone };
+        setMsg('');
+        setRows((prev) => {
+          const next = prev.map((x) => (x.id === r.id ? ({ ...x, ...fields } as FlowTransportRow) : x));
+          trRowsCache = next;
+          return next;
+        });
+        void flowTransportEdit(api, [{ id: r.id, row_version: r.row_version, fields }]).then((res) =>
+          applyServerRows(res.rows),
+        );
+        return;
+      }
       let value = '';
       if (newValue.kind === GridCellKind.Custom) {
         const d = (newValue as FlowDropdownCell).data;
@@ -492,8 +553,6 @@ export function FlowTransportGrid(): JSX.Element {
         time: 'time_range',
         status: 'status',
         comment: 'comment',
-        driver: 'driver',
-        phone: 'driver_phone',
       };
       const field = fieldByCol[spec.id];
       if (!field) return;
@@ -775,9 +834,6 @@ export function FlowTransportGrid(): JSX.Element {
             );
           })}
         </div>
-        <span className="tabular-nums">
-          {viewRows.length}/{rows.length} строк · {dayCount} дней · {vehicles.length} машин
-        </span>
         {msg && (
           <span className="max-w-[300px] truncate text-[11px] text-[#6B6862]" title={msg}>
             {msg}
@@ -836,6 +892,28 @@ export function FlowTransportGrid(): JSX.Element {
             smoothScrollY
           />
         )}
+      </div>
+      {/* Нижняя строка-счётчик (как в Формировании, юзер 2026-06-12 п.8): сколько строк/дней/машин. */}
+      <div className="flex shrink-0 items-center gap-3 border-t border-black/[0.06] px-4 py-1.5 text-[12px] text-[#6B6862]">
+        {selectedCount > 0 && (
+          <span>
+            Выбрано: <span className="tabular-nums text-[#2A2925]">{selectedCount}</span>
+          </span>
+        )}
+        <span className="ml-auto tabular-nums">
+          {viewRows.length !== rows.length ? (
+            <>
+              Показано <span className="text-[#2A2925]">{viewRows.length}</span> из{' '}
+              <span className="text-[#2A2925]">{rows.length}</span> строк
+            </>
+          ) : (
+            <>
+              <span className="text-[#2A2925]">{rows.length}</span> строк
+            </>
+          )}{' '}
+          · <span className="text-[#2A2925]">{dayCount}</span> дней ·{' '}
+          <span className="text-[#2A2925]">{vehicles.length}</span> машин
+        </span>
       </div>
       {trip && (
         <TransportTripCard
