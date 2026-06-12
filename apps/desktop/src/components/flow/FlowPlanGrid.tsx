@@ -216,6 +216,18 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     return m;
   }, [anchors]);
 
+  // Отчёт: окно 7 дней — строки старше (сегодня−7 по дате плана) ЗАКРЫТЫ полностью
+  // (ничего не правится; юзер 2026-06-12 п.2). В Плане замок не действует.
+  const reportCutoff = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }, []);
+  const rowLocked = useCallback(
+    (r: FlowDeliveryRow) => mode === 'report' && (r.plan_date || '') < reportCutoff,
+    [mode, reportCutoff],
+  );
+
   // Порядок показа: день плана → группа сборки → номер поставки → материал.
   // Отчёт — только ЗАФИКСИРОВАННЫЕ строки, свежий день СВЕРХУ (работают по дню).
   const viewRows = useMemo(() => {
@@ -352,11 +364,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       if (!spec || !r) {
         return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
       }
+      const locked = rowLocked(r);
       if (spec.id === 'done' || spec.id === 'reason') {
         // Отметки отчёта — выпадашки (ТЗ §5.1): статус вып. + причина невывоза.
         const cell: FlowDropdownCell = {
           kind: GridCellKind.Custom,
-          allowOverlay: true,
+          allowOverlay: !locked,
           copyData: spec.id === 'done' ? r.done_stat || '' : r.fail_reason || '',
           data: {
             kind: 'flow-dropdown',
@@ -367,7 +380,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         return cell;
       }
       const text = cellText(spec, r);
-      const editable = !!spec.editable;
+      const editable = !!spec.editable && !locked;
       return {
         kind: GridCellKind.Text,
         data: spec.id === 'qty' ? (r.qty == null ? '' : String(r.qty).replace('.', ',')) : text,
@@ -377,7 +390,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         contentAlign: spec.id === 'qty' || spec.id === 'kg' || spec.id === 'v' ? 'right' : 'left',
       };
     },
-    [viewRows, cellText, COLS],
+    [viewRows, cellText, COLS, rowLocked],
   );
 
   /** Применить серверные строки поставок (ответ правки/конфликта). */
@@ -401,6 +414,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const spec = COLS[col];
       const r = viewRows[row];
       if (!spec || !r || !spec.editable) return;
+      if (rowLocked(r)) {
+        setMsg('Старше 7 дней — отчёт закрыт, правки заблокированы');
+        return;
+      }
       // Отметки отчёта приходят из выпадашки (custom cell).
       if (newValue.kind === GridCellKind.Custom) {
         const d = (newValue as FlowDropdownCell).data;
@@ -491,7 +508,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         applyServerDlv(res.rows); // успех/конфликт — догоняем серверной версией
       });
     },
-    [viewRows, anchorByKey, applyServerDlv],
+    [viewRows, anchorByKey, applyServerDlv, rowLocked],
   );
 
   // Подсветка строк: ERROR — красная, DUPLICATE — янтарная, черновик — чуть приглушён.
@@ -505,11 +522,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       if (mode === 'report') {
         if (r.done_stat === 'увезли') return { bgCell: '#EAF5EA' };
         if (r.done_stat === 'не увезли') return { bgCell: '#FBEAE7' };
+        if (rowLocked(r)) return { textDark: '#8C8983' }; // закрытый отчёт (>7 дней) — приглушён
       }
       if (!(r.dlv || '').trim()) return { textDark: '#5A5752' };
       return undefined;
     },
-    [viewRows, flagById, mode],
+    [viewRows, flagById, mode, rowLocked],
   );
 
   const selectedCount = selection.rows.length;
@@ -518,12 +536,19 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   const massMark = useCallback(
     (done: 'увезли' | 'не увезли', reason: string) => {
       const targets: FlowDeliveryRow[] = [];
+      let lockedHit = false;
       for (const idx of selection.rows) {
         const r = viewRows[idx];
-        if (r) targets.push(r);
+        if (!r) continue;
+        if (rowLocked(r)) {
+          lockedHit = true;
+          continue;
+        }
+        targets.push(r);
       }
+      if (lockedHit) setMsg('Часть строк старше 7 дней — отчёт по ним закрыт');
       if (targets.length === 0) return;
-      setMsg('');
+      if (!lockedHit) setMsg('');
       const fields = { done_stat: done, fail_reason: done === 'не увезли' ? reason : '' };
       setRows((prev) => {
         const ids = new Set(targets.map((t) => t.id));
@@ -536,7 +561,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         targets.map((t) => ({ id: t.id, row_version: t.row_version, fields })),
       ).then((res) => applyServerDlv(res.rows));
     },
-    [selection, viewRows, applyServerDlv],
+    [selection, viewRows, applyServerDlv, rowLocked],
   );
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];
