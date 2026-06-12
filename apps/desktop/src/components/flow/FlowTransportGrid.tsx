@@ -63,35 +63,30 @@ interface TrColSpec {
   editable?: boolean;
 }
 
+// Порядок колонок (юзер 2026-06-12): дата · ИСТОРИЯ(рейс) · статус · работа · время · марка ·
+// №·ГОС · выезд · водитель · комментарий. ТИП/ДОП.ТН/ТН/Д/Ш/В — НЕ колонки, а карточка машины
+// по двойному клику на №·ГОС (как карточка MAT в формировании). Это ЧИСТО UI-показ: на сервере
+// все поля хранятся отдельно (flow_vehicles), вставки приходят по колонкам — мы лишь красиво объединяем.
 const TR_COLS: readonly TrColSpec[] = [
   { id: 'date', title: 'ДАТА' },
-  // МАРКА сверху + ЦВЕТ кузова снизу (одна ячейка); № гаражный (жирный) + ГОС. № снизу (одна ячейка).
-  { id: 'brand', title: 'МАРКА' },
-  { id: 'garage', title: '№ · ГОС' },
-  // РЕЙС — сразу после №·ГОС и в закреплённой зоне (юзер 2026-06-12 п.R3.3).
-  { id: 'trip', title: 'РЕЙС' },
-  { id: 'out', title: 'ВЫЕЗД' },
-  { id: 'vtype', title: 'ТИП' },
-  { id: 'max', title: 'ДОП.ТН' },
-  { id: 'cap', title: 'ТН' },
-  { id: 'len', title: 'Д' },
-  { id: 'wid', title: 'Ш' },
-  { id: 'hei', title: 'В' },
+  { id: 'trip', title: 'ИСТОРИЯ' }, // бывш. РЕЙС — двойной клик: история машины за день
+  { id: 'status', title: 'СТАТУС', editable: true },
   { id: 'work', title: 'РАБОТА', editable: true },
   { id: 'time', title: 'ВРЕМЯ', editable: true },
-  { id: 'status', title: 'СТАТУС', editable: true },
-  { id: 'comment', title: 'КОМЕНТ.', editable: true },
-  // ВОДИТЕЛЬ — ФИО + СОТ под ним (отдельной колонки СОТ. больше нет; юзер 2026-06-12 п.6).
-  { id: 'driver', title: 'ВОДИТЕЛЬ', editable: true },
+  { id: 'brand', title: 'МАРКА' }, // стек: марка + цвет
+  { id: 'garage', title: '№ · ГОС' }, // стек: № (жирный) + гос; двойной клик → карточка характеристик
+  { id: 'out', title: 'ВЫЕЗД' },
+  { id: 'driver', title: 'ВОДИТЕЛЬ', editable: true }, // ФИО + СОТ под ним
+  { id: 'comment', title: 'КОММЕНТАРИЙ', editable: true },
 ];
 
 /** Порядок статусов в выпадашке — по слову юзера; «(пусто)» НЕТ (снять = Delete). */
 const STATUS_ORDER = ['Размещен', 'Отклонен', 'Отмена', 'Новый', 'Открыт'] as const;
 
-/** Шрифт как в Формировании: стандарт 10px на всю таблицу, второстепенные колонки — 8px
- *  (юзер 2026-06-12: марка/№гос/тип/доп.тн/тн/Д/Ш/В мельче). Марка и №·ГОС — стек-ячейки
- *  (рисуют свой 8px), здесь — текстовые второстепенные. */
-const SMALL_COLS = new Set(['vtype', 'max', 'cap', 'len', 'wid', 'hei']);
+/** Шрифт как в Формировании: стандарт 10px на всю таблицу. Мелкие (8px) — только стек-ячейки
+ *  МАРКА и №·ГОС (рисуют свой размер сами). Отдельных второстепенных текст-колонок не осталось
+ *  (тип/тоннаж/габариты ушли в карточку машины). */
+const SMALL_COLS = new Set<string>();
 const STD_FONT = '10px';
 const SMALL_FONT = '8px';
 
@@ -233,6 +228,8 @@ export function FlowTransportGrid(): JSX.Element {
   const [printDay, setPrintDay] = useState<string | null>(null);
   const [printOpen, setPrintOpen] = useState(false);
   const [trip, setTrip] = useState<{ row: FlowTransportRow; x: number; y: number } | null>(null);
+  // Карточка характеристик машины (по двойному клику на №·ГОС).
+  const [specCard, setSpecCard] = useState<{ garage: string; veh: FlowVehicle | null; x: number; y: number } | null>(null);
   const gridRef = useRef<DataEditorRef | null>(null);
 
   useEffect(() => {
@@ -520,16 +517,6 @@ export function FlowTransportGrid(): JSX.Element {
         };
         return cell;
       }
-      if (spec.id === 'vtype') {
-        return {
-          kind: GridCellKind.Text,
-          data: text,
-          displayData: text,
-          allowOverlay: false,
-          allowWrapping: true,
-          themeOverride: fontOverride,
-        };
-      }
       if (spec.id === 'driver') {
         // ВОДИТЕЛЬ: ФИО + СОТ под ним; двойной клик → поиск по базе водителей.
         const veh = vehByGarage.get(r.garage_no);
@@ -647,16 +634,23 @@ export function FlowTransportGrid(): JSX.Element {
     [viewRows, applyServerRows, rowLocked, cols],
   );
 
-  // РЕЙС: двойной клик/Enter по колонке — поповер истории (план+факт из отчёта).
+  // Двойной клик/Enter: ИСТОРИЯ → поповер истории (план+факт из отчёта); №·ГОС → карточка
+  // характеристик машины (тип/доп.тн/тн/Д/Ш/В — как карточка MAT в формировании).
   const onCellActivated = useCallback(
     ([col, row]: Item) => {
       const spec = cols[col];
       const r = viewRows[row];
-      if (!spec || !r || spec.id !== 'trip' || !r.garage_no) return;
+      if (!spec || !r || !r.garage_no) return;
       const b = gridRef.current?.getBounds(col, row);
-      if (b) setTrip({ row: r, x: b.x + b.width / 2, y: b.y + b.height });
+      if (!b) return;
+      if (spec.id === 'trip') {
+        setTrip({ row: r, x: b.x + b.width / 2, y: b.y + b.height });
+      } else if (spec.id === 'garage') {
+        const veh = vehByGarage.get(r.garage_no) ?? null;
+        setSpecCard({ garage: r.garage_no, veh, x: b.x + b.width / 2, y: b.y + b.height });
+      }
     },
-    [viewRows, cols],
+    [viewRows, cols, vehByGarage],
   );
 
   // Подкраска по статусу (юзер): Размещен — зелёная; Отклонен/Отмена — красная;
@@ -994,7 +988,7 @@ export function FlowTransportGrid(): JSX.Element {
             customRenderers={TR_RENDERERS}
             getCellsForSelection
             rowMarkers="none"
-            freezeColumns={showDate ? 4 : 3}
+            freezeColumns={showDate ? 2 : 1}
             rowSelect="multi"
             columnSelect="none"
             rangeSelect="multi-rect"
@@ -1033,6 +1027,15 @@ export function FlowTransportGrid(): JSX.Element {
           x={trip.x}
           y={trip.y}
           onClose={() => setTrip(null)}
+        />
+      )}
+      {specCard && (
+        <VehicleSpecCard
+          garage={specCard.garage}
+          veh={specCard.veh}
+          x={specCard.x}
+          y={specCard.y}
+          onClose={() => setSpecCard(null)}
         />
       )}
       {printDay && (
@@ -1247,6 +1250,59 @@ function TransportTripCard({
             <div className="text-[10px] text-text-muted/60">
               зелёный — увезли · серый — отменено/не увезено · {dlv.length} поставок
             </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/**
+ * Карточка характеристик машины (двойной клик по №·ГОС) — как карточка MAT в формировании.
+ * ЧИСТО UI-показ: данные из базы машин (flow_vehicles), на сервере поля хранятся отдельно.
+ * Порядок (юзер 2026-06-12): ТИП · ДОП.ТН · ТН · Длина · Ширина · Высота от площадки (метры).
+ */
+function VehicleSpecCard({
+  garage,
+  veh,
+  x,
+  y,
+  onClose,
+}: {
+  garage: string;
+  veh: FlowVehicle | null;
+  x: number;
+  y: number;
+  onClose: () => void;
+}): JSX.Element {
+  const Row = ({ label, value }: { label: string; value: string }): JSX.Element => (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-[10px] uppercase tracking-wide text-text-muted/60">{label}</span>
+      <span className="tabular-nums text-text-secondary">{value || '—'}</span>
+    </div>
+  );
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div
+        className="fixed z-50 w-[252px] -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-surface p-3 text-[12px] shadow-xl"
+        style={{ left: x, top: y + 4 }}
+      >
+        <div className="flex items-baseline gap-2 text-[12px] font-medium text-text-strong">
+          Машина {garage}
+          {veh?.gos_no && <span className="tabular-nums text-text-muted">{veh.gos_no}</span>}
+        </div>
+        {!veh ? (
+          <div className="mt-2 text-[12px] text-text-muted">Машины {garage} нет в базе.</div>
+        ) : (
+          <div className="mt-2 flex flex-col gap-1.5">
+            <Row label="Тип" value={veh.vtype ?? ''} />
+            {veh.model && <Row label="Модель" value={veh.model} />}
+            <Row label="Доп. тн" value={veh.max_mass_kg != null ? `${tons(veh.max_mass_kg)} т` : ''} />
+            <Row label="Тн (грузоп.)" value={veh.capacity_kg != null ? `${tons(veh.capacity_kg)} т` : ''} />
+            <Row label="Длина" value={veh.len_mm != null ? `${meters(veh.len_mm)} м` : ''} />
+            <Row label="Ширина" value={veh.wid_mm != null ? `${meters(veh.wid_mm)} м` : ''} />
+            <Row label="Высота от площадки" value={veh.hei_mm != null ? `${meters(veh.hei_mm)} м` : ''} />
           </div>
         )}
       </div>

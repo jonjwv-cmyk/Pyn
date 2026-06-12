@@ -145,6 +145,7 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
                     <Tooltip.Content
                       side="right"
                       sideOffset={20}
+                      avoidCollisions={false}
                       className="z-50 rounded-md bg-bg-deep px-2 py-1 text-[12px] text-text-strong shadow-lg"
                     >
                       {desc}
