@@ -11,7 +11,7 @@ export interface FlowStackData {
   readonly top: string;
   readonly bottom: string;
   readonly boldTop?: boolean;
-  /** Мелкий шрифт (как второстепенные колонки формирования): верх 8px, низ 7px. */
+  /** Стек транспорта: верх 10px (как весь текст листа), низ 9px (второстепенная строка). */
   readonly small?: boolean;
 }
 export type FlowStackCell = CustomCell<FlowStackData>;
@@ -24,8 +24,8 @@ export const flowStackRenderer: CustomRenderer<FlowStackCell> = {
     const { ctx, rect, theme } = args;
     const { top, bottom, boldTop, small } = cell.data;
     const padX = theme.cellHorizontalPadding;
-    const topPx = small ? '8px' : theme.baseFontStyle;
-    const bottomPx = small ? '7px' : '10.5px';
+    const topPx = small ? '10px' : theme.baseFontStyle;
+    const bottomPx = small ? '9px' : '10.5px';
     ctx.save();
     ctx.beginPath();
     ctx.rect(rect.x, rect.y, rect.width, rect.height);

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CompactSelection,
   DataEditor,
+  type DataEditorRef,
   GridCellKind,
   type EditableGridCell,
   type GridCell,
@@ -15,6 +16,10 @@ import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { colZeroRowSelection } from './flow-grid-selection';
+import { FlowSearchPanel } from './FlowSearchPanel';
+import { useFlowGridSearch, type FlowSearchColumn } from './flow-grid-search';
+import { FlowHeaderMenu } from './FlowHeaderMenu';
+import { useFlowColumnFilters } from './flow-column-filter';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import {
   flowDeliveriesGet,
@@ -136,6 +141,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     columns: CompactSelection.empty(),
     rows: CompactSelection.empty(),
   });
+  const gridRef = useRef<DataEditorRef | null>(null);
   const [msg, setMsg] = useState('');
 
   // CLST: кластер/день доставки склада-получателя из живой базы складов.
@@ -229,9 +235,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     [mode, reportCutoff],
   );
 
-  // Порядок показа: день плана → группа сборки → номер поставки → материал.
-  // Отчёт — только ЗАФИКСИРОВАННЫЕ строки, свежий день СВЕРХУ (работают по дню).
-  const viewRows = useMemo(() => {
+  // База показа (порядок: день плана → группа сборки → номер поставки → материал).
+  // Отчёт — только ЗАФИКСИРОВАННЫЕ строки, свежий день СВЕРХУ. Фильтры колонок и
+  // колоночная сортировка накладываются ниже (viewRows).
+  const baseRows = useMemo(() => {
     const out = (mode === 'report' ? rows.filter((r) => Number(r.fixation_id) > 0) : rows.slice());
     out.sort(
       (a, b) =>
@@ -283,11 +290,6 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     for (const r of rows) g.add((r.dlv || '').trim() || `${r.plan_date}·${r.grp}`);
     return g.size;
   }, [rows]);
-
-  const columns = useMemo<GridColumn[]>(
-    () => COLS.map((c) => ({ id: c.id, title: c.title, width: c.width })),
-    [COLS],
-  );
 
   const cellText = useCallback(
     (spec: PlanColSpec, r: FlowDeliveryRow): string => {
@@ -357,6 +359,73 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     },
     [anchorByKey, vghByKey, flagById, whById],
   );
+
+  // ── Поиск как в Формировании (подсветка/перелёт, не фильтр) ───────────────────
+  // cellText уже склеивает объединённые колонки (ПОСТАВКА = dlv|pos, ЗАКАЗ = ord|it),
+  // поэтому годится и для матча, и для показа совпадения. Индексы колонок поиска = COLS.
+  const specById = useMemo(() => {
+    const m = new Map<string, PlanColSpec>();
+    for (const c of COLS) m.set(c.id, c);
+    return m;
+  }, [COLS]);
+  const searchRaw = useCallback(
+    (r: FlowDeliveryRow, colId: string): string => {
+      const spec = specById.get(colId);
+      return spec ? cellText(spec, r) : '';
+    },
+    [specById, cellText],
+  );
+  const searchDisplay = useCallback(
+    (col: FlowSearchColumn, r: FlowDeliveryRow): string => {
+      const spec = specById.get(col.id);
+      return spec ? cellText(spec, r) : '';
+    },
+    [specById, cellText],
+  );
+  const searchColumns = useMemo<FlowSearchColumn[]>(
+    () => COLS.map((c) => ({ id: c.id, title: c.title })),
+    [COLS],
+  );
+
+  // Фильтры/сортировка колонок — меню-чек-лист как в Формировании. getValue = cellText
+  // (объединённые ПОСТАВКА=dlv|pos, ЗАКАЗ=ord|it уже склеены — фильтр по любому под-значению
+  // через поиск в меню). Индексы searchColumns выровнены с COLS/DataEditor.columns.
+  const colFilters = useFlowColumnFilters<FlowDeliveryRow>({
+    columns: searchColumns,
+    rows: baseRows,
+    getValue: searchRaw,
+  });
+
+  // Показ = база → фильтры колонок → (колоночная сортировка перекрывает дефолтную).
+  const viewRows = useMemo(
+    () => colFilters.applySort(colFilters.applyFilters(baseRows)),
+    [baseRows, colFilters.applyFilters, colFilters.applySort],
+  );
+
+  // hasMenu → ▾ меню колонки (фильтр/сорт). Активный фильтр — лёгкая clay-подложка.
+  const columns = useMemo<GridColumn[]>(
+    () =>
+      COLS.map((c) => ({
+        id: c.id,
+        title: c.title,
+        width: c.width,
+        hasMenu: true,
+        ...(colFilters.activeFilterColIds.has(c.id)
+          ? { themeOverride: { bgHeader: '#F4E6DE', bgHeaderHovered: '#EFD9CE' } }
+          : {}),
+      })),
+    [COLS, colFilters.activeFilterColIds],
+  );
+
+  const gridSearch = useFlowGridSearch<FlowDeliveryRow>({
+    columns: searchColumns,
+    rows,
+    viewRows,
+    gridRef,
+    getRaw: searchRaw,
+    getDisplay: searchDisplay,
+    setSelection,
+  });
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
@@ -615,6 +684,22 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             {msg}
           </span>
         )}
+        {/* Поиск как в Формировании: панель-поповер по колонкам, подсветка + перелёт (⌘F).
+            Не фильтрует строки. Замена скрыта (живая серверная база). */}
+        <FlowSearchPanel
+          open={gridSearch.open}
+          onOpenChange={gridSearch.onOpenChange}
+          query={gridSearch.query}
+          onQueryChange={gridSearch.onQueryChange}
+          groups={gridSearch.groups}
+          totalMatches={gridSearch.totalMatches}
+          active={gridSearch.activeMatch}
+          onGoTo={gridSearch.goToMatch}
+          onReplace={gridSearch.replaceAll}
+          replaceResult={gridSearch.replaceResult}
+          dimmed={gridSearch.dimmed}
+          allowReplace={false}
+        />
         {selectedCount > 0 && mode === 'report' && (
           <div className="ml-auto flex items-center gap-2">
             <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
@@ -682,6 +767,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         )}
         {size.width > 0 && size.height > 0 && (
           <DataEditor
+            ref={gridRef}
             theme={gridTheme}
             width={size.width}
             height={size.height}
@@ -701,11 +787,33 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             rangeSelect="multi-rect"
             rowHeight={22}
             headerHeight={22}
+            highlightRegions={gridSearch.highlightRegions}
+            onVisibleRegionChanged={gridSearch.onVisibleRegionChanged}
+            onHeaderMenuClick={colFilters.handleHeaderMenuClick}
+            onKeyDown={(e) => {
+              gridSearch.handleKey(e);
+            }}
             smoothScrollX
             smoothScrollY
           />
         )}
       </div>
+      {/* Меню колонки (▾): сорт + поиск по колонке + чек-лист значений — как в Формировании.
+          Объединённые ПОСТАВКА/ЗАКАЗ фильтруются по склейке (поиск в меню сужает по под-значению). */}
+      <FlowHeaderMenu
+        state={colFilters.menu}
+        sortDir={colFilters.menuSortDir}
+        search={colFilters.menuSearch}
+        values={colFilters.menuValues}
+        excluded={colFilters.menuExcluded}
+        onSort={colFilters.onSort}
+        onSortReset={colFilters.onSortReset}
+        onSearchChange={colFilters.onMenuSearchChange}
+        onToggleValue={colFilters.onToggleValue}
+        onClear={colFilters.onClear}
+        onDeselectAll={colFilters.onDeselectAll}
+        onClose={colFilters.closeMenu}
+      />
     </div>
   );
 }

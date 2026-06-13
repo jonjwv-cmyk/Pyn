@@ -40,6 +40,9 @@ interface FlowSearchPanelProps {
   /** «Хочет погаснуть» — после перелёта к результату (чтобы не перекрывать его).
    *  Реально гаснет только когда курсор НЕ над окном (наведение — всегда чёткое). */
   dimmed: boolean;
+  /** Показывать ли «Заменить» (по умолчанию да). Гриды на живой серверной базе
+   *  (Транспорт/План) пока без массовой замены — только поиск/перелёт. */
+  allowReplace?: boolean;
 }
 
 /**
@@ -61,6 +64,7 @@ export function FlowSearchPanel({
   onReplace,
   replaceResult,
   dimmed,
+  allowReplace = true,
 }: FlowSearchPanelProps) {
   const [hovered, setHovered] = useState(false);
   const [replaceOpen, setReplaceOpen] = useState(false);
@@ -125,19 +129,21 @@ export function FlowSearchPanel({
             {has && (
               <span className="shrink-0 text-[12px] tabular-nums text-text-muted/70">{totalMatches}</span>
             )}
-            <button
-              type="button"
-              onClick={() => setReplaceOpen((o) => !o)}
-              title="Заменить найденное"
-              className={cn(
-                'shrink-0 rounded-md border px-1.5 py-0.5 text-[12px] transition-colors',
-                replaceOpen
-                  ? 'border-accent-clay/60 text-accent-clay'
-                  : 'border-border-subtle text-text-secondary hover:text-text-strong',
-              )}
-            >
-              Заменить
-            </button>
+            {allowReplace && (
+              <button
+                type="button"
+                onClick={() => setReplaceOpen((o) => !o)}
+                title="Заменить найденное"
+                className={cn(
+                  'shrink-0 rounded-md border px-1.5 py-0.5 text-[12px] transition-colors',
+                  replaceOpen
+                    ? 'border-accent-clay/60 text-accent-clay'
+                    : 'border-border-subtle text-text-secondary hover:text-text-strong',
+                )}
+              >
+                Заменить
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onOpenChange(false)}
@@ -150,7 +156,7 @@ export function FlowSearchPanel({
 
           {/* Замена: строка «что меняем» — это поле поиска выше; здесь «на что» + кнопка
               с числом найденного; ниже — подтверждение результата. Целиком, отменяемо ⌘Z. */}
-          {replaceOpen && (
+          {allowReplace && replaceOpen && (
             <>
               <div className="flex shrink-0 items-center gap-1.5 border-b border-border-subtle/60 px-3 py-2">
                 <input

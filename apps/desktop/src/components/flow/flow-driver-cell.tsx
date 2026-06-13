@@ -215,15 +215,17 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
       ctx.fill();
       ctx.fillStyle = theme.textDark;
       ctx.fillText(driver, x0 + padP, yTop);
-      // Нижняя строка: СОТ + (если МОЛ) пилюля «МОЛ» + «по дату».
+      // Нижняя строка: СОТ — РОВНО ПОД ФИО (отступ x0+padP = начало текста ФИО внутри
+      // плашки, а не её левый край) и ЖИРНЫМ (юзер 2026-06-12). Пилюли МОЛ/«по дату» — мельче.
       const yB = rect.y + rect.height * 0.72;
-      let x = x0;
-      ctx.font = `8px ${theme.fontFamily}`;
+      let x = x0 + padP;
       if (phoneDisplay) {
+        ctx.font = `600 9px ${theme.fontFamily}`;
         ctx.fillStyle = theme.textMedium;
         ctx.fillText(phoneDisplay, x, yB);
         x += ctx.measureText(phoneDisplay).width + 6;
       }
+      ctx.font = `8px ${theme.fontFamily}`;
       if (isMol) {
         x = drawPill(ctx, x, yB, 'МОЛ', 'rgba(217,119,87,0.20)', '#8A4B2E');
         if (until) {

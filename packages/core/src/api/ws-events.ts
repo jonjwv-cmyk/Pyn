@@ -122,6 +122,8 @@ export const WS_EVENT_TYPES = {
    * Чисто UI — строки таблицы не трогает.
    */
   FLOW_VIEW_CHANGED: 'flow_view_changed',
+  /** Раздел «Транспорт» — изменён ОБЩИЙ вид (фильтры поиска/статусов/дней). */
+  FLOW_TRANSPORT_VIEW_CHANGED: 'flow_transport_view_changed',
   /**
    * База ВГХ (вес/габариты/объём/тех-имя) изменена — правка карточки или перенос
    * из промежуточного листа. Шлёт актуальные строки базы; клиенты обновляют стор
@@ -280,6 +282,15 @@ export interface FlowPlanMonthChangedEvent extends WsServerEvent {
  *  обновить аватар автора. `value` — JSON-строка вида (пусто — вид сброшен). Чисто UI. */
 export interface FlowViewChangedEvent extends WsServerEvent {
   type: 'flow_view_changed';
+  value: string;
+  updated_by: string;
+  updated_by_name: string;
+  updated_at: string;
+}
+
+/** То же для раздела «Транспорт» (отдельный общий вид: фильтры поиска/статусов/дней). */
+export interface FlowTransportViewChangedEvent extends WsServerEvent {
+  type: 'flow_transport_view_changed';
   value: string;
   updated_by: string;
   updated_by_name: string;

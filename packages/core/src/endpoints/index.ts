@@ -231,6 +231,8 @@ export {
   flowPlanMonthSet,
   flowViewGet,
   flowViewSet,
+  flowTransportViewGet,
+  flowTransportViewSet,
   flowImport,
   flowImportRunsGet,
   flowScriptPress,

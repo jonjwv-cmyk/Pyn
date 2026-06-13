@@ -186,6 +186,18 @@ export async function flowViewSet(client: ApiClient, value: string): Promise<Flo
   return wireToFlowView(wire);
 }
 
+/** Прочитать общий вид раздела «Транспорт» (отдельный от «Потока»). */
+export async function flowTransportViewGet(client: ApiClient): Promise<FlowView> {
+  const wire = await client.call<FlowViewWire>('flow_transport_view_get', {});
+  return wireToFlowView(wire);
+}
+
+/** Сохранить/сбросить общий вид «Транспорта» (admin). Сервер шлёт `flow_transport_view_changed`. */
+export async function flowTransportViewSet(client: ApiClient, value: string): Promise<FlowView> {
+  const wire = await client.call<FlowViewWire>('flow_transport_view_set', { value });
+  return wireToFlowView(wire);
+}
+
 /**
  * Приём выгрузки заказов: приложение запускает VBS «Выгрузка заказов» (SAP→TSV),
  * парсит TSV (`parseOrdersTsv`) и шлёт строки сюда СВОИМ E2E-каналом (через

@@ -27,6 +27,7 @@ export {
   type FlowVehiclesChangedEvent,
   type FlowPlanMonthChangedEvent,
   type FlowViewChangedEvent,
+  type FlowTransportViewChangedEvent,
   type VghChangedEvent,
   type VghStagingChangedEvent,
   type FlowImportLoggedEvent,
