@@ -315,6 +315,71 @@ export async function flowImport(
   };
 }
 
+/**
+ * Нормализованная строка выгрузки zm_vl (полная сверка поставок, ТЗ §5.2). Клиент
+ * сопоставляет колонки реальной выгрузки (по ИМЕНАМ заголовков, см. `parseZmvlTsv`)
+ * в эти поля и шлёт на сервер `flow_zmvl_reconcile`. Карта: Поставка→dlv, Позиция→
+ * dlv_pos, НомЗаказа→ord, ПозЗаказа→it, Номер транспортного заказа→trz, Отп_Склад→fr,
+ * Пол_Склад→to_wh, Объем Пост→qty(план), ДатаПлановОМ→plan_date, КолПрихода→fact_qty,
+ * Дата проводки→fact_dt, Создал→sap_created_by, Дата создания+Время→sap_created_at,
+ * места с остатком→stock_note, Удалить→deleted.
+ */
+export interface FlowZmvlRow {
+  dlv: string;
+  dlv_pos: string;
+  ord: string;
+  it: string;
+  trz: string;
+  fr: string;
+  to_wh: string;
+  /** Плановый объём поставки (строкой как в выгрузке; сервер нормализует число). */
+  qty: string;
+  /** Плановая дата (ДатаПлановОМ) — сервер приведёт к YYYY-MM-DD. */
+  plan_date: string;
+  /** КолПрихода (факт пришло в цех). */
+  fact_qty: string;
+  /** Дата проводки факта. */
+  fact_dt: string;
+  sap_created_by: string;
+  sap_created_at: string;
+  /** «Справка»: места хранения с НЕнулевым остатком (собирает клиент). */
+  stock_note: string;
+  /** Признак удаления SAP («Удалить»). */
+  deleted: string;
+}
+
+export interface FlowZmvlReconcileResult {
+  received: number;
+  /** Сколько черновиков получили SAP-номер (создание поставки). */
+  assigned: number;
+  updated: number;
+  inserted: number;
+  /** Сколько поставок ушло в резерв (исчезли из полной выгрузки / помечены удалёнными). */
+  reserved: number;
+  full: boolean;
+}
+
+/**
+ * Полная сверка поставок по zm_vl (ТЗ §5.2): новый номер→черновику, факт прихода,
+ * исчезла→резерв (позиция снова открыта). `full` (по умолчанию true) включает
+ * reserve-missing — ставить ТОЛЬКО на ПОЛНОЙ выгрузке (все статусы), иначе снесёт план.
+ */
+export async function flowZmvlReconcile(
+  client: ApiClient,
+  rows: FlowZmvlRow[],
+  full = true,
+): Promise<FlowZmvlReconcileResult> {
+  const wire = await client.call<Partial<FlowZmvlReconcileResult>>('flow_zmvl_reconcile', { rows, full });
+  return {
+    received: Number(wire.received) || 0,
+    assigned: Number(wire.assigned) || 0,
+    updated: Number(wire.updated) || 0,
+    inserted: Number(wire.inserted) || 0,
+    reserved: Number(wire.reserved) || 0,
+    full: wire.full !== false,
+  };
+}
+
 /** Прочитать журнал прогонов выгрузки (новые сверху) для раздела LOG. */
 export async function flowImportRunsGet(client: ApiClient, limit?: number): Promise<FlowImportRun[]> {
   const wire = await client.call<{ runs?: FlowImportRun[] }>('flow_import_runs_get', limit ? { limit } : {});
