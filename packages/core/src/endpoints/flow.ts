@@ -380,6 +380,99 @@ export async function flowZmvlReconcile(
   };
 }
 
+/**
+ * Разобрать TSV полной выгрузки zm_vl (152 колонки, эталон `все колонки zm_vl.XLSX`).
+ * Матч колонок по ИМЕНАМ заголовков (ПЕРВАЯ строка TSV) — устойчиво к перестановке/
+ * подмножеству колонок при доработке макроса. Дубли заголовков («Позиция», «Базовая
+ * ЕИ») → берём ПЕРВОЕ вхождение (это нужные: Позиция=поз.поставки, ЕИ=базовая).
+ * Заголовки нормализуем (trim + схлоп пробелов + срез хвостовой точки «КолПрихода.»).
+ * Строка без «Поставка» и без «НомЗаказа» — пропуск (шапка/мусор).
+ */
+export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
+  const lines = String(tsv ?? '').split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length < 2) return [];
+  const normH = (h: string): string =>
+    String(h ?? '').replace(/\s+/g, ' ').trim().replace(/\.+$/, '').toLowerCase();
+  const header = (lines[0] ?? '').split('\t');
+  const idx = new Map<string, number>();
+  header.forEach((h, i) => {
+    const k = normH(h);
+    if (k && !idx.has(k)) idx.set(k, i); // первое вхождение
+  });
+  // Найти индекс по списку кандидатов (нормализованных) — первый совпавший.
+  const col = (...names: string[]): number => {
+    for (const n of names) {
+      const k = normH(n);
+      const i = idx.get(k);
+      if (i != null) return i;
+    }
+    return -1;
+  };
+  const iDlv = col('Поставка');
+  const iPos = col('Позиция');
+  const iOrd = col('НомЗаказа');
+  const iIt = col('ПозЗаказа');
+  const iTrz = col('Номер транспортного заказа');
+  const iFr = col('Отп_Склад');
+  const iTo = col('Пол_Склад');
+  const iQty = col('Объем Пост', 'Объем поставки');
+  const iPlanDt = col('ДатаПлановОМ');
+  const iFactQty = col('КолПрихода');
+  const iFactDt = col('Дата проводки', 'ДатаДокДвМат');
+  const iCreBy = col('Создал');
+  const iCreDt = col('Дата создания');
+  const iCreTm = col('Время');
+  const iDel = col('Удалить');
+  const iUom = col('Базовая ЕИ');
+  const iNo = col('Материал');
+  const iMat = col('Наименование материала');
+  // «Справка» — места хранения с НЕнулевым остатком (ТЗ §7): пары место→запас.
+  const stockPairs: Array<[number, number]> = [
+    [col('Складское место'), col('СвОстЦС')],
+    [col('Складское место1'), col('Запас СМ1')],
+    [col('Складское место2'), col('Запас СМ2')],
+    [col('Складское место3'), col('Запас СМ3')],
+  ];
+  const at = (p: string[], i: number): string => (i >= 0 ? (p[i] ?? '').trim() : '');
+  const posNum = (s: string): boolean => {
+    const n = Number(String(s).replace(/\s+/g, '').replace(',', '.'));
+    return Number.isFinite(n) && n > 0;
+  };
+  const out: FlowZmvlRow[] = [];
+  for (let li = 1; li < lines.length; li++) {
+    const p = (lines[li] ?? '').split('\t');
+    const dlv = at(p, iDlv);
+    const ord = at(p, iOrd);
+    if (!dlv && !ord) continue;
+    const place: string[] = [];
+    for (const [pi, qi] of stockPairs) {
+      const pl = at(p, pi);
+      const q = at(p, qi);
+      if (pl && posNum(q)) place.push(`${pl}:${q}`);
+    }
+    const creDt = at(p, iCreDt);
+    const creTm = at(p, iCreTm);
+    out.push({
+      dlv,
+      dlv_pos: at(p, iPos),
+      ord,
+      it: at(p, iIt),
+      trz: at(p, iTrz),
+      fr: at(p, iFr),
+      to_wh: at(p, iTo),
+      qty: at(p, iQty),
+      plan_date: at(p, iPlanDt),
+      fact_qty: at(p, iFactQty),
+      fact_dt: at(p, iFactDt),
+      sap_created_by: at(p, iCreBy),
+      sap_created_at: [creDt, creTm].filter(Boolean).join(' '),
+      stock_note: place.join('; '),
+      deleted: at(p, iDel),
+    });
+  }
+  return out;
+}
+
 /** Прочитать журнал прогонов выгрузки (новые сверху) для раздела LOG. */
 export async function flowImportRunsGet(client: ApiClient, limit?: number): Promise<FlowImportRun[]> {
   const wire = await client.call<{ runs?: FlowImportRun[] }>('flow_import_runs_get', limit ? { limit } : {});
