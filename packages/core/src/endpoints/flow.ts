@@ -390,7 +390,7 @@ export async function flowZmvlReconcile(
  */
 export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
   const lines = String(tsv ?? '').split(/\r?\n/).filter((l) => l.length > 0);
-  if (lines.length < 2) return [];
+  if (lines.length < 1) return [];
   const normH = (h: string): string =>
     String(h ?? '').replace(/\s+/g, ' ').trim().replace(/\.+$/, '').toLowerCase();
   const header = (lines[0] ?? '').split('\t');
@@ -426,12 +426,22 @@ export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
   const iUom = col('Базовая ЕИ');
   const iNo = col('Материал');
   const iMat = col('Наименование материала');
+  // SAP grid API macros (`WF_PLAN_VBS`) can return data rows without a header. In that
+  // case we use the exact 152-column order from `все колонки zm_vl.XLSX`.
+  const hasHeader = iDlv >= 0 && iOrd >= 0;
+  const fixed = {
+    dlv: 6, pos: 7, trz: 8, fr: 2, to: 3, no: 11, mat: 12, uom: 13,
+    ord: 22, it: 23, creBy: 24, creDt: 25, creTm: 26, factDt: 64, planDt: 68,
+    factQty: 86, qty: 103, del: 143,
+    stock: [[30, 21], [32, 33], [34, 35], [36, 37]] as Array<[number, number]>,
+  };
+  const ix = (named: number, fallback: number): number => (hasHeader ? named : fallback);
   // «Справка» — места хранения с НЕнулевым остатком (ТЗ §7): пары место→запас.
   const stockPairs: Array<[number, number]> = [
-    [col('Складское место'), col('СвОстЦС')],
-    [col('Складское место1'), col('Запас СМ1')],
-    [col('Складское место2'), col('Запас СМ2')],
-    [col('Складское место3'), col('Запас СМ3')],
+    [ix(col('Складское место'), fixed.stock[0]?.[0] ?? -1), ix(col('СвОстЦС'), fixed.stock[0]?.[1] ?? -1)],
+    [ix(col('Складское место1'), fixed.stock[1]?.[0] ?? -1), ix(col('Запас СМ1'), fixed.stock[1]?.[1] ?? -1)],
+    [ix(col('Складское место2'), fixed.stock[2]?.[0] ?? -1), ix(col('Запас СМ2'), fixed.stock[2]?.[1] ?? -1)],
+    [ix(col('Складское место3'), fixed.stock[3]?.[0] ?? -1), ix(col('Запас СМ3'), fixed.stock[3]?.[1] ?? -1)],
   ];
   const at = (p: string[], i: number): string => (i >= 0 ? (p[i] ?? '').trim() : '');
   const posNum = (s: string): boolean => {
@@ -439,10 +449,10 @@ export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
     return Number.isFinite(n) && n > 0;
   };
   const out: FlowZmvlRow[] = [];
-  for (let li = 1; li < lines.length; li++) {
+  for (let li = hasHeader ? 1 : 0; li < lines.length; li++) {
     const p = (lines[li] ?? '').split('\t');
-    const dlv = at(p, iDlv);
-    const ord = at(p, iOrd);
+    const dlv = at(p, ix(iDlv, fixed.dlv));
+    const ord = at(p, ix(iOrd, fixed.ord));
     if (!dlv && !ord) continue;
     const place: string[] = [];
     for (const [pi, qi] of stockPairs) {
@@ -450,24 +460,24 @@ export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
       const q = at(p, qi);
       if (pl && posNum(q)) place.push(`${pl}:${q}`);
     }
-    const creDt = at(p, iCreDt);
-    const creTm = at(p, iCreTm);
+    const creDt = at(p, ix(iCreDt, fixed.creDt));
+    const creTm = at(p, ix(iCreTm, fixed.creTm));
     out.push({
       dlv,
-      dlv_pos: at(p, iPos),
+      dlv_pos: at(p, ix(iPos, fixed.pos)),
       ord,
-      it: at(p, iIt),
-      trz: at(p, iTrz),
-      fr: at(p, iFr),
-      to_wh: at(p, iTo),
-      qty: at(p, iQty),
-      plan_date: at(p, iPlanDt),
-      fact_qty: at(p, iFactQty),
-      fact_dt: at(p, iFactDt),
-      sap_created_by: at(p, iCreBy),
+      it: at(p, ix(iIt, fixed.it)),
+      trz: at(p, ix(iTrz, fixed.trz)),
+      fr: at(p, ix(iFr, fixed.fr)),
+      to_wh: at(p, ix(iTo, fixed.to)),
+      qty: at(p, ix(iQty, fixed.qty)),
+      plan_date: at(p, ix(iPlanDt, fixed.planDt)),
+      fact_qty: at(p, ix(iFactQty, fixed.factQty)),
+      fact_dt: at(p, ix(iFactDt, fixed.factDt)),
+      sap_created_by: at(p, ix(iCreBy, fixed.creBy)),
       sap_created_at: [creDt, creTm].filter(Boolean).join(' '),
       stock_note: place.join('; '),
-      deleted: at(p, iDel),
+      deleted: at(p, ix(iDel, fixed.del)),
     });
   }
   return out;
