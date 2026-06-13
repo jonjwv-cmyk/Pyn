@@ -11,7 +11,7 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { Trash2 } from 'lucide-react';
+import { Redo2, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
@@ -142,6 +142,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     rows: CompactSelection.empty(),
   });
   const gridRef = useRef<DataEditorRef | null>(null);
+  // Контейнер DataEditor — также для проверки видимости вкладки в ⌘Z-хоткее.
+  const measureRef = useRef<HTMLDivElement | null>(null);
   const [msg, setMsg] = useState('');
 
   // CLST: кластер/день доставки склада-получателя из живой базы складов.
@@ -478,6 +480,98 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     });
   }, []);
 
+  // ── Отмена/повтор правок (⌘Z / ⌘⇧Z, кнопки) — как в Формировании/Транспорте ───
+  // Покрывает ПРАВКИ ПОЛЕЙ ПОСТАВКИ (qty/trz/exp1/exp2/vehicle/ride/done/reason).
+  // «Согласовал» — поле ЯКОРЯ (другая таблица) → в историю НЕ кладём (правится из всех
+  // видов). Удаление (резерв) тоже отдельно. rowsRef — свежий row_version при применении.
+  const rowsRef = useRef<FlowDeliveryRow[]>(rows);
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
+  type PlanEdit = { id: number; before: Record<string, string | number | null>; after: Record<string, string | number | null> };
+  const undoRef = useRef<PlanEdit[]>([]);
+  const redoRef = useRef<PlanEdit[]>([]);
+  const [history, setHistory] = useState({ canUndo: false, canRedo: false });
+  const syncHistory = useCallback(() => {
+    setHistory({ canUndo: undoRef.current.length > 0, canRedo: redoRef.current.length > 0 });
+  }, []);
+
+  // Применить набор полей к поставке (оптимистично + сервер) БЕЗ записи в историю — общий
+  // путь для правки и для отмены/повтора. row_version берём актуальный из rowsRef.
+  const applyDlvFields = useCallback(
+    (id: number, fields: Record<string, string | number | null>) => {
+      const cur = rowsRef.current.find((x) => x.id === id);
+      if (!cur) return;
+      if (rowLocked(cur)) {
+        setMsg('Старше 7 дней — отчёт закрыт, правки заблокированы');
+        return;
+      }
+      setMsg('');
+      setRows((prev) => {
+        const next = prev.map((x) => (x.id === id ? ({ ...x, ...fields } as FlowDeliveryRow) : x));
+        planDlvCache = next;
+        rowsRef.current = next;
+        return next;
+      });
+      void flowDeliveriesEdit(api, [{ id, row_version: cur.row_version, fields }]).then((res) =>
+        applyServerDlv(res.rows),
+      );
+    },
+    [applyServerDlv, rowLocked],
+  );
+
+  // Снимок текущих значений изменяемых полей (ключи fields = имена колонок строки).
+  const captureBefore = useCallback(
+    (r: FlowDeliveryRow, fields: Record<string, string | number | null>) => {
+      const before: Record<string, string | number | null> = {};
+      const rec = r as unknown as Record<string, unknown>;
+      for (const k of Object.keys(fields)) {
+        const v = rec[k];
+        before[k] = (v === undefined ? null : v) as string | number | null;
+      }
+      return before;
+    },
+    [],
+  );
+  const pushHistory = useCallback(
+    (e: PlanEdit) => {
+      undoRef.current.push(e);
+      if (undoRef.current.length > 100) undoRef.current.shift();
+      redoRef.current = []; // новый шаг обнуляет «повтор»
+      syncHistory();
+    },
+    [syncHistory],
+  );
+  const undo = useCallback(() => {
+    const e = undoRef.current.pop();
+    if (!e) return;
+    applyDlvFields(e.id, e.before);
+    redoRef.current.push(e);
+    syncHistory();
+  }, [applyDlvFields, syncHistory]);
+  const redo = useCallback(() => {
+    const e = redoRef.current.pop();
+    if (!e) return;
+    applyDlvFields(e.id, e.after);
+    undoRef.current.push(e);
+    syncHistory();
+  }, [applyDlvFields, syncHistory]);
+
+  // ⌘Z / ⌘⇧Z (Ctrl на Win) — кроме случая когда фокус в поле ввода (там Cmd+Z правит текст).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z') return;
+      if (!measureRef.current || measureRef.current.offsetParent === null) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      if (e.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, redo]);
+
   const onCellEdited = useCallback(
     (cell: Item, newValue: EditableGridCell) => {
       const [col, row] = cell;
@@ -504,15 +598,11 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           }
           fields.fail_reason = v;
         } else return;
-        setMsg('');
-        setRows((prev) => {
-          const next = prev.map((x) => (x.id === r.id ? ({ ...x, ...fields } as FlowDeliveryRow) : x));
-          planDlvCache = next;
-          return next;
-        });
-        void flowDeliveriesEdit(api, [{ id: r.id, row_version: r.row_version, fields }]).then((res) =>
-          applyServerDlv(res.rows),
-        );
+        const before = captureBefore(r, fields);
+        const changed = Object.keys(fields).some((k) => String(before[k] ?? '') !== String(fields[k] ?? ''));
+        if (!changed) return;
+        applyDlvFields(r.id, fields);
+        pushHistory({ id: r.id, before, after: fields });
         return;
       }
       if (newValue.kind !== GridCellKind.Text) return;
@@ -566,19 +656,13 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       else if (spec.id === 'ride') fields.ride_id = raw;
       else return;
 
-      setMsg('');
-      setRows((prev) => {
-        const next = prev.map((x) =>
-          x.id === r.id ? ({ ...x, ...fields } as FlowDeliveryRow) : x,
-        );
-        planDlvCache = next;
-        return next;
-      });
-      void flowDeliveriesEdit(api, [{ id: r.id, row_version: r.row_version, fields }]).then((res) => {
-        applyServerDlv(res.rows); // успех/конфликт — догоняем серверной версией
-      });
+      const before = captureBefore(r, fields);
+      const changed = Object.keys(fields).some((k) => String(before[k] ?? '') !== String(fields[k] ?? ''));
+      if (!changed) return;
+      applyDlvFields(r.id, fields);
+      pushHistory({ id: r.id, before, after: fields });
     },
-    [viewRows, anchorByKey, applyServerDlv, rowLocked],
+    [viewRows, anchorByKey, applyDlvFields, captureBefore, pushHistory, rowLocked],
   );
 
   // Подсветка строк: ERROR — красная, DUPLICATE — янтарная, черновик — чуть приглушён.
@@ -652,7 +736,6 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   }, [selection, viewRows]);
 
   // Размер контейнера для DataEditor.
-  const measureRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
     const el = measureRef.current;
@@ -670,6 +753,27 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[#FDFDFB]">
       <div className="flex shrink-0 items-center gap-3 border-b border-black/[0.06] px-4 py-1.5 text-[12px] text-[#6B6862]">
+        {/* Отмена / Повтор правок поставки (как в Формировании/Транспорте) — ⌘Z / ⌘⇧Z. */}
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={undo}
+            disabled={!history.canUndo}
+            title="Отменить (⌘Z)"
+            className="flex h-6 w-6 items-center justify-center rounded-md border border-black/10 text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:cursor-default disabled:opacity-35"
+          >
+            <Undo2 size={13} strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            onClick={redo}
+            disabled={!history.canRedo}
+            title="Повторить (⌘⇧Z)"
+            className="flex h-6 w-6 items-center justify-center rounded-md border border-black/10 text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:cursor-default disabled:opacity-35"
+          >
+            <Redo2 size={13} strokeWidth={1.75} />
+          </button>
+        </div>
         <span className="tabular-nums">
           {rows.length} строк · {groupCount} поставок
           {draftCount > 0 ? ` · черновиков ${draftCount}` : ''}
