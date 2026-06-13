@@ -483,6 +483,188 @@ export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
   return out;
 }
 
+/**
+ * Нормализованная строка выгрузки СЭД (`ZM_EDM_DOCS`). Это пока только приёмник
+ * TSV для будущего `flow_delivery_events`: макрос СЭД может быть не ALV-grid,
+ * поэтому парсер принимает и TSV с заголовком, и 33-колоночный порядок из
+ * `данные из СЭД.XLSX`.
+ */
+export interface FlowSedRow {
+  icon: string;
+  work_status: string;
+  document_status: string;
+  journal: string;
+  sent_date: string;
+  sent_time: string;
+  sent_by: string;
+  approval_status: string;
+  approved_date: string;
+  approved_time: string;
+  open_sed_doc: string;
+  open_file: string;
+  approved_by_name: string;
+  approved_by_tab: string;
+  returned: string;
+  dlv: string;
+  sap_created_date: string;
+  plant: string;
+  storage: string;
+  material_doc: string;
+  material_doc_year: string;
+  doc_date: string;
+  posting_date: string;
+  reference: string;
+  header_text: string;
+  receiving_plant: string;
+  receiving_storage: string;
+  movement_type: string;
+  shop: string;
+  receipt_material_doc: string;
+  receipt_material_doc_year: string;
+  sed_doc_id: string;
+  comment: string;
+}
+
+/**
+ * Разобрать TSV СЭД. Header-driven путь устойчив к копированию списка с шапкой;
+ * fallback — фиксированные 33 колонки из `данные из СЭД.XLSX`:
+ * icon/status/work/doc/journal/sent/approval/delivery/material docs/UNID/comment.
+ * Excel serial dates/times приводим к ISO-like строкам, SAP-текст оставляем как есть.
+ */
+export function parseSedTsv(tsv: string): FlowSedRow[] {
+  const lines = String(tsv ?? '').split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length < 1) return [];
+  const normH = (h: string): string =>
+    String(h ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\.+$/, '')
+      .replace(/ё/g, 'е')
+      .toLowerCase();
+  const header = (lines[0] ?? '').split('\t');
+  const idx = new Map<string, number>();
+  header.forEach((h, i) => {
+    const k = normH(h);
+    if (k && !idx.has(k)) idx.set(k, i);
+  });
+  const col = (...names: string[]): number => {
+    for (const n of names) {
+      const i = idx.get(normH(n));
+      if (i != null) return i;
+    }
+    return -1;
+  };
+  const iDlv = col('Поставка');
+  const iJournal = col('Журнал');
+  const iSentDate = col('ДтОтпрСЭД', 'Дата отправки СЭД');
+  const iSedDocId = col('ID документа в СЭД', 'UNID');
+  const hasHeader = iDlv >= 0 && (iJournal >= 0 || iSentDate >= 0 || iSedDocId >= 0);
+  const fixed = {
+    icon: 0,
+    workStatus: 1,
+    documentStatus: 2,
+    journal: 3,
+    sentDate: 4,
+    sentTime: 5,
+    sentBy: 6,
+    approvalStatus: 7,
+    approvedDate: 8,
+    approvedTime: 9,
+    openSedDoc: 10,
+    openFile: 11,
+    approvedByName: 12,
+    approvedByTab: 13,
+    returned: 14,
+    dlv: 15,
+    sapCreatedDate: 16,
+    plant: 17,
+    storage: 18,
+    materialDoc: 19,
+    materialDocYear: 20,
+    docDate: 21,
+    postingDate: 22,
+    reference: 23,
+    headerText: 24,
+    receivingPlant: 25,
+    receivingStorage: 26,
+    movementType: 27,
+    shop: 28,
+    receiptMaterialDoc: 29,
+    receiptMaterialDocYear: 30,
+    sedDocId: 31,
+    comment: 32,
+  };
+  const ix = (named: number, fallback: number): number => (hasHeader ? named : fallback);
+  const at = (p: string[], i: number): string => (i >= 0 ? (p[i] ?? '').trim() : '');
+  const serialNum = (s: string): number | null => {
+    const raw = String(s ?? '').replace(',', '.').trim();
+    if (!/^-?\d+(?:\.\d+)?$/.test(raw)) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+  const excelDate = (s: string): string => {
+    const n = serialNum(s);
+    if (n == null || n <= 0 || n < 20000) return s.trim();
+    const ms = Math.round((n - 25569) * 86400000);
+    return new Date(ms).toISOString().slice(0, 10);
+  };
+  const excelTime = (s: string): string => {
+    const n = serialNum(s);
+    if (n == null || n < 0 || n >= 1) return s.trim();
+    const total = Math.round(n * 86400);
+    const hh = String(Math.floor(total / 3600) % 24).padStart(2, '0');
+    const mm = String(Math.floor(total / 60) % 60).padStart(2, '0');
+    const ss = String(total % 60).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  };
+  const dateAt = (p: string[], i: number): string => excelDate(at(p, i));
+  const timeAt = (p: string[], i: number): string => excelTime(at(p, i));
+  const out: FlowSedRow[] = [];
+  for (let li = hasHeader ? 1 : 0; li < lines.length; li++) {
+    const p = (lines[li] ?? '').split('\t');
+    const dlv = at(p, ix(iDlv, fixed.dlv));
+    const sedDocId = at(p, ix(iSedDocId, fixed.sedDocId));
+    const materialDoc = at(p, ix(col('Документ материала'), fixed.materialDoc));
+    if (!dlv && !sedDocId && !materialDoc) continue;
+    out.push({
+      icon: at(p, fixed.icon),
+      work_status: at(p, ix(col('Статус работы'), fixed.workStatus)),
+      document_status: at(p, ix(col('Статус документа'), fixed.documentStatus)),
+      journal: at(p, ix(iJournal, fixed.journal)),
+      sent_date: dateAt(p, ix(iSentDate, fixed.sentDate)),
+      sent_time: timeAt(p, ix(col('ВрОтпрСЭД', 'Время отправки СЭД'), fixed.sentTime)),
+      sent_by: at(p, ix(col('КемОтпрСЭД', 'Кем отправлено СЭД'), fixed.sentBy)),
+      approval_status: at(p, ix(col('СтСоглДокС', 'СтСоглДокСЭД', 'Статус согласования документа'), fixed.approvalStatus)),
+      approved_date: dateAt(p, ix(col('ДтСоглДокС', 'ДтСоглДокСЭД', 'Дата согласования документа'), fixed.approvedDate)),
+      approved_time: timeAt(p, ix(col('ВрСоглДокС', 'ВрСоглДокСЭД', 'Время согласования документа'), fixed.approvedTime)),
+      open_sed_doc: at(p, ix(col('ОткрДокСЭД'), fixed.openSedDoc)),
+      open_file: at(p, ix(col('ОткрФайл'), fixed.openFile)),
+      approved_by_name: at(p, ix(col('ФИОСоглСЭД'), fixed.approvedByName)),
+      approved_by_tab: at(p, ix(col('ТабСоглСЭД'), fixed.approvedByTab)),
+      returned: at(p, ix(col('Возврат'), fixed.returned)),
+      dlv,
+      sap_created_date: dateAt(p, ix(col('Дата создания'), fixed.sapCreatedDate)),
+      plant: at(p, ix(col('Завод'), fixed.plant)),
+      storage: at(p, ix(col('Склад'), fixed.storage)),
+      material_doc: materialDoc,
+      material_doc_year: at(p, ix(col('ГодДокумМатериала'), fixed.materialDocYear)),
+      doc_date: dateAt(p, ix(col('Дата документа'), fixed.docDate)),
+      posting_date: dateAt(p, ix(col('Дата проводки'), fixed.postingDate)),
+      reference: at(p, ix(col('Ссылка'), fixed.reference)),
+      header_text: at(p, ix(col('Текст заголовка документа'), fixed.headerText)),
+      receiving_plant: at(p, ix(col('Принимающий завод'), fixed.receivingPlant)),
+      receiving_storage: at(p, ix(col('Принимающий склад'), fixed.receivingStorage)),
+      movement_type: at(p, ix(col('Вид движения'), fixed.movementType)),
+      shop: at(p, ix(col('ПрЦех'), fixed.shop)),
+      receipt_material_doc: at(p, ix(col('ДМ поступл'), fixed.receiptMaterialDoc)),
+      receipt_material_doc_year: at(p, ix(col('Год ДМ пос'), fixed.receiptMaterialDocYear)),
+      sed_doc_id: sedDocId,
+      comment: at(p, ix(col('Комментари', 'Комментарий'), fixed.comment)),
+    });
+  }
+  return out;
+}
+
 /** Прочитать журнал прогонов выгрузки (новые сверху) для раздела LOG. */
 export async function flowImportRunsGet(client: ApiClient, limit?: number): Promise<FlowImportRun[]> {
   const wire = await client.call<{ runs?: FlowImportRun[] }>('flow_import_runs_get', limit ? { limit } : {});
