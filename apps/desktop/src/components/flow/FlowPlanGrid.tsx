@@ -114,9 +114,10 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'flag', title: 'ПРОВЕРКА', width: 92 },
 ];
 
-/** Причины невывоза (ТЗ §5.1) — зеркало серверного списка. */
-const FAIL_REASONS = ['нет на складе', 'мало', 'брак', 'приёмка', 'входной контроль',
-  'отказ цеха', 'перенос', 'нет МОЛа', 'иное'] as const;
+/** Причины невывоза (юзер 2026-06-14) — зеркало серверного списка (валидация). */
+const FAIL_REASONS = ['нет на центральном складе', 'менее транспортной нормы', 'брак',
+  'на приёмке', 'на входном контроле', 'отказ цеха', 'перенос на другой день',
+  'нет МОЛа', 'иные причины'] as const;
 
 const PLAN_RENDERERS = [flowDropdownRenderer];
 
@@ -895,7 +896,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           </div>
         )}
       </div>
-      <div ref={measureRef} className="flow-grid relative min-h-0 flex-1">
+      {/* Обёртка relative + измеряемый слой `absolute inset-0` (как в Транспорте): абсолютный
+          слой повторяет размер родителя независимо от ширины канваса → появляются полосы
+          прокрутки, а flex-1 НЕ растягивается под широкий грид (был баг: много колонок, но не
+          прокрутить). */}
+      <div className="relative min-h-0 flex-1">
+        <div ref={measureRef} className="flow-grid absolute inset-0">
         {loading && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#FDFDFB]/70 text-[13px] text-[#6B6862]">
             Загрузка плана…
@@ -945,6 +951,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             smoothScrollY
           />
         )}
+        </div>
       </div>
       {/* Меню колонки (▾): сорт + поиск по колонке + чек-лист значений — как в Формировании.
           Объединённые ПОСТАВКА/ЗАКАЗ фильтруются по склейке (поиск в меню сужает по под-значению). */}
