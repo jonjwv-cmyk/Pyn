@@ -13,6 +13,7 @@ import { FlowPlanFormButton } from './FlowPlanFormButton';
 import { FlowPlanFixButton } from './FlowPlanFixButton';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
 import { FlowImportIndicator, type FlowImportRunner } from './FlowImportIndicator';
+import { FlowZmVlButton } from './FlowZmVlButton';
 
 /** Этапы плана: формирование → план → отчёт. Транспорт — отдельный раздел сайдбара. */
 type FlowStage = 'form' | 'plan' | 'report';
@@ -109,8 +110,7 @@ export function FlowScreen(): JSX.Element {
               <FlowPlanFixButton />
             </>
           )}
-          {/* Кнопка «Сверка zm_vl» убрана из Отчёта (юзер 2026-06-12, п.7): её роль теперь
-              выполняет кнопка-скрипт zm_vl в сайдбаре. Компонент FlowZmVlButton оставлен. */}
+          {stage === 'report' && <FlowZmVlButton />}
         </div>
       </div>
       <WorkspaceCard>
