@@ -1250,6 +1250,12 @@ export function FlowSandboxGrid(): JSX.Element {
   const planMetaMap = useScheduleMonthsMeta(planMonths);
   const planMeta = planMetaMap.get(monthKey(planYear, planMonth));
 
+  // Якоря с АКТИВНОЙ поставкой (позиция «ушла в план») — в формировании её нет, и в
+  // транспортную норму (доступный остаток) такие НЕ считаем. Источник — flow_deliveries
+  // (карта id→`ord|it` обновляется реалтаймом ниже). Объявлено здесь, т.к. нужно норме.
+  const [dlvAnchorById, setDlvAnchorById] = useState<Map<number, string>>(() => new Map());
+  const activeDlvAnchors = useMemo(() => new Set(dlvAnchorById.values()), [dlvAnchorById]);
+
   // РАСЧЁТНЫЙ STAT по строке (id → { auto, undershoot }) — ЕДИНЫЙ источник вердикта для
   // показа (liveRows), пунктов выпадашки (statOptionsForRow) и валидации (applyEdits).
   // Транспортная норма: Σкол-ва не-OFF по связке отправитель|получатель|номенклатура|ЕИ|MAT
@@ -1264,6 +1270,10 @@ export function FlowSandboxGrid(): JSX.Element {
     const sumByGroup = new Map<string, number>();
     for (const r of rows) {
       if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
+      // Позиция уже в плане (активная поставка) — в формировании её нет, в норму НЕ считаем
+      // (норма = доступный к транспорту остаток по живым строкам; юзер 2026-06-14). Иначе сумма
+      // раздувается спланированными → «мало» не срабатывает, хотя нижний расчёт показывает недобор.
+      if (activeDlvAnchors.has(`${r.ord}|${r.it}`)) continue;
       const q = typeof r.qty === 'number' ? r.qty : Number(r.qty);
       if (!Number.isFinite(q)) continue;
       const g = `${r.fr}|${r.to_wh}|${normVghKey(r.no_num)}|${r.uom}|${r.mat}`;
@@ -1301,7 +1311,7 @@ export function FlowSandboxGrid(): JSX.Element {
       map.set(r.id, { auto, undershoot });
     }
     return map;
-  }, [rows, vghByKey, whById]);
+  }, [rows, vghByKey, whById, activeDlvAnchors]);
 
   // CLST — ЖИВОЙ из нашего графика. Колонка ПО ДНЯМ НЕДЕЛИ (ПН-ПТ) из графика
   // ВЫБРАННОГО месяца; внутри дня кластер выводим суффиксом: ВЫЕЗД/КХП («ПН КХП»,
@@ -1373,8 +1383,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // «Формирование = только позиции БЕЗ активной поставки» (модель якорь+поставки):
   // позиция, попавшая в план («Сформировать план» / ручная вставка), из формирования
   // исчезает — это ВИД, строка-якорь не удаляется. Удалили поставку (резерв) →
-  // позиция возвращается. Держим карту id поставки → якорь `ord|it` (реалтайм).
-  const [dlvAnchorById, setDlvAnchorById] = useState<Map<number, string>>(() => new Map());
+  // позиция возвращается. Держим карту id поставки → якорь `ord|it` (реалтайм; стейт объявлен выше).
   useEffect(() => {
     let alive = true;
     void flowDeliveriesGet(api)
@@ -1399,7 +1408,6 @@ export function FlowSandboxGrid(): JSX.Element {
       return next;
     });
   });
-  const activeDlvAnchors = useMemo(() => new Set(dlvAnchorById.values()), [dlvAnchorById]);
   // Видимые строки формирования: без позиций с активной поставкой (они в Плане).
   const visibleRows = useMemo<FlowSandboxRow[]>(() => {
     if (activeDlvAnchors.size === 0) return liveRows;
