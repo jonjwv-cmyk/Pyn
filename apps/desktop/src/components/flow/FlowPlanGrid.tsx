@@ -11,7 +11,7 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { Redo2, Trash2, Undo2 } from 'lucide-react';
+import { Download, Redo2, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
@@ -38,6 +38,13 @@ import { useVghStore, normVghKey } from '@/lib/vgh-store';
 import { ensureVghLoaded } from '@/lib/vgh-repo';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import { fmtNum3, MONTH_ABBR_RU, parseMol } from './flow-sandbox.fixtures';
+import {
+  exportPlanForExpeditors,
+  exportPlanFull,
+  exportWarehouseSheet,
+  type ExportCtx,
+  type FlowExportVariant,
+} from './flow-export';
 
 /**
  * Этап «План» — грид поставок (flow_deliveries). Модель «якорь + поставки»:
@@ -749,6 +756,23 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   }, []);
 
   const gridTheme = useMemo<Partial<Theme>>(() => ({ ...FLOW_GRID_THEME }), []);
+  const exportCtx = useMemo<ExportCtx>(
+    () => ({ anchorByKey, vghByKey, whById }),
+    [anchorByKey, vghByKey, whById],
+  );
+  const runExport = useCallback(
+    (variant: FlowExportVariant) => {
+      if (viewRows.length === 0) {
+        setMsg(mode === 'report' ? 'Отчёт пуст — нечего выгружать' : 'План пуст — нечего выгружать');
+        return;
+      }
+      if (variant === 'full') exportPlanFull(viewRows, exportCtx);
+      else if (variant === 'expeditors') exportPlanForExpeditors(viewRows, exportCtx);
+      else exportWarehouseSheet(viewRows, exportCtx);
+      setMsg('');
+    },
+    [exportCtx, mode, viewRows],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[#FDFDFB]">
@@ -773,6 +797,26 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           >
             <Redo2 size={13} strokeWidth={1.75} />
           </button>
+        </div>
+        <div className="flex items-center gap-1">
+          <Download size={13} strokeWidth={1.75} />
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              const v = e.target.value as FlowExportVariant | '';
+              if (v) runExport(v);
+              e.target.value = '';
+            }}
+            title="Выгрузить текущий вид в Excel-совместимый CSV"
+            className="h-6 max-w-[168px] rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25"
+          >
+            <option value="" disabled>
+              Экспорт…
+            </option>
+            <option value="expeditors">Экспедиторам</option>
+            <option value="full">{mode === 'report' ? 'Отчёт полный' : 'План полный'}</option>
+            <option value="warehouse">Кладовщикам</option>
+          </select>
         </div>
         <span className="tabular-nums">
           {rows.length} строк · {groupCount} поставок
