@@ -5,6 +5,7 @@ import { flowImport, getMacroBundle, parseOrdersTsv } from '@pyn/core';
 import { api } from '@/lib/api';
 import { customActionLabel, useTablesRegistry } from '@/lib/use-tables-registry';
 import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
+import { reportClientError } from '@/lib/error-report';
 
 /**
  * Кнопка «Выгрузка заказов» (этап Формирование раздела «Поток»). Запускает ТОТ ЖЕ
@@ -81,6 +82,10 @@ export function FlowOrderUploadButton({
       );
     } catch (e) {
       setMsg(`Ошибка: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
+      reportClientError('flow_import', e instanceof Error ? e.message : String(e), {
+        stack: e instanceof Error ? e.stack : undefined,
+        context: 'Выгрузка заказов',
+      });
     } finally {
       setBusy(false);
       onRunningChange?.(false);

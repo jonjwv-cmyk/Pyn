@@ -3,6 +3,7 @@ import i18next from 'i18next';
 import { App } from './App';
 import { TrayMenu } from './components/system/TrayMenu';
 import { initI18n } from './lib/i18n';
+import { installGlobalErrorReporting } from './lib/error-report';
 import './index.css';
 import './lib/fonts';
 
@@ -41,6 +42,9 @@ async function bootstrap(): Promise<void> {
     if (e.newValue === i18next.language) return;
     void i18next.changeLanguage(e.newValue);
   });
+
+  // Глобальный репорт необработанных ошибок на сервер (мониторинг) — только основное окно.
+  if (!isTrayMenu) installGlobalErrorReporting();
 
   ReactDOM.createRoot(document.getElementById('root')!).render(
     isTrayMenu ? <TrayMenu /> : <App />,

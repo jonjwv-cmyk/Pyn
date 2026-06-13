@@ -269,6 +269,13 @@ export {
 } from './flow-plan';
 
 export {
+  clientErrorLog,
+  clientErrorsGet,
+  type ClientErrorReport,
+  type ClientErrorRow,
+} from './client-errors';
+
+export {
   flowVehiclesGet,
   flowVehiclesUpsert,
   flowTransportGet,

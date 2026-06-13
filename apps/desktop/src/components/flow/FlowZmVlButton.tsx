@@ -3,6 +3,7 @@ import { DatabaseZap, RefreshCw } from 'lucide-react';
 import { flowZmvlReconcile, getMacroBundle, parseZmvlTsv, releaseSheetLock } from '@pyn/core';
 import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
 import { api } from '@/lib/api';
+import { reportClientError } from '@/lib/error-report';
 
 /** Пароль кнопки сверки (ТЗ §5.2) — фиксирован заранее, обработка подключится позже. */
 const ZMVL_PASSWORD = '7777';
@@ -53,6 +54,10 @@ export function FlowZmVlButton(): JSX.Element {
       );
     } catch (e) {
       setMsg(`Ошибка: ${(e instanceof Error ? e.message : String(e)).slice(0, 100)}`);
+      reportClientError('flow_zmvl', e instanceof Error ? e.message : String(e), {
+        stack: e instanceof Error ? e.stack : undefined,
+        context: 'Сверка zm_vl',
+      });
     } finally {
       await releaseSheetLock(api, ZMVL_ACTION_ID).catch(() => undefined);
       setBusy(false);
