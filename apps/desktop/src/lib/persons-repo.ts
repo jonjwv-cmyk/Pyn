@@ -18,6 +18,7 @@ import {
   personUpdate,
   personCreate,
   parsePersonsSnapshotJson,
+  parseBroadcastApprovalWarehouses,
   type Person,
   type PersonsMeta,
   type PersonPatch,
@@ -230,6 +231,14 @@ export async function savePerson(id: number, patch: PersonPatch): Promise<void> 
   if (patch.work !== undefined) optimistic.work = patch.work;
   if (patch.mail !== undefined) optimistic.mail = patch.mail;
   if (patch.comment !== undefined) optimistic.comment = patch.comment;
+  // broadcast-поля (рассылка / согласуемые склады) — тоже в локальную проекцию,
+  // чтобы переоткрытие карточки показало свежий выбор сразу, не дожидаясь WS-refresh.
+  if (patch.broadcast_enabled !== undefined) optimistic.broadcastEnabled = patch.broadcast_enabled === 1;
+  if (patch.broadcast_group !== undefined) optimistic.broadcastGroup = patch.broadcast_group;
+  if (patch.broadcast_purpose !== undefined) optimistic.broadcastPurpose = patch.broadcast_purpose;
+  if (patch.broadcast_approval_warehouses !== undefined) {
+    optimistic.broadcastApprovalWarehouses = parseBroadcastApprovalWarehouses(patch.broadcast_approval_warehouses);
+  }
   if (patch.is_mol !== undefined) {
     optimistic.isMol = patch.is_mol === 1;
     if (patch.is_mol === 1 && patch.fio !== undefined && patch.fio.trim()) optimistic.isOrphan = false;

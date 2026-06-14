@@ -14,6 +14,64 @@ import type { ApiClient } from '../api/client';
  * клиентский МОЛ-пайплайн не меняется.
  */
 
+// ── Роль потока (поля контакта; внутр. имена остаются broadcast_*) ──────────
+
+// Группы «роли потока» (UI-лейбл «Роль потока», юзер 2026-06-12). Экспедиторы и
+// Водители-экспедиторы добавлены для транспорта/потока — для них «цель» необязательна.
+export const BROADCAST_GROUPS = [
+  'ИТР УПП',
+  'Заявители',
+  'Согласующие',
+  'Экспедиторы',
+  'Водители-экспедиторы',
+] as const;
+export type BroadcastGroup = (typeof BROADCAST_GROUPS)[number];
+
+/** Группы роли потока, для которых «цель/коммент» НЕ обязательна (Согласующие — там
+ *  склады; Экспедиторы/Водители-экспедиторы — юзер 2026-06-12). */
+export const BROADCAST_PURPOSE_OPTIONAL_GROUPS: ReadonlySet<string> = new Set([
+  'Согласующие',
+  'Экспедиторы',
+  'Водители-экспедиторы',
+]);
+
+/** Парсит JSON-массив кодов складов согласования из wire/БД. */
+export function parseBroadcastApprovalWarehouses(raw: string | null | undefined): string[] {
+  if (!raw || !raw.trim()) return [];
+  try {
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of arr) {
+      const code = String(item).trim();
+      if (!code) continue;
+      const key = code.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(code);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Сериализует склады согласования для patch/БД. */
+export function serializeBroadcastApprovalWarehouses(codes: readonly string[]): string {
+  const seen = new Set<string>();
+  const filtered: string[] = [];
+  for (const code of codes) {
+    const trimmed = code.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    filtered.push(trimmed);
+  }
+  return JSON.stringify(filtered);
+}
+
 // ── Domain types ──────────────────────────────────────────────────────────
 
 /** Склад человека: код (ведущие нули целы) + «по дату» (DD.MM.YYYY | ''). */
@@ -41,6 +99,14 @@ export interface Person {
   source: 'import' | 'manual';
   warehouses: PersonWarehouse[];
   updatedAt: string;
+  /** Участвует в рассылке. */
+  broadcastEnabled: boolean;
+  /** '' | ИТР УПП | Заявители | Согласующие. */
+  broadcastGroup: string;
+  /** Цель рассылки (отдельно от comment). */
+  broadcastPurpose: string;
+  /** Склады согласования — только для группы «Согласующие». */
+  broadcastApprovalWarehouses: string[];
 }
 
 export interface PersonsMeta {
@@ -79,6 +145,10 @@ export interface PersonPatch {
   mail?: string;
   comment?: string;
   is_mol?: 0 | 1;
+  broadcast_enabled?: 0 | 1;
+  broadcast_group?: string;
+  broadcast_purpose?: string;
+  broadcast_approval_warehouses?: string;
 }
 
 /** Новый контакт («+ Контакт»). ФИО обязателен, табельный — нет. */
@@ -92,6 +162,10 @@ export interface PersonCreateInput {
   mail?: string;
   comment?: string;
   is_mol?: 0 | 1;
+  broadcast_enabled?: 0 | 1;
+  broadcast_group?: string;
+  broadcast_purpose?: string;
+  broadcast_approval_warehouses?: string;
 }
 
 // ── Wire types ────────────────────────────────────────────────────────────
@@ -126,6 +200,10 @@ interface PersonWire {
   source?: string;
   warehouses?: Array<{ code?: string; until?: string }>;
   updated_at?: string;
+  broadcast_enabled?: number;
+  broadcast_group?: string;
+  broadcast_purpose?: string;
+  broadcast_approval_warehouses?: string;
 }
 
 interface PersonsDownloadUrlWire {
@@ -152,6 +230,10 @@ function wireToPerson(w: PersonWire): Person {
     source: w.source === 'manual' ? 'manual' : 'import',
     warehouses: (w.warehouses ?? []).map((x) => ({ code: x.code ?? '', until: x.until ?? '' })),
     updatedAt: w.updated_at ?? '',
+    broadcastEnabled: Number(w.broadcast_enabled ?? 0) === 1,
+    broadcastGroup: w.broadcast_group ?? '',
+    broadcastPurpose: w.broadcast_purpose ?? '',
+    broadcastApprovalWarehouses: parseBroadcastApprovalWarehouses(w.broadcast_approval_warehouses),
   };
 }
 

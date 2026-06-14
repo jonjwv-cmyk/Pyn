@@ -36,6 +36,15 @@ function buildIndex(arr: Person[]): Map<number, Person> {
   return new Map(arr.map((p) => [p.id, p]));
 }
 
+/** Нормализует контакт из кэша/слепка (старые записи без broadcastApprovalWarehouses). */
+function normalizePerson(p: Person): Person {
+  const warehouses = Array.isArray(p.broadcastApprovalWarehouses)
+    ? p.broadcastApprovalWarehouses
+    : [];
+  if (warehouses === p.broadcastApprovalWarehouses) return p;
+  return { ...p, broadcastApprovalWarehouses: warehouses };
+}
+
 export const usePersonsStore = create<PersonsState>((set, get) => ({
   persons: [],
   byId: new Map(),
@@ -48,7 +57,8 @@ export const usePersonsStore = create<PersonsState>((set, get) => ({
   },
 
   setLoaded({ persons, meta }) {
-    set({ persons, byId: buildIndex(persons), meta, status: 'loaded' });
+    const normalized = persons.map(normalizePerson);
+    set({ persons: normalized, byId: buildIndex(normalized), meta, status: 'loaded' });
   },
 
   setStatus(status) {
