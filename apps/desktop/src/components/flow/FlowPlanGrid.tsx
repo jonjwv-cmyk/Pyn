@@ -110,7 +110,7 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'dlvord', title: 'ПОСТАВКА · ЗАКАЗ', width: 132 },
   { id: 'fr', title: 'FR', width: 52 },
   { id: 'to', title: 'СП', width: 52 },
-  { id: 'pr', title: 'СКЛАД ДО', width: 72 },
+  { id: 'pr', title: 'PR', width: 64 },
   { id: 'clst', title: 'CLST', width: 86 },
   { id: 'mol', title: 'МОЛ', width: 150 },
   { id: 'no', title: 'НОМ №', width: 96 },
@@ -300,7 +300,7 @@ const REPORT_FONT_PX = 10; // baseFontStyle грида
 const REPORT_HPAD = 8; // горизонтальный padding ячейки (с запасом)
 const PHONE_SAMPLE = '8 982 664 2800'; // эталон ширины телефона под ФИО
 /** Колонки с мягким переносом по словам (растут в высоту, ширина клампится). */
-const WRAP_COLS = new Set(['mat', 'note']);
+const WRAP_COLS = new Set(['mat', 'note', 'vehicleType']);
 /** Колонки 2-строчные по природе (поставка/заказ, МОЛ+тел, экспедиторы+тел). */
 function measurePx(s: string, font: string): number {
   if (!MEASURE_CTX) return s.length * 6;
@@ -517,24 +517,61 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     });
     return { expeditorOptions: options, expeditorByKey: byKey, expeditorByInitial: byInitial };
   }, [persons]);
-  /** Сопоставить имя экспедитора (полное ИЛИ сокращённое «Фамилия И.») с ролью-человеком. */
+  // Полный справочник как опции выбора (юзер 2026-06-14: «вписать из справочника, поиск целиком
+  // по ФИО или табельному; не обязан быть МОЛом/в роли — но возил»). Роль-люди сортируются ПЕРВЫМИ.
+  const { allPersonOptions, allByKey } = useMemo(() => {
+    const COLOR = { ok: '#3FB950', error: '#F85149', neutral: '#9AA0A6' } as const;
+    const opts: FlowDriverOption[] = [];
+    const byKey = new Map<string, FlowDriverOption>();
+    for (const p of persons) {
+      if (p.isOrphan) continue;
+      const phone = p.mobile || p.work || '';
+      const role = EXPEDITOR_ROLE_GROUPS.has(p.broadcastGroup) && p.broadcastEnabled ? p.broadcastGroup : '';
+      const opt: FlowDriverOption = {
+        fio: p.fio,
+        position: [role, p.position].filter(Boolean).join(' · '),
+        phone,
+        phoneDisplay: phone ? formatMobilePhone(phone) : '',
+        status: p.status || '',
+        color: COLOR[molStatusKind(p.status || '')],
+        isMol: p.isMol,
+        until: '',
+        roleGroup: role,
+        tab: p.tab || '',
+      };
+      const k = personKey(p.fio);
+      if (!k || byKey.has(k)) continue;
+      byKey.set(k, opt);
+      opts.push(opt);
+    }
+    opts.sort((a, b) => {
+      const ra = a.roleGroup ? 0 : 1; // роль-люди первыми
+      const rb = b.roleGroup ? 0 : 1;
+      return ra !== rb ? ra - rb : a.fio.localeCompare(b.fio, 'ru');
+    });
+    return { allPersonOptions: opts, allByKey: byKey };
+  }, [persons]);
+  /** Сопоставить имя экспедитора (полное ИЛИ сокращённое «Фамилия И.») с человеком справочника.
+   *  Сначала роль-люди (точно/по фамилии+инициалу), затем любой из справочника по полному ФИО. */
   const resolveExpeditorOpt = useCallback(
     (name: string): FlowDriverOption | undefined => {
       const exact = expeditorByKey.get(personKey(name));
       if (exact) return exact;
       const byIni = expeditorByInitial.get(surnameInitialKey(name));
-      return byIni ?? undefined; // null (неоднозначно) → не подставляем
+      if (byIni) return byIni;
+      return allByKey.get(personKey(name)); // не роль, но из справочника (выбран вручную)
     },
-    [expeditorByKey, expeditorByInitial],
+    [expeditorByKey, expeditorByInitial, allByKey],
   );
-  /** Имя для показа: если сокращённое имя резолвится в роль — полное ФИО, иначе как есть. */
+  /** Имя для показа: если сокращённое имя резолвится в человека — полное ФИО, иначе как есть. */
   const expeditorDisplayName = useCallback(
     (name: string): string => resolveExpeditorOpt(name)?.fio ?? name,
     [resolveExpeditorOpt],
   );
+  // Список выбора экспедитора = ВЕСЬ справочник (роль-люди сверху), поиск по ФИО/табельному.
   const expeditorsForWh = useCallback(
-    (_wh: string): readonly FlowDriverOption[] => expeditorOptions,
-    [expeditorOptions],
+    (_wh: string): readonly FlowDriverOption[] => allPersonOptions,
+    [allPersonOptions],
   );
   useEffect(() => {
     let alive = true;
@@ -691,11 +728,17 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     return out;
   }, [rows, mode, selectedDay]);
 
-  // Проверка ошибок (эталон buildPlanDupGh_ / buildPlanAggByG_): по SAP-номерам.
+  // Проверка ошибок (эталон buildPlanDupGh_ / buildPlanAggByG_): по SAP-номерам. Считаем
+  // ТОЛЬКО по строкам ПЛАНА (fixation_id=0, не в резерве) — иначе строка-перенос в Плане и её
+  // оригинал в Отчёте (тот же номер поставки) ложно светились дубликатом (юзер 2026-06-14).
+  const planRowsForFlags = useMemo(
+    () => rows.filter((r) => Number(r.fixation_id) === 0 && Number(r.reserved) !== 1),
+    [rows],
+  );
   const flagById = useMemo(() => {
     const cnt = new Map<string, number>();
     const agg = new Map<string, { fr: Set<string>; to: Set<string> }>();
-    for (const r of rows) {
+    for (const r of planRowsForFlags) {
       const dlv = (r.dlv || '').trim();
       if (!dlv) continue;
       const k = `${dlv}|${(r.dlv_pos || '').trim()}`;
@@ -709,7 +752,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       if ((r.to_wh || '').trim()) a.to.add((r.to_wh || '').trim());
     }
     const m = new Map<number, '' | 'DUPLICATE' | 'ERROR'>();
-    for (const r of rows) {
+    for (const r of planRowsForFlags) {
       const dlv = (r.dlv || '').trim();
       if (!dlv) {
         m.set(r.id, '');
@@ -721,7 +764,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       else m.set(r.id, '');
     }
     return m;
-  }, [rows]);
+  }, [planRowsForFlags]);
 
   const draftCount = useMemo(() => rows.filter((r) => !(r.dlv || '').trim()).length, [rows]);
   const groupCount = useMemo(() => {
@@ -899,7 +942,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       }
       for (const s of seen) px = Math.max(px, measurePx(s, valFont) + REPORT_HPAD * 2 + 4);
       if (withPhone) px = Math.max(px, phoneW + REPORT_HPAD * 2 + 6);
-      const max = WRAP_COLS.has(c.id) ? 300 : 460;
+      // ТИП ТС — узкая, текст переносится в 2-3 строки (П: «компактно»); МАТ/КОММ — до 300.
+      const max = c.id === 'vehicleType' ? 120 : WRAP_COLS.has(c.id) ? 300 : 460;
       out[c.id] = Math.round(Math.max(40, Math.min(max, px)));
     }
     return out;
@@ -929,16 +973,21 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const matLines = reportWrapLines(r.mat || '', (colWidths.mat ?? 280) - REPORT_HPAD * 2);
       const noteText = Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchorByKey.get(`${r.ord}|${r.it}`)?.note || '');
       const noteLines = reportWrapLines(noteText, (colWidths.note ?? 230) - REPORT_HPAD * 2);
+      const vtypeText = splitMultiCell(r.ride_id || '').length > 0
+        ? splitMultiCell(r.ride_id || '').map((id) => vehicleByGarage.get(id.toUpperCase())?.type || '').join('\n')
+        : (r.vehicle || '');
+      const vtypeLines = reportWrapLines(vtypeText, (colWidths.vehicleType ?? 120) - REPORT_HPAD * 2);
       const expN = deliveryExpeditors(r).length;
       const cands = [
         40, // база: 2 строки (поставка·заказ / МОЛ+тел)
         16 + (matLines - 1) * LINE,
         16 + (noteLines - 1) * LINE,
+        16 + (vtypeLines - 1) * LINE,
         expN > 1 ? expN * 18 + 4 : 30,
       ];
       return Math.max(36, Math.min(160, Math.max(...cands)));
     },
-    [viewRows, colWidths, anchorByKey],
+    [viewRows, colWidths, anchorByKey, vehicleByGarage],
   );
 
   const gridSearch = useFlowGridSearch<FlowDeliveryRow>({
@@ -1216,7 +1265,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         if (!opt) {
           return {
             value: '',
-            error: `${fioStr} не назначен ролью экспедитора в потоке`,
+            error: `${fioStr} не найден в справочнике контактов`,
           };
         }
         out.push(opt.fio);

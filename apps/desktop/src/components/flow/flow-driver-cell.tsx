@@ -23,6 +23,7 @@ export interface FlowDriverOption {
   readonly isMol: boolean; // материально-ответственный
   readonly until: string; // срок «по дату» (ближайший склад), если МОЛ
   readonly roleGroup?: string;
+  readonly tab?: string; // табельный номер — для поиска (юзер: «по фио или табельному»)
 }
 export interface FlowDriverData {
   readonly kind: 'flow-driver';
@@ -95,7 +96,8 @@ function FlowDriverEditor({
           const byFio = d.fio.toLowerCase().includes(q);
           const byPos = d.position.toLowerCase().includes(q);
           const byPhone = digits.length >= 3 && d.phone.replace(/\D/g, '').includes(digits);
-          return byFio || byPos || byPhone;
+          const byTab = !!d.tab && digits.length >= 2 && d.tab.replace(/\D/g, '').includes(digits);
+          return byFio || byPos || byPhone || byTab;
         })
       : drivers;
     return base.slice(0, 40);
@@ -303,19 +305,32 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
       const names = selectedDrivers.length > 0 ? selectedDrivers : splitDriverNames(driver);
       const shown = names.slice(0, 3);
       const byName = new Map(cell.data.drivers.map((d) => [driverNameKey(d.fio), d] as const));
-      const lineH = Math.min(16, Math.max(12, rect.height / Math.max(shown.length, 1)));
-      const startY = rect.y + rect.height / 2 - ((shown.length - 1) * lineH) / 2;
+      // Каждый экспедитор — ПИЛЛ статуса (цвет) + телефон ниже, чётко отделены (юзер: «как мол,
+      // пилл статуса и телефон, корректно отделены»). Слот на каждого ≈ высота/кол-во.
+      const slot = Math.max(18, Math.min(26, rect.height / Math.max(shown.length, 1)));
+      const startY = rect.y + rect.height / 2 - ((shown.length - 1) * slot) / 2;
       for (let i = 0; i < shown.length; i += 1) {
         const name = shown[i] ?? '';
         const opt = byName.get(driverNameKey(name));
-        const y = startY + i * lineH;
+        const label = shortFio(opt?.fio ?? name);
+        const color = opt?.color || '#9AA0A6';
+        const cy = startY + i * slot;
+        const hasPhone = !!opt?.phoneDisplay;
+        const fy = hasPhone ? cy - 4 : cy;
         ctx.font = `10px ${theme.fontFamily}`;
-        ctx.fillStyle = opt?.color || theme.textDark;
-        ctx.fillText(shortFio(opt?.fio ?? name), x0, y - (opt?.phoneDisplay ? 3 : 0), rect.width - padX * 2);
-        if (opt?.phoneDisplay) {
-          ctx.font = `8px ${theme.fontFamily}`;
+        const tw = ctx.measureText(label).width;
+        const padP = 6;
+        const ph = 14;
+        ctx.fillStyle = color + '33';
+        ctx.beginPath();
+        ctx.roundRect(x0, fy - ph / 2, padP + tw + padP, ph, ph / 2);
+        ctx.fill();
+        ctx.fillStyle = theme.textDark;
+        ctx.fillText(label, x0 + padP, fy, rect.width - padX * 2);
+        if (hasPhone) {
+          ctx.font = `600 8px ${theme.fontFamily}`;
           ctx.fillStyle = theme.textMedium;
-          ctx.fillText(opt.phoneDisplay, x0, y + 7, rect.width - padX * 2);
+          ctx.fillText(opt!.phoneDisplay, x0 + padP, cy + 7, rect.width - padX * 2);
         }
       }
       ctx.restore();
