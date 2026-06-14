@@ -168,7 +168,7 @@ export const flowVehicleRenderer: CustomRenderer<FlowVehicleCell> = {
       const id = shown[i] ?? '';
       const v = byGarage.get(id.toUpperCase());
       const y = startY + i * lineH;
-      ctx.font = `10px ${theme.fontFamily}`;
+      ctx.font = `700 10px ${theme.fontFamily}`; // R3.5: ГАРАЖНЫЙ — жирным
       ctx.fillStyle = theme.textDark;
       ctx.fillText(id, x, y, Math.max(30, rect.width * 0.45));
       if (v?.gosNo) {

@@ -124,6 +124,7 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'vehicle', title: 'ГАРАЖНЫЙ', width: 170, editable: true },
   { id: 'status', title: 'СТАТУС ВЫП.', width: 210, editable: true },
   { id: 'note', title: 'КОММЕНТАРИЙ', width: 230 },
+  { id: 'request', title: 'ЗАПРОС', width: 130 },
 ];
 
 /** Причины невывоза (юзер 2026-06-14) — зеркало серверного списка (валидация). */
@@ -868,6 +869,9 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return splitMultiCell(r.ride_id || r.vehicle || '').join('\n');
         case 'note':
           return Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchor?.note ?? '');
+        case 'request':
+          // ЗАПРОС (заявка) — с якоря формирования (R3.6). У сеяного импорта без якоря пусто.
+          return anchor?.request ?? '';
         case 'flag':
           return flagById.get(r.id) ?? '';
         default:
@@ -942,8 +946,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       }
       for (const s of seen) px = Math.max(px, measurePx(s, valFont) + REPORT_HPAD * 2 + 4);
       if (withPhone) px = Math.max(px, phoneW + REPORT_HPAD * 2 + 6);
-      // ТИП ТС — узкая, текст переносится в 2-3 строки (П: «компактно»); МАТ/КОММ — до 300.
-      const max = c.id === 'vehicleType' ? 120 : WRAP_COLS.has(c.id) ? 300 : 460;
+      // ТИП ТС — перенос по словам, но не режем длинные слова («гидроманипулятор», R3.4): до 170.
+      const max = c.id === 'vehicleType' ? 170 : WRAP_COLS.has(c.id) ? 300 : 460;
       out[c.id] = Math.round(Math.max(40, Math.min(max, px)));
     }
     return out;
@@ -979,13 +983,13 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const vtypeLines = reportWrapLines(vtypeText, (colWidths.vehicleType ?? 120) - REPORT_HPAD * 2);
       const expN = deliveryExpeditors(r).length;
       const cands = [
-        40, // база: 2 строки (поставка·заказ / МОЛ+тел)
+        32, // база: 2 строки ПОСТАВКА·ЗАКАЗ (телефон в ячейке убран — R3.1)
         16 + (matLines - 1) * LINE,
         16 + (noteLines - 1) * LINE,
         16 + (vtypeLines - 1) * LINE,
-        expN > 1 ? expN * 18 + 4 : 30,
+        expN > 1 ? expN * 16 + 4 : 0, // экспедиторы — по строке на каждого (без телефона)
       ];
-      return Math.max(36, Math.min(160, Math.max(...cands)));
+      return Math.max(30, Math.min(150, Math.max(...cands)));
     },
     [viewRows, colWidths, anchorByKey, vehicleByGarage],
   );
@@ -1023,7 +1027,9 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           (!!selected && molUntilStatus(selected.until) === 'expired' && !opts.some((o) => molUntilStatus(o.until) !== 'expired'));
         const cell: FlowMolCell = {
           kind: GridCellKind.Custom,
-          allowOverlay: !!spec.editable && canEditMol(r) && !locked,
+          // R3.3: МОЛ открывается для ПРОСМОТРА молов и в Отчёте (как в Формировании); сам выбор в
+          // Отчёте не меняется (блокируется в onCellEdited — «меняет только выгрузка СЭД»).
+          allowOverlay: !locked,
           copyData: noMol ? 'Нет МОЛа' : fullFio,
           data: {
             kind: 'flow-mol',
@@ -1033,7 +1039,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             color: noMol ? '#E5484D' : selected?.color ?? resolved?.color ?? parsed?.color ?? '#9AA0A6',
             noMol,
             options: opts,
-            phoneDisplay: noMol ? '' : selected?.phoneDisplay ?? '', // телефон под ФИО (п.3)
+            // R3.1: телефон в ЯЧЕЙКЕ не показываем (только ФИО); телефон есть в выпадашке-карточке.
+            phoneDisplay: '',
           },
         };
         return cell;
@@ -1338,11 +1345,40 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           }
           const { done_stat, fail_reason } = decodeStatus(value);
           const fields: Record<string, string | number | null> = { done_stat, fail_reason };
-          const before = captureBefore(r, fields);
-          const changed = Object.keys(fields).some((k) => String(before[k] ?? '') !== String(fields[k] ?? ''));
-          if (!changed) return;
-          applyDlvFields(r.id, fields);
-          pushHistory({ id: r.id, before, after: fields });
+          // R3.8 ПРИНЦИП ЕДИНОГО ДОКУМЕНТА: поставка — один документ. Нельзя одну позицию отметить,
+          // а другие нет → статус применяем КО ВСЕЙ поставке (все позиции dlv того дня). Частично =
+          // сначала удали лишние позиции из поставки в Плане (перенос «позиция удалена»), потом отметь.
+          const dlv = (r.dlv || '').trim();
+          const day = (r.plan_date || '').slice(0, 10);
+          const targets = dlv
+            ? rows.filter(
+                (x) =>
+                  Number(x.fixation_id) > 0 &&
+                  Number(x.reserved) !== 1 &&
+                  (x.dlv || '').trim() === dlv &&
+                  (x.plan_date || '').slice(0, 10) === day &&
+                  !rowLocked(x),
+              )
+            : [r];
+          const ts = targets.filter((t) => {
+            const b = captureBefore(t, fields);
+            return Object.keys(fields).some((k) => String(b[k] ?? '') !== String(fields[k] ?? ''));
+          });
+          if (ts.length === 0) return;
+          setRows((prev) => {
+            const ids = new Set(ts.map((t) => t.id));
+            const next = prev.map((x) => (ids.has(x.id) ? ({ ...x, ...fields } as FlowDeliveryRow) : x));
+            planDlvCache = next;
+            rowsRef.current = next;
+            return next;
+          });
+          void flowDeliveriesEdit(
+            api,
+            ts.map((t) => ({ id: t.id, row_version: t.row_version, fields })),
+          ).then((res) => applyServerDlv(res.rows));
+          // История — на инициирующую строку (отмена статуса), остальные правятся тем же значением.
+          pushHistory({ id: r.id, before: captureBefore(r, fields), after: fields });
+          if (dlv && ts.length > 1) setMsg(`Статус применён ко всей поставке ${dlv} (${ts.length} поз.)`);
           return;
         }
         if (spec.id === 'mol' && data.kind === 'flow-mol') {
@@ -1524,6 +1560,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       anchorByKey,
       applyDlvFields,
       applyAnchorFields,
+      applyServerDlv,
       captureBefore,
       pushHistory,
       rowLocked,

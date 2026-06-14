@@ -100,8 +100,13 @@ function FlowDriverEditor({
           return byFio || byPos || byPhone || byTab;
         })
       : drivers;
-    return base.slice(0, 40);
-  }, [drivers, query]);
+    // R3.2: выбранные (picked) — ВВЕРХ списка при открытии.
+    const pickedKeys = new Set(picked.map((p) => p.toUpperCase()));
+    const sorted = [...base].sort(
+      (a, b) => (pickedKeys.has(b.fio.toUpperCase()) ? 1 : 0) - (pickedKeys.has(a.fio.toUpperCase()) ? 1 : 0),
+    );
+    return sorted.slice(0, 40);
+  }, [drivers, query, picked]);
 
   const finishMulti = (items: readonly string[]): void =>
     onFinishedEditing({
@@ -294,6 +299,7 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
   draw: (args, cell) => {
     const { ctx, rect, theme } = args;
     const { driver, phoneDisplay, color, isMol, until, showPhoneInCell = true, selectedDrivers } = cell.data;
+    const phoneInCell = showPhoneInCell; // R3.1: в Отчёте/Плане ячейка экспедитора — только ФИО
     const padX = theme.cellHorizontalPadding;
     ctx.save();
     ctx.beginPath();
@@ -307,7 +313,7 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
       const byName = new Map(cell.data.drivers.map((d) => [driverNameKey(d.fio), d] as const));
       // Каждый экспедитор — ПИЛЛ статуса (цвет) + телефон ниже, чётко отделены (юзер: «как мол,
       // пилл статуса и телефон, корректно отделены»). Слот на каждого ≈ высота/кол-во.
-      const slot = Math.max(18, Math.min(26, rect.height / Math.max(shown.length, 1)));
+      const slot = Math.max(14, Math.min(26, rect.height / Math.max(shown.length, 1)));
       const startY = rect.y + rect.height / 2 - ((shown.length - 1) * slot) / 2;
       for (let i = 0; i < shown.length; i += 1) {
         const name = shown[i] ?? '';
@@ -315,7 +321,7 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
         const label = shortFio(opt?.fio ?? name);
         const color = opt?.color || '#9AA0A6';
         const cy = startY + i * slot;
-        const hasPhone = !!opt?.phoneDisplay;
+        const hasPhone = phoneInCell && !!opt?.phoneDisplay;
         const fy = hasPhone ? cy - 4 : cy;
         ctx.font = `10px ${theme.fontFamily}`;
         const tw = ctx.measureText(label).width;

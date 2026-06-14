@@ -41,14 +41,16 @@ function FlowMolEditor({
   onFinishedEditing: (next?: FlowMolCell) => void;
 }) {
   const { options, value } = cell.data;
+  // R3.2: выбранный МОЛ — ВВЕРХ списка при открытии.
+  const ordered = [...options].sort((a, b) => (b.fio === value ? 1 : 0) - (a.fio === value ? 1 : 0));
 
   return (
     <div className="flex max-h-80 w-64 flex-col">
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 py-0.5 text-text-secondary">
-        {options.length === 0 ? (
+        {ordered.length === 0 ? (
           <div className="px-2 py-1.5 text-[12px] text-text-muted/70">Нет молов для склада</div>
         ) : (
-          options.map((o, i) => {
+          ordered.map((o, i) => {
             const selected = o.fio === value;
             return (
               <div
