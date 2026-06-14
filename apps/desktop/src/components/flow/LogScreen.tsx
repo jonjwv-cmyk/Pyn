@@ -3,10 +3,12 @@ import { useTranslation } from 'react-i18next';
 import {
   flowImportRunsGet,
   flowScriptRunsGet,
+  flowSapRunsGet,
   type FlowImportRun,
   type FlowImportLoggedEvent,
   type FlowScriptRun,
   type FlowScriptLoggedEvent,
+  type FlowSapRun,
 } from '@pyn/core';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { Avatar } from '@/components/ui/Avatar';
@@ -46,6 +48,7 @@ export function LogScreen(): JSX.Element {
   const { t } = useTranslation();
   const [runs, setRuns] = useState<FlowImportRun[]>([]);
   const [scriptRuns, setScriptRuns] = useState<FlowScriptRun[]>([]);
+  const [sapRuns, setSapRuns] = useState<FlowSapRun[]>([]);
   const [loading, setLoading] = useState(true);
   const users = useUsersStore((s) => s.users);
   // Presence — из единого источника (как у всех аватаров): статус-точка на аватаре прогона.
@@ -53,11 +56,16 @@ export function LogScreen(): JSX.Element {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([flowImportRunsGet(api), flowScriptRunsGet(api).catch(() => [])])
-      .then(([imp, scr]) => {
+    Promise.all([
+      flowImportRunsGet(api),
+      flowScriptRunsGet(api).catch(() => []),
+      flowSapRunsGet(api).catch(() => []),
+    ])
+      .then(([imp, scr, sap]) => {
         if (!alive) return;
         setRuns(imp);
         setScriptRuns(scr);
+        setSapRuns(sap);
       })
       .catch(() => { /* пусто — покажем 0 записей */ })
       .finally(() => { if (alive) setLoading(false); });
@@ -89,12 +97,14 @@ export function LogScreen(): JSX.Element {
     const items: Array<
       | { kind: 'import'; ts: number; run: FlowImportRun }
       | { kind: 'script'; ts: number; run: FlowScriptRun }
+      | { kind: 'sap'; ts: number; run: FlowSapRun }
     > = [];
     for (const r of runs) items.push({ kind: 'import', ts: parseUtcMs(r.started_at), run: r });
     for (const r of scriptRuns) items.push({ kind: 'script', ts: parseUtcMs(r.at), run: r });
+    for (const r of sapRuns) items.push({ kind: 'sap', ts: parseUtcMs(r.started_at), run: r });
     items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
     return items;
-  }, [runs, scriptRuns]);
+  }, [runs, scriptRuns, sapRuns]);
 
   return (
     <main className="flex flex-1 flex-col overflow-hidden">
@@ -111,6 +121,66 @@ export function LogScreen(): JSX.Element {
           )}
           <div className="flex flex-col gap-1.5">
             {timeline.map((item) => {
+              // Прогон подгрузки SAP (zm_vl/СЭД) — мониторинг: кто · что · итоги · ошибка.
+              if (item.kind === 'sap') {
+                const s = item.run;
+                const u = users.find((x) => x.login === s.login);
+                const nm = s.full_name || s.login || '—';
+                const pres = presenceByLogin[s.login]?.status ?? 'offline';
+                const dur = fmtDuration(s.started_at, s.finished_at);
+                const label =
+                  s.kind === 'sed'
+                    ? 'СЭД · подгрузка'
+                    : `zm_vl · сверка (${s.full_load ? 'все' : 'открытые'})`;
+                return (
+                  <div
+                    key={`sap${s.id}`}
+                    className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${
+                      s.ok
+                        ? 'border-border-subtle bg-bg-surface/40'
+                        : 'border-rose-300/60 bg-rose-50/40'
+                    }`}
+                  >
+                    <span className="relative mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center">
+                      <Avatar
+                        initials={u?.initials || computeInitials(nm)}
+                        size={32}
+                        login={s.login || undefined}
+                        avatarUrl={u?.avatarUrl}
+                        avatarBlobKey={u?.avatarBlobKey ?? undefined}
+                        avatarBlobNonce={u?.avatarBlobNonce ?? undefined}
+                      />
+                      <PresenceDot state={pres} size={10} ringClass="ring-bg-surface" className="absolute -bottom-0.5 -right-0.5" />
+                    </span>
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <span className="max-w-[220px] truncate text-[13px] font-medium text-text-strong" title={nm}>
+                          {nm}
+                        </span>
+                        <span className="text-[12px] text-accent-clay">· {label}</span>
+                        <span className="text-[11px] text-text-muted/80">{formatFullYek(s.started_at)}</span>
+                        {dur && <span className="text-[11px] text-text-secondary">· за {dur}</span>}
+                      </div>
+                      {s.ok ? (
+                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11.5px] tabular-nums text-text-secondary">
+                          <span>получено {s.received}</span>
+                          {s.assigned > 0 && <span>· создано {s.assigned}</span>}
+                          {s.updated > 0 && <span>· обновлено {s.updated}</span>}
+                          {s.inserted > 0 && <span>· добавлено {s.inserted}</span>}
+                          {s.reserved > 0 && <span className="text-rose-600">· в резерв {s.reserved}</span>}
+                          <span className="text-text-muted/60">
+                            (поставок {s.total_before} → {s.total_after})
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="text-[11.5px] text-rose-600" title={s.error}>
+                          ошибка: {s.error || 'нет данных'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
               // Нажатие кнопки-скрипта — компактная строка (кто · что · когда).
               if (item.kind === 'script') {
                 const s = item.run;

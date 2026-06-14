@@ -671,6 +671,35 @@ export async function flowImportRunsGet(client: ApiClient, limit?: number): Prom
   return Array.isArray(wire.runs) ? wire.runs : [];
 }
 
+/** Прогон подгрузки SAP (zm_vl/СЭД) — мониторинг (ТЗ E «видеть, корректно ли передаются данные»). */
+export interface FlowSapRun {
+  id: number;
+  /** 'zmvl' | 'sed' — какой источник тянули. */
+  kind: string;
+  login: string;
+  full_name: string;
+  /** 1 — полная выгрузка (zm_vl все); 0 — открытые/частичная. */
+  full_load: number;
+  started_at: string;
+  finished_at: string;
+  received: number;
+  assigned: number;
+  updated: number;
+  inserted: number;
+  reserved: number;
+  total_before: number;
+  total_after: number;
+  /** 1 — успех, 0 — ошибка (текст в error). */
+  ok: number;
+  error: string;
+}
+
+/** Прочитать журнал прогонов подгрузки SAP (новые сверху) для раздела LOG. */
+export async function flowSapRunsGet(client: ApiClient, limit?: number): Promise<FlowSapRun[]> {
+  const wire = await client.call<{ runs?: FlowSapRun[] }>('flow_sap_runs_get', limit ? { limit } : {});
+  return Array.isArray(wire.runs) ? wire.runs : [];
+}
+
 /** Кнопки-скрипты сайдбара: OBD / zm_vl / СЭД / МОЛы / Контакты / OTIF5. */
 export type FlowScriptId = 'obd' | 'zmvl' | 'sed' | 'mols' | 'contacts' | 'otif5';
 
