@@ -50,7 +50,7 @@ import { ensureVghLoaded } from '@/lib/vgh-repo';
 import { useScheduleMonthsMeta, monthKey } from '@/lib/schedule/use-schedule-sync';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
-import { fmtNum3, MONTH_ABBR_RU, parseMol } from './flow-sandbox.fixtures';
+import { fmtNum3, MONTH_ABBR_RU, parseMol, compactFio } from './flow-sandbox.fixtures';
 import {
   exportPlanForExpeditors,
   exportPlanFull,
@@ -979,7 +979,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           data: {
             kind: 'flow-mol',
             value: rawMol,
-            fio: noMol ? 'Нет МОЛа' : fullFio,
+            // Показ «Фамилия Имя О.» (как просил юзер: «Черепанов Дмитрий М.»); copyData — полное.
+            fio: noMol ? 'Нет МОЛа' : compactFio(fullFio),
             color: noMol ? '#E5484D' : selected?.color ?? resolved?.color ?? parsed?.color ?? '#9AA0A6',
             noMol,
             options: opts,
