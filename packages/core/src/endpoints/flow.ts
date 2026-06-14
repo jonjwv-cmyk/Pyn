@@ -23,7 +23,11 @@ export interface FlowRow {
   no_num: string;
   mat: string;
   uom: string;
+  /** Текущее кол-во заказа = ИСТИНА из выгрузки (перезаписывается при импорте). */
   qty: number | null;
+  /** «Изначально по заказу» — кол-во на момент ПЕРВОЙ выгрузки позиции, неизменно (справка).
+   *  Опционально: снимок/старые строки без него (бэкфилл = qty). */
+  ordered_init?: number | null;
   kg: number | null;
   v: number | null;
   note: string;

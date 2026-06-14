@@ -45,7 +45,8 @@ export interface FlowSandboxRow {
   mat: string; // O MAT — наименование
   mat_full: string; // O коммент — полное тех-имя (ГОСТ)
   uom: string; // P UoM — ед. изм.
-  qty: number | null; // Q QTY — количество
+  qty: number | null; // Q QTY — текущее кол-во заказа (ИСТИНА из выгрузки, перезаписывается)
+  ordered_init?: number | null; // «изначально по заказу» — неизменно (справка, выгрузка не трогает)
   kg: number | null; // R KG — вес
   v: number | null; // S V — объём
   note: string; // T NOTE — примечание (+ служебная окраска)

@@ -41,6 +41,7 @@ import {
   flowViewGet,
   flowViewSet,
   type FlowChangedEvent,
+  type FlowDeliveryRow,
   type FlowDeliveriesChangedEvent,
   type FlowPlanMonth,
   type FlowPlanMonthChangedEvent,
@@ -476,6 +477,14 @@ function buildContractError(kind: 'expired' | 'not-covered', fio: string, until?
 /** МОЛ строки «отсутствует» = в данных «Нет МОЛа» ЛИБО выбранный МОЛ просрочен (договор
  *  истёк по живой базе). Тогда строка показывает «Нет МОЛа» и светится красным —
  *  автоматически, руками снимать не нужно (просрочка вычисляется относительно сегодня). */
+/** Поставка → инфо для расчёта доступного остатка (якорь, кол-во, проведена ли).
+ *  Проведена = есть факт прихода (zm_vl) ИЛИ отмечена «увезли» — такая уже отражена в
+ *  уменьшенном кол-ве выгрузки, в «занято планом» НЕ вычитается. */
+function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; posted: boolean } {
+  const posted = d.fact_qty != null || d.done_stat === 'увезли';
+  return { a: `${d.ord}|${d.it}`, qty: d.qty == null ? 0 : Number(d.qty), posted };
+}
+
 function molIsGone(
   row: FlowSandboxRow,
   molByWarehouse: ReadonlyMap<string, readonly FlowMolOption[]>,
@@ -1245,8 +1254,24 @@ export function FlowSandboxGrid(): JSX.Element {
   // Якоря с АКТИВНОЙ поставкой (позиция «ушла в план») — в формировании её нет, и в
   // транспортную норму (доступный остаток) такие НЕ считаем. Источник — flow_deliveries
   // (карта id→`ord|it` обновляется реалтаймом ниже). Объявлено здесь, т.к. нужно норме.
-  const [dlvAnchorById, setDlvAnchorById] = useState<Map<number, string>>(() => new Map());
-  const activeDlvAnchors = useMemo(() => new Set(dlvAnchorById.values()), [dlvAnchorById]);
+  // id поставки → { якорь ord|it, кол-во, проведена ли (отгружена/факт) }. Проведённая
+  // поставка УЖЕ отражена в уменьшенном кол-ве выгрузки (SAP списал), потому в «доступный
+  // остаток» НЕ вычитается; незакрытая (черновик/план без факта) — вычитается (юзер 2026-06-14).
+  type DlvInfo = { a: string; qty: number; posted: boolean };
+  const [dlvInfoById, setDlvInfoById] = useState<Map<number, DlvInfo>>(() => new Map());
+  const activeDlvAnchors = useMemo(
+    () => new Set([...dlvInfoById.values()].map((v) => v.a)),
+    [dlvInfoById],
+  );
+  // Σ кол-ва НЕзакрытых (не проведённых) поставок по якорю — сколько уже «занято планом».
+  const plannedOpenByAnchor = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const v of dlvInfoById.values()) {
+      if (v.posted) continue;
+      m.set(v.a, (m.get(v.a) ?? 0) + (Number.isFinite(v.qty) ? v.qty : 0));
+    }
+    return m;
+  }, [dlvInfoById]);
 
   // РАСЧЁТНЫЙ STAT по строке (id → { auto, undershoot }) — ЕДИНЫЙ источник вердикта для
   // показа (liveRows), пунктов выпадашки (statOptionsForRow) и валидации (applyEdits).
@@ -1381,7 +1406,7 @@ export function FlowSandboxGrid(): JSX.Element {
     void flowDeliveriesGet(api)
       .then((dlv) => {
         if (!alive) return;
-        setDlvAnchorById(new Map(dlv.map((d) => [d.id, `${d.ord}|${d.it}`] as const)));
+        setDlvInfoById(new Map(dlv.map((d) => [d.id, dlvInfoOf(d)] as const)));
       })
       .catch(() => undefined);
     return () => {
@@ -1389,13 +1414,13 @@ export function FlowSandboxGrid(): JSX.Element {
     };
   }, []);
   useWsEvent<FlowDeliveriesChangedEvent>('flow_deliveries_changed', (e) => {
-    setDlvAnchorById((prev) => {
+    setDlvInfoById((prev) => {
       const next = new Map(prev);
       for (const id of Array.isArray(e.deleted) ? e.deleted : []) next.delete(Number(id));
       for (const r of Array.isArray(e.rows) ? e.rows : []) {
         const id = Number(r.id);
         if (Number((r as { reserved?: number }).reserved) === 1) next.delete(id);
-        else next.set(id, `${String((r as { ord?: unknown }).ord ?? '')}|${String((r as { it?: unknown }).it ?? '')}`);
+        else next.set(id, dlvInfoOf(r as unknown as FlowDeliveryRow));
       }
       return next;
     });
@@ -1410,13 +1435,19 @@ export function FlowSandboxGrid(): JSX.Element {
   // OFF (P2, юзер 2026-06-14): OFF — фантом (хранится в БД для переноса коммент/МОЛ §2.4),
   // но из РАБОЧЕГО вида формирования скрыт. Служебный тумблер «OFF» в тулбаре показывает
   // их для ручной чистки.
+  // Частичная отгрузка (B, юзер 2026-06-14): позицию скрываем НЕ при любой поставке, а только
+  // когда НЕЗАКРЫТЫЕ поставки покрыли всё доступное кол-во. Остаток (qty − Σнезакрытых) > 0 →
+  // позиция ОСТАЁТСЯ в формировании (раньше любая поставка прятала её целиком — терялся остаток).
+  // Проведённые поставки уже отражены в qty выгрузки → не вычитаем.
   const visibleRows = useMemo<FlowSandboxRow[]>(() => {
     return liveRows.filter((r) => {
-      if (activeDlvAnchors.has(`${r.ord}|${r.it}`)) return false;
       if (!showOff && String(r.day_wk ?? '').toUpperCase() === 'OFF') return false;
-      return true;
+      const open = plannedOpenByAnchor.get(`${r.ord}|${r.it}`) ?? 0;
+      if (open <= 0) return true; // незакрытых поставок нет — позиция доступна
+      const avail = (r.qty ?? 0) - open;
+      return avail > 1e-6; // полностью покрыта планом → в Плане, из формирования убираем
     });
-  }, [liveRows, activeDlvAnchors, showOff]);
+  }, [liveRows, plannedOpenByAnchor, showOff]);
 
   // Допустимые РУЧНЫЕ значения STAT по строке (для пунктов выпадашки И валидации в applyEdits).
   // Универсальные маркеры (вопрос/самовывоз/отказ/неликвиды) — на любой строке. «заявка» руками —
