@@ -758,35 +758,27 @@ export function FlowSandboxGrid(): JSX.Element {
     }
     return { molByWarehouse: byWh, molByKey: byKey };
   }, [molRecords]);
-  // Авто-обработка ПРОСРОЧЕННОГО выбранного МОЛ (по живой базе, относительно сегодня):
-  //  • остался ОДИН валидный мол → подставляем его сразу;
-  //  • валидных ДВА и более → снимаем просроченного (нужно выбрать вручную);
-  //  • валидных НЕТ (просроченный был единственным) → оставляем — строка покажет «Нет МОЛа».
-  // Идёт автоматически (руками снимать не нужно), пересчитывается при изменении базы молов.
-  useEffect(() => {
-    setRows((prev) => {
-      let changed = false;
-      const next = prev.map((r) => {
-        const raw = String(r.mol ?? '');
-        if (!raw.trim() || raw.toUpperCase().includes('НЕТ МОЛ')) return r;
-        const opts = molByWarehouse.get(r.to_wh) ?? [];
-        const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
-        if (!sel || molUntilStatus(sel.until) !== 'expired') return r;
-        const valid = opts.filter((o) => molUntilStatus(o.until) !== 'expired');
-        const only = valid.length === 1 ? valid[0] : undefined;
-        if (only) {
-          changed = true;
-          return { ...r, mol: only.fio };
-        }
-        if (valid.length >= 2) {
-          changed = true;
-          return { ...r, mol: '' };
-        }
-        return r; // валидных нет — оставляем (покажется «Нет МОЛа»)
-      });
-      return changed ? next : prev;
-    });
-  }, [molByWarehouse]);
+  // Опции МОЛ по складу с защитой от расхождения ведущих нулей (P1): to_wh приходит
+  // 4-символьным («0122»); база МОЛ обычно такая же, но на случай «122» пробуем оба.
+  const molsForWh = useCallback(
+    (wh: string): readonly FlowMolOption[] => {
+      const direct = molByWarehouse.get(wh);
+      if (direct && direct.length) return direct;
+      const stripped = wh.replace(/^0+/, '');
+      if (stripped && stripped !== wh) {
+        const alt = molByWarehouse.get(stripped);
+        if (alt && alt.length) return alt;
+      }
+      if (/^\d{1,3}$/.test(wh)) {
+        const alt = molByWarehouse.get(wh.padStart(4, '0'));
+        if (alt && alt.length) return alt;
+      }
+      return direct ?? [];
+    },
+    [molByWarehouse],
+  );
+  // Авто-МОЛ (P1) — эффект ниже, ПОСЛЕ writeCells/syncEdits (он персистит правки): пустой
+  // МОЛ + единственный валидный на складе → подставить; просроченный → авто-обработать.
   // Авто-ширина — ПРОИЗВОДНАЯ от данных: пересчитывается при изменении строк, после
   // загрузки шрифта И при смене базы МОЛ (мол-колонку мерим по РЕЗОЛВНУТОМУ полному
   // ФИО из базы — оно длиннее снимка, иначе режется). Всегда плотно по содержимому.
@@ -1408,11 +1400,23 @@ export function FlowSandboxGrid(): JSX.Element {
       return next;
     });
   });
-  // Видимые строки формирования: без позиций с активной поставкой (они в Плане).
+  // Служебный тумблер «показать OFF/фантомы» (P2) — по умолчанию OFF скрыты.
+  const [showOff, setShowOff] = useState(false);
+  const offCount = useMemo(
+    () => liveRows.reduce((n, r) => (String(r.day_wk ?? '').toUpperCase() === 'OFF' ? n + 1 : n), 0),
+    [liveRows],
+  );
+  // Видимые строки формирования: без позиций с активной поставкой (они в Плане) и БЕЗ
+  // OFF (P2, юзер 2026-06-14): OFF — фантом (хранится в БД для переноса коммент/МОЛ §2.4),
+  // но из РАБОЧЕГО вида формирования скрыт. Служебный тумблер «OFF» в тулбаре показывает
+  // их для ручной чистки.
   const visibleRows = useMemo<FlowSandboxRow[]>(() => {
-    if (activeDlvAnchors.size === 0) return liveRows;
-    return liveRows.filter((r) => !activeDlvAnchors.has(`${r.ord}|${r.it}`));
-  }, [liveRows, activeDlvAnchors]);
+    return liveRows.filter((r) => {
+      if (activeDlvAnchors.has(`${r.ord}|${r.it}`)) return false;
+      if (!showOff && String(r.day_wk ?? '').toUpperCase() === 'OFF') return false;
+      return true;
+    });
+  }, [liveRows, activeDlvAnchors, showOff]);
 
   // Допустимые РУЧНЫЕ значения STAT по строке (для пунктов выпадашки И валидации в applyEdits).
   // Универсальные маркеры (вопрос/самовывоз/отказ/неликвиды) — на любой строке. «заявка» руками —
@@ -2055,6 +2059,38 @@ export function FlowSandboxGrid(): JSX.Element {
     },
     [applyServerRows],
   );
+
+  // Авто-обработка МОЛ по живой базе (P1, юзер 2026-06-14). Относительно сегодня:
+  //  • пустой МОЛ + ровно ОДИН валидный на складе → подставляем его (авто-выбор);
+  //  • выбранный ПРОСРОЧЕН: остался один валидный → меняем на него; валидных 2+ → снимаем
+  //    (нужен ручной выбор); валидных нет → оставляем (покажется «Нет МОЛа»).
+  // OFF-фантомы НЕ трогаем. Изменения ПЕРСИСТЯТСЯ (writeCells+syncEdits) — иначе авто-МОЛ
+  // не дошёл бы до Плана/Отчёта (они читают МОЛ с якоря). Идемпотентно: повторный проход
+  // ничего не находит → changes пуст → стоп. Был баг: эффект пропускал пустые ячейки, и
+  // единственный МОЛ не вставал на новые/сеяные строки.
+  useEffect(() => {
+    const changes = new Map<number, FlowRowPatch>();
+    for (const r of rowsRef.current) {
+      if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
+      const opts = molsForWh(r.to_wh);
+      const valid = opts.filter((o) => molUntilStatus(o.until) !== 'expired');
+      const only = valid.length === 1 ? valid[0] : undefined;
+      const raw = String(r.mol ?? '');
+      const trimmed = raw.trim();
+      if (trimmed === '') {
+        if (only) changes.set(r.id, { mol: only.fio });
+        continue;
+      }
+      if (trimmed.toUpperCase().includes('НЕТ МОЛ')) continue;
+      const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
+      if (!sel || molUntilStatus(sel.until) !== 'expired') continue;
+      if (only) changes.set(r.id, { mol: only.fio });
+      else if (valid.length >= 2) changes.set(r.id, { mol: '' });
+    }
+    if (changes.size === 0) return;
+    writeCells(changes);
+    syncEdits(changes);
+  }, [molByWarehouse, rows, molsForWh, writeCells, syncEdits]);
 
   // Живое чтение базы формирования при монтировании. Если кэш есть — грид уже
   // показан из него, спиннера нет; всё равно тянем свежее в фоне (refetch догоняет
@@ -3290,6 +3326,27 @@ export function FlowSandboxGrid(): JSX.Element {
           hasPersonalView={hasPersonalView}
           onReset={handleViewReset}
         />
+        {/* Служебный тумблер «OFF» (P2): OFF-фантомы скрыты из рабочего вида; нажми, чтобы
+            показать для ручной чистки. Бейдж — сколько их сейчас. */}
+        {(offCount > 0 || showOff) && (
+          <button
+            type="button"
+            onClick={() => setShowOff((v) => !v)}
+            title={
+              showOff
+                ? 'OFF-фантомы показаны — нажмите, чтобы скрыть'
+                : 'Показать OFF-фантомы (скрытые позиции для переноса/чистки)'
+            }
+            className={`flex h-6 items-center gap-1 rounded-md border px-1.5 text-[12px] transition-colors ${
+              showOff
+                ? 'border-accent-clay/70 text-[#0A0A0A]'
+                : 'border-black/10 text-[#6B6862] hover:text-[#0A0A0A]'
+            }`}
+          >
+            OFF
+            {offCount > 0 && <span className="tabular-nums opacity-70">{offCount}</span>}
+          </button>
+        )}
         {selectedRowCount > 0 && (
           <div className="ml-auto flex items-center gap-2 text-[12px] text-[#6B6862]">
             <span className="tabular-nums text-[#2A2925]">Выбрано строк: {selectedRowCount}</span>

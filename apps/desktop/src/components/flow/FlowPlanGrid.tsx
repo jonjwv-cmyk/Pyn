@@ -89,7 +89,9 @@ const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'flag', title: 'ПРОВЕРКА', width: 92 },
 ];
 
-/** Отчёт — те же поставки, но только зафиксированные + отметки выполнения. */
+/** Отчёт — те же поставки, но только зафиксированные + отметки выполнения.
+ *  P4 (юзер 2026-06-14): «СТАТУС ВЫП.» и «ПРИЧИНА» — ОДНА колонка/редактор. P5: колонки
+ *  «ПРОВЕРКА» (дубль/ERROR) в Отчёте нет — там одна и та же поставка, флаг ни к чему. */
 const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'date', title: 'ДАТА', width: 78 },
   { id: 'fix', title: 'ФИКС', width: 60 },
@@ -108,16 +110,36 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'exp2', title: 'ЭКСП. 2', width: 118, editable: true },
   { id: 'vehicle', title: 'МАШИНА', width: 104, editable: true },
   { id: 'ride', title: 'ID', width: 58, editable: true },
-  { id: 'done', title: 'СТАТУС ВЫП.', width: 100, editable: true },
-  { id: 'reason', title: 'ПРИЧИНА', width: 130, editable: true },
+  { id: 'status', title: 'СТАТУС ВЫП.', width: 210, editable: true },
   { id: 'note', title: 'КОММЕНТАРИЙ', width: 230 },
-  { id: 'flag', title: 'ПРОВЕРКА', width: 92 },
 ];
 
 /** Причины невывоза (юзер 2026-06-14) — зеркало серверного списка (валидация). */
 const FAIL_REASONS = ['нет на центральном складе', 'менее транспортной нормы', 'брак',
   'на приёмке', 'на входном контроле', 'отказ цеха', 'перенос на другой день',
   'нет МОЛа', 'иные причины'] as const;
+
+/** Префикс невывоза в объединённой колонке «СТАТУС ВЫП.» (P4). */
+const NOT_DELIVERED_PREFIX = 'не увезли — ';
+/** Опции объединённой колонки: пусто / увезли / «не увезли — <причина>» по каждой причине. */
+const STATUS_OPTIONS: readonly string[] = ['', 'увезли', ...FAIL_REASONS.map((r) => `${NOT_DELIVERED_PREFIX}${r}`)];
+
+/** Отображаемое значение объединённого статуса из (done_stat, fail_reason). */
+function statusValue(r: FlowDeliveryRow): string {
+  if (r.done_stat === 'увезли') return 'увезли';
+  if (r.done_stat === 'не увезли') return r.fail_reason ? `${NOT_DELIVERED_PREFIX}${r.fail_reason}` : 'не увезли';
+  return '';
+}
+
+/** Разбор выбранной опции объединённого статуса → поля поставки. */
+function decodeStatus(opt: string): { done_stat: string; fail_reason: string } {
+  if (opt === 'увезли') return { done_stat: 'увезли', fail_reason: '' };
+  if (opt.startsWith(NOT_DELIVERED_PREFIX)) {
+    return { done_stat: 'не увезли', fail_reason: opt.slice(NOT_DELIVERED_PREFIX.length) };
+  }
+  if (opt === 'не увезли') return { done_stat: 'не увезли', fail_reason: '' };
+  return { done_stat: '', fail_reason: '' };
+}
 
 const PLAN_RENDERERS = [flowDropdownRenderer];
 
@@ -249,7 +271,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   // Отчёт — только ЗАФИКСИРОВАННЫЕ строки, свежий день СВЕРХУ. Фильтры колонок и
   // колоночная сортировка накладываются ниже (viewRows).
   const baseRows = useMemo(() => {
-    const out = (mode === 'report' ? rows.filter((r) => Number(r.fixation_id) > 0) : rows.slice());
+    // P3 (юзер 2026-06-14): ПЛАН = только НЕзафиксированные черновики (fixation_id===0 и не
+    // в резерве). Зафиксированное и сеяный импорт отчёта (fixation_id>0) сюда не попадают.
+    const out =
+      mode === 'report'
+        ? rows.filter((r) => Number(r.fixation_id) > 0)
+        : rows.filter((r) => Number(r.fixation_id) === 0 && Number(r.reserved) !== 1);
     out.sort(
       (a, b) =>
         (mode === 'report'
@@ -321,6 +348,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return r.done_stat || '';
         case 'reason':
           return r.fail_reason || '';
+        case 'status':
+          return statusValue(r);
         case 'dlv':
           return (r.dlv || '').trim() ? `${r.dlv}${(r.dlv_pos || '').trim() ? `|${r.dlv_pos}` : ''}` : 'черновик';
         case 'trz':
@@ -445,17 +474,14 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
       }
       const locked = rowLocked(r);
-      if (spec.id === 'done' || spec.id === 'reason') {
-        // Отметки отчёта — выпадашки (ТЗ §5.1): статус вып. + причина невывоза.
+      if (spec.id === 'status') {
+        // P4: объединённая отметка отчёта — одна выпадашка «увезли / не увезли — <причина>».
+        const v = statusValue(r);
         const cell: FlowDropdownCell = {
           kind: GridCellKind.Custom,
           allowOverlay: !locked,
-          copyData: spec.id === 'done' ? r.done_stat || '' : r.fail_reason || '',
-          data: {
-            kind: 'flow-dropdown',
-            value: spec.id === 'done' ? r.done_stat || '' : r.fail_reason || '',
-            options: spec.id === 'done' ? ['', 'увезли', 'не увезли'] : ['', ...FAIL_REASONS],
-          },
+          copyData: v,
+          data: { kind: 'flow-dropdown', value: v, options: STATUS_OPTIONS },
         };
         return cell;
       }
@@ -590,22 +616,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         setMsg('Старше 7 дней — отчёт закрыт, правки заблокированы');
         return;
       }
-      // Отметки отчёта приходят из выпадашки (custom cell).
+      // Объединённая отметка отчёта приходит из выпадашки (custom cell) — P4.
       if (newValue.kind === GridCellKind.Custom) {
         const d = (newValue as FlowDropdownCell).data;
-        if (!d || d.kind !== 'flow-dropdown') return;
-        const v = d.value;
-        const fields: Record<string, string | number | null> = {};
-        if (spec.id === 'done') {
-          fields.done_stat = v;
-          if (v !== 'не увезли' && r.fail_reason) fields.fail_reason = ''; // причина только при «не увезли»
-        } else if (spec.id === 'reason') {
-          if (v && r.done_stat !== 'не увезли') {
-            setMsg('Причина — только при статусе «не увезли»');
-            return;
-          }
-          fields.fail_reason = v;
-        } else return;
+        if (!d || d.kind !== 'flow-dropdown' || spec.id !== 'status') return;
+        const { done_stat, fail_reason } = decodeStatus(d.value);
+        const fields: Record<string, string | number | null> = { done_stat, fail_reason };
         const before = captureBefore(r, fields);
         const changed = Object.keys(fields).some((k) => String(before[k] ?? '') !== String(fields[k] ?? ''));
         if (!changed) return;
@@ -678,9 +694,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     (row: number): Partial<Theme> | undefined => {
       const r = viewRows[row];
       if (!r) return undefined;
-      const flag = flagById.get(r.id) ?? '';
-      if (flag === 'ERROR') return { bgCell: '#FBE3E0', textDark: '#8A1F11' };
-      if (flag === 'DUPLICATE') return { bgCell: '#FCEFD9', textDark: '#7A4B0F' };
+      // P5: дубль/ERROR-подсветка — только в Плане (в Отчёте поставка одна и та же).
+      if (mode === 'plan') {
+        const flag = flagById.get(r.id) ?? '';
+        if (flag === 'ERROR') return { bgCell: '#FBE3E0', textDark: '#8A1F11' };
+        if (flag === 'DUPLICATE') return { bgCell: '#FCEFD9', textDark: '#7A4B0F' };
+      }
       if (mode === 'report') {
         if (r.done_stat === 'увезли') return { bgCell: '#EAF5EA' };
         if (r.done_stat === 'не увезли') return { bgCell: '#FBEAE7' };
