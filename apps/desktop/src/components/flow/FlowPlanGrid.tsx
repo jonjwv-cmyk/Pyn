@@ -119,26 +119,26 @@ const FAIL_REASONS = ['нет на центральном складе', 'мен
   'на приёмке', 'на входном контроле', 'отказ цеха', 'перенос на другой день',
   'нет МОЛа', 'иные причины'] as const;
 
-/** Префикс невывоза в объединённой колонке «СТАТУС ВЫП.» (P4). */
-const NOT_DELIVERED_PREFIX = 'не увезли — ';
-/** Опции объединённой колонки: пусто / увезли / «не увезли — <причина>» по каждой причине. */
-const STATUS_OPTIONS: readonly string[] = ['', 'увезли', ...FAIL_REASONS.map((r) => `${NOT_DELIVERED_PREFIX}${r}`)];
+/** Статус выполнения (юзер 2026-06-14): по умолчанию «ОЖИДАНИЕ» (пусто в БД), «выполнено»
+ *  (зелёный в исходном отчёте) или ПРИЧИНА (серый, не увезено). Стереть ячейку → снова ожидание. */
+const STATUS_WAIT = 'ожидание';
+const STATUS_DONE = 'выполнено';
+/** Опции выпадашки: ожидание / выполнено / каждая причина (выбор причины = «не увезли»). */
+const STATUS_OPTIONS: readonly string[] = [STATUS_WAIT, STATUS_DONE, ...FAIL_REASONS];
 
-/** Отображаемое значение объединённого статуса из (done_stat, fail_reason). */
+/** Отображаемое значение статуса из (done_stat, fail_reason). Пусто → «ожидание». */
 function statusValue(r: FlowDeliveryRow): string {
-  if (r.done_stat === 'увезли') return 'увезли';
-  if (r.done_stat === 'не увезли') return r.fail_reason ? `${NOT_DELIVERED_PREFIX}${r.fail_reason}` : 'не увезли';
-  return '';
+  if (r.done_stat === STATUS_DONE || r.done_stat === 'увезли') return STATUS_DONE;
+  if (r.fail_reason) return r.fail_reason; // серый: не увезено, причина в ячейке
+  if (r.done_stat === 'не увезли') return 'не увезли';
+  return STATUS_WAIT; // по умолчанию — ожидание
 }
 
-/** Разбор выбранной опции объединённого статуса → поля поставки. */
+/** Разбор выбранной опции статуса → поля поставки. «ожидание»/пусто → сброс в ноль. */
 function decodeStatus(opt: string): { done_stat: string; fail_reason: string } {
-  if (opt === 'увезли') return { done_stat: 'увезли', fail_reason: '' };
-  if (opt.startsWith(NOT_DELIVERED_PREFIX)) {
-    return { done_stat: 'не увезли', fail_reason: opt.slice(NOT_DELIVERED_PREFIX.length) };
-  }
-  if (opt === 'не увезли') return { done_stat: 'не увезли', fail_reason: '' };
-  return { done_stat: '', fail_reason: '' };
+  if (opt === STATUS_DONE) return { done_stat: STATUS_DONE, fail_reason: '' };
+  if (opt === STATUS_WAIT || opt === '') return { done_stat: '', fail_reason: '' };
+  return { done_stat: 'не увезли', fail_reason: opt }; // выбрана причина
 }
 
 const PLAN_RENDERERS = [flowDropdownRenderer];
@@ -705,8 +705,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         if (flag === 'DUPLICATE') return { bgCell: '#FCEFD9', textDark: '#7A4B0F' };
       }
       if (mode === 'report') {
-        if (r.done_stat === 'увезли') return { bgCell: '#EAF5EA' };
-        if (r.done_stat === 'не увезли') return { bgCell: '#FBEAE7' };
+        // Зеркало исходного отчёта: выполнено = зелёный, причина (не увезено) = серый,
+        // ожидание (по умолчанию) = нейтральный.
+        if (r.done_stat === STATUS_DONE || r.done_stat === 'увезли') return { bgCell: '#EAF5EA' };
+        if (r.fail_reason || r.done_stat === 'не увезли') return { bgCell: '#F0F0EE', textDark: '#6B6862' };
         if (rowLocked(r)) return { textDark: '#8C8983' }; // закрытый отчёт (>7 дней) — приглушён
       }
       if (!(r.dlv || '').trim()) return { textDark: '#5A5752' };
@@ -719,7 +721,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   /** Массовая отметка отчёта (ТЗ §5.1): одно значение на все выделенные строки,
    *  БЕЗ привязки к складу — выбрал → протянулось. Причина чистится при «увезли». */
   const massMark = useCallback(
-    (done: 'увезли' | 'не увезли', reason: string) => {
+    (done: 'выполнено' | 'не увезли', reason: string) => {
       const targets: FlowDeliveryRow[] = [];
       let lockedHit = false;
       for (const idx of selection.rows) {
@@ -877,10 +879,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
             <button
               type="button"
-              onClick={() => massMark('увезли', '')}
+              onClick={() => massMark('выполнено', '')}
               className="rounded-md border border-black/10 px-2 py-0.5 text-[#1F7A33] transition-colors hover:border-[#1F7A33]/50"
             >
-              Увезли
+              Выполнено
             </button>
             <select
               defaultValue=""
@@ -891,10 +893,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
                 }
               }}
               className="h-6 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#8A1F11] outline-none"
-              title="Не увезли — выбрать причину и протянуть на все выделенные"
+              title="Причина (не увезено) — выбрать и протянуть на все выделенные"
             >
               <option value="" disabled>
-                Не увезли…
+                Причина…
               </option>
               {FAIL_REASONS.map((fr) => (
                 <option key={fr} value={fr}>
