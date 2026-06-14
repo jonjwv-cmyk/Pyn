@@ -83,25 +83,25 @@ interface PlanColSpec {
 }
 
 const PLAN_COLS: readonly PlanColSpec[] = [
-  { id: 'date', title: 'ДАТА', width: 78 },
-  { id: 'fix', title: 'ФИКС', width: 60 },
+  { id: 'date', title: 'DAY', width: 78 },
+  { id: 'fix', title: 'FIX', width: 60 },
   // ПОСТАВКА·ЗАКАЗ — одна ячейка в 2 строки (П9): сверху поставка|П/П, снизу заказ|П/З.
-  { id: 'dlvord', title: 'ПОСТАВКА · ЗАКАЗ', width: 132 },
+  { id: 'dlvord', title: 'DLV · ORD', width: 132 },
   { id: 'trz', title: 'ТЗ', width: 86, editable: true },
   { id: 'fr', title: 'FR', width: 52 },
-  { id: 'to', title: 'СП', width: 52 },
+  { id: 'to', title: 'TO', width: 52 },
   { id: 'clst', title: 'CLST', width: 86 },
   { id: 'mol', title: 'МОЛ', width: 150, editable: true },
-  { id: 'approved', title: 'СОГЛАСОВАЛ', width: 130, editable: true },
-  { id: 'mat', title: 'МАТЕРИАЛ', width: 280 },
-  { id: 'uom', title: 'ЕИ', width: 42 },
-  { id: 'qty', title: 'КОЛ-ВО', width: 86, editable: true },
-  { id: 'kg', title: 'КГ', width: 86 },
+  { id: 'approved', title: 'СОГЛ.', width: 130, editable: true },
+  { id: 'mat', title: 'MAT', width: 280 },
+  { id: 'uom', title: 'UoM', width: 42 },
+  { id: 'qty', title: 'QTY', width: 86, editable: true },
+  { id: 'kg', title: 'KG', width: 86 },
   { id: 'v', title: 'V', width: 64 },
   { id: 'exp', title: 'ЭКСПЕДИТОРЫ', width: 190, editable: true },
   { id: 'vehicleType', title: 'ТИП ТС', width: 130 },
   { id: 'vehicle', title: 'ГАРАЖНЫЙ', width: 170, editable: true },
-  { id: 'note', title: 'КОММЕНТАРИЙ', width: 230 },
+  { id: 'note', title: 'NOTE', width: 230 },
   { id: 'flag', title: 'ПРОВЕРКА', width: 92 },
 ];
 
@@ -109,25 +109,25 @@ const PLAN_COLS: readonly PlanColSpec[] = [
  *  P4 (юзер 2026-06-14): «СТАТУС ВЫП.» и «ПРИЧИНА» — ОДНА колонка/редактор. P5: колонки
  *  «ПРОВЕРКА» (дубль/ERROR) в Отчёте нет — там одна и та же поставка, флаг ни к чему. */
 const REPORT_COLS: readonly PlanColSpec[] = [
-  { id: 'date', title: 'ДАТА', width: 78 },
-  { id: 'fix', title: 'ФИКС', width: 60 },
-  { id: 'dlvord', title: 'ПОСТАВКА · ЗАКАЗ', width: 132 },
+  { id: 'date', title: 'DAY', width: 78 },
+  { id: 'fix', title: 'FIX', width: 60 },
+  { id: 'dlvord', title: 'DLV · ORD', width: 132 },
   { id: 'fr', title: 'FR', width: 52 },
-  { id: 'to', title: 'СП', width: 52 },
+  { id: 'to', title: 'TO', width: 52 },
   { id: 'pr', title: 'PR', width: 64 },
   { id: 'clst', title: 'CLST', width: 86 },
   { id: 'mol', title: 'МОЛ', width: 150 },
-  { id: 'no', title: 'НОМ №', width: 96 },
-  { id: 'mat', title: 'МАТЕРИАЛ', width: 280 },
-  { id: 'uom', title: 'ЕИ', width: 42 },
-  { id: 'qty', title: 'КОЛ-ВО', width: 86 },
-  { id: 'kg', title: 'КГ', width: 86 },
+  { id: 'no', title: 'NO. №', width: 96 },
+  { id: 'mat', title: 'MAT', width: 280 },
+  { id: 'uom', title: 'UoM', width: 42 },
+  { id: 'qty', title: 'QTY', width: 86 },
+  { id: 'kg', title: 'KG', width: 86 },
   { id: 'v', title: 'V', width: 64 },
   { id: 'exp', title: 'ЭКСПЕДИТОРЫ', width: 190, editable: true },
   { id: 'vehicleType', title: 'ТИП ТС', width: 130 },
   { id: 'vehicle', title: 'ГАРАЖНЫЙ', width: 170, editable: true },
-  { id: 'status', title: 'СТАТУС ВЫП.', width: 210, editable: true },
-  { id: 'note', title: 'КОММЕНТАРИЙ', width: 230 },
+  { id: 'status', title: 'STAT', width: 210, editable: true },
+  { id: 'note', title: 'NOTE', width: 230 },
   { id: 'request', title: 'ЗАПРОС', width: 130 },
 ];
 
@@ -303,10 +303,30 @@ const GRID_FONT_FAMILY =
 const MEASURE_CTX = document.createElement('canvas').getContext('2d');
 const REPORT_FONT_PX = 10; // baseFontStyle грида
 const REPORT_HPAD = 8; // горизонтальный padding ячейки (с запасом)
-const PHONE_SAMPLE = '8 982 664 2800'; // эталон ширины телефона под ФИО
 /** Колонки с мягким переносом по словам (растут в высоту, ширина клампится). */
 const WRAP_COLS = new Set(['mat', 'note', 'vehicleType']);
-/** Колонки 2-строчные по природе (поставка/заказ, МОЛ+тел, экспедиторы+тел). */
+const PLAN_COL_FONT_PX: Record<string, number> = {
+  clst: 7,
+  date: 8,
+  status: 8,
+  kg: 8,
+  v: 8,
+  mol: 8,
+  request: 8,
+};
+const PLAN_BOLD_COLS = new Set(['date', 'fr', 'to', 'pr', 'qty', 'kg', 'v', 'status']);
+function planColFontPx(id: string): number {
+  return PLAN_COL_FONT_PX[id] ?? REPORT_FONT_PX;
+}
+function isPlanBoldCol(id: string): boolean {
+  return PLAN_BOLD_COLS.has(id);
+}
+function planCellTheme(id: string): Partial<Theme> {
+  return {
+    baseFontStyle: `${isPlanBoldCol(id) ? '600 ' : ''}${planColFontPx(id)}px`,
+    editorFontSize: `${planColFontPx(id)}px`,
+  };
+}
 function measurePx(s: string, font: string): number {
   if (!MEASURE_CTX) return s.length * 6;
   MEASURE_CTX.font = font;
@@ -332,6 +352,26 @@ function reportWrapLines(text: string, maxW: number): number {
     total += lines;
   }
   return Math.max(1, total);
+}
+function wrapWordsMaxLines(text: string, maxW: number, maxLines: number): string {
+  if (!text || !MEASURE_CTX || maxW <= 0) return text;
+  MEASURE_CTX.font = `${REPORT_FONT_PX}px ${GRID_FONT_FAMILY}`;
+  const result: string[] = [];
+  const words = text.replace(/\n+/g, ' ').split(/\s+/).filter(Boolean);
+  let line = '';
+  for (let i = 0; i < words.length; i += 1) {
+    const word = words[i] ?? '';
+    const test = line ? `${line} ${word}` : word;
+    const lastAllowedLine = result.length >= maxLines - 1;
+    if (!lastAllowedLine && line && MEASURE_CTX.measureText(test).width > maxW) {
+      result.push(line);
+      line = word;
+    } else {
+      line = test;
+    }
+  }
+  if (line) result.push(line);
+  return result.slice(0, maxLines).join('\n') || text;
 }
 
 // Кэш на сессию: мгновенный повторный вход (как у формирования), потом refetch.
@@ -498,7 +538,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const color = COLOR[molStatusKind(p.status || '')];
       const opt: FlowDriverOption = {
         fio: p.fio,
-        position: [p.broadcastGroup, p.position].filter(Boolean).join(' · '),
+        position: p.position || p.broadcastGroup,
         phone,
         phoneDisplay: phone ? formatMobilePhone(phone) : '',
         status: p.status || '',
@@ -534,7 +574,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const role = EXPEDITOR_ROLE_GROUPS.has(p.broadcastGroup) && p.broadcastEnabled ? p.broadcastGroup : '';
       const opt: FlowDriverOption = {
         fio: p.fio,
-        position: [role, p.position].filter(Boolean).join(' · '),
+        position: p.position || role,
         phone,
         phoneDisplay: phone ? formatMobilePhone(phone) : '',
         status: p.status || '',
@@ -931,17 +971,16 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
 
   // hasMenu → ▾ меню колонки (фильтр/сорт). Активный фильтр — лёгкая clay-подложка.
   // Авто-ширина по содержимому (П6, как в Формировании): мерим уникальные значения
-  // колонки в пикселях шрифтом грида; МОЛ/экспедитор резервируют ширину телефона (он под
-  // ФИО). Колонки с переносом (МАТЕРИАЛ/КОММЕНТАРИЙ) клампим, чтобы текст переносился, а не
+  // колонки в пикселях шрифтом грида. Колонки с переносом (МАТЕРИАЛ/КОММЕНТАРИЙ/ТИП ТС)
+  // клампим, чтобы текст переносился, а не
   // раздувал колонку. Пересчёт при изменении видимых строк.
   const colWidths = useMemo<Record<string, number>>(() => {
     const out: Record<string, number> = {};
-    const valFont = `${REPORT_FONT_PX}px ${GRID_FONT_FAMILY}`;
-    const hdrFont = `600 ${REPORT_FONT_PX}px ${GRID_FONT_FAMILY}`;
-    const phoneW = measurePx(PHONE_SAMPLE, `600 9px ${GRID_FONT_FAMILY}`);
     for (const c of COLS) {
+      const fontPx = planColFontPx(c.id);
+      const valFont = `${isPlanBoldCol(c.id) ? '600 ' : ''}${fontPx}px ${GRID_FONT_FAMILY}`;
+      const hdrFont = `800 ${fontPx}px ${GRID_FONT_FAMILY}`;
       let px = measurePx(c.title, hdrFont) + 22; // заголовок + место под ▾
-      const withPhone = c.id === 'mol' || c.id === 'exp';
       const seen = new Set<string>();
       for (let i = 0; i < viewRows.length && seen.size < 500; i += 1) {
         const r = viewRows[i];
@@ -949,9 +988,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         for (const line of cellText(c, r).split('\n')) if (line) seen.add(line);
       }
       for (const s of seen) px = Math.max(px, measurePx(s, valFont) + REPORT_HPAD * 2 + 4);
-      if (withPhone) px = Math.max(px, phoneW + REPORT_HPAD * 2 + 6);
-      // ТИП ТС — перенос по словам, но не режем длинные слова («гидроманипулятор», R3.4): до 170.
-      const max = c.id === 'vehicleType' ? 170 : WRAP_COLS.has(c.id) ? 300 : 460;
+      // ТИП ТС — ручной перенос по словам в 2 строки, без разрыва букв; ширина аккуратно ограничена.
+      const max = c.id === 'vehicleType' ? 150 : WRAP_COLS.has(c.id) ? 300 : 460;
       out[c.id] = Math.round(Math.max(40, Math.min(max, px)));
     }
     return out;
@@ -959,15 +997,20 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
 
   const columns = useMemo<GridColumn[]>(
     () =>
-      COLS.map((c) => ({
-        id: c.id,
-        title: c.title,
-        width: colWidths[c.id] ?? c.width,
-        hasMenu: true,
-        ...(colFilters.activeFilterColIds.has(c.id)
-          ? { themeOverride: { bgHeader: '#F4E6DE', bgHeaderHovered: '#EFD9CE' } }
-          : {}),
-      })),
+      COLS.map((c) => {
+        const fontPx = planColFontPx(c.id);
+        const active = colFilters.activeFilterColIds.has(c.id);
+        return {
+          id: c.id,
+          title: c.title,
+          width: colWidths[c.id] ?? c.width,
+          hasMenu: true,
+          themeOverride: {
+            headerFontStyle: `800 ${fontPx}px`,
+            ...(active ? { bgHeader: '#F4E6DE', bgHeaderHovered: '#EFD9CE' } : {}),
+          },
+        };
+      }),
     [COLS, colWidths, colFilters.activeFilterColIds],
   );
 
@@ -984,7 +1027,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const vtypeText = splitMultiCell(r.ride_id || '').length > 0
         ? splitMultiCell(r.ride_id || '').map((id) => vehicleByGarage.get(id.toUpperCase())?.type || '').join('\n')
         : (r.vehicle || '');
-      const vtypeLines = reportWrapLines(vtypeText, (colWidths.vehicleType ?? 120) - REPORT_HPAD * 2);
+      const vtypeLines = wrapWordsMaxLines(vtypeText, (colWidths.vehicleType ?? 130) - REPORT_HPAD * 2, 2).split('\n').length;
       const expN = deliveryExpeditors(r).length;
       const cands = [
         32, // база: 2 строки ПОСТАВКА·ЗАКАЗ (телефон в ячейке убран — R3.1)
@@ -1035,6 +1078,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           // Отчёте не меняется (блокируется в onCellEdited — «меняет только выгрузка СЭД»).
           allowOverlay: !locked,
           copyData: noMol ? 'Нет МОЛа' : fullFio,
+          themeOverride: planCellTheme(spec.id),
           data: {
             kind: 'flow-mol',
             value: rawMol,
@@ -1056,6 +1100,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           kind: GridCellKind.Custom,
           allowOverlay: !locked,
           copyData: v,
+          themeOverride: planCellTheme(spec.id),
           data: { kind: 'flow-dropdown', value: v, options: STATUS_OPTIONS },
         };
         return cell;
@@ -1070,6 +1115,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           kind: GridCellKind.Custom,
           allowOverlay: editable,
           copyData: names.join('\n'),
+          themeOverride: planCellTheme(spec.id),
           data: {
             kind: 'flow-driver',
             driver: names.join('\n'),
@@ -1095,6 +1141,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           kind: GridCellKind.Custom,
           allowOverlay: !!spec.editable && !locked,
           copyData: ids.join('\n'),
+          themeOverride: planCellTheme(spec.id),
           data: {
             kind: 'flow-vehicle',
             value: ids.join('\n'),
@@ -1106,20 +1153,26 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         return cell;
       }
       const text = cellText(spec, r);
+      const displayText =
+        spec.id === 'vehicleType'
+          ? wrapWordsMaxLines(text, (colWidths.vehicleType ?? 130) - REPORT_HPAD * 2, 2)
+          : text;
       const editable = !!spec.editable && !locked;
       // Перенос по словам (П6) — МАТЕРИАЛ/КОММЕНТАРИЙ; ПОСТАВКА·ЗАКАЗ — 2 строки через \n.
-      const wrap = WRAP_COLS.has(spec.id) || spec.id === 'dlvord';
+      // ТИП ТС переносим сами по словам в 2 строки, чтобы Glide не резал буквы.
+      const wrap = (WRAP_COLS.has(spec.id) && spec.id !== 'vehicleType') || spec.id === 'dlvord';
       return {
         kind: GridCellKind.Text,
-        data: spec.id === 'qty' ? (r.qty == null ? '' : String(r.qty).replace('.', ',')) : text,
-        displayData: text,
+        data: spec.id === 'qty' ? (r.qty == null ? '' : String(r.qty).replace('.', ',')) : displayText,
+        displayData: displayText,
         allowOverlay: editable,
         readonly: !editable,
         allowWrapping: wrap,
+        themeOverride: planCellTheme(spec.id),
         contentAlign: spec.id === 'qty' || spec.id === 'kg' || spec.id === 'v' ? 'right' : 'left',
       };
     },
-    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol],
+    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol],
   );
 
   /** Применить серверные строки поставок (ответ правки/конфликта). */
@@ -1719,7 +1772,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     () => ({
       ...FLOW_GRID_THEME,
       baseFontStyle: '10px',
-      headerFontStyle: '600 10px',
+      headerFontStyle: '800 10px',
       editorFontSize: '10px',
     }),
     [],

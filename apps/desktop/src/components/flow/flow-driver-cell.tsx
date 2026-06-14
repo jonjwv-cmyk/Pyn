@@ -212,6 +212,11 @@ function FlowDriverEditor({
                     )}
                     <span>{o.fio}</span>
                   </span>
+                  {o.position && (
+                    <span className="mt-0.5 block whitespace-normal break-normal text-[10.5px] leading-snug text-text-muted/65">
+                      {o.position}
+                    </span>
+                  )}
                 </button>
                 <div className="mt-0.5 flex items-center gap-2 text-[11px]">
                   {o.phoneDisplay && (
@@ -253,7 +258,6 @@ function FlowDriverEditor({
                     )}
                   </div>
                 )}
-                {o.position && <div className="mt-0.5 text-[10.5px] text-text-muted/60">{o.position}</div>}
               </div>
             );
           })
