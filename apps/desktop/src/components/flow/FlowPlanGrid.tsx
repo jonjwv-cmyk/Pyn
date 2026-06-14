@@ -360,10 +360,14 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return r.fr || '';
         case 'to':
           return r.to_wh || '';
-        case 'mol':
+        case 'mol': {
+          // Зафиксированное (ТЗ §3.8 / B) читает ЗАМОРОЖЕННЫЙ snapshot, черновик — живьём
+          // с якоря (он мог уехать под новый заказ той же связки).
+          if (Number(r.fixation_id) > 0) return r.snap_mol ? (parseMol(r.snap_mol)?.fio ?? r.snap_mol) : '';
           return anchor?.mol ? (parseMol(anchor.mol)?.fio ?? anchor.mol) : '';
+        }
         case 'approved':
-          return anchor?.approved_by ?? '';
+          return Number(r.fixation_id) > 0 ? r.snap_approved || '' : (anchor?.approved_by ?? '');
         case 'mat':
           return r.mat || '';
         case 'uom':
@@ -389,7 +393,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         case 'ride':
           return r.ride_id || '';
         case 'note':
-          return anchor?.note ?? '';
+          return Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchor?.note ?? '');
         case 'flag':
           return flagById.get(r.id) ?? '';
         default:

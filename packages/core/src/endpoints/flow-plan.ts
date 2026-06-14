@@ -60,6 +60,12 @@ export interface FlowDeliveryRow {
   created_by: string;
   created_at: string;
   row_version: number;
+  /** SNAPSHOT при фиксации (ТЗ §3.8): замороженные МОЛ / комментарий / «согласовал» с
+   *  якоря на момент «Зафиксировать». Зафиксированная строка (fixation_id>0) читает их,
+   *  черновик — живьём с якоря. Пусто у строк, зафиксированных до ввода snapshot. */
+  snap_mol: string;
+  snap_note: string;
+  snap_approved: string;
 }
 
 /** Одна правка поставки: id + версия (конфликт) + изменённые поля. */
