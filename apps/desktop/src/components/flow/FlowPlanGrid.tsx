@@ -862,6 +862,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             color: noMol ? '#E5484D' : selected?.color ?? resolved?.color ?? parsed?.color ?? '#9AA0A6',
             noMol,
             options: opts,
+            phoneDisplay: noMol ? '' : selected?.phoneDisplay ?? '', // телефон под ФИО (п.3)
           },
         };
         return cell;
@@ -1634,6 +1635,17 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
                 </option>
               ))}
             </select>
+            {/* П.4: «Удалить из отчёта» — убрать строку в резерв; позиция вернётся в
+                формирование с данными, выгрузка заказов её актуализирует (OFF/новое кол-во/правка). */}
+            <button
+              type="button"
+              onClick={deleteSelected}
+              title="Удалить из отчёта (в резерв) — позиция вернётся в формирование, выгрузка актуализирует"
+              className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
+            >
+              <Trash2 size={13} strokeWidth={1.75} />
+              Удалить из отчёта
+            </button>
           </div>
         )}
         {!pendingTransfer && selectedCount > 0 && mode === 'plan' && (

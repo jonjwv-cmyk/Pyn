@@ -24,6 +24,7 @@ export interface FlowMolData {
   readonly color: string; // цвет статус-точки
   readonly options: readonly FlowMolOption[]; // молы склада TO
   readonly noMol?: boolean; // «Нет мола» — акцентная красная пилюля
+  readonly phoneDisplay?: string; // телефон выбранного МОЛ — строкой ПОД ФИО (п.3)
 }
 export type FlowMolCell = CustomCell<FlowMolData>;
 
@@ -120,9 +121,8 @@ export const flowMolRenderer: CustomRenderer<FlowMolCell> = {
     (c.data as { kind?: unknown }).kind === 'flow-mol',
   draw: (args, cell) => {
     const { ctx, rect, theme } = args;
-    const { fio, color, noMol } = cell.data;
+    const { fio, color, noMol, phoneDisplay } = cell.data;
     const padX = theme.cellHorizontalPadding;
-    const cy = rect.y + rect.height / 2;
     ctx.save();
     ctx.beginPath();
     ctx.rect(rect.x, rect.y, rect.width, rect.height);
@@ -131,6 +131,10 @@ export const flowMolRenderer: CustomRenderer<FlowMolCell> = {
     ctx.font = `${noMol ? '700 ' : ''}${theme.baseFontStyle} ${theme.fontFamily}`;
     ctx.textBaseline = 'middle';
     const x = rect.x + padX;
+    // Телефон выбранного МОЛ — строкой ПОД ФИО (п.3, юзер 2026-06-14). Если телефона нет —
+    // ФИО по центру (как было). С телефоном — ФИО выше, телефон ниже (как у экспедитора).
+    const hasPhone = !noMol && !!phoneDisplay;
+    const fioCy = hasPhone ? rect.y + rect.height * 0.34 : rect.y + rect.height / 2;
     if (fio) {
       // Статус — ЦВЕТОМ пилюли (без отдельной точки): зелёная/красная/серая.
       const tw = ctx.measureText(fio).width;
@@ -139,10 +143,15 @@ export const flowMolRenderer: CustomRenderer<FlowMolCell> = {
       const pw = padP + tw + padP;
       ctx.fillStyle = noMol ? 'rgba(220,38,38,0.26)' : color + '33';
       ctx.beginPath();
-      ctx.roundRect(x, cy - ph / 2, pw, ph, ph / 2);
+      ctx.roundRect(x, fioCy - ph / 2, pw, ph, ph / 2);
       ctx.fill();
       ctx.fillStyle = noMol ? '#6E120D' : theme.textDark;
-      ctx.fillText(fio, x + padP, cy);
+      ctx.fillText(fio, x + padP, fioCy);
+      if (hasPhone) {
+        ctx.font = `600 9px ${theme.fontFamily}`;
+        ctx.fillStyle = theme.textMedium;
+        ctx.fillText(phoneDisplay as string, x + padP, rect.y + rect.height * 0.74, rect.width - padX * 2);
+      }
     }
     ctx.restore();
     return true;
