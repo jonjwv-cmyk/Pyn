@@ -17,6 +17,7 @@ import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { colZeroRowSelection } from './flow-grid-selection';
 import { FlowSearchPanel } from './FlowSearchPanel';
+import { FlowDayPicker } from './FlowDayPicker';
 import { useFlowGridSearch, type FlowSearchColumn } from './flow-grid-search';
 import { FlowHeaderMenu } from './FlowHeaderMenu';
 import { useFlowColumnFilters } from './flow-column-filter';
@@ -175,6 +176,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   // Контейнер DataEditor — также для проверки видимости вкладки в ⌘Z-хоткее.
   const measureRef = useRef<HTMLDivElement | null>(null);
   const [msg, setMsg] = useState('');
+  // Календарь выбора дня (P7): null — все дни; иначе фильтр по plan_date.
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
 
   // CLST: кластер/день доставки склада-получателя из живой базы складов.
   const whById = useWarehousesStore((st) => st.byId);
@@ -273,10 +276,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   const baseRows = useMemo(() => {
     // P3 (юзер 2026-06-14): ПЛАН = только НЕзафиксированные черновики (fixation_id===0 и не
     // в резерве). Зафиксированное и сеяный импорт отчёта (fixation_id>0) сюда не попадают.
-    const out =
+    let out =
       mode === 'report'
         ? rows.filter((r) => Number(r.fixation_id) > 0)
         : rows.filter((r) => Number(r.fixation_id) === 0 && Number(r.reserved) !== 1);
+    // Календарь (P7): выбран день → показываем только его.
+    if (selectedDay) out = out.filter((r) => (r.plan_date || '').slice(0, 10) === selectedDay);
     out.sort(
       (a, b) =>
         (mode === 'report'
@@ -287,7 +292,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         (a.mat || '').localeCompare(b.mat || '', 'ru'),
     );
     return out;
-  }, [rows, mode]);
+  }, [rows, mode, selectedDay]);
 
   // Проверка ошибок (эталон buildPlanDupGh_ / buildPlanAggByG_): по SAP-номерам.
   const flagById = useMemo(() => {
@@ -824,6 +829,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             <Redo2 size={13} strokeWidth={1.75} />
           </button>
         </div>
+        {/* Календарь дня (P7): статусы дней — красный черновики / зелёный фиксация / смешанный. */}
+        <FlowDayPicker mode={mode} rows={rows} selected={selectedDay} onSelect={setSelectedDay} />
         <div className="flex items-center gap-1">
           <Download size={13} strokeWidth={1.75} />
           <select
