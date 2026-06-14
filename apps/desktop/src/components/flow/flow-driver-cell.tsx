@@ -22,6 +22,7 @@ export interface FlowDriverOption {
   readonly color: string; // цвет статуса (зел/красн/серый)
   readonly isMol: boolean; // материально-ответственный
   readonly until: string; // срок «по дату» (ближайший склад), если МОЛ
+  readonly roleGroup?: string;
 }
 export interface FlowDriverData {
   readonly kind: 'flow-driver';
@@ -32,8 +33,38 @@ export interface FlowDriverData {
   readonly isMol: boolean; // показать пилюлю «МОЛ» в ячейке
   readonly until: string; // срок «по дату» — пилюлей в ячейке (если есть)
   readonly drivers: readonly FlowDriverOption[]; // кандидаты (должность «водитель»)
+  readonly searchPlaceholder?: string;
+  readonly emptyLabel?: string;
+  readonly emptySearchLabel?: string;
+  readonly showPhoneInCell?: boolean;
+  readonly selectedDrivers?: readonly string[];
+  readonly maxSelected?: number;
 }
 export type FlowDriverCell = CustomCell<FlowDriverData>;
+
+function splitDriverNames(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of raw.split(/\r?\n|;/)) {
+    const name = part.trim();
+    if (!name) continue;
+    const key = name.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+function driverNameKey(fio: string): string {
+  return fio.trim().toUpperCase().split(/\s+/).filter(Boolean).slice(0, 2).join(' ');
+}
+
+function shortFio(fio: string): string {
+  const p = fio.trim().split(/\s+/).filter(Boolean);
+  if (p.length >= 3) return `${p[0]} ${p[1]} ${p[2]?.slice(0, 1)}.`;
+  return fio.trim();
+}
 
 /** Редактор: поиск по ФИО/должности/сот среди водителей базы. Выбор ТОЛЬКО из базы. */
 function FlowDriverEditor({
@@ -43,8 +74,18 @@ function FlowDriverEditor({
   value: FlowDriverCell;
   onFinishedEditing: (next?: FlowDriverCell) => void;
 }) {
-  const { drivers, driver } = cell.data;
+  const {
+    drivers,
+    driver,
+    selectedDrivers,
+    maxSelected = 1,
+    searchPlaceholder = 'Поиск водителя: ФИО / должность / сот.',
+    emptyLabel = 'Нет водителей в базе контактов',
+    emptySearchLabel = 'Не найдено среди водителей базы',
+  } = cell.data;
   const [query, setQuery] = useState('');
+  const multi = Array.isArray(selectedDrivers);
+  const [picked, setPicked] = useState<string[]>(() => (selectedDrivers ? [...selectedDrivers] : splitDriverNames(driver)));
 
   const matches = useMemo<readonly FlowDriverOption[]>(() => {
     const q = query.trim().toLowerCase();
@@ -60,7 +101,31 @@ function FlowDriverEditor({
     return base.slice(0, 40);
   }, [drivers, query]);
 
-  const pick = (o: FlowDriverOption): void =>
+  const finishMulti = (items: readonly string[]): void =>
+    onFinishedEditing({
+      ...cell,
+      data: {
+        ...cell.data,
+        driver: items.join('\n'),
+        phone: '',
+        phoneDisplay: '',
+        color: '',
+        isMol: false,
+        until: '',
+        selectedDrivers: [...items],
+      },
+    });
+
+  const pick = (o: FlowDriverOption): void => {
+    if (multi) {
+      setPicked((prev) => {
+        const exists = prev.some((x) => x.toUpperCase() === o.fio.toUpperCase());
+        if (exists) return prev.filter((x) => x.toUpperCase() !== o.fio.toUpperCase());
+        if (prev.length >= maxSelected) return prev;
+        return [...prev, o.fio];
+      });
+      return;
+    }
     onFinishedEditing({
       ...cell,
       data: {
@@ -73,16 +138,38 @@ function FlowDriverEditor({
         until: o.until,
       },
     });
+  };
 
   return (
     <div className="flex max-h-80 w-72 flex-col">
+      {multi && (
+        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-text-muted">
+          <span className="tabular-nums">{picked.length}/{maxSelected}</span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => finishMulti([])}
+              className="rounded border border-white/[0.10] px-1.5 py-0.5 transition-colors hover:bg-white/[0.06] hover:text-text-strong"
+            >
+              Очистить
+            </button>
+            <button
+              type="button"
+              onClick={() => finishMulti(picked)}
+              className="rounded border border-accent-clay/40 px-1.5 py-0.5 text-accent-clay transition-colors hover:bg-accent-clay/10"
+            >
+              Готово
+            </button>
+          </div>
+        </div>
+      )}
       <input
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         // eslint-disable-next-line jsx-a11y/no-autofocus
         autoFocus
         spellCheck={false}
-        placeholder="Поиск водителя: ФИО / должность / сот."
+        placeholder={searchPlaceholder}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && matches[0]) pick(matches[0]);
         }}
@@ -91,11 +178,13 @@ function FlowDriverEditor({
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-0.5 py-0.5 text-text-secondary">
         {matches.length === 0 ? (
           <div className="px-2 py-1.5 text-[12px] text-text-muted/70">
-            {query ? 'Не найдено среди водителей базы' : 'Нет водителей в базе контактов'}
+            {query ? emptySearchLabel : emptyLabel}
           </div>
         ) : (
           matches.map((o, i) => {
-            const selected = o.fio === driver;
+            const selected = multi
+              ? picked.some((x) => x.toUpperCase() === o.fio.toUpperCase())
+              : o.fio === driver;
             return (
               <div
                 key={`${o.fio}-${i}`}
@@ -105,8 +194,16 @@ function FlowDriverEditor({
                 )}
               >
                 <button type="button" onClick={() => pick(o)} className="block w-full text-left">
-                  <span className="text-[12px] font-medium leading-snug" style={{ color: o.color || undefined }}>
-                    {o.fio}
+                  <span className="flex items-center gap-1.5 text-[12px] font-medium leading-snug" style={{ color: o.color || undefined }}>
+                    {multi && (
+                      <span className={cn(
+                        'flex h-3.5 w-3.5 items-center justify-center rounded border text-[9px]',
+                        selected ? 'border-accent-clay bg-accent-clay text-white' : 'border-white/[0.18] text-transparent',
+                      )}>
+                        ✓
+                      </span>
+                    )}
+                    <span>{o.fio}</span>
                   </span>
                 </button>
                 <div className="mt-0.5 flex items-center gap-2 text-[11px]">
@@ -194,7 +291,7 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
     typeof c.data === 'object' && c.data !== null && (c.data as { kind?: unknown }).kind === 'flow-driver',
   draw: (args, cell) => {
     const { ctx, rect, theme } = args;
-    const { driver, phoneDisplay, color, isMol, until } = cell.data;
+    const { driver, phoneDisplay, color, isMol, until, showPhoneInCell = true, selectedDrivers } = cell.data;
     const padX = theme.cellHorizontalPadding;
     ctx.save();
     ctx.beginPath();
@@ -202,6 +299,28 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
     ctx.clip();
     const x0 = rect.x + padX;
     ctx.textBaseline = 'middle';
+    if (Array.isArray(selectedDrivers)) {
+      const names = selectedDrivers.length > 0 ? selectedDrivers : splitDriverNames(driver);
+      const shown = names.slice(0, 3);
+      const byName = new Map(cell.data.drivers.map((d) => [driverNameKey(d.fio), d] as const));
+      const lineH = Math.min(16, Math.max(12, rect.height / Math.max(shown.length, 1)));
+      const startY = rect.y + rect.height / 2 - ((shown.length - 1) * lineH) / 2;
+      for (let i = 0; i < shown.length; i += 1) {
+        const name = shown[i] ?? '';
+        const opt = byName.get(driverNameKey(name));
+        const y = startY + i * lineH;
+        ctx.font = `10px ${theme.fontFamily}`;
+        ctx.fillStyle = opt?.color || theme.textDark;
+        ctx.fillText(shortFio(opt?.fio ?? name), x0, y - (opt?.phoneDisplay ? 3 : 0), rect.width - padX * 2);
+        if (opt?.phoneDisplay) {
+          ctx.font = `8px ${theme.fontFamily}`;
+          ctx.fillStyle = theme.textMedium;
+          ctx.fillText(opt.phoneDisplay, x0, y + 7, rect.width - padX * 2);
+        }
+      }
+      ctx.restore();
+      return true;
+    }
     if (driver) {
       // ФИО — плашкой ЦВЕТОМ СТАТУСА (10px, как стандарт формирования).
       const yTop = rect.y + rect.height * 0.32;
@@ -219,7 +338,7 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
       // плашки, а не её левый край) и ЖИРНЫМ (юзер 2026-06-12). Пилюли МОЛ/«по дату» — мельче.
       const yB = rect.y + rect.height * 0.72;
       let x = x0 + padP;
-      if (phoneDisplay) {
+      if (showPhoneInCell && phoneDisplay) {
         ctx.font = `600 9px ${theme.fontFamily}`;
         ctx.fillStyle = theme.textMedium;
         ctx.fillText(phoneDisplay, x, yB);
@@ -250,6 +369,18 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
       minWidth: '260px',
     },
   }),
-  onDelete: (cell) => ({ ...cell, data: { ...cell.data, driver: '', phone: '', phoneDisplay: '', color: '', isMol: false, until: '' } }),
+  onDelete: (cell) => ({
+    ...cell,
+    data: {
+      ...cell.data,
+      driver: '',
+      phone: '',
+      phoneDisplay: '',
+      color: '',
+      isMol: false,
+      until: '',
+      ...(Array.isArray(cell.data.selectedDrivers) ? { selectedDrivers: [] } : {}),
+    },
+  }),
   onPaste: (v, d) => ({ ...d, driver: v }),
 };

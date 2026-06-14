@@ -35,6 +35,9 @@ export function FlowDayPicker({
   placeholder = 'Все дни',
   title = 'Календарь — выбрать день плана/отчёта',
   allowClear = true,
+  minDate,
+  isDateEnabled,
+  disabledTitle = 'дата недоступна',
 }: {
   mode: 'plan' | 'report';
   rows: readonly FlowDeliveryRow[];
@@ -43,6 +46,9 @@ export function FlowDayPicker({
   placeholder?: string;
   title?: string;
   allowClear?: boolean;
+  minDate?: string;
+  isDateEnabled?: (iso: string) => boolean;
+  disabledTitle?: string;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -155,6 +161,7 @@ export function FlowDayPicker({
               const iso = isoOf(d);
               const st = statByDay.get(iso);
               const past = iso < today;
+              const disabled = (!!minDate && iso < minDate) || (!!isDateEnabled && !isDateEnabled(iso));
               const isSel = iso === selected;
               // Статус-цвет (приоритет: выбранный → смешанный → зелёный → красный → прошлый → нейтр.)
               let cls = 'text-text-primary hover:bg-white/[0.06]';
@@ -162,16 +169,21 @@ export function FlowDayPicker({
               else if (st?.fixed) cls = 'bg-emerald-500/25 text-emerald-200';
               else if (st?.draft) cls = 'bg-rose-500/25 text-rose-200';
               else if (past) cls = 'text-text-muted/40';
+              if (disabled) cls = 'cursor-not-allowed text-text-muted/25';
               return (
                 <button
                   key={iso}
                   type="button"
+                  disabled={disabled}
                   onClick={() => {
+                    if (disabled) return;
                     onSelect(iso);
                     setOpen(false);
                   }}
                   title={
-                    st
+                    disabled
+                      ? disabledTitle
+                      : st
                       ? `${st.fixed ? 'есть зафиксированные' : ''}${st.fixed && st.draft ? ' + ' : ''}${st.draft ? 'есть черновики' : ''}`
                       : 'нет строк'
                   }
@@ -188,16 +200,18 @@ export function FlowDayPicker({
             <span className="text-[10px] text-text-muted/70">
               {mode === 'report' ? 'зелёный — выполнено есть' : 'красный — черновики'}
             </span>
-            <button
-              type="button"
-              onClick={() => {
-                onSelect(null);
-                setOpen(false);
-              }}
-              className="rounded px-1.5 py-0.5 text-[11px] text-text-primary transition-colors hover:bg-white/[0.06] hover:text-text-strong"
-            >
-              Все дни
-            </button>
+            {allowClear && (
+              <button
+                type="button"
+                onClick={() => {
+                  onSelect(null);
+                  setOpen(false);
+                }}
+                className="rounded px-1.5 py-0.5 text-[11px] text-text-primary transition-colors hover:bg-white/[0.06] hover:text-text-strong"
+              >
+                Все дни
+              </button>
+            )}
           </div>
         </div>
       )}
