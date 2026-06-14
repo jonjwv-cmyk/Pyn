@@ -66,6 +66,8 @@ export interface FlowDeliveryRow {
   snap_mol: string;
   snap_note: string;
   snap_approved: string;
+  /** SNAPSHOT «склад до» (Был/прежний склад-получатель) — заморожен при фиксации (п.1). */
+  snap_pr: string;
 }
 
 /** Одна правка поставки: id + версия (конфликт) + изменённые поля. */
@@ -118,10 +120,14 @@ export async function flowTransfer(
   client: ApiClient,
   ids: number[],
   toDate: string,
+  target: 'plan' | 'report' = 'plan',
+  keepDlv = true,
 ): Promise<{ transferred: number; rows: FlowDeliveryRow[] }> {
   const wire = await client.call<{ transferred?: number; rows?: FlowDeliveryRow[] }>('flow_transfer', {
     ids,
     to_date: toDate,
+    target,
+    keep_dlv: keepDlv,
   });
   return {
     transferred: Number(wire.transferred) || 0,
