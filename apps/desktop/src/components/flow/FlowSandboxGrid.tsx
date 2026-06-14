@@ -480,9 +480,12 @@ function buildContractError(kind: 'expired' | 'not-covered', fio: string, until?
 /** Поставка → инфо для расчёта доступного остатка (якорь, кол-во, проведена ли).
  *  Проведена = есть факт прихода (zm_vl) ИЛИ отмечена «увезли» — такая уже отражена в
  *  уменьшенном кол-ве выгрузки, в «занято планом» НЕ вычитается. */
-function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; posted: boolean } {
+function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; posted: boolean; delivered: boolean } {
   const posted = d.fact_qty != null || d.done_stat === 'увезли';
-  return { a: `${d.ord}|${d.it}`, qty: d.qty == null ? 0 : Number(d.qty), posted };
+  // «Доставлено по отчёту» = зафиксированная поставка со статусом выполнено/увезли. Если позиция
+  // при этом снова в формировании/выгрузке — это «обманка отчёта» (юзер 2026-06-14), red RGB.
+  const delivered = Number(d.fixation_id) > 0 && (d.done_stat === 'выполнено' || d.done_stat === 'увезли');
+  return { a: `${d.ord}|${d.it}`, qty: d.qty == null ? 0 : Number(d.qty), posted, delivered };
 }
 
 function molIsGone(
@@ -1257,7 +1260,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // id поставки → { якорь ord|it, кол-во, проведена ли (отгружена/факт) }. Проведённая
   // поставка УЖЕ отражена в уменьшенном кол-ве выгрузки (SAP списал), потому в «доступный
   // остаток» НЕ вычитается; незакрытая (черновик/план без факта) — вычитается (юзер 2026-06-14).
-  type DlvInfo = { a: string; qty: number; posted: boolean };
+  type DlvInfo = { a: string; qty: number; posted: boolean; delivered: boolean };
   const [dlvInfoById, setDlvInfoById] = useState<Map<number, DlvInfo>>(() => new Map());
   const activeDlvAnchors = useMemo(
     () => new Set([...dlvInfoById.values()].map((v) => v.a)),
@@ -1271,6 +1274,13 @@ export function FlowSandboxGrid(): JSX.Element {
       m.set(v.a, (m.get(v.a) ?? 0) + (Number.isFinite(v.qty) ? v.qty : 0));
     }
     return m;
+  }, [dlvInfoById]);
+  // Якоря, ДОСТАВЛЕННЫЕ по отчёту (выполнено/увезли). Если такая позиция снова в формировании —
+  // «обманка отчёта» (юзер 2026-06-14): отчёт говорит «увезли», а заказ снова открыт → red-подсветка.
+  const deliveredReportAnchors = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of dlvInfoById.values()) if (v.delivered) s.add(v.a);
+    return s;
   }, [dlvInfoById]);
 
   // РАСЧЁТНЫЙ STAT по строке (id → { auto, undershoot }) — ЕДИНЫЙ источник вердикта для
@@ -1349,9 +1359,9 @@ export function FlowSandboxGrid(): JSX.Element {
       const patch: Partial<FlowSandboxRow> = {};
       if (haveWh) {
         const wh = whById.get(r.to_wh);
-        const weekday =
-          (shops.length ? frozenWeekdayOf(shops, r.to_wh) : null) ||
-          (wh?.inSchedule ? wh.deliveryDay : null);
+        const weekday = shops.length
+          ? frozenWeekdayOf(shops, r.to_wh)
+          : (wh?.inSchedule ? wh.deliveryDay : null);
         const clst = !weekday
           ? CLST_NONE
           : wh && (wh.cluster === 'ВЫЕЗД' || wh.cluster === 'КХП')
@@ -1431,6 +1441,9 @@ export function FlowSandboxGrid(): JSX.Element {
     () => liveRows.reduce((n, r) => (String(r.day_wk ?? '').toUpperCase() === 'OFF' ? n + 1 : n), 0),
     [liveRows],
   );
+  // Активные (не-OFF) строки — нижний счётчик считает ИХ (юзер 2026-06-14: «из — это активные
+  // не OFF»; OFF-счётчик отдельно вверху на тумблере).
+  const nonOffCount = useMemo(() => liveRows.length - offCount, [liveRows.length, offCount]);
   // Видимые строки формирования: без позиций с активной поставкой (они в Плане) и БЕЗ
   // OFF (P2, юзер 2026-06-14): OFF — фантом (хранится в БД для переноса коммент/МОЛ §2.4),
   // но из РАБОЧЕГО вида формирования скрыт. Служебный тумблер «OFF» в тулбаре показывает
@@ -2953,12 +2966,19 @@ export function FlowSandboxGrid(): JSX.Element {
         o.bgCellMedium = t.bg;
       }
       if (t?.text) o.textDark = t.text;
+      // «Обманка отчёта» (юзер 2026-06-14): позиция доставлена по отчёту (выполнено/увезли), но
+      // снова в формировании (заказ открыт / OFF-фантом) → КРАСНАЯ подсветка поверх статуса.
+      if (deliveredReportAnchors.has(`${r.ord}|${r.it}`)) {
+        o.bgCell = '#FBDAD5';
+        o.bgCellMedium = '#FBDAD5';
+        o.textDark = '#8A1F11';
+      }
       // Линии-разделители КЛАСТЕРА и СКЛАДА (TO) рисуются в drawCell (опаково, по данным,
       // ДО колонки номера) — строковый horizontalBorderColor здесь НЕ используем (он
       // заходил на колонку номера). Тут только фон/текст условного форматирования.
       return Object.keys(o).length > 0 ? o : undefined;
     },
-    [viewRows, molByWarehouse],
+    [viewRows, molByWarehouse, deliveredReportAnchors],
   );
   // Граница КЛАСТЕРА — ТОЛСТАЯ (2.5px) ОПАКОВАЯ линия (без alpha!) по верху первой строки
   // кластера. Опаковая = идемпотентна: перерисовка на hover не накапливает цвет (это и
@@ -3513,17 +3533,18 @@ export function FlowSandboxGrid(): JSX.Element {
             </span>
           </>
         )}
-        {/* Объём — справа: «Показано X из Y» (фильтр) либо «Y строк». */}
+        {/* Объём — справа: «Показано X из Y» где Y = АКТИВНЫЕ (не-OFF) строки (юзер 2026-06-14).
+            OFF не входят (их счётчик — на тумблере «OFF» вверху). */}
         <span className="ml-auto">
-          {filtered ? (
+          {viewRows.length < nonOffCount ? (
             <>
               Показано{' '}
               <span className="tabular-nums text-[#2A2925]">{viewRows.length.toLocaleString('ru-RU')}</span> из{' '}
-              <span className="tabular-nums text-[#2A2925]">{rows.length.toLocaleString('ru-RU')}</span>
+              <span className="tabular-nums text-[#2A2925]">{nonOffCount.toLocaleString('ru-RU')}</span>
             </>
           ) : (
             <>
-              <span className="tabular-nums text-[#2A2925]">{rows.length.toLocaleString('ru-RU')}</span> строк
+              <span className="tabular-nums text-[#2A2925]">{nonOffCount.toLocaleString('ru-RU')}</span> строк
             </>
           )}
         </span>
