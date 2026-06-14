@@ -82,7 +82,11 @@ import {
   type FlowViewState,
 } from './flow-view';
 import { sessionStore } from '@/lib/token-store';
-import { useScheduleMonthsMeta, monthKey } from '@/lib/schedule/use-schedule-sync';
+import {
+  canUseLiveWarehouseScheduleForMonth,
+  useScheduleMonthsMeta,
+  monthKey,
+} from '@/lib/schedule/use-schedule-sync';
 import {
   FLOW_COLUMNS,
   FLOW_STAT_OPTIONS,
@@ -1354,6 +1358,7 @@ export function FlowSandboxGrid(): JSX.Element {
     const haveVgh = vghByKey.size > 0; // ЖИВЫЕ KG/V/тех-имя из базы ВГХ
     if (!haveWh && !haveVgh) return rows;
     const shops = planMeta?.shops ?? [];
+    const canUseLiveSchedule = canUseLiveWarehouseScheduleForMonth(planYear, planMonth);
     let changed = false;
     const next = rows.map((r) => {
       const patch: Partial<FlowSandboxRow> = {};
@@ -1361,7 +1366,7 @@ export function FlowSandboxGrid(): JSX.Element {
         const wh = whById.get(r.to_wh);
         const weekday = shops.length
           ? frozenWeekdayOf(shops, r.to_wh)
-          : (wh?.inSchedule ? wh.deliveryDay : null);
+          : (canUseLiveSchedule && wh?.inSchedule ? wh.deliveryDay : null);
         const clst = !weekday
           ? CLST_NONE
           : wh && (wh.cluster === 'ВЫЕЗД' || wh.cluster === 'КХП')
@@ -1405,7 +1410,7 @@ export function FlowSandboxGrid(): JSX.Element {
       return { ...r, ...patch };
     });
     return changed ? next : rows;
-  }, [rows, whById, planMeta, vghByKey, statMetaById]);
+  }, [rows, whById, planMeta, planYear, planMonth, vghByKey, statMetaById]);
 
   // «Формирование = только позиции БЕЗ активной поставки» (модель якорь+поставки):
   // позиция, попавшая в план («Сформировать план» / ручная вставка), из формирования

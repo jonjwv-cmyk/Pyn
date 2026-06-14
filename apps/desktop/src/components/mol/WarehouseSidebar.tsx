@@ -18,7 +18,12 @@ import { cn } from '@/lib/cn';
 import { formatWorkPhone, splitAndFormatWorkPhones } from '@/lib/mol-format';
 import { clusterLabel, monthLabel, weekdayShortLabel } from '@/lib/i18n-labels';
 import { computeRowDates } from '@/lib/schedule/compute';
-import { currentThreeMonths, monthKey, useScheduleMonthsMeta } from '@/lib/schedule/use-schedule-sync';
+import {
+  canUseLiveWarehouseScheduleForMonth,
+  currentThreeMonths,
+  monthKey,
+  useScheduleMonthsMeta,
+} from '@/lib/schedule/use-schedule-sync';
 import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
 import { LockedEditorContent } from '@/components/schedule/EditorLockedOverlay';
 import { useWarehousesStore } from '@/lib/warehouses-store';
@@ -247,12 +252,19 @@ function ScheduleMonthsBlock({
         const meta = metaMap.get(monthKey(m.year, m.month));
         // Если в (зафиксированном) месяце день недели склада отличался от текущего —
         // берём исторический из снапшота и подписываем его рядом с днями.
-        const monthWeekday = (meta && frozenWeekday(meta.shops, warehouse.id)) || weekday;
+        const frozen = meta ? frozenWeekday(meta.shops, warehouse.id) : null;
+        const monthWeekday = meta?.shops.length
+          ? frozen
+          : canUseLiveWarehouseScheduleForMonth(m.year, m.month)
+            ? weekday
+            : null;
         const weekdayChanged = monthWeekday !== weekday;
         // «Сформирован» = снапшот на сервере есть И выбраны нерабочие дни месяца
         // (holidays — дни «не возим»). Пустой holidays → график не сформирован.
         const days = meta && meta.exists && meta.holidays.length > 0
-          ? computeRowDates(m.year, m.month, monthWeekday, [{ code: warehouse.id }], meta.holidays, meta.overrides)
+          ? monthWeekday
+            ? computeRowDates(m.year, m.month, monthWeekday, [{ code: warehouse.id }], meta.holidays, meta.overrides)
+            : []
           : null;
         return (
           <div key={`${m.year}-${m.month}`} className="flex items-baseline gap-2">
@@ -267,7 +279,7 @@ function ScheduleMonthsBlock({
               <span className="text-[11px] text-text-muted/70">—</span>
             ) : (
               <div className="flex flex-1 flex-wrap items-center gap-1">
-                {weekdayChanged && (
+                {weekdayChanged && monthWeekday && (
                   <span className="flex h-5 items-center rounded-md bg-accent-clay/15 px-1.5 text-[9.5px] font-semibold uppercase tracking-wide text-accent-clay">
                     {weekdayShortLabel(monthWeekday, t)}
                   </span>

@@ -697,6 +697,18 @@ export function currentThreeMonths(): { year: number; month: number }[] {
 }
 
 /**
+ * Можно ли использовать ЖИВОЙ `delivery_day` склада, если в слепке месяца склад
+ * не найден. Правило бизнеса (2026-06-14): изменения текущего графика действуют
+ * на текущий и будущие месяцы, но НИКОГДА не дорисовывают прошлые месяцы.
+ */
+export function canUseLiveWarehouseScheduleForMonth(year: number, month: number): boolean {
+  const now = new Date();
+  const curYear = now.getFullYear();
+  const curMonth = now.getMonth() + 1;
+  return year > curYear || (year === curYear && month >= curMonth);
+}
+
+/**
  * Прогреть monthCache метой prev/current/next месяцев, чтобы карточки склада в
  * Базе показывали дни графика СРАЗУ (без async pop-in). Fire-and-forget; звать
  * после login (рядом с initWarehouses). Dedup/cache — внутри loadMonthEntry.

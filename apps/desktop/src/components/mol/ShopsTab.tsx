@@ -35,6 +35,7 @@ import {
 import { clusterLabel, monthLabel, weekdayShortLabel } from '@/lib/i18n-labels';
 import { computeRowDates } from '@/lib/schedule/compute';
 import {
+  canUseLiveWarehouseScheduleForMonth,
   currentThreeMonths,
   monthKey,
   useScheduleMonthsMeta,
@@ -1052,18 +1053,25 @@ function ScheduleRows({
     <div className="flex flex-col gap-1">
       {months.map((m) => {
         const meta = metaMap.get(monthKey(m.year, m.month));
-        const monthWeekday = (meta && frozenWeekday(meta.shops, warehouse.id)) || weekday;
+        const frozen = meta ? frozenWeekday(meta.shops, warehouse.id) : null;
+        const monthWeekday = meta?.shops.length
+          ? frozen
+          : canUseLiveWarehouseScheduleForMonth(m.year, m.month)
+            ? weekday
+            : null;
         const weekdayChanged = monthWeekday !== weekday;
         const days =
           meta && meta.exists && meta.holidays.length > 0
-            ? computeRowDates(m.year, m.month, monthWeekday, [{ code: warehouse.id }], meta.holidays, meta.overrides)
+            ? monthWeekday
+              ? computeRowDates(m.year, m.month, monthWeekday, [{ code: warehouse.id }], meta.holidays, meta.overrides)
+              : []
             : null;
         return (
           <div key={`${m.year}-${m.month}`} className="flex items-baseline gap-2">
             <span className="w-[52px] shrink-0 whitespace-nowrap text-[10.5px] font-medium capitalize text-text-muted">
               {monthLabel(m.month, t)}
             </span>
-            {weekdayChanged && (
+            {weekdayChanged && monthWeekday && (
               <span className="rounded bg-accent-clay/15 px-1 text-[9px] font-semibold uppercase tracking-wide text-accent-clay">
                 {weekdayShortLabel(monthWeekday, t)}
               </span>

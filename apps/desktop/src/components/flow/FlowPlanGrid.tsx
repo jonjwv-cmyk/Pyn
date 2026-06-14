@@ -47,7 +47,11 @@ import { usePersonsStore } from '@/lib/persons-store';
 import { initPersons, savePerson } from '@/lib/persons-repo';
 import { useVghStore, normVghKey } from '@/lib/vgh-store';
 import { ensureVghLoaded } from '@/lib/vgh-repo';
-import { useScheduleMonthsMeta, monthKey } from '@/lib/schedule/use-schedule-sync';
+import {
+  canUseLiveWarehouseScheduleForMonth,
+  useScheduleMonthsMeta,
+  monthKey,
+} from '@/lib/schedule/use-schedule-sync';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import { fmtNum3, MONTH_ABBR_RU, parseMol, compactFio } from './flow-sandbox.fixtures';
@@ -796,7 +800,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           let day: string | null = null;
           if (meta?.shops.length) {
             day = frozenWeekdayOf(meta.shops, r.to_wh);
-          } else if (!meta || meta.exists !== false) {
+          } else if (m && canUseLiveWarehouseScheduleForMonth(m.year, m.month) && (!meta || meta.exists !== false)) {
             day = wh && Number(wh.in_schedule) === 1 ? wh.delivery_day : null;
           }
           if (!day) return 'Нет';
