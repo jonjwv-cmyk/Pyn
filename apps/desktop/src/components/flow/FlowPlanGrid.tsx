@@ -81,9 +81,9 @@ interface PlanColSpec {
 const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'date', title: 'ДАТА', width: 78 },
   { id: 'fix', title: 'ФИКС', width: 60 },
-  { id: 'dlv', title: 'ПОСТАВКА', width: 112 },
+  // ПОСТАВКА·ЗАКАЗ — одна ячейка в 2 строки (П9): сверху поставка|П/П, снизу заказ|П/З.
+  { id: 'dlvord', title: 'ПОСТАВКА · ЗАКАЗ', width: 132 },
   { id: 'trz', title: 'ТЗ', width: 86, editable: true },
-  { id: 'order', title: 'ЗАКАЗ', width: 112 },
   { id: 'fr', title: 'FR', width: 52 },
   { id: 'to', title: 'СП', width: 52 },
   { id: 'clst', title: 'CLST', width: 86 },
@@ -107,8 +107,7 @@ const PLAN_COLS: readonly PlanColSpec[] = [
 const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'date', title: 'ДАТА', width: 78 },
   { id: 'fix', title: 'ФИКС', width: 60 },
-  { id: 'dlv', title: 'ПОСТАВКА', width: 112 },
-  { id: 'order', title: 'ЗАКАЗ', width: 112 },
+  { id: 'dlvord', title: 'ПОСТАВКА · ЗАКАЗ', width: 132 },
   { id: 'fr', title: 'FR', width: 52 },
   { id: 'to', title: 'СП', width: 52 },
   { id: 'pr', title: 'СКЛАД ДО', width: 72 },
@@ -203,6 +202,14 @@ function personKey(fio: string): string {
   return fio.trim().toUpperCase().split(/\s+/).filter(Boolean).slice(0, 2).join(' ');
 }
 
+/** Ключ «Фамилия + первая буква имени» — для матча сокращённых имён отчёта («Черепанов Д.»)
+ *  к полному ФИО роли («Черепанов Дмитрий …»). Опускаем точки/отчество. '' — нет второго слова. */
+function surnameInitialKey(fio: string): string {
+  const parts = fio.trim().toUpperCase().replace(/\./g, ' ').split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return '';
+  return `${parts[0]} ${(parts[1] ?? '').slice(0, 1)}`;
+}
+
 function splitMultiCell(raw: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -283,6 +290,43 @@ function parseQty(raw: string): number | null {
   if (!s) return null;
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
+}
+
+// ── Авто-ширина + перенос по словам (П6, как в Формировании/Транспорте) ───────────
+const GRID_FONT_FAMILY =
+  '"Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+const MEASURE_CTX = document.createElement('canvas').getContext('2d');
+const REPORT_FONT_PX = 10; // baseFontStyle грида
+const REPORT_HPAD = 8; // горизонтальный padding ячейки (с запасом)
+const PHONE_SAMPLE = '8 982 664 2800'; // эталон ширины телефона под ФИО
+/** Колонки с мягким переносом по словам (растут в высоту, ширина клампится). */
+const WRAP_COLS = new Set(['mat', 'note']);
+/** Колонки 2-строчные по природе (поставка/заказ, МОЛ+тел, экспедиторы+тел). */
+function measurePx(s: string, font: string): number {
+  if (!MEASURE_CTX) return s.length * 6;
+  MEASURE_CTX.font = font;
+  return MEASURE_CTX.measureText(s).width;
+}
+/** Сколько визуальных строк займёт text при мягком переносе по словам в ширине maxW. */
+function reportWrapLines(text: string, maxW: number): number {
+  if (!text) return 1;
+  if (!MEASURE_CTX || maxW <= 0) return text.includes('\n') ? text.split('\n').length : 1;
+  MEASURE_CTX.font = `${REPORT_FONT_PX}px ${GRID_FONT_FAMILY}`;
+  let total = 0;
+  for (const para of text.split('\n')) {
+    if (para === '') { total += 1; continue; }
+    let line = '';
+    let lines = 1;
+    for (const tok of para.split(/(\s+)/)) {
+      const test = line + tok;
+      if (MEASURE_CTX.measureText(test).width > maxW && line.trim() !== '') {
+        lines += 1;
+        line = tok.replace(/^\s+/, '');
+      } else line = test;
+    }
+    total += lines;
+  }
+  return Math.max(1, total);
 }
 
 // Кэш на сессию: мгновенный повторный вход (как у формирования), потом refetch.
@@ -434,10 +478,13 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       }
     });
   }, [persons, vehicles]);
-  const { expeditorOptions, expeditorByKey } = useMemo(() => {
+  const { expeditorOptions, expeditorByKey, expeditorByInitial } = useMemo(() => {
     const COLOR = { ok: '#3FB950', error: '#F85149', neutral: '#9AA0A6' } as const;
     const options: FlowDriverOption[] = [];
     const byKey = new Map<string, FlowDriverOption>();
+    // Индекс «Фамилия + инициал» — матч сокращённых имён отчёта («Черепанов Д.») к роли.
+    // Неоднозначные (две роли с одинаковым ключом) помечаем null → не подставляем вслепую.
+    const byInitial = new Map<string, FlowDriverOption | null>();
     for (const p of persons) {
       // Роль потока = единственный квалификатор экспедитора (юзер 2026-06-14: «роль назначена,
       // но не тянет» — раньше отсекались НЕ-МОЛ экспедиторы; МОЛ для экспедитора не обязателен).
@@ -459,6 +506,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       if (!k || byKey.has(k)) continue;
       byKey.set(k, opt);
       options.push(opt);
+      const ik = surnameInitialKey(p.fio);
+      if (ik) byInitial.set(ik, byInitial.has(ik) ? null : opt); // дубль ключа → null (неоднозначно)
     }
     const roleRank = (o: FlowDriverOption): number => (o.roleGroup === 'Экспедиторы' ? 0 : 1);
     options.sort((a, b) => {
@@ -466,8 +515,23 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const rb = roleRank(b);
       return ra !== rb ? ra - rb : a.fio.localeCompare(b.fio, 'ru');
     });
-    return { expeditorOptions: options, expeditorByKey: byKey };
+    return { expeditorOptions: options, expeditorByKey: byKey, expeditorByInitial: byInitial };
   }, [persons]);
+  /** Сопоставить имя экспедитора (полное ИЛИ сокращённое «Фамилия И.») с ролью-человеком. */
+  const resolveExpeditorOpt = useCallback(
+    (name: string): FlowDriverOption | undefined => {
+      const exact = expeditorByKey.get(personKey(name));
+      if (exact) return exact;
+      const byIni = expeditorByInitial.get(surnameInitialKey(name));
+      return byIni ?? undefined; // null (неоднозначно) → не подставляем
+    },
+    [expeditorByKey, expeditorByInitial],
+  );
+  /** Имя для показа: если сокращённое имя резолвится в роль — полное ФИО, иначе как есть. */
+  const expeditorDisplayName = useCallback(
+    (name: string): string => resolveExpeditorOpt(name)?.fio ?? name,
+    [resolveExpeditorOpt],
+  );
   const expeditorsForWh = useCallback(
     (_wh: string): readonly FlowDriverOption[] => expeditorOptions,
     [expeditorOptions],
@@ -702,10 +766,16 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return statusValue(r);
         case 'dlv':
           return (r.dlv || '').trim() ? `${r.dlv}${(r.dlv_pos || '').trim() ? `|${r.dlv_pos}` : ''}` : 'черновик';
-        case 'trz':
-          return r.trz || '';
         case 'order':
           return `${r.ord}${r.it ? `|${r.it}` : ''}`;
+        case 'dlvord': {
+          // П9: одна ячейка в 2 строки — сверху поставка|П/П, снизу заказ|П/З.
+          const dlv = (r.dlv || '').trim() ? `${r.dlv}${(r.dlv_pos || '').trim() ? `|${r.dlv_pos}` : ''}` : 'черновик';
+          const ord = `${r.ord}${r.it ? `|${r.it}` : ''}`;
+          return `${dlv}\n${ord}`;
+        }
+        case 'trz':
+          return r.trz || '';
         case 'fr':
           return r.fr || '';
         case 'to':
@@ -742,7 +812,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return '—';
         }
         case 'exp':
-          return deliveryExpeditors(r).join('\n');
+          // Сокращённые имена отчёта («Черепанов Д.») резолвим в полное ФИО роли (П6/П5).
+          return deliveryExpeditors(r).map(expeditorDisplayName).join('\n');
         case 'vehicleType': {
           const ids = splitMultiCell(r.ride_id || '');
           if (ids.length > 0) {
@@ -760,7 +831,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return '';
       }
     },
-    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage],
+    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName],
   );
 
   // ── Поиск как в Формировании (подсветка/перелёт, не фильтр) ───────────────────
@@ -774,7 +845,9 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   const searchRaw = useCallback(
     (r: FlowDeliveryRow, colId: string): string => {
       const spec = specById.get(colId);
-      return spec ? cellText(spec, r) : '';
+      // Многострочные ячейки (ПОСТАВКА·ЗАКАЗ, экспедиторы) → одной строкой для фильтра/поиска,
+      // чтобы чек-лист колонки и поиск в меню работали по поставке И заказу (П9, интерим).
+      return spec ? cellText(spec, r).replace(/\n/g, ' · ') : '';
     },
     [specById, cellText],
   );
@@ -806,18 +879,66 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   );
 
   // hasMenu → ▾ меню колонки (фильтр/сорт). Активный фильтр — лёгкая clay-подложка.
+  // Авто-ширина по содержимому (П6, как в Формировании): мерим уникальные значения
+  // колонки в пикселях шрифтом грида; МОЛ/экспедитор резервируют ширину телефона (он под
+  // ФИО). Колонки с переносом (МАТЕРИАЛ/КОММЕНТАРИЙ) клампим, чтобы текст переносился, а не
+  // раздувал колонку. Пересчёт при изменении видимых строк.
+  const colWidths = useMemo<Record<string, number>>(() => {
+    const out: Record<string, number> = {};
+    const valFont = `${REPORT_FONT_PX}px ${GRID_FONT_FAMILY}`;
+    const hdrFont = `600 ${REPORT_FONT_PX}px ${GRID_FONT_FAMILY}`;
+    const phoneW = measurePx(PHONE_SAMPLE, `600 9px ${GRID_FONT_FAMILY}`);
+    for (const c of COLS) {
+      let px = measurePx(c.title, hdrFont) + 22; // заголовок + место под ▾
+      const withPhone = c.id === 'mol' || c.id === 'exp';
+      const seen = new Set<string>();
+      for (let i = 0; i < viewRows.length && seen.size < 500; i += 1) {
+        const r = viewRows[i];
+        if (!r) continue;
+        for (const line of cellText(c, r).split('\n')) if (line) seen.add(line);
+      }
+      for (const s of seen) px = Math.max(px, measurePx(s, valFont) + REPORT_HPAD * 2 + 4);
+      if (withPhone) px = Math.max(px, phoneW + REPORT_HPAD * 2 + 6);
+      const max = WRAP_COLS.has(c.id) ? 300 : 460;
+      out[c.id] = Math.round(Math.max(40, Math.min(max, px)));
+    }
+    return out;
+  }, [COLS, viewRows, cellText]);
+
   const columns = useMemo<GridColumn[]>(
     () =>
       COLS.map((c) => ({
         id: c.id,
         title: c.title,
-        width: c.width,
+        width: colWidths[c.id] ?? c.width,
         hasMenu: true,
         ...(colFilters.activeFilterColIds.has(c.id)
           ? { themeOverride: { bgHeader: '#F4E6DE', bgHeaderHovered: '#EFD9CE' } }
           : {}),
       })),
-    [COLS, colFilters.activeFilterColIds],
+    [COLS, colWidths, colFilters.activeFilterColIds],
+  );
+
+  // Переменная высота строки (П6): 2 строки для ПОСТАВКА·ЗАКАЗ / МОЛ+тел; перенос по словам
+  // в МАТЕРИАЛ/КОММЕНТАРИЙ растит строку; несколько экспедиторов — строка под каждого.
+  const getReportRowHeight = useCallback(
+    (row: number): number => {
+      const r = viewRows[row];
+      if (!r) return 40;
+      const LINE = 13;
+      const matLines = reportWrapLines(r.mat || '', (colWidths.mat ?? 280) - REPORT_HPAD * 2);
+      const noteText = Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchorByKey.get(`${r.ord}|${r.it}`)?.note || '');
+      const noteLines = reportWrapLines(noteText, (colWidths.note ?? 230) - REPORT_HPAD * 2);
+      const expN = deliveryExpeditors(r).length;
+      const cands = [
+        40, // база: 2 строки (поставка·заказ / МОЛ+тел)
+        16 + (matLines - 1) * LINE,
+        16 + (noteLines - 1) * LINE,
+        expN > 1 ? expN * 18 + 4 : 30,
+      ];
+      return Math.max(36, Math.min(160, Math.max(...cands)));
+    },
+    [viewRows, colWidths, anchorByKey],
   );
 
   const gridSearch = useFlowGridSearch<FlowDeliveryRow>({
@@ -879,11 +1000,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         return cell;
       }
       if (spec.id === 'exp') {
-        const names = deliveryExpeditors(r);
-        const firstKey = names[0] ? personKey(names[0]) : '';
-        const selected = firstKey ? expeditorsForWh(r.to_wh).find((o) => personKey(o.fio) === firstKey) : undefined;
-        const resolved = firstKey ? expeditorByKey.get(firstKey) : undefined;
-        const opt = selected ?? resolved;
+        // Резолвим сокращённые имена отчёта в полное ФИО роли — тогда ячейка-водитель находит
+        // опцию по ФИО и рисует телефон под ФИО (П5/П6). Неоднозначные остаются как есть.
+        const names = deliveryExpeditors(r).map(expeditorDisplayName);
+        const opt = names[0] ? resolveExpeditorOpt(names[0]) : undefined;
         const editable = !!spec.editable && !locked;
         const cell: FlowDriverCell = {
           kind: GridCellKind.Custom,
@@ -894,7 +1014,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             driver: names.join('\n'),
             phone: opt?.phone ?? '',
             phoneDisplay: opt?.phoneDisplay ?? '',
-            color: selected?.color ?? resolved?.color ?? '#9AA0A6',
+            color: opt?.color ?? '#9AA0A6',
             isMol: !!opt?.isMol,
             until: opt?.until ?? '',
             drivers: expeditorsForWh(r.to_wh),
@@ -926,16 +1046,19 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       }
       const text = cellText(spec, r);
       const editable = !!spec.editable && !locked;
+      // Перенос по словам (П6) — МАТЕРИАЛ/КОММЕНТАРИЙ; ПОСТАВКА·ЗАКАЗ — 2 строки через \n.
+      const wrap = WRAP_COLS.has(spec.id) || spec.id === 'dlvord';
       return {
         kind: GridCellKind.Text,
         data: spec.id === 'qty' ? (r.qty == null ? '' : String(r.qty).replace('.', ',')) : text,
         displayData: text,
         allowOverlay: editable,
         readonly: !editable,
+        allowWrapping: wrap,
         contentAlign: spec.id === 'qty' || spec.id === 'kg' || spec.id === 'v' ? 'right' : 'left',
       };
     },
-    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, expeditorsForWh, expeditorByKey, vehicleOptions, canEditMol],
+    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol],
   );
 
   /** Применить серверные строки поставок (ответ правки/конфликта). */
@@ -1709,7 +1832,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             rowSelect="multi"
             columnSelect="none"
             rangeSelect="multi-rect"
-            rowHeight={44}
+            rowHeight={getReportRowHeight}
             headerHeight={24}
             highlightRegions={gridSearch.highlightRegions}
             onVisibleRegionChanged={gridSearch.onVisibleRegionChanged}
