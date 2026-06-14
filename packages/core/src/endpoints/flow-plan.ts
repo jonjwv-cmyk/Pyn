@@ -109,6 +109,26 @@ export async function flowDeliveriesDelete(client: ApiClient, ids: number[]): Pr
   return Array.isArray(wire.deleted) ? wire.deleted : [];
 }
 
+/**
+ * Перенос поставок «на другой день» (ТЗ §5.4/§12). ДО фиксации — двигаем plan_date;
+ * ПОСЛЕ фиксации — старую помечаем «перенос на другой день» (серый), копию-черновик
+ * кладём в новый день. Дата — только сегодня/будущее (`date_in_past`).
+ */
+export async function flowTransfer(
+  client: ApiClient,
+  ids: number[],
+  toDate: string,
+): Promise<{ transferred: number; rows: FlowDeliveryRow[] }> {
+  const wire = await client.call<{ transferred?: number; rows?: FlowDeliveryRow[] }>('flow_transfer', {
+    ids,
+    to_date: toDate,
+  });
+  return {
+    transferred: Number(wire.transferred) || 0,
+    rows: Array.isArray(wire.rows) ? wire.rows : [],
+  };
+}
+
 /** Итог «Сформировать план» на день. */
 export interface FlowPlanFormResult {
   date: string;

@@ -32,11 +32,17 @@ export function FlowDayPicker({
   rows,
   selected,
   onSelect,
+  placeholder = 'Все дни',
+  title = 'Календарь — выбрать день плана/отчёта',
+  allowClear = true,
 }: {
   mode: 'plan' | 'report';
   rows: readonly FlowDeliveryRow[];
   selected: string | null;
   onSelect: (iso: string | null) => void;
+  placeholder?: string;
+  title?: string;
+  allowClear?: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -88,14 +94,14 @@ export function FlowDayPicker({
 
   const label = selected
     ? `${parseInt(selected.slice(8, 10), 10)} ${MONTH_ABBR_RU[parseInt(selected.slice(5, 7), 10) - 1] ?? ''}`
-    : 'Все дни';
+    : placeholder;
 
   return (
     <div ref={ref} className="relative flex items-center">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        title="Календарь — выбрать день плана/отчёта"
+        title={title}
         className={`flex h-6 items-center gap-1 rounded-md border px-1.5 text-[12px] transition-colors ${
           selected
             ? 'border-accent-clay/70 text-[#0A0A0A]'
@@ -105,7 +111,7 @@ export function FlowDayPicker({
         <CalendarDays size={13} strokeWidth={1.75} />
         {label}
       </button>
-      {selected && (
+      {selected && allowClear && (
         <button
           type="button"
           onClick={() => onSelect(null)}

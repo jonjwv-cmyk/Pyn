@@ -26,6 +26,7 @@ import {
   flowDeliveriesGet,
   flowDeliveriesEdit,
   flowDeliveriesDelete,
+  flowTransfer,
   flowWorkflowGet,
   flowWorkflowEdit,
   type FlowDeliveryRow,
@@ -773,6 +774,31 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     void flowDeliveriesDelete(api, ids).catch(() => undefined);
   }, [selection, viewRows]);
 
+  const transferSelected = useCallback(
+    (toDate: string | null) => {
+      if (!toDate) return;
+      const ids: number[] = [];
+      for (const idx of selection.rows) {
+        const r = viewRows[idx];
+        if (r) ids.push(r.id);
+      }
+      if (ids.length === 0) return;
+      setMsg('');
+      void flowTransfer(api, ids, toDate)
+        .then((res) => {
+          applyServerDlv(res.rows);
+          setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
+          setSelectedDay(toDate);
+          setMsg(`Перенесено строк: ${res.transferred}`);
+        })
+        .catch((e) => {
+          const text = e instanceof Error ? e.message : String(e);
+          setMsg(`Не удалось перенести: ${text.slice(0, 90)}`);
+        });
+    },
+    [selection, viewRows, applyServerDlv],
+  );
+
   // Размер контейнера для DataEditor.
   const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
@@ -884,6 +910,15 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         {selectedCount > 0 && mode === 'report' && (
           <div className="ml-auto flex items-center gap-2">
             <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
+            <FlowDayPicker
+              mode={mode}
+              rows={rows}
+              selected={null}
+              onSelect={transferSelected}
+              placeholder="Перенести…"
+              title="Перенести выбранное на другой день"
+              allowClear={false}
+            />
             <button
               type="button"
               onClick={() => massMark('выполнено', '')}
@@ -916,6 +951,15 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         {selectedCount > 0 && mode === 'plan' && (
           <div className="ml-auto flex items-center gap-2">
             <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
+            <FlowDayPicker
+              mode={mode}
+              rows={rows}
+              selected={null}
+              onSelect={transferSelected}
+              placeholder="Перенести…"
+              title="Перенести выбранное на другой день"
+              allowClear={false}
+            />
             <button
               type="button"
               onClick={deleteSelected}
