@@ -271,9 +271,14 @@ export {
   flowTransfer,
   flowPlanForm,
   flowPlanFix,
+  flowDeliveryEventsGet,
+  flowDeliveryAdd,
+  flowSedReconcile,
   type FlowDeliveryRow,
   type FlowDeliveryEdit,
   type FlowPlanFormResult,
+  type FlowDeliveryEvent,
+  type FlowDeliveryAddInput,
 } from './flow-plan';
 
 export {

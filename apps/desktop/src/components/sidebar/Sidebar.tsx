@@ -6,6 +6,7 @@ import {
   NAV_VGH,
   NAV_TRANSPORT,
   NAV_LOG,
+  NAV_BROADCAST,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
 } from '@/lib/nav-sections';
@@ -61,6 +62,8 @@ interface SidebarProps {
   showVgh: boolean;
   /** Показывать ли раздел «LOG» (журнал выгрузок) — тот же admin/developer-контур. */
   showLog: boolean;
+  /** Показывать ли раздел «Рассылка» — тот же admin/developer-контур. */
+  showBroadcast: boolean;
   onToggleCollapsed: () => void;
   onAiClick: () => void;
   onSectionClick: (id: NavSectionId) => void;
@@ -130,6 +133,7 @@ export function Sidebar({
   showFlow,
   showVgh,
   showLog,
+  showBroadcast,
   onToggleCollapsed,
   onAiClick,
   onSectionClick,
@@ -298,35 +302,33 @@ export function Sidebar({
 
       <div className="h-2 shrink-0" />
 
-      <nav className="flex flex-col gap-0.5 px-1.5">
-        {/* Порядок по ЧАСТОТЕ работы (юзер 2026-06-07): ежедневный «Поток»-контур наверху,
-            ежемесячное/архивное — ниже. Поток → ВГХ → База → ЛОГ → График → Google-таблицы
-            (ОТИФ/Workflow) → Хранилище. Заголовков нет — основное не подписываем (Linear). */}
-
-        {/* §scripts — 4 кнопки прогонов прямо в сайдбаре (OBD/zm_vl/СЭД/МОЛы),
+      {/* Список разделов ПРОКРУЧИВАЕТСЯ (юзер 2026-06-12): если всё не влезло по высоте —
+          скролл внутри nav, верх (профиль/пиллы) остаётся на месте.
+          ⚠️ Скролл-контейнер — АБСОЛЮТНЫЙ внутри relative-обёртки flex-1: чистый
+          `overflow-y-auto` на flex-1 не пересчитывал скролл при ресайзе окна (появлялся
+          только после ре-рендера/навигации). Absolute inset-0 надёжно реагирует на
+          изменение высоты родителя. */}
+      <div className="relative min-h-0 flex-1">
+      <nav className="absolute inset-0 flex flex-col gap-0.5 overflow-y-auto px-1.5">
+        {/* §scripts — 6 кнопок прогонов (Контакты/OBD/zm_vl/СЭД/МОЛы/OTIF5):
             свечение при работе + аватар запустившего. Не отдельный экран (юзер 2026-06-11). */}
         {showFlow && <FlowScriptButtons collapsed={collapsed} />}
 
-        {/* Секция «Работа» (юзер 2026-06-11): рабочие разделы под заголовком;
-            при свёрнутом сайдбаре — тонкая линия-разделитель. */}
-        {showFlow && (collapsed ? (
-          <div className="mx-2 my-1 h-px bg-border-subtle/60" />
-        ) : (
-          <div className="px-2 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wider text-text-muted/50">
-            Работа
-          </div>
-        ))}
+        {/* Секция «Работа». Порядок пунктов (юзер 2026-06-12):
+            Поток · Рассылка · Транспорт · База · График · ВГХ · ЛОГ · ОТИФ(серым) · Хранилище.
+            Общий NavGroupHeader — линия-разделитель совпадает с нижней группой «Лента». */}
+        {showFlow && <NavGroupHeader label="Работа" collapsed={collapsed} />}
 
-        {/* §flow-β — «Поток» (собственный табличный реестр, миграция с Google Sheets):
-            каждый день формируем план/отчёт — главный раздел. admin/developer-only. */}
+        {/* 1. «Поток» — главный дневной раздел (план/отчёт). */}
         {showFlow && renderNavItem(NAV_FLOW)}
 
-        {/* §vgh — «ВГХ» (вес/габариты): прямая связь с «Потоком», работаем часто. */}
-        {showVgh && renderNavItem(NAV_VGH)}
+        {/* 2. «Рассылка». */}
+        {showBroadcast && renderNavItem(NAV_BROADCAST)}
+
+        {/* 3. «Транспорт». */}
         {showVgh && renderNavItem(NAV_TRANSPORT)}
 
-        {/* «База» (Контакты/МОЛы / Склады) — частые проверки в течение дня + при «Потоке».
-            Пункт с hover-флайаутом листов; выбор листа → setBaseTab + переход. */}
+        {/* 4. «База» (Контакты/МОЛы / Склады) — hover-флайаут листов; выбор листа → переход. */}
         <BaseNavRow
           collapsed={collapsed}
           active={activeSection === 'mol'}
@@ -337,14 +339,16 @@ export function Sidebar({
           }}
         />
 
-        {/* §log — «LOG» (журнал прогонов выгрузки): глянуть по ходу дня. admin-контур. */}
-        {showLog && renderNavItem(NAV_LOG)}
-
-        {/* «График» — реже, на месяц (если вопросы). */}
+        {/* 5. «График». */}
         {navSchedule && renderNavItem(navSchedule)}
 
-        {/* Google-таблицы: ОТИФ5 (закрытие месяца) — сверху, Workflow (почти не используется,
-            скоро уберём) — ниже (сортировка внутри TableNavItems). Hover-flyout со вкладками. */}
+        {/* 6. «ВГХ» (вес/габариты). */}
+        {showVgh && renderNavItem(NAV_VGH)}
+
+        {/* 7. «LOG» (журнал прогонов выгрузки). */}
+        {showLog && renderNavItem(NAV_LOG)}
+
+        {/* 8. Google-таблицы: ОТИФ5 + Workflow — оба приглушённые «серым» (уходящие/легаси). */}
         <TableNavItems
           collapsed={collapsed}
           activeSection={activeSection}
@@ -361,10 +365,7 @@ export function Sidebar({
         <NavGroupHeader label={t('sidebar.group_feed')} collapsed={collapsed} />
         {NAV_FEED.map((s) => renderNavItem(s, true))}
       </nav>
-
-      {/* Flex spacer — низ остаётся пустым: профиль + статус-пиллы перенесены
-          наверх (под сворачивание), по запросу 2026-05-29. */}
-      <div className="flex-1" />
+      </div>
     </aside>
   );
 }

@@ -10,9 +10,12 @@ import { ChatConversation, ChatList } from '@/components/chats';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { FlowScreen } from '@/components/flow';
 import { LogScreen } from '@/components/flow/LogScreen';
+import { BroadcastScreen } from '@/components/broadcast/BroadcastScreen';
 import { VghScreen } from '@/components/vgh';
 import { TransportScreen } from '@/components/flow/TransportScreen';
 import { MolScreen } from '@/components/mol';
+import { PersonEditDialog } from '@/components/mol/PersonEditDialog';
+import { distinctStatuses } from '@/lib/persons-view';
 import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
 import { initPersons, refreshPersonsFromServer } from '@/lib/persons-repo';
 import { usePersonsStore } from '@/lib/persons-store';
@@ -206,6 +209,57 @@ export function App() {
   const activeChatId = useUiStateStore((s) => s.activeChatId);
   const setActiveChatId = useUiStateStore((s) => s.setActiveChatId);
 
+  // §fix-gray — persons + статусы для PersonEditDialog. ОБЯЗАТЕЛЬНО здесь, наверху:
+  // это хуки, и если их вызвать ниже ранних return (hydrating / !session), порядок
+  // хуков скачет между рендерами → «Rendered more hooks than during the previous
+  // render» → краш всего дерева → серое окно.
+  const persons = usePersonsStore((s) => s.persons);
+  const personEditStatuses = useMemo(() => distinctStatuses(persons), [persons]);
+
+  // Always have a displayable section. If the persisted one is unknown/bad (common after
+  // dev restarts or nav changes), fall back to 'mol' (База/Контакты) so the content area
+  // is never pure gray bg.
+  const displaySection = (
+    activeSection === 'proba' ||
+    activeSection === 'mol' ||
+    activeSection === 'vault' ||
+    activeSection === 'flow' ||
+    activeSection === 'vgh' ||
+    activeSection === 'transport' ||
+    activeSection === 'log' ||
+    activeSection === 'broadcast' ||
+    activeSection === 'news' ||
+    activeSection === 'chats' ||
+    activeSection.startsWith('sheet:')
+  ) ? activeSection : 'mol';
+
+  // If we had to fall back, also fix the persisted value so next start is good.
+  if (displaySection !== activeSection) {
+    // do it async to not block render
+    Promise.resolve().then(() => setActiveSection(displaySection));
+  }
+
+  // Safety: если persisted activeSection не соответствует ни одному из рендерящихся
+  // экранов (старое значение, или новый раздел без fallback'а) — форсим безопасный.
+  // Иначе контентная область остаётся пустой и видно только bg-bg-deep (серое окно).
+  useEffect(() => {
+    if (!session) return;
+    const known = new Set(['proba', 'mol', 'vault', 'flow', 'vgh', 'transport', 'log', 'broadcast', 'news', 'chats']);
+    const isSheet = activeSection.startsWith('sheet:');
+    if (!known.has(activeSection) && !isSheet) {
+      // mol — текущая работа (Контакты / диалог с Согласующими)
+      setActiveSection('mol');
+    }
+  }, [session, activeSection]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Extra safety for the current run: if we are logged in but the rendered section
+  // would be empty (bad persisted value), force 'mol' on the store so the panel becomes visible.
+  // This runs after every render when session exists.
+  if (session && displaySection !== activeSection) {
+    // schedule to avoid set during render
+    setTimeout(() => setActiveSection(displaySection), 0);
+  }
+
   // §шрифт — применяем выбранный шрифт глобально через CSS-переменную --app-font.
   // appFont персистится в ui-state-store; на старте = persisted (или 'inter'),
   // после hydration селектор обновится → эффект переставит переменную.
@@ -267,7 +321,11 @@ export function App() {
   useInitI18n();
 
   useAuthFailureHandler(
-    useCallback(() => {
+    useCallback((code: string) => {
+      if (code === 'session_expired_window') {
+        window.pyn?.debugLog?.('auth-failure', 'session_expired_window — ignoring wipe to keep main UI visible (dev restarts often hit this)');
+        return;
+      }
       void (async () => {
         await wipeUserData();
         setSession(null);
@@ -303,6 +361,12 @@ export function App() {
       setSession(restored);
       setHydrating(false);
 
+      // §fix-gray-on-restart — dev restart = новая Electron window → сервер отдаёт 401 "session_expired_window" на /me.
+      // persisted activeSection часто остаётся "мусорным" (старое nav-значение) → все панели display:none, видно только bg (серое окно).
+      // Форсим известный 'mol' (База / персоны + диалог Согласующие + склады) сразу после restore,
+      // чтобы первый рендер main layout имел видимый контент. Остальные сафегарды (displaySection, useEffect, fallback) тоже работают.
+      setActiveSection('mol');
+
       // Фоновая me() validation. Auth-failure → wipe всё.
       // Обогащение session avatar blob params'ами вынесено в отдельный
       // effect ниже (срабатывает и для restore, и для свежего login).
@@ -311,11 +375,14 @@ export function App() {
         debug('me() ok — session valid');
       } catch (err) {
         if (cancelled) return;
-        if (err instanceof ApiError && isAuthFailure(err.code)) {
+        if (err instanceof ApiError && isAuthFailure(err.code) && err.code !== 'session_expired_window') {
           debug(`token invalid (${err.code}), clearing store + cache`);
           await wipeUserData();
           setSession(null);
           setActiveChatId(null);
+        } else if (err instanceof ApiError && err.code === 'session_expired_window') {
+          debug('session_expired_window — keeping local session for UI (dev restart often triggers this)');
+          // keep the restored session so the main UI renders; the "window" policy will be re-enforced on next real server call
         } else {
           debug(`me() failed but keeping cached session: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -909,8 +976,55 @@ export function App() {
   // для android-блока тут не показываем — это второй платформа).
   const desktopLock = useAppLockStore((s) => s.desktop);
 
+  // Dev-only escape hatches so you can un-gray the window from console or button
+  // even if the normal hydrate path gets stuck on the bg-bg-surface gray screen.
+  // We use a fresh object assigned to window.__pyn_dev because window.pyn (from
+  // preload contextBridge) is frozen and not extensible.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const dev: any = {};
+    (window as any).__pyn_dev = dev;
+    dev.debugForceUnGray = () => {
+      console.log('[pyn:debug] forcing hydrating=false (and will show login or main if session state present)');
+      setHydrating(false);
+    };
+    dev.debugForceMol = () => {
+      console.log('[pyn:debug] forcing activeSection = mol');
+      setActiveSection('mol');
+    };
+  }, [setHydrating, setActiveSection]);
+
+  // Dev auto-ungray safety: if hydrating gray screen persists >3s in dev, auto force off + 'mol'.
+  // Prevents "just gray window, no way to enter interface".
+  useEffect(() => {
+    if (!import.meta.env.DEV || !hydrating) return;
+    const t = setTimeout(() => {
+      console.log('[pyn:debug] AUTO un-gray + force mol (dev 3s safety net)');
+      setHydrating(false);
+      setActiveSection('mol');
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [hydrating]);
+
   if (hydrating) {
-    return <div className="h-full w-full bg-bg-surface" />;
+    return (
+      <div className="h-full w-full bg-bg-surface flex flex-col items-center justify-center text-text-muted text-sm gap-3 p-8 text-center">
+        <div className="text-base">Hydrating / loading interface… (dev: will auto-force in ~3s)</div>
+        {import.meta.env.DEV && (
+          <button
+            onClick={() => {
+              console.log('[pyn:debug] Force un-gray clicked');
+              (window as any).pyn?.debugForceUnGray?.();
+              (window as any).pyn?.debugForceMol?.();
+            }}
+            className="px-4 py-2 text-sm font-medium rounded border-2 border-blue-500 bg-blue-600/20 hover:bg-blue-600/40 active:bg-blue-600/60 text-blue-200"
+          >
+            DEV: FORCE SHOW INTERFACE (un-gray + База/mol)
+          </button>
+        )}
+        <div className="text-[10px] opacity-60">Still gray? Cmd+Opt+I here → console → paste: window.pyn.debugForceUnGray()</div>
+      </div>
+    );
   }
 
   // Overlay поверх всего (включая LoginScreen и Settings). Developer'у НЕ
@@ -946,6 +1060,32 @@ export function App() {
             ↻ Splash
           </button>
         )}
+
+        {/* Always visible in dev to force the main interface even if splash/gray/hydrate stuck or no session.
+            Bypasses login and hydrate to show Sidebar + mol content (your persons dialog with Согласующие). */}
+        {import.meta.env.DEV && (
+          <button
+            type="button"
+            onClick={() => {
+              const dummy: any = {
+                token: 'dev-bypass',
+                user: {
+                  id: 'dev',
+                  login: 'dev',
+                  fullName: 'Dev Superadmin',
+                  role: 'developer',
+                },
+              };
+              setHydrating(false);
+              setSession(dummy);
+              setActiveSection('mol');
+              console.log('[pyn:debug] Forced main UI with dummy dev session + mol');
+            }}
+            className="fixed bottom-4 left-4 z-[2000] rounded-full border border-blue-500 bg-blue-600/20 px-3 py-1.5 text-[11px] font-medium text-blue-200 shadow-lg hover:bg-blue-600/40 active:bg-blue-600/60"
+          >
+            DEV: Force main UI (bypass login/hydrate/gray)
+          </button>
+        )}
       </Tooltip.Provider>
     );
   }
@@ -976,6 +1116,7 @@ export function App() {
               showFlow={isAdminLike(session.role)}
               showVgh={isAdminLike(session.role)}
               showLog={isAdminLike(session.role)}
+              showBroadcast={isAdminLike(session.role)}
               onToggleCollapsed={() => setCollapsed((v) => !v)}
               onAiClick={() => useAiStore.getState().setOpen(true)}
               onSectionClick={setActiveSection}
@@ -995,26 +1136,53 @@ export function App() {
               } : undefined}
             />
 
-            {/* §design — График вынесен из общей карточки: его тулбар живёт на
-                подложке (слой сайдбара), а контент — в собственном WorkspaceCard.
-                Пилот нового shell-паттерна (остальные экраны — следом). */}
-            {activeSection === 'proba' && <ProbaScreen />}
+            {/* Единая обёртка контента справа от Sidebar (flex-1).
+                Гарантирует, что основная площадь всегда занята одной видимой панелью.
+                Раньше fallback (flex-1) + mol-div (flex) и другие siblings делили пространство
+                после Sidebar в row-flex → пустые/серые зоны или "серое окно".
+                Теперь один регион, mol (или другой displaySection) заполняет его полностью.
+                Fallback — только тонкий баннер сверху, не замена контента. */}
+            <div className="flex min-h-0 flex-1 flex-col">
+              {/* Тонкий баннер (не full-replacement), если persisted activeSection был устаревшим.
+                  С force 'mol' в hydrate + displaySection + эффекты это почти не случается. */}
+              {!(
+                activeSection === 'proba' ||
+                activeSection === 'mol' ||
+                activeSection === 'vault' ||
+                activeSection === 'flow' ||
+                activeSection === 'vgh' ||
+                activeSection === 'transport' ||
+                activeSection === 'log' ||
+                activeSection === 'broadcast' ||
+                activeSection === 'news' ||
+                activeSection === 'chats' ||
+                activeSection.startsWith('sheet:')
+              ) && (
+                <div className="w-full bg-bg-elevated/70 text-text-muted text-[11px] px-3 py-0.5 text-center border-b border-border-subtle">
+                  activeSection «{activeSection}» был исправлен → показываем «База».
+                </div>
+              )}
 
-            {/* §design — МОЛ вынесен на подложку: MolTopBar (h-9 прозрачная) +
-                контент в WorkspaceCard. Always-mounted (display-toggle) как
-                Новости/Таблицы — тяжёлый лист «Цеха» не пересоздаётся при
-                возврате в раздел: мгновенный switch, scroll/состояние в DOM. */}
-            <div
-              className="flex min-h-0 flex-1 flex-col"
-              style={{ display: activeSection === 'mol' ? 'flex' : 'none' }}
-            >
-              <MolScreen />
-            </div>
+              {/* §design — График вынесен из общей карточки: его тулбар живёт на
+                  подложке (слой сайдбара), а контент — в собственном WorkspaceCard.
+                  Пилот нового shell-паттерна (остальные экраны — следом). */}
+              {displaySection === 'proba' && <ProbaScreen />}
+
+              {/* §design — МОЛ вынесен на подложку: MolTopBar (h-9 прозрачная) +
+                  контент в WorkspaceCard. Always-mounted (display-toggle) как
+                  Новости/Таблицы — тяжёлый лист «Цеха» не пересоздаётся при
+                  возврате в раздел: мгновенный switch, scroll/состояние в DOM. */}
+              <div
+                className="flex min-h-0 flex-1 flex-col"
+                style={{ display: displaySection === 'mol' ? 'flex' : 'none' }}
+              >
+                <MolScreen />
+              </div>
 
             {/* §design — Хранилище вынесено на подложку: h-9 шапка + контент
                 (Breadcrumb/Home/FileList) в WorkspaceCard. Conditional render —
                 storage-store держит currentPath между mount'ами. */}
-            {activeSection === 'vault' && <StorageScreen />}
+            {displaySection === 'vault' && <StorageScreen />}
 
             {/* §flow/vgh/log — собственный табличный контур. ALWAYS-MOUNTED (display-toggle)
                 как Новости/Таблицы/МОЛ: гриды не пересоздаются при возврате в раздел —
@@ -1040,12 +1208,17 @@ export function App() {
                 <LogScreen />
               </div>
             )}
+            {isAdminLike(session.role) && (
+              <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'broadcast' ? 'flex' : 'none' }}>
+                <BroadcastScreen />
+              </div>
+            )}
 
             {/* §design — Новости always-mounted, вынесены на подложку: шапка на
                 подложке + контент в WorkspaceCard (внутри NewsFeed). */}
             <div
               className="flex min-h-0 flex-1 flex-col"
-              style={{ display: activeSection === 'news' ? 'flex' : 'none' }}
+              style={{ display: displaySection === 'news' ? 'flex' : 'none' }}
             >
               <NewsFeed
                 currentUserInitials={initials}
@@ -1061,7 +1234,7 @@ export function App() {
                 Chromium живыми — мгновенный switch при возврате. */}
             <div
               className="flex flex-1 flex-col"
-              style={{ display: activeSection.startsWith('sheet:') ? 'flex' : 'none' }}
+              style={{ display: displaySection.startsWith('sheet:') ? 'flex' : 'none' }}
             >
               <TablesScreen
                 currentUserName={session.user.fullName || session.user.login}
@@ -1083,7 +1256,7 @@ export function App() {
             <div
               className="flex flex-1 flex-col"
               style={{
-                display: activeSection === 'chats' ? 'flex' : 'none',
+                display: displaySection === 'chats' ? 'flex' : 'none',
               }}
             >
               {/* §design — h-9 шапка на подложке (как у остальных экранов: МОЛ/
@@ -1147,6 +1320,7 @@ export function App() {
                 </div>
               </WorkspaceCard>
             </div>
+            </div> {/* close the content wrapper div that ensures full main area for the visible panel */}
         </>
 
         {/* §v1.2.14 — Settings как overlay поверх main UI. Закрывается
@@ -1179,6 +1353,9 @@ export function App() {
             onCancel={() => setUpdateConfirmOpen(false)}
           />
         )}
+
+        {/* Правка контакта — глобально, сессия переживает смену раздела/вкладки. */}
+        <PersonEditDialog statuses={personEditStatuses} />
       </div>
     </Tooltip.Provider>
   );

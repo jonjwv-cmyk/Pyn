@@ -1874,7 +1874,13 @@ function TransportTripCard({
     let alive = true;
     void flowDeliveriesGet(api, { planDate: row.tdate })
       .then((rows) => {
-        if (alive) setDlv(rows.filter((d) => Number(d.fixation_id) > 0 && (d.ride_id || '').trim() === row.garage_no));
+        if (alive) {
+          setDlv(rows.filter((d) => {
+            if (Number(d.fixation_id) <= 0) return false;
+            const ids = String(d.ride_id || '').split(/\r?\n|;/).map((x) => x.trim()).filter(Boolean);
+            return ids.some((id) => id.toUpperCase() === row.garage_no.toUpperCase());
+          }));
+        }
       })
       .catch(() => {
         if (alive) setDlv([]);
@@ -1889,8 +1895,12 @@ function TransportTripCard({
     const from = new Map<string, boolean>(); // склад → есть «увезли»
     const to = new Map<string, boolean>();
     for (const d of dlv ?? []) {
-      if (d.exp1) e.add(d.exp1);
-      if (d.exp2) e.add(d.exp2);
+      for (const raw of [d.exp1, d.exp2]) {
+        for (const part of String(raw || '').split(/\r?\n|;/)) {
+          const fio = part.trim();
+          if (fio) e.add(fio);
+        }
+      }
       const ok = d.done_stat === 'увезли';
       if ((d.fr || '').trim()) from.set(d.fr, (from.get(d.fr) ?? false) || ok);
       if ((d.to_wh || '').trim()) to.set(d.to_wh, (to.get(d.to_wh) ?? false) || ok);

@@ -12,7 +12,7 @@ import { MolEmptyView, type MolEmptyState } from './MolEmptyView';
 import { MolTable, type MolTableRow } from './MolTable';
 import { MolTopBar } from './MolTopBar';
 import { OrphanPanel } from './OrphanPanel';
-import { PersonEditDialog, type PersonEditTarget } from './PersonEditDialog';
+import { usePersonEditStore } from '@/lib/person-edit-store';
 import { ShopsTab } from './ShopsTab';
 import { WarehouseSidebar } from './WarehouseSidebar';
 
@@ -38,7 +38,7 @@ export function MolScreen() {
   const setShopsQuery = useUiStateStore((s) => s.setShopsQuery);
 
   const [actionRequest, setActionRequest] = useState<ContactActionRequest | null>(null);
-  const [editTarget, setEditTarget] = useState<PersonEditTarget | null>(null);
+  const openPersonEdit = usePersonEditStore((s) => s.open);
 
   // База «Контакты» (persons) грузится eager после логина (App.tsx) — она же
   // питает производный МОЛ для Потока/Цеха. Здесь только читаем.
@@ -124,7 +124,7 @@ export function MolScreen() {
   const showOrphanPanel = parsed.mode === 'empty' && orphans.length > 0;
 
   const openEdit = (person: Person) =>
-    setEditTarget({ mode: person.isOrphan ? 'orphan' : 'edit', person });
+    openPersonEdit({ mode: person.isOrphan ? 'orphan' : 'edit', person });
   const onEditPersonId = (id: number) => {
     const p = persons.find((x) => x.id === id);
     if (p) openEdit(p);
@@ -142,7 +142,7 @@ export function MolScreen() {
         warehousesCount={warehousesCount}
         molCount={molCount}
         molPreviousCount={meta?.previous?.molCount ?? null}
-        onAddContact={() => setEditTarget({ mode: 'create' })}
+        onAddContact={() => openPersonEdit({ mode: 'create' })}
         query={tab === 'mol' ? query : shopsQuery}
         onQueryChange={tab === 'mol' ? setQuery : setShopsQuery}
       />
@@ -203,7 +203,6 @@ export function MolScreen() {
         </div>
       )}
 
-      <PersonEditDialog target={editTarget} statuses={statuses} onClose={() => setEditTarget(null)} />
       <ContactActionDialog request={actionRequest} onClose={() => setActionRequest(null)} />
     </main>
   );

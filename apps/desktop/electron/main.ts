@@ -33,6 +33,19 @@ setupMainLog();
 // Должно быть ДО `app.whenReady()` — Chromium init читает switch'и однократно.
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP api.otlhelper.com 45.12.239.5');
 
+// §fix-gray-gpu — в dev на macOS (особенно с Vite HMR + <webview> + Metal) GPU процесс часто
+// крашится (exit_code=15, "GPU state invalid", network service crash). Это делает окно
+// полностью серым/пустым (renderer мёртв), даже если React-код живой и есть DEV-кнопки.
+// Отключаем hardware GPU только в dev — используем SwiftShader (software). Окно остаётся
+// paintable, кнопки "DEV: Force main UI" внизу слева видны, можно кликнуть bypass.
+// В prod оставляем как есть (для perf).
+if (process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === 'development') {
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+  app.commandLine.appendSwitch('use-gl', 'swiftshader');
+  app.commandLine.appendSwitch('ignore-gpu-blacklist');
+}
+
 // §revert v1.2.4 → v1.2.3 — `disable-features: UserAgentClientHint` оказался
 // анти-pattern'ом. Реальный Chrome ВСЕГДА отправляет `Sec-CH-UA-*` headers;
 // их полное отсутствие — для Google security ML маркер «UA подменён, hints

@@ -19,6 +19,7 @@ import {
   useUsersStore,
 } from '@/lib/stores';
 import { usePersonsStore } from '@/lib/persons-store';
+import { usePersonEditStore } from '@/lib/person-edit-store';
 import { sessionStore } from '@/lib/token-store';
 import { clearTablesRegistry } from '@/lib/use-tables-registry';
 import { stopWs } from '@/lib/ws';
@@ -36,6 +37,7 @@ export async function wipeUserData(): Promise<void> {
   useSessionInfoStore.getState().clear();
   useMolStore.getState().clear();
   usePersonsStore.getState().clear();
+  usePersonEditStore.getState().close();
   useUiStateStore.getState().clear();
   useOutboxStore.getState().clear();
   useStatsStore.getState().clear();

@@ -27,6 +27,8 @@ import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mo
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
 import { flowToRenderer, type FlowToCell, type FlowToOption } from './flow-to-cell';
+import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
+import { FlowAnchorHistoryCard, type FlowAnchorHistoryTarget } from './FlowAnchorHistoryCard';
 import { FlowHeaderMenu, type FlowHeaderMenuAnchor } from './FlowHeaderMenu';
 import { FlowMatFilterMenu, type FlowMatSubState } from './FlowMatFilterMenu';
 import { FlowOrdFilterMenu, type FlowOrdEntry } from './FlowOrdFilterMenu';
@@ -36,12 +38,14 @@ import {
   flowWorkflowEdit,
   flowWorkflowDelete,
   flowDeliveriesGet,
+  flowDeliveryEventsGet,
   flowPlanMonthGet,
   flowPlanMonthSet,
   flowViewGet,
   flowViewSet,
   type FlowChangedEvent,
   type FlowDeliveryRow,
+  type FlowDeliveryEvent,
   type FlowDeliveriesChangedEvent,
   type FlowPlanMonth,
   type FlowPlanMonthChangedEvent,
@@ -124,6 +128,7 @@ const FLOW_RENDERERS = [
   flowDayRenderer,
   flowMatRenderer,
   flowToRenderer,
+  flowHistoryRenderer,
 ];
 /** Базовые метрики грида при 100% (масштабируются кнопкой масштаба).
  *  Шрифт 13px (Inter) — как в сайдбаре: читаемо и компактно (вкус Linear/Figma);
@@ -316,6 +321,11 @@ const SWEEP_VOPROS = { rgb: '233,176,30', base: 0.16, peak: 0.48 };
 // «Нет» (склад вне графика выбранного месяца) — СИНИЙ перелив (как NEW, но синий):
 // кластер/день по графику не определить, строку нужно видеть и доформировать.
 const SWEEP_NET = { rgb: '56,124,222', base: 0.18, peak: 0.52 };
+// «Обманка отчёта» — СОЧНЫЙ РАДУЖНЫЙ перелив (RGB по всему спектру): отчёт говорит «увезли»
+// ровно столько же по ЕИ, сколько снова открыто в формировании → сигнал «поставка жива у нас»
+// (юзер 2026-06-15). Расхождение кол-ва (отчёт 30 / формирование 50) = остаток, НЕ обманка.
+const RAINBOW_CYCLE_MS = 2600; // полный оборот спектра (живо, но не мельтешит)
+const RAINBOW_ALPHA = 0.34; // насыщенность подложки (текст поверх читается)
 
 /** Пунктирная подсветка скопированного диапазона (Glide highlightRegions, style dashed). */
 interface CopiedRegion {
@@ -484,12 +494,24 @@ function buildContractError(kind: 'expired' | 'not-covered', fio: string, until?
 /** Поставка → инфо для расчёта доступного остатка (якорь, кол-во, проведена ли).
  *  Проведена = есть факт прихода (zm_vl) ИЛИ отмечена «увезли» — такая уже отражена в
  *  уменьшенном кол-ве выгрузки, в «занято планом» НЕ вычитается. */
-function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; posted: boolean; delivered: boolean } {
+function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; posted: boolean; delivered: boolean; occupies: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean } {
   const posted = d.fact_qty != null || d.done_stat === 'увезли';
-  // «Доставлено по отчёту» = зафиксированная поставка со статусом выполнено/увезли. Если позиция
-  // при этом снова в формировании/выгрузке — это «обманка отчёта» (юзер 2026-06-14), red RGB.
-  const delivered = Number(d.fixation_id) > 0 && (d.done_stat === 'выполнено' || d.done_stat === 'увезли');
-  return { a: `${d.ord}|${d.it}`, qty: d.qty == null ? 0 : Number(d.qty), posted, delivered };
+  // «Реально отгружено» для ОБМАНКИ (юзер 2026-06-15): нужен ФАКТ отгрузки — приход из zm_vl
+  // (fact_qty) ИЛИ статус «увезли», а НЕ цвет «выполнено» из импорта отчёта (он без факта и красил
+  // бы формирование зря). Обманка = реально увезли + заказ снова открыт тем же кол-вом.
+  const delivered = Number(d.fixation_id) > 0 && posted;
+  // ЗАНИМАЕТ позицию (скрывает из формирования). Освобождают ТОЛЬКО: реальная отгрузка
+  // (факт zm_vl или «увезли» — выгрузка заказов уже уменьшена, остаток виден) и «не увезли»
+  // (возврат). «Выполнено» БЕЗ факта (цвет отчёта, выгрузка НЕ уменьшена) — ЗАНИМАЕТ (прячем,
+  // как 1.2.77): помечено сделанным, повторно не планируем (юзер 2026-06-15). Зеркало OCCUPIES_SQL.
+  const done = String(d.done_stat ?? '');
+  const occupies = d.fact_qty == null && done !== 'увезли' && done !== 'не увезли';
+  return {
+    a: `${d.ord}|${d.it}`, qty: d.qty == null ? 0 : Number(d.qty), uom: String(d.uom ?? ''),
+    posted, delivered, occupies,
+    sedStatus: String(d.sed_status ?? ''), sedHolder: String(d.sed_holder ?? ''),
+    sapOpen: Number(d.sap_open) === 1,
+  };
 }
 
 function molIsGone(
@@ -1150,6 +1172,16 @@ export function FlowSandboxGrid(): JSX.Element {
   const openVghCard = useCallback((r: FlowSandboxRow, note?: string) => {
     setVghCard({ noNum: String(r.no_num ?? ''), mat: String(r.mat ?? ''), uom: String(r.uom ?? ''), note });
   }, []);
+
+  // Карточка ИСТОРИИ движения позиции по якорю (заказ+позиция): таймлайн эпизодов поставок +
+  // дискретных событий (план/фиксация/статус/перенос/удаление/факт zm_vl). Грузится по клику.
+  const [historyCard, setHistoryCard] = useState<FlowAnchorHistoryTarget | null>(null);
+  const openHistoryCard = useCallback((r: FlowSandboxRow) => {
+    const ord = String(r.ord ?? '').trim();
+    const it = String(r.it ?? '').trim();
+    if (!ord) return; // без заказа якоря нет — истории нет
+    setHistoryCard({ ord, it, mat: String(r.mat ?? ''), noNum: String(r.no_num ?? '') });
+  }, []);
   useEffect(() => {
     const onContact = (e: Event) => {
       const detail = (e as CustomEvent<ContactActionRequest>).detail;
@@ -1264,28 +1296,76 @@ export function FlowSandboxGrid(): JSX.Element {
   // id поставки → { якорь ord|it, кол-во, проведена ли (отгружена/факт) }. Проведённая
   // поставка УЖЕ отражена в уменьшенном кол-ве выгрузки (SAP списал), потому в «доступный
   // остаток» НЕ вычитается; незакрытая (черновик/план без факта) — вычитается (юзер 2026-06-14).
-  type DlvInfo = { a: string; qty: number; posted: boolean; delivered: boolean };
+  type DlvInfo = {
+    a: string; qty: number; uom: string; posted: boolean; delivered: boolean; occupies: boolean;
+    sedStatus: string; sedHolder: string; sapOpen: boolean;
+  };
   const [dlvInfoById, setDlvInfoById] = useState<Map<number, DlvInfo>>(() => new Map());
+  // СЭД по якорю — статус движения документа + на ком (с активной поставки позиции). Для колонки СЭД
+  // в Формировании (казусы: возили, а 2 дня не подписано / кто отклонил). Незакрытая = sapOpen.
+  const sedByAnchor = useMemo(() => {
+    const m = new Map<string, { status: string; holder: string; open: boolean }>();
+    for (const v of dlvInfoById.values()) {
+      if (!v.sedStatus && !v.sedHolder) continue;
+      const cur = m.get(v.a);
+      // приоритет — у кого есть статус; незакрытая важнее (open=true перебивает).
+      if (!cur || (v.sapOpen && !cur.open)) m.set(v.a, { status: v.sedStatus, holder: v.sedHolder, open: v.sapOpen });
+    }
+    return m;
+  }, [dlvInfoById]);
+  // Якоря с ОТКРЫТОЙ попыткой — только они держат позицию вне Формирования. Закрытые эпизоды
+  // (не увезли+причина/выполнено/перенос) позицию ОТПУСКАЮТ → она снова в формировании (R3.7).
   const activeDlvAnchors = useMemo(
-    () => new Set([...dlvInfoById.values()].map((v) => v.a)),
+    () => new Set([...dlvInfoById.values()].filter((v) => v.occupies).map((v) => v.a)),
     [dlvInfoById],
   );
-  // Σ кол-ва НЕзакрытых (не проведённых) поставок по якорю — сколько уже «занято планом».
+  // Σ кол-ва ОТКРЫТЫХ (незакрытых) поставок по якорю — сколько уже «занято планом».
   const plannedOpenByAnchor = useMemo(() => {
     const m = new Map<string, number>();
     for (const v of dlvInfoById.values()) {
-      if (v.posted) continue;
+      if (!v.occupies) continue;
       m.set(v.a, (m.get(v.a) ?? 0) + (Number.isFinite(v.qty) ? v.qty : 0));
     }
     return m;
   }, [dlvInfoById]);
-  // Якоря, ДОСТАВЛЕННЫЕ по отчёту (выполнено/увезли). Если такая позиция снова в формировании —
-  // «обманка отчёта» (юзер 2026-06-14): отчёт говорит «увезли», а заказ снова открыт → red-подсветка.
-  const deliveredReportAnchors = useMemo(() => {
-    const s = new Set<string>();
-    for (const v of dlvInfoById.values()) if (v.delivered) s.add(v.a);
-    return s;
+  // Якоря, ДОСТАВЛЕННЫЕ по отчёту (выполнено/увезли) → кол-во+ЕИ доставленного (сумма эпизодов).
+  // «Обманка отчёта» (юзер 2026-06-15): отчёт говорит «увезли» РОВНО столько же по ЕИ, сколько
+  // снова открыто в формировании → сигнал «поставка жива у нас». Если в формировании БОЛЬШЕ
+  // (отчёт 30 / формирование 50) — это законный ОСТАТОК (ещё 20), НЕ обманка.
+  const deliveredByAnchor = useMemo(() => {
+    const m = new Map<string, { qty: number; uom: string }>();
+    for (const v of dlvInfoById.values()) {
+      if (!v.delivered) continue;
+      const cur = m.get(v.a);
+      if (cur) cur.qty += v.qty;
+      else m.set(v.a, { qty: v.qty, uom: v.uom });
+    }
+    return m;
   }, [dlvInfoById]);
+  // RGB-маркер = ТОЛЬКО ПОЛНАЯ ПОВТОРЯШКА (юзер 2026-06-15): статус «выполнено/увезли» И в
+  // формировании ТОЧНО столько же по ЕИ. Любое расхождение (стало меньше/больше — изменили заказ
+  // или zm_vl поправил факт) — это НЕ повторяшка: RGB НЕТ, только значок истории. Не-доставленные
+  // статусы (мало/на приёмке/нет на складе…) вообще не дают RGB — их возврат в формирование штатный.
+  const isCheatRow = useCallback(
+    (r: FlowSandboxRow): boolean => {
+      const d = deliveredByAnchor.get(`${r.ord}|${r.it}`);
+      if (!d) return false;
+      const fq = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+      if (!Number.isFinite(fq)) return false;
+      const sameUom =
+        !d.uom || !r.uom || String(d.uom).trim().toUpperCase() === String(r.uom).trim().toUpperCase();
+      return sameUom && Math.abs(fq - d.qty) < 1e-6; // ТОЧНОЕ совпадение кол-ва
+    },
+    [deliveredByAnchor],
+  );
+
+  // Якоря, у которых ЕСТЬ история движения (хоть один эпизод поставки): только им показываем
+  // значок ИСТОРИЯ (юзер 2026-06-15: «значок если история есть, нет — не показываем, не путаем»).
+  // Ключ ord|it → история живёт, пока жив заказ-позиция (переживает смену месяца формирования).
+  const anchorsWithHistory = useMemo(
+    () => new Set([...dlvInfoById.values()].map((v) => v.a)),
+    [dlvInfoById],
+  );
 
   // РАСЧЁТНЫЙ STAT по строке (id → { auto, undershoot }) — ЕДИНЫЙ источник вердикта для
   // показа (liveRows), пунктов выпадашки (statOptionsForRow) и валидации (applyEdits).
@@ -1980,6 +2060,29 @@ export function FlowSandboxGrid(): JSX.Element {
           data: { kind: 'flow-to', value: code, shopName: wh?.shopName ?? '', options: opts },
         } satisfies FlowToCell;
       }
+      if (spec.id === 'sed') {
+        // СЭД движение документа по активной поставке позиции: статус + на ком; «●» = незакрыта.
+        const s = sedByAnchor.get(`${rowData.ord}|${rowData.it}`);
+        const head = s ? (s.open && s.status ? `● ${s.status}` : s.status) : '';
+        const txt = s ? (s.holder ? `${head}\n${s.holder}` : head) : '';
+        return {
+          kind: GridCellKind.Text,
+          data: txt, displayData: txt, allowOverlay: false, allowWrapping: true,
+        };
+      }
+      if (spec.kind === 'history') {
+        // ИСТОРИЯ движения позиции — иконка-часы ТОЛЬКО если у позиции есть история (эпизоды);
+        // иначе пустая ячейка (не путаем). Клик → карточка-таймлайн по якорю.
+        if (!anchorsWithHistory.has(`${rowData.ord}|${rowData.it}`)) {
+          return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
+        }
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: false,
+          copyData: '',
+          data: { kind: 'flow-history' },
+        } satisfies FlowHistoryCell;
+      }
       if (spec.kind === 'dropdown') {
         // УР: 0 — основная поставка, показываем ПУСТО (выбрать «0» нельзя — это дефолт).
         const value = spec.id === 'split_level' ? (Number(raw) > 0 ? String(raw) : '') : String(raw ?? '');
@@ -2021,7 +2124,7 @@ export function FlowSandboxGrid(): JSX.Element {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse, molByKey, whById, whByShop, statOptionsForRow],
+    [viewRows, molByWarehouse, molByKey, whById, whByShop, statOptionsForRow, anchorsWithHistory, sedByAnchor],
   );
 
   // Шрифт ЗНАЧЕНИЯ per-колонке (clst 7 / day·stat·kg·v·mol·request 8 / прочее 10) +
@@ -2353,8 +2456,9 @@ export function FlowSandboxGrid(): JSX.Element {
       const r = viewRows[row];
       if (!spec || !r) return;
       if (spec.id === 'no_num') openVghCard(r);
+      else if (spec.kind === 'history') openHistoryCard(r);
     },
-    [viewRows, openVghCard],
+    [viewRows, openVghCard, openHistoryCard],
   );
 
   const onCellEdited = useCallback(
@@ -2971,19 +3075,14 @@ export function FlowSandboxGrid(): JSX.Element {
         o.bgCellMedium = t.bg;
       }
       if (t?.text) o.textDark = t.text;
-      // «Обманка отчёта» (юзер 2026-06-14): позиция доставлена по отчёту (выполнено/увезли), но
-      // снова в формировании (заказ открыт / OFF-фантом) → КРАСНАЯ подсветка поверх статуса.
-      if (deliveredReportAnchors.has(`${r.ord}|${r.it}`)) {
-        o.bgCell = '#FBDAD5';
-        o.bgCellMedium = '#FBDAD5';
-        o.textDark = '#8A1F11';
-      }
+      // «Обманка отчёта» рисуется РАДУЖНЫМ переливом в drawCell (не статичным фоном здесь) —
+      // только при СОВПАДЕНИИ кол-ва по ЕИ (isCheatRow). Тут фон/текст под неё не трогаем.
       // Линии-разделители КЛАСТЕРА и СКЛАДА (TO) рисуются в drawCell (опаково, по данным,
       // ДО колонки номера) — строковый horizontalBorderColor здесь НЕ используем (он
       // заходил на колонку номера). Тут только фон/текст условного форматирования.
       return Object.keys(o).length > 0 ? o : undefined;
     },
-    [viewRows, molByWarehouse, deliveredReportAnchors],
+    [viewRows, molByWarehouse],
   );
   // Граница КЛАСТЕРА — ТОЛСТАЯ (2.5px) ОПАКОВАЯ линия (без alpha!) по верху первой строки
   // кластера. Опаковая = идемпотентна: перерисовка на hover не накапливает цвет (это и
@@ -3000,18 +3099,41 @@ export function FlowSandboxGrid(): JSX.Element {
       // Приоритет подсветки: OFF (нет заказа) → «Нет» (склад вне графика, синий) → NEW →
       // STAT «вопрос». OFF НИКОГДА не перебиваем анимацией (он краснее и важнее); «Нет»
       // важнее NEW — без кластера строку нельзя сформировать.
-      const sweep = r
-        ? r.day_wk === 'OFF'
-          ? null
-          : r.clst === CLST_NONE
-            ? SWEEP_NET
-            : r.day_wk === 'new'
-              ? SWEEP_NEW
-              : r.stat === 'вопрос'
-                ? SWEEP_VOPROS
-                : null
-        : null;
-      if (sweep) {
+      // «Обманка отчёта» (увезли = открыто снова, кол-во по ЕИ совпадает) — РАДУЖНЫЙ перелив,
+      // ВЫСШИЙ приоритет (важнее OFF/NEW): это ошибка-сигнал, её надо видеть сразу. Расхождение
+      // кол-ва (остаток) обманкой НЕ считается (isCheatRow). Иначе — обычный sweep по типу строки.
+      const cheat = r ? isCheatRow(r) : false;
+      const sweep = cheat
+        ? null
+        : r
+          ? r.day_wk === 'OFF'
+            ? null
+            : r.clst === CLST_NONE
+              ? SWEEP_NET
+              : r.day_wk === 'new'
+                ? SWEEP_NEW
+                : r.stat === 'вопрос'
+                  ? SWEEP_VOPROS
+                  : null
+          : null;
+      const lastColUnderlay = col === FLOW_COLUMNS.length - 1;
+      const lastRowUnderlay = row === viewRows.length - 1;
+      if (cheat) {
+        const W = gridPxWidthRef.current || rect.x + rect.width * 4;
+        const phase = (performance.now() / RAINBOW_CYCLE_MS) % 1;
+        const g = ctx.createLinearGradient(0, 0, W, 0);
+        const N = 24;
+        for (let i = 0; i <= N; i++) {
+          const p = i / N;
+          const hue = (((p - phase) * 360) % 360 + 360) % 360;
+          g.addColorStop(p, `hsla(${hue.toFixed(0)},90%,58%,${RAINBOW_ALPHA})`);
+        }
+        ctx.save();
+        ctx.fillStyle = g;
+        ctx.fillRect(rect.x + 1, rect.y + 1, rect.width - (lastColUnderlay ? 2 : 1), rect.height - (lastRowUnderlay ? 2 : 1));
+        ctx.restore();
+        (args as unknown as { requestAnimationFrame?: () => void }).requestAnimationFrame?.();
+      } else if (sweep) {
         const W = gridPxWidthRef.current || rect.x + rect.width * 4;
         // Фаза — по времени (одинаковая для всех ячеек кадра → полоса непрерывна по строке).
         const phase = (performance.now() / SWEEP_CYCLE_MS) % 1;
@@ -3023,11 +3145,9 @@ export function FlowSandboxGrid(): JSX.Element {
           const a = sweep.base + (sweep.peak - sweep.base) * wave;
           g.addColorStop(p, `rgba(${sweep.rgb},${a.toFixed(3)})`);
         }
-        const lastCol = col === FLOW_COLUMNS.length - 1;
-        const lastRow = row === viewRows.length - 1;
         ctx.save();
         ctx.fillStyle = g;
-        ctx.fillRect(rect.x + 1, rect.y + 1, rect.width - (lastCol ? 2 : 1), rect.height - (lastRow ? 2 : 1));
+        ctx.fillRect(rect.x + 1, rect.y + 1, rect.width - (lastColUnderlay ? 2 : 1), rect.height - (lastRowUnderlay ? 2 : 1));
         ctx.restore();
         // Двигаем анимацию ШТАТНЫМ механизмом Glide: просим следующий кадр — Glide
         // перерисует эту ячейку (как у встроенного last-updated flash). Надёжнее внешнего
@@ -3055,7 +3175,7 @@ export function FlowSandboxGrid(): JSX.Element {
         ctx.restore();
       }
     },
-    [viewRows],
+    [viewRows, isCheatRow],
   );
 
   // Индикаторы в шапке поверх дефолта Glide, в одной точке справа: стрелка МЕНЮ (▾)
@@ -3611,6 +3731,13 @@ export function FlowSandboxGrid(): JSX.Element {
         seed={vghCard ? { mat: vghCard.mat, uom: vghCard.uom } : null}
         note={vghCard?.note}
         onClose={() => setVghCard(null)}
+      />
+
+      {/* Карточка ИСТОРИИ движения позиции по якорю (клик по колонке ИСТОРИЯ). */}
+      <FlowAnchorHistoryCard
+        target={historyCard}
+        load={(ord, it) => flowDeliveryEventsGet(api, ord, it)}
+        onClose={() => setHistoryCard(null)}
       />
 
       {/* Окно-предупреждение по МОЛ: чужой склад / договор истёк / дата вне срока договора. */}

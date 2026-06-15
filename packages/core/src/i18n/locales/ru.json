@@ -75,6 +75,7 @@
     "nav_flow": "Поток",
     "nav_vgh": "ВГХ",
     "nav_log": "LOG",
+    "nav_broadcast": "Рассылка",
     "nav_chats": "Чаты",
     "nav_news": "Новости",
     "group_feed": "Лента"
@@ -778,7 +779,28 @@
       "cancel": "Отмена",
       "ph_mobile": "+7 900 000 0000",
       "ph_mail": "name@evraz.com",
-      "ph_comment": "заметка о контакте"
+      "ph_comment": "заметка о контакте",
+      "field_broadcast": "Роль потока",
+      "field_broadcast_group": "Группа",
+      "field_broadcast_purpose": "Цель рассылки",
+      "broadcast_purpose_optional": "необязательно",
+      "field_broadcast_warehouses": "Согласуемые склады",
+      "broadcast_warehouses_pick": "Выберите склады…",
+      "broadcast_warehouses_selected": "Выбрано складов: {{count}}",
+      "approval_warehouses_title": "Согласуемые склады",
+      "approval_warehouses_close": "Свернуть",
+      "approval_warehouses_search_ph": "склад · цех",
+      "approval_warehouses_count": "Выбрано: {{count}}",
+      "approval_warehouses_empty": "База складов пуста",
+      "approval_warehouses_no_match": "Ничего не найдено",
+      "approval_warehouses_reset_all": "Сбросить все",
+      "approval_warehouses_reset": "Сброс",
+      "approval_warehouses_in_schedule": "В графике текущего месяца",
+      "approval_warehouses_next_month": "Войдёт в график со следующего месяца",
+      "approval_warehouses_clear_search": "Очистить поиск",
+      "approval_warehouses_clear_shop": "Снять выбор цеха",
+      "broadcast_group_none": "Выберите группу",
+      "ph_broadcast_purpose": "кратко: роль контакта в потоке"
     }
   },
   "lock": {

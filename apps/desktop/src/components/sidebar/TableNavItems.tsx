@@ -58,15 +58,11 @@ export function TableNavItems({ collapsed, activeSection, onPick }: TableNavItem
   // Стабильная сортировка (V8) — таблицы с равным ключом сохраняют порядок реестра.
   const orderedFiles = [...files].sort((a, b) => tableSortKey(a) - tableSortKey(b));
 
-  if (loading && files.length === 0) {
-    return (
-      <div className="flex animate-pulse flex-col gap-1.5 px-3 py-2">
-        {[0, 1].map((i) => (
-          <div key={i} className="h-3 w-3/4 rounded bg-bg-hover" />
-        ))}
-      </div>
-    );
-  }
+  // Пока реестр таблиц грузится (первый вход) — НИЧЕГО не рисуем. Прежний серый
+  // skeleton-блок имел иные отступы (px-3 py-2), прыгал в раскладке и читался как
+  // «приложение серое, грузится, порядок не такой» (юзер 2026-06-12). Таблицы появятся
+  // аккуратно по готовности, на своём месте — порядок не дёргается.
+  if (loading && files.length === 0) return null;
 
   return (
     <>
@@ -105,8 +101,8 @@ function TableNavRow({
   const displayName = customTableName(file.title);
   const shortName = customTableShortName(file.title);
   const { Icon, iconColor } = tableIconFor(file.title);
-  // Workflow — почти не используется (скоро уберём) → приглушённый «сероватый» вид, не мешает.
-  const muted = (file.title || '').toUpperCase() === 'WORKFLOW';
+  // Workflow И ОТИФ5 — оба «уходящие»/легаси → приглушённый «сероватый» вид (юзер 2026-06-12).
+  const muted = ['WORKFLOW', 'OTIF5'].includes((file.title || '').toUpperCase());
 
   // Клик по таблице → открываем её запомненный лист (если ещё существует),
   // иначе первый. «Где были — туда и попадём».
@@ -148,7 +144,9 @@ function TableNavRow({
         <HoverCard.Content
           side="right"
           align="start"
-          sideOffset={8}
+          // Тот же отступ от рейла, что у подсказок/флайаутов сайдбара (юзер 2026-06-12):
+          // флайаут стоит НА РАССТОЯНИИ, а не вплотную к сайдбару.
+          sideOffset={20}
           collisionPadding={8}
           className={cn(
             'z-50 flex max-h-[420px] w-[220px] flex-col overflow-y-auto',

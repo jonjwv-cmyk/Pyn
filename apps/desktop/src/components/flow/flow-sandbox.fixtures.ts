@@ -22,6 +22,7 @@ export type FlowColumnKind =
   | 'mol' // МОЛ: статус-точка + ФИО; телефон/срок подсказкой
   | 'day' // new / OFF / дата доставки (поповер); объединяет ST + день недели
   | 'mat' // материал: ⚠ ручной заказ + название; карточка-оверлей по двойному клику
+  | 'history' // ИСТОРИЯ движения позиции (иконка-часы; карточка-таймлайн по клику)
   | 'to'; // склад-получатель: выпадашка складов того же цеха
 
 /** Строка листа WORKFLOW (снимок 1:1). Коды складов — текст (ведущий ноль важен). */
@@ -39,6 +40,8 @@ export interface FlowSandboxRow {
   time_at: string; // J TIME — когда выгружен к нам (до секунд)
   off_at?: string; // когда удалён (пропал из выгрузки → day_wk='OFF'); пусто — активен
   pct: number | null; // % — ВИРТУАЛЬНАЯ (в БД нет): считаем livePct из qty/chg; поле-ключ колонки
+  history?: undefined; // ИСТОРИЯ — синтетическая колонка-иконка (не поле строки; ключ для FlowColumnSpec)
+  sed?: undefined; // СЭД — синтетическая колонка (статус движения + на ком с активной поставки)
   q: string; // L Q — значок аварийного запаса
   warn: string; // M ⚠️ — ручной заказ + ФИО
   no_num: string; // N NO.№ — номенклатура
@@ -144,6 +147,8 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   // поставки под разные машины. Группировка плана: fr+to+уровень (flow_plan_form).
   { id: 'split_level', title: 'УР', width: 44, kind: 'dropdown',
     options: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], editable: true },
+  { id: 'sed', title: 'СЭД', width: 150, kind: 'text' },
+  { id: 'history', title: 'ИСТОРИЯ', width: 64, kind: 'history' },
   { id: 'no_num', title: 'NO. №', width: 86, kind: 'text' },
   { id: 'mat', title: 'MAT', width: 210, kind: 'mat' },
   { id: 'uom', title: 'UoM', width: 50, kind: 'text' },

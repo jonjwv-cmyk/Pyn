@@ -1,4 +1,4 @@
-import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Scale, Truck, Waves } from 'lucide-react';
+import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Rss, Scale, Truck, Waves } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -55,7 +55,7 @@ export const NAV_VGH: NavSection = {
   id: 'vgh',
   get label() { return i18next.t('sidebar.nav_vgh'); },
   icon: Scale,
-  iconColor: 'text-violet-400',
+  // Цвет снят (юзер 2026-06-12): цветные значки только у Поток/Транспорт/База, ВГХ — нейтральный.
 };
 
 /**
@@ -67,6 +67,9 @@ export const NAV_TRANSPORT: NavSection = {
   id: 'transport',
   get label() { return i18next.t('sidebar.nav_transport', 'Транспорт'); },
   icon: Truck,
+  // Цветной значок (юзер 2026-06-12): транспорт — amber (дорога/машина), в семье с
+  // Поток-teal и База-blue. ВГХ цвет снят.
+  iconColor: 'text-amber-400',
 };
 
 /**
@@ -78,6 +81,20 @@ export const NAV_LOG: NavSection = {
   id: 'log',
   get label() { return i18next.t('sidebar.nav_log'); },
   icon: History,
+};
+
+/**
+ * Раздел «Рассылка» — массовые рассылки (контент позже). Вне `NAV_SECTIONS`;
+ * гейт на клиенте через `showBroadcast` (как «Поток»/LOG).
+ */
+export const NAV_BROADCAST: NavSection = {
+  id: 'broadcast',
+  get label() { return i18next.t('sidebar.nav_broadcast'); },
+  // Значок-«вещание» (Rss) — простой и узнаваемый символ рассылки/вещания (не письмо/почта,
+  // не рупор, не громоздкая вышка), цветной rose (юзер 2026-06-12). В семье Поток-teal /
+  // Транспорт-amber / База-blue.
+  icon: Rss,
+  iconColor: 'text-rose-400',
 };
 
 // Группа «Лента».

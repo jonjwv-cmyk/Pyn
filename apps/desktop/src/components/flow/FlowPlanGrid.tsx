@@ -99,9 +99,9 @@ const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'kg', title: 'KG', width: 86 },
   { id: 'v', title: 'V', width: 64 },
   { id: 'exp', title: 'ЭКСПЕДИТОРЫ', width: 190, editable: true },
-  { id: 'vehicleType', title: 'ТИП ТС', width: 130 },
+  { id: 'vehicleType', title: 'ТИП ТС', width: 130, editable: true },
   { id: 'vehicle', title: 'ГАРАЖНЫЙ', width: 170, editable: true },
-  { id: 'note', title: 'NOTE', width: 230 },
+  { id: 'note', title: 'NOTE', width: 230, editable: true },
   { id: 'flag', title: 'ПРОВЕРКА', width: 92 },
 ];
 
@@ -124,10 +124,11 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'kg', title: 'KG', width: 86 },
   { id: 'v', title: 'V', width: 64 },
   { id: 'exp', title: 'ЭКСПЕДИТОРЫ', width: 190, editable: true },
-  { id: 'vehicleType', title: 'ТИП ТС', width: 130 },
+  { id: 'vehicleType', title: 'ТИП ТС', width: 130, editable: true },
   { id: 'vehicle', title: 'ГАРАЖНЫЙ', width: 170, editable: true },
   { id: 'status', title: 'STAT', width: 210, editable: true },
-  { id: 'note', title: 'NOTE', width: 230 },
+  { id: 'sed', title: 'СЭД', width: 170 },
+  { id: 'note', title: 'NOTE', width: 230, editable: true },
   { id: 'request', title: 'ЗАПРОС', width: 130 },
 ];
 
@@ -135,6 +136,10 @@ const REPORT_COLS: readonly PlanColSpec[] = [
 const FAIL_REASONS = ['нет на центральном складе', 'менее транспортной нормы', 'брак',
   'на приёмке', 'на входном контроле', 'отказ цеха', 'перенос на другой день',
   'нет МОЛа', 'иные причины'] as const;
+
+/** ТИП ТС (юзер 2026-06-15) — НАШ маркер кузова, НЕ тянется из машины. До 3 на строку
+ *  (соответствует до 3 гаражным). Хранится в поле `vehicle` (через `\n`). */
+const BODY_TYPES = ['БОРТ', 'ПУЛЬМАН', 'ФУРГОН', 'ГАЗЕЛЬ'] as const;
 
 /** Статус выполнения (юзер 2026-06-14): по умолчанию «ОЖИДАНИЕ» (пусто в БД), «выполнено»
  *  (зелёный в исходном отчёте) или ПРИЧИНА (серый, не увезено). Стереть ячейку → снова ожидание. */
@@ -233,8 +238,11 @@ function deliveryExpeditors(r: FlowDeliveryRow): string[] {
   return splitMultiCell([r.exp1 || '', r.exp2 || ''].filter(Boolean).join('\n'));
 }
 
-function isTransferredReportRow(r: FlowDeliveryRow): boolean {
-  return Number(r.fixation_id) > 0 && String(r.created_by || '').startsWith('transfer:');
+/** Строка, созданная НАМИ руками в отчёте (перенос или ручная вставка) — её можно удалить.
+ *  Строки, пришедшие автоматом при фиксации плана / сеяного импорта = «железная» база. */
+function isManualRow(r: FlowDeliveryRow): boolean {
+  const cb = String(r.created_by || '');
+  return cb.startsWith('transfer:') || cb.startsWith('manual:');
 }
 
 function resolvePersonName(raw: string, byKey: ReadonlyMap<string, { fio: string }>): string {
@@ -304,7 +312,7 @@ const MEASURE_CTX = document.createElement('canvas').getContext('2d');
 const REPORT_FONT_PX = 10; // baseFontStyle грида
 const REPORT_HPAD = 8; // горизонтальный padding ячейки (с запасом)
 /** Колонки с мягким переносом по словам (растут в высоту, ширина клампится). */
-const WRAP_COLS = new Set(['mat', 'note', 'vehicleType']);
+const WRAP_COLS = new Set(['mat', 'note', 'vehicleType', 'sed']);
 const PLAN_COL_FONT_PX: Record<string, number> = {
   clst: 7,
   date: 8,
@@ -733,6 +741,29 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     return m;
   }, [anchors]);
 
+  // Карта строк по id — для цепочки переноса (transfer_src) в колонке DAY (накопление дат).
+  const rowById = useMemo(() => {
+    const m = new Map<number, FlowDeliveryRow>();
+    for (const r of rows) m.set(r.id, r);
+    return m;
+  }, [rows]);
+  // Цепочка дат переноса по transfer_src (старая → … → текущая). Одна дата — переноса не было.
+  const transferChainDates = useCallback(
+    (r: FlowDeliveryRow): string[] => {
+      const dates: string[] = [];
+      const seen = new Set<number>();
+      let cur: FlowDeliveryRow | undefined = r;
+      while (cur && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        dates.unshift((cur.plan_date || '').slice(0, 10));
+        const src: number = Number(cur.transfer_src) || 0;
+        cur = src ? rowById.get(src) : undefined;
+      }
+      return dates;
+    },
+    [rowById],
+  );
+
   // Отчёт: окно 7 дней — строки старше (сегодня−7 по дате плана) ЗАКРЫТЫ полностью
   // (ничего не правится; юзер 2026-06-12 п.2). В Плане замок не действует.
   const reportCutoff = useMemo(() => {
@@ -745,8 +776,18 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     [mode, reportCutoff],
   );
   const canEditMol = useCallback(
-    (r: FlowDeliveryRow) => Number(r.fixation_id) === 0 || (mode === 'report' && isTransferredReportRow(r)),
+    (r: FlowDeliveryRow) => Number(r.fixation_id) === 0 || (mode === 'report' && isManualRow(r)),
     [mode],
+  );
+  // Удаление (юзер 2026-06-15): ПЛАН до фиксации — любой черновик (сняли поставку/пересоздали);
+  // ОТЧЁТ — только руками вставленные/переносы, «железную» базу фиксации НЕ трогаем.
+  const canDeleteRow = useCallback(
+    (r: FlowDeliveryRow) => {
+      if (rowLocked(r)) return false;
+      if (mode === 'plan') return Number(r.fixation_id) === 0;
+      return isManualRow(r);
+    },
+    [mode, rowLocked],
   );
 
   // База показа (порядок: день плана → группа сборки → номер поставки → материал).
@@ -827,8 +868,11 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     (spec: PlanColSpec, r: FlowDeliveryRow): string => {
       const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
       switch (spec.id) {
-        case 'date':
-          return fmtPlanDate(r.plan_date);
+        case 'date': {
+          // Накопление переноса (юзер 2026-06-15): «июн 12 → июн 15 → …» по цепочке transfer_src.
+          const chain = transferChainDates(r);
+          return chain.length > 1 ? chain.map(fmtPlanDate).join(' → ') : fmtPlanDate(r.plan_date);
+        }
         case 'fix': {
           const b = Number(r.batch_seq) || 0;
           return b === 0 ? '' : b === 1 ? 'план' : `доп ${b}`;
@@ -886,7 +930,9 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         case 'mat':
           return r.mat || '';
         case 'uom':
-          return r.uom || '';
+          // ЕИ из zm_vl/выгрузки НЕНАДЁЖНА (может писать Т вместо Л). Ориентир — БАЗА НОМЕНКЛАТУР
+          // (ВГХ по no_num, как КГ/V); нет номенклатуры в базе → берём ЕИ с формирования/строки.
+          return (vghByKey.get(normVghKey(r.no_num))?.uom || '').trim() || r.uom || '';
         case 'qty':
           return r.qty == null ? '' : fmtNum3(r.qty);
         case 'kg': {
@@ -902,17 +948,22 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         case 'exp':
           // Сокращённые имена отчёта («Черепанов Д.») резолвим в полное ФИО роли (П6/П5).
           return deliveryExpeditors(r).map(expeditorDisplayName).join('\n');
-        case 'vehicleType': {
-          const ids = splitMultiCell(r.ride_id || '');
-          if (ids.length > 0) {
-            return ids.map((id) => vehicleByGarage.get(id.toUpperCase())?.type || '').join('\n');
-          }
+        case 'vehicleType':
+          // НАШ маркер кузова (БОРТ/ПУЛЬМАН/…) из поля vehicle — НЕ тянем из машины (юзер 2026-06-15).
           return r.vehicle || '';
-        }
         case 'vehicle':
           return splitMultiCell(r.ride_id || r.vehicle || '').join('\n');
         case 'note':
           return Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchor?.note ?? '');
+        case 'sed': {
+          // СЭД-движение документа: статус (подписан/на подписании/…) + на ком сейчас (ФИО подписанта).
+          // Незакрытая поставка (sap_open) помечается «●». История движения — в карточке (клик).
+          const st = (r.sed_status || '').trim();
+          const who = (r.sed_holder || '').trim();
+          if (!st && !who) return '';
+          const head = Number(r.sap_open) === 1 && st ? `● ${st}` : st;
+          return who ? `${head}\n${who}` : head;
+        }
         case 'request':
           // ЗАПРОС (заявка) — с якоря формирования (R3.6). У сеяного импорта без якоря пусто.
           return anchor?.request ?? '';
@@ -922,7 +973,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return '';
       }
     },
-    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName],
+    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName, transferChainDates],
   );
 
   // ── Поиск как в Формировании (подсветка/перелёт, не фильтр) ───────────────────
@@ -985,11 +1036,17 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       for (let i = 0; i < viewRows.length && seen.size < 500; i += 1) {
         const r = viewRows[i];
         if (!r) continue;
-        for (const line of cellText(c, r).split('\n')) if (line) seen.add(line);
+        for (const line of cellText(c, r).split('\n')) {
+          if (!line) continue;
+          // МОЛ в ячейке показывается КОМПАКТНО («Фамилия Имя О.»), а не полным ФИО —
+          // меряем ширину по тому, что реально видно, иначе колонка раздувается (юзер 2026-06-15).
+          seen.add(c.id === 'mol' ? compactFio(line) : line);
+        }
       }
       for (const s of seen) px = Math.max(px, measurePx(s, valFont) + REPORT_HPAD * 2 + 4);
-      // ТИП ТС — ручной перенос по словам в 2 строки, без разрыва букв; ширина аккуратно ограничена.
-      const max = c.id === 'vehicleType' ? 150 : WRAP_COLS.has(c.id) ? 300 : 460;
+      // ТИП ТС/МОЛ — компактные колонки с верхним лимитом; перенос в 2 строки где нужно.
+      const max =
+        c.id === 'vehicleType' ? 150 : c.id === 'mol' ? 170 : WRAP_COLS.has(c.id) ? 300 : 460;
       out[c.id] = Math.round(Math.max(40, Math.min(max, px)));
     }
     return out;
@@ -1024,10 +1081,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const matLines = reportWrapLines(r.mat || '', (colWidths.mat ?? 280) - REPORT_HPAD * 2);
       const noteText = Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchorByKey.get(`${r.ord}|${r.it}`)?.note || '');
       const noteLines = reportWrapLines(noteText, (colWidths.note ?? 230) - REPORT_HPAD * 2);
-      const vtypeText = splitMultiCell(r.ride_id || '').length > 0
-        ? splitMultiCell(r.ride_id || '').map((id) => vehicleByGarage.get(id.toUpperCase())?.type || '').join('\n')
-        : (r.vehicle || '');
-      const vtypeLines = wrapWordsMaxLines(vtypeText, (colWidths.vehicleType ?? 130) - REPORT_HPAD * 2, 2).split('\n').length;
+      // ТИП ТС — наш маркер (поле vehicle, до 3 через \n); высота по числу выбранных типов.
+      const vtypeLines = Math.max(1, splitMultiCell(r.vehicle || '').length);
       const expN = deliveryExpeditors(r).length;
       const cands = [
         32, // база: 2 строки ПОСТАВКА·ЗАКАЗ (телефон в ячейке убран — R3.1)
@@ -1074,9 +1129,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           (!!selected && molUntilStatus(selected.until) === 'expired' && !opts.some((o) => molUntilStatus(o.until) !== 'expired'));
         const cell: FlowMolCell = {
           kind: GridCellKind.Custom,
-          // R3.3: МОЛ открывается для ПРОСМОТРА молов и в Отчёте (как в Формировании); сам выбор в
-          // Отчёте не меняется (блокируется в onCellEdited — «меняет только выгрузка СЭД»).
-          allowOverlay: !locked,
+          // МОЛ в Отчёте — ВСЕГДА на ПРОСМОТР (юзер 2026-06-15: «молы просто смотрим»), даже на
+          // строках старше 7 дней. Менять нельзя (onCellEdited отбивает — «только выгрузка/СЭД»);
+          // 7-дневный замок к МОЛ не применяется, он не редактируется в принципе.
+          allowOverlay: true,
           copyData: noMol ? 'Нет МОЛа' : fullFio,
           themeOverride: planCellTheme(spec.id),
           data: {
@@ -1132,6 +1188,18 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             selectedDrivers: names,
             maxSelected: 3,
           },
+        };
+        return cell;
+      }
+      if (spec.id === 'vehicleType') {
+        // ТИП ТС — наш мультимаркер кузова (до 3); правится/удаляется в окне 7 дней.
+        const editable = !!spec.editable && !locked;
+        const cell: FlowDropdownCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: editable,
+          copyData: (r.vehicle || '').replace(/\n/g, ', '),
+          themeOverride: planCellTheme(spec.id),
+          data: { kind: 'flow-dropdown', value: r.vehicle || '', options: BODY_TYPES as unknown as string[], multi: true, maxSelected: 3 },
         };
         return cell;
       }
@@ -1440,8 +1508,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         }
         if (spec.id === 'mol' && data.kind === 'flow-mol') {
           if (Number(r.fixation_id) > 0) {
-            if (!isTransferredReportRow(r)) {
-              setMsg('МОЛ отчёта меняется только через СЭД или у строк, созданных переносом');
+            if (!isManualRow(r)) {
+              setMsg('МОЛ отчёта меняется только через СЭД или у строк, добавленных/перенесённых руками');
               return;
             }
             const resolved = resolveMolForRow(r, String(data.value ?? ''));
@@ -1488,6 +1556,21 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           pushHistory({ id: r.id, before, after: fields });
           return;
         }
+        if (spec.id === 'vehicleType' && data.kind === 'flow-dropdown') {
+          // ТИП ТС — наш маркер кузова (до 3), НЕ из машины. Пишем в vehicle, ride_id не трогаем.
+          const types = splitMultiCell(String(data.value ?? ''));
+          if (types.length > 3) {
+            setMsg('Можно выбрать не больше трёх типов ТС');
+            return;
+          }
+          const fields: Record<string, string | number | null> = { vehicle: types.join('\n') };
+          const before = captureBefore(r, fields);
+          if (String(before.vehicle ?? '') === fields.vehicle) return;
+          setMsg('');
+          applyDlvFields(r.id, fields);
+          pushHistory({ id: r.id, before, after: fields });
+          return;
+        }
         if (spec.id === 'vehicle' && data.kind === 'flow-vehicle') {
           const ids = splitMultiCell(String(data.value ?? ''));
           if (ids.length > 3) {
@@ -1500,9 +1583,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             setMsg(`Машины ${missing} нет в базе транспорта`);
             return;
           }
-          const value = ids.join('\n');
-          const vehicleTypes = ids.map((id) => vehicleByGarage.get(id.toUpperCase())?.type || '').join('\n');
-          const fields: Record<string, string | number | null> = { vehicle: vehicleTypes, ride_id: value };
+          // ГАРАЖНЫЙ пишет ТОЛЬКО ride_id — ТИП ТС (vehicle) теперь НАШ независимый маркер.
+          const fields: Record<string, string | number | null> = { ride_id: ids.join('\n') };
           const before = captureBefore(r, fields);
           const changed = Object.keys(fields).some((k) => String(before[k] ?? '') !== String(fields[k] ?? ''));
           if (!changed) return;
@@ -1518,8 +1600,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
 
       if (spec.id === 'mol') {
         if (Number(r.fixation_id) > 0) {
-          if (!isTransferredReportRow(r)) {
-            setMsg('МОЛ отчёта меняется только через СЭД или у строк, созданных переносом');
+          if (!isManualRow(r)) {
+            setMsg('МОЛ отчёта меняется только через СЭД или у строк, добавленных/перенесённых руками');
             return;
           }
           const resolved = resolveMolForRow(r, raw);
@@ -1563,6 +1645,29 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         return;
       }
 
+      if (spec.id === 'note') {
+        // Комментарий (юзер 2026-06-15): ОТЧЁТ — правим snap_note строки в окне 7 дней (rowLocked
+        // уже отбил старше; сервер пускает snap_note на зафикс. строку). ПЛАН — комментарий ЯКОРЯ.
+        if (Number(r.fixation_id) > 0) {
+          const fields: Record<string, string | number | null> = { snap_note: raw };
+          const before = captureBefore(r, fields);
+          if (String(before.snap_note ?? '') === raw) return;
+          setMsg('');
+          applyDlvFields(r.id, fields);
+          pushHistory({ id: r.id, before, after: fields });
+          return;
+        }
+        const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
+        if (!anchor) {
+          setMsg('Не нашёл позицию формирования для этой поставки');
+          return;
+        }
+        if (String(anchor.note ?? '') === raw) return;
+        setMsg('');
+        applyAnchorFields(anchor, { note: raw });
+        return;
+      }
+
       // Поля самой поставки. Кол-во валидируем ДО оптимистичного показа.
       const fields: Record<string, string | number | null> = {};
       if (spec.id === 'qty') {
@@ -1586,6 +1691,15 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         fields.exp1 = resolved.value;
         fields.exp2 = '';
       }
+      else if (spec.id === 'vehicleType') {
+        // ТИП ТС — наш маркер кузова (текстовая вставка/ввод): пишем в vehicle, до 3.
+        const types = splitMultiCell(raw);
+        if (types.length > 3) {
+          setMsg('Можно выбрать не больше трёх типов ТС');
+          return;
+        }
+        fields.vehicle = types.join('\n');
+      }
       else if (spec.id === 'vehicle') {
         const ids = splitMultiCell(raw);
         if (ids.length > 3) {
@@ -1598,9 +1712,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           setMsg(`Машины ${missing} нет в базе транспорта`);
           return;
         }
-        const value = ids.join('\n');
-        fields.vehicle = ids.map((id) => vehicleByGarage.get(id.toUpperCase())?.type || '').join('\n');
-        fields.ride_id = value;
+        // ГАРАЖНЫЙ пишет только ride_id; ТИП ТС (vehicle) — отдельный маркер.
+        fields.ride_id = ids.join('\n');
       }
       else return;
 
@@ -1663,8 +1776,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   const selectedCount = selection.rows.length;
   /** Массовая отметка отчёта (ТЗ §5.1): одно значение на все выделенные строки,
    *  БЕЗ привязки к складу — выбрал → протянулось. Причина чистится при «увезли». */
-  const massMark = useCallback(
-    (done: 'выполнено' | 'не увезли', reason: string) => {
+  // Применить статус ко ВСЕМ выделенным строкам разом (массовая отметка + вставка значения
+  // статуса из буфера). Замок 7 дней уважаем. `done_stat:''` = сброс в ожидание.
+  const applyStatusToSelected = useCallback(
+    (fields: { done_stat: string; fail_reason: string }) => {
       const targets: FlowDeliveryRow[] = [];
       let lockedHit = false;
       for (const idx of selection.rows) {
@@ -1679,7 +1794,6 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       if (lockedHit) setMsg('Часть строк старше 7 дней — отчёт по ним закрыт');
       if (targets.length === 0) return;
       if (!lockedHit) setMsg('');
-      const fields = { done_stat: done, fail_reason: done === 'не увезли' ? reason : '' };
       setRows((prev) => {
         const ids = new Set(targets.map((t) => t.id));
         const next = prev.map((x) => (ids.has(x.id) ? ({ ...x, ...fields } as FlowDeliveryRow) : x));
@@ -1693,13 +1807,52 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     },
     [selection, viewRows, applyServerDlv, rowLocked],
   );
+  const massMark = useCallback(
+    (done: 'выполнено' | 'не увезли', reason: string) =>
+      applyStatusToSelected({ done_stat: done, fail_reason: done === 'не увезли' ? reason : '' }),
+    [applyStatusToSelected],
+  );
+  // Вставка из буфера в колонку СТАТУС: одно скопированное значение → на ВСЕ выделенные строки
+  // (юзер 2026-06-15: «копирую, выделяю другие строки, вставляю — а идёт только на одну»). Перенос
+  // вставкой не копируем (у него своя дата-логика через ячейку). Прочие колонки — стандартная Glide.
+  const onPaste = useCallback(
+    (target: readonly [number, number], values: readonly (readonly string[])[]): boolean => {
+      const spec = COLS[target[0]];
+      const pasted = String(values?.[0]?.[0] ?? '').trim();
+      if (spec?.id === 'status' && selection.rows.length > 1 && pasted) {
+        if (pasted.startsWith(TRANSFER_REASON)) {
+          setMsg('Перенос вставкой не копируется — задайте через ячейку статуса');
+          return false;
+        }
+        applyStatusToSelected(decodeStatus(pasted));
+        return false; // обработали сами — Glide не вставляет
+      }
+      return true; // остальное — обычная вставка диапазона Glide
+    },
+    [COLS, selection, applyStatusToSelected],
+  );
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];
+    let blocked = 0;
     for (const idx of selection.rows) {
       const r = viewRows[idx];
-      if (r) ids.push(r.id);
+      if (!r) continue;
+      if (canDeleteRow(r)) ids.push(r.id);
+      else blocked++;
     }
-    if (ids.length === 0) return;
+    if (ids.length === 0) {
+      setMsg(
+        blocked > 0
+          ? mode === 'report'
+            ? 'Это база фиксации — удаляются только руками вставленные строки/переносы'
+            : 'Старше 7 дней — отчёт закрыт, удаление заблокировано'
+          : '',
+      );
+      return;
+    }
+    if (blocked > 0) {
+      setMsg(`Удалено ${ids.length}; ${blocked} — база фиксации, пропущены`);
+    }
     // Резерв (не стирание): позиции снова открыты → вернутся в формирование.
     setRows((prev) => {
       const drop = new Set(ids);
@@ -1709,7 +1862,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     });
     setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
     void flowDeliveriesDelete(api, ids).catch(() => undefined);
-  }, [selection, viewRows]);
+  }, [selection, viewRows, canDeleteRow, mode]);
 
   const transferIds = useCallback(
     (ids: readonly number[], toDate: string | null, target: TransferTarget = 'plan', keepDlv = true) => {
@@ -1966,8 +2119,14 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             getCellContent={getCellContent}
             onCellEdited={onCellEdited}
             onCellsEdited={onCellsEdited}
+            onPaste={onPaste}
             gridSelection={selection}
-            onGridSelectionChange={(sel) => setSelection(colZeroRowSelection(sel) ?? sel)}
+            onGridSelectionChange={(sel) => {
+              // Протяжка по первой колонке → выделение строк. СОХРАНЯЕМ current, иначе Glide
+              // теряет активную протяжку и выделяется только одна строка (юзер 2026-06-15).
+              const rowsSel = colZeroRowSelection(sel);
+              setSelection(rowsSel ? { ...rowsSel, current: sel.current } : sel);
+            }}
             getRowThemeOverride={getRowThemeOverride}
             customRenderers={PLAN_RENDERERS}
             getCellsForSelection

@@ -26,6 +26,72 @@ export interface FlowDropdownData {
   /** Разрешить СВОЙ текст: сверху поле ввода (Enter коммитит, печать фильтрует
    *  список). Для колонок «выбери из частых ИЛИ напиши своё» (РАБОТА транспорта). */
   readonly allowCustom?: boolean;
+  /** МУЛЬТИВЫБОР: значение = выбранные опции через `\n`, до `maxSelected` штук
+   *  (ТИП ТС: БОРТ/ПУЛЬМАН/ФУРГОН/ГАЗЕЛЬ — наш маркер кузова, до 3). */
+  readonly multi?: boolean;
+  readonly maxSelected?: number;
+}
+
+/** Мульти-редактор (ТИП ТС): чек-лист опций, локальный набор → «Готово» коммитит. */
+function FlowMultiEditor({
+  value: cell,
+  onFinishedEditing,
+}: {
+  value: FlowDropdownCell;
+  onFinishedEditing: (newValue?: FlowDropdownCell) => void;
+}) {
+  const { options, value, maxSelected = 3 } = cell.data;
+  const [picked, setPicked] = useState<string[]>(() =>
+    value.split('\n').map((s) => s.trim()).filter(Boolean),
+  );
+  const commit = (items: readonly string[]) =>
+    onFinishedEditing({ ...cell, data: { ...cell.data, value: items.join('\n') } });
+  const toggle = (o: string) =>
+    setPicked((prev) =>
+      prev.includes(o) ? prev.filter((x) => x !== o) : prev.length >= maxSelected ? prev : [...prev, o],
+    );
+  return (
+    <div className="flex w-56 flex-col text-text-secondary">
+      <div className="mb-1 flex items-center justify-between px-1 text-[11px] text-text-muted">
+        <span className="tabular-nums">{picked.length}/{maxSelected}</span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => commit([])}
+            className="rounded border border-white/10 px-1.5 py-0.5 transition-colors hover:bg-white/[0.06] hover:text-text-strong"
+          >
+            Очистить
+          </button>
+          <button
+            type="button"
+            onClick={() => commit(picked)}
+            className="rounded border border-accent-clay/40 bg-accent-clay/20 px-1.5 py-0.5 text-text-strong transition-colors hover:bg-accent-clay/30"
+          >
+            Готово
+          </button>
+        </div>
+      </div>
+      <div className="flex min-h-0 flex-col overflow-y-auto">
+        {options.map((o) => {
+          const selected = picked.includes(o);
+          return (
+            <button
+              type="button"
+              key={o}
+              onClick={() => toggle(o)}
+              className={cn(
+                'flex w-full shrink-0 items-center gap-2 rounded px-2 py-1 text-left text-[12px] transition-colors',
+                selected ? 'bg-accent-clay/25 text-text-strong' : 'text-text-primary hover:bg-accent-clay/20',
+              )}
+            >
+              <span className={cn('inline-block h-3 w-3 shrink-0 rounded-sm border', selected ? 'border-accent-clay bg-accent-clay/70' : 'border-white/25')} />
+              {o}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export type FlowDropdownCell = CustomCell<FlowDropdownData>;
@@ -100,12 +166,14 @@ export const flowDropdownRenderer: CustomRenderer<FlowDropdownCell> = {
     c.data !== null &&
     (c.data as { kind?: unknown }).kind === 'flow-dropdown',
   draw: (args, cell) => {
-    // Без стрелки — раскрытие двойным кликом (как в Google Sheets).
-    drawTextCell(args, cell.data.value ?? '', cell.contentAlign);
+    // Без стрелки — раскрытие двойным кликом (как в Google Sheets). В multi-режиме
+    // значения через `\n` показываем в одну строку через запятую.
+    const v = cell.data.value ?? '';
+    drawTextCell(args, cell.data.multi ? v.replace(/\n/g, ', ') : v, cell.contentAlign);
     return true;
   },
-  provideEditor: () => ({
-    editor: FlowDropdownEditor,
+  provideEditor: (cell) => ({
+    editor: cell.data.multi ? FlowMultiEditor : FlowDropdownEditor,
     disablePadding: true,
     disableStyling: true,
     // Оформляем САМ контейнер оверлея (он внешний — не клипается, тень снаружи,

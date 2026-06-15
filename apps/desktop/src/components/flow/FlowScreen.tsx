@@ -14,6 +14,7 @@ import { FlowPlanFixButton } from './FlowPlanFixButton';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
 import { FlowImportIndicator, type FlowImportRunner } from './FlowImportIndicator';
 import { FlowZmVlButton } from './FlowZmVlButton';
+import { FlowSedButton, FlowZmvlOpenButton } from './FlowSapButtons';
 
 /** Этапы плана: формирование → план → отчёт. Транспорт — отдельный раздел сайдбара. */
 type FlowStage = 'form' | 'plan' | 'report';
@@ -110,7 +111,13 @@ export function FlowScreen(): JSX.Element {
               <FlowPlanFixButton />
             </>
           )}
-          {stage === 'report' && <FlowZmVlButton />}
+          {stage === 'report' && (
+            <>
+              <FlowSedButton />
+              <FlowZmVlButton />
+              <FlowZmvlOpenButton />
+            </>
+          )}
         </div>
       </div>
       <WorkspaceCard>

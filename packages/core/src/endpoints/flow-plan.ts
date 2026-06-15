@@ -1,4 +1,5 @@
 import type { ApiClient } from '../api/client';
+import type { FlowSedRow } from './flow';
 
 /**
  * Раздел «Поток», этап «План» — поставки (flow_deliveries). Модель «якорь +
@@ -70,6 +71,14 @@ export interface FlowDeliveryRow {
   snap_pr: string;
   /** Связка строки-переноса с источником (П4): id исходной строки, с которой перенесли. 0 — нет. */
   transfer_src?: number;
+  /** СЭД-снимок (сверка ZM_EDM_DOCS): статус движения документа (подписан/отклонен/аннулирован/
+   *  на подписании/не передан), на ком сейчас (табель подписанта; ФИО — в sed_holder), даты
+   *  запуска/подписания. `sap_open` — поставка есть в zm_vl открытых (целиком не закрыта). */
+  sed_status?: string;
+  sed_who_tab?: string;
+  sed_launch_at?: string;
+  sed_signed_at?: string;
+  sap_open?: number;
 }
 
 /** Одна правка поставки: id + версия (конфликт) + изменённые поля. */
@@ -186,5 +195,124 @@ export async function flowPlanForm(client: ApiClient, date: string): Promise<Flo
     groups: Number(wire.groups) || 0,
     skippedActive: Number(wire.skipped_active) || 0,
     noKey: Number(wire.no_key) || 0,
+  };
+}
+
+/**
+ * Дискретное событие истории позиции по якорю (заказ+позиция). Immutable журнал
+ * движения ТМЦ (модель «якорь ord|it + эпизод dlv|dlv_pos»): смена статуса, возврат,
+ * перенос, удаление-резерв, конфликт zm_vl. Эпизоды (строки поставок) дают остальное.
+ */
+export interface FlowDeliveryEvent {
+  id: number;
+  anchor_ord: string;
+  anchor_it: string;
+  delivery_id: number | null;
+  dlv: string;
+  dlv_pos: string;
+  /** plan_form|fix|status_set|transfer_out|transfer_in|delete_reserve|zmvl_missing_reserve|… */
+  event_kind: string;
+  plan_date: string;
+  qty: number | null;
+  done_stat: string;
+  fail_reason: string;
+  vehicle: string;
+  ride_id: string;
+  expeditors: string;
+  snap_mol: string;
+  snap_approved: string;
+  request: string;
+  login: string;
+  full_name: string;
+  created_at: string;
+}
+
+/** Поля ручного добавления строки поставки (план/отчёт). Все, кроме target/planDate, опциональны. */
+export interface FlowDeliveryAddInput {
+  target: 'plan' | 'report';
+  planDate: string;
+  ord?: string;
+  it?: string;
+  fr?: string;
+  to_wh?: string;
+  no_num?: string;
+  mat?: string;
+  uom?: string;
+  qty?: number | null;
+  dlv?: string;
+  dlv_pos?: string;
+}
+
+/**
+ * Ручное добавление строки поставки (юзер 2026-06-15): created_by='manual:…' — её можно
+ * удалять и править МОЛ/комментарий (не «железная база»). `target='report'` требует уже
+ * зафиксированного дня (иначе `no_report_for_day`); `target='plan'` — дата сегодня/будущее.
+ */
+export async function flowDeliveryAdd(
+  client: ApiClient,
+  input: FlowDeliveryAddInput,
+): Promise<{ id: number | null; fixationId: number; rows: FlowDeliveryRow[] }> {
+  const wire = await client.call<{ id?: number; fixation_id?: number; rows?: FlowDeliveryRow[] }>(
+    'flow_delivery_add',
+    {
+      target: input.target,
+      plan_date: input.planDate,
+      ord: input.ord ?? '',
+      it: input.it ?? '',
+      fr: input.fr ?? '',
+      to_wh: input.to_wh ?? '',
+      no_num: input.no_num ?? '',
+      mat: input.mat ?? '',
+      uom: input.uom ?? '',
+      qty: input.qty ?? null,
+      dlv: input.dlv ?? '',
+      dlv_pos: input.dlv_pos ?? '',
+    },
+  );
+  return {
+    id: wire.id ?? null,
+    fixationId: Number(wire.fixation_id) || 0,
+    rows: Array.isArray(wire.rows) ? wire.rows : [],
+  };
+}
+
+/**
+ * История позиции по якорю: эпизоды (все строки поставок, включая резерв) + дискретные
+ * события. Для карточки/колонки ИСТОРИЯ в Формировании (как в Транспорте). Вызывается
+ * по требованию (открытие карточки) — не polling.
+ */
+export async function flowDeliveryEventsGet(
+  client: ApiClient,
+  ord: string,
+  it: string,
+): Promise<{ episodes: FlowDeliveryRow[]; events: FlowDeliveryEvent[] }> {
+  const wire = await client.call<{ episodes?: FlowDeliveryRow[]; events?: FlowDeliveryEvent[] }>(
+    'flow_delivery_events_get',
+    { ord, it },
+  );
+  return {
+    episodes: Array.isArray(wire.episodes) ? wire.episodes : [],
+    events: Array.isArray(wire.events) ? wire.events : [],
+  };
+}
+
+/**
+ * Сверка СЭД (ZM_EDM_DOCS): клиент парсит выгрузку (`parseSedTsv`) → сервер считает статус движения
+ * документа по каждой поставке (последний запуск, «время согл = подписано», дедуп повторов) и пишет
+ * снимок (sed_status/holder/launch/signed) + события истории. Возвращает сводку прогона.
+ */
+export async function flowSedReconcile(
+  client: ApiClient,
+  rows: FlowSedRow[],
+): Promise<{ received: number; docs: number; updated: number; events: number }> {
+  const wire = await client.call<{ received?: number; docs?: number; updated?: number; events?: number }>(
+    'flow_sed_reconcile',
+    { rows },
+  );
+  return {
+    received: Number(wire.received) || 0,
+    docs: Number(wire.docs) || 0,
+    updated: Number(wire.updated) || 0,
+    events: Number(wire.events) || 0,
   };
 }

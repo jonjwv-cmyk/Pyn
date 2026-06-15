@@ -118,6 +118,21 @@ function downloadCsv(text: string, filename: string): void {
 }
 const num = (n: number | null): string => (n == null ? '' : fmtNum3(n));
 const stamp = (): string => new Date().toISOString().slice(0, 10);
+function expeditorsOf(r: FlowDeliveryRow): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [r.exp1, r.exp2]) {
+    for (const part of T(raw).split(/\r?\n|;/)) {
+      const fio = part.trim();
+      if (!fio) continue;
+      const key = fio.toUpperCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(fio);
+    }
+  }
+  return out;
+}
 
 /** Вариант 1 — полный план (без схлопывания), МОЛ «Фамилия И.О.» без телефона. */
 export function exportPlanFull(rows: FlowDeliveryRow[], ctx: ExportCtx): void {
@@ -138,7 +153,7 @@ export function exportPlanFull(rows: FlowDeliveryRow[], ctx: ExportCtx): void {
     num(kgOf(r, ctx)),
     num(vOf(r, ctx)),
     r.ride_id || '',
-    [r.exp1, r.exp2].filter(Boolean).join(', '),
+    expeditorsOf(r).join(', '),
   ]);
   downloadCsv(csvText(header, out), `План_${stamp()}.csv`);
 }
@@ -159,7 +174,7 @@ export function exportPlanForExpeditors(rows: FlowDeliveryRow[], ctx: ExportCtx)
     g.v += vOf(r, ctx) ?? 0;
     if (T(r.dlv)) g.dlvs.add(`${r.dlv}${T(r.dlv_pos) ? `|${r.dlv_pos}` : ''}`);
     if (T(r.ride_id)) g.rides.add(T(r.ride_id));
-    for (const e of [r.exp1, r.exp2]) if (T(e)) g.exps.add(T(e));
+    for (const e of expeditorsOf(r)) g.exps.add(e);
   }
   const header = ['Дата плана', 'CLST', 'Куда', 'МОЛ', 'Материал', 'ЕИ',
     'Кол-во', 'КГ', 'V', 'Поставки', 'ID', 'Эксп.'];

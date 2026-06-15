@@ -27,12 +27,15 @@ import { formatFullYek } from '@/lib/format-time';
  *  • свёрнутый сайдбар — компактные иконки 2×2.
  */
 
+// Порядок (юзер 2026-06-12): Контакты · OBD · zm_vl · СЭД · МОЛы · OTIF5. В развёрнутом
+// сайдбаре это раскладка 2×2 слева-направо (Контакты|OBD / zm_vl|СЭД / МОЛы|OTIF5),
+// в свёрнутом — тот же порядок сверху вниз. Тексты/иконки прежние, кроме подсказки OBD.
 const SCRIPTS: { id: FlowScriptId; title: string; desc: string; icon: typeof Download }[] = [
-  { id: 'obd', title: 'OBD', desc: 'Синхронизация открытых поставок', icon: Download },
+  { id: 'contacts', title: 'Контакты', desc: 'Синхронизация базы Контактов', icon: BookUser },
+  { id: 'obd', title: 'OBD', desc: 'Синхронизация реестра открытых поставок', icon: Download },
   { id: 'zmvl', title: 'zm_vl', desc: 'Синхронизация реестра поставок', icon: DatabaseZap },
   { id: 'sed', title: 'СЭД', desc: 'Синхронизация с СЭД', icon: FileText },
   { id: 'mols', title: 'МОЛы', desc: 'Синхронизация МОЛов', icon: Users },
-  { id: 'contacts', title: 'Контакты', desc: 'Синхронизация базы Контактов', icon: BookUser },
   { id: 'otif5', title: 'OTIF5', desc: 'Синхронизация поставок для OTIF5', icon: PackageCheck },
 ];
 
@@ -98,7 +101,11 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
   }, [users]);
 
   return (
-    <div className={cn('px-1.5', collapsed ? 'py-1' : 'pb-1 pt-0.5')}>
+    // БЕЗ собственного горизонтального отступа (и в свёрнутом, и в развёрнутом) — кнопки
+    // стоят на той же левой линии и той же ширины, что пункты навигации (родительский <nav>
+    // уже даёт px-1.5). Так и подсказка-тултип справа берёт ТОТ ЖЕ отступ от рейла, и левая
+    // колонка кнопок выровнена со значками вкладок; правая колонка симметрична. Юзер 2026-06-12.
+    <div className={cn(collapsed ? 'py-1' : 'pb-1 pt-0.5')}>
       {/* Свёрнутый сайдбар — кнопки в ОДНУ колонку, чтобы тултип-подсказка справа выходила
           ЗА ПРЕДЕЛЫ рейла (а не на соседнюю кнопку); развёрнутый — 2×2 (юзер 2026-06-12 R3.2). */}
       <div className={cn('grid gap-1', collapsed ? 'grid-cols-1' : 'grid-cols-2')}>
@@ -113,14 +120,18 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
               onMouseEnter={() => setHover(id)}
               onMouseLeave={() => setHover((h) => (h === id ? null : h))}
               className={cn(
-                'flex w-full items-center justify-center gap-1.5 rounded-md border transition-all',
-                collapsed ? 'h-7' : 'h-8 px-1.5',
+                // Значок и текст — по ЛЕВОМУ краю (justify-start), значок в icon-box как у
+                // пунктов навигации → стоит на той же вертикальной линии (юзер 2026-06-12).
+                'flex w-full items-center justify-start gap-1.5 rounded-md border px-1.5 transition-all',
+                collapsed ? 'h-7' : 'h-8',
                 isRunning
                   ? 'border-accent-clay/80 bg-accent-clay/15 text-text-strong shadow-[0_0_10px_rgba(217,119,87,0.55)] animate-pulse'
                   : 'border-border-subtle text-text-secondary hover:border-border-default hover:text-text-strong',
               )}
             >
-              <Icon size={collapsed ? 14 : 13} strokeWidth={1.75} />
+              <span className="flex h-5 w-4 shrink-0 items-center justify-start">
+                <Icon size={collapsed ? 14 : 13} strokeWidth={1.75} />
+              </span>
               {!collapsed && <span className="truncate text-[11px] font-medium">{title}</span>}
               {/* мини-аватар последнего запустившего (угол кнопки) */}
               {p && who && (

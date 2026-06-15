@@ -39,7 +39,8 @@ export function BaseNavRow({ collapsed, active, baseTab, onPick }: BaseNavRowPro
         <HoverCard.Content
           side="right"
           align="start"
-          sideOffset={12}
+          // Единый отступ от рейла со всеми подсказками/флайаутами сайдбара (юзер 2026-06-12).
+          sideOffset={20}
           collisionPadding={8}
           className={cn(
             'z-50 flex w-[180px] flex-col',
