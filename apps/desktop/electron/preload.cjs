@@ -158,8 +158,8 @@ contextBridge.exposeInMainWorld('pyn', {
    * `{ ok: false, error: 'platform_not_supported' }`.
    */
   macro: {
-    runVbs: function pynMacroRunVbs(vbsSource) {
-      return ipcRenderer.invoke('pyn:macro:run-vbs', String(vbsSource || ''));
+    runVbs: function pynMacroRunVbs(vbsSource, opts) {
+      return ipcRenderer.invoke('pyn:macro:run-vbs', String(vbsSource || ''), opts || {});
     },
   },
   /**

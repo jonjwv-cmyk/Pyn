@@ -45,10 +45,16 @@ export interface MacroRunResult {
   error?: string;
 }
 
+export interface MacroInputFile {
+  envName: string;
+  filename?: string;
+  content: string;
+}
+
 export function setupMacroBridge(): void {
   ipcMain.handle(
     'pyn:macro:run-vbs',
-    async (_evt, vbsSource: string): Promise<MacroRunResult> => {
+    async (_evt, vbsSource: string, opts?: { inputFiles?: MacroInputFile[] }): Promise<MacroRunResult> => {
       if (process.platform !== 'win32') {
         return { ok: false, error: 'platform_not_supported' };
       }
@@ -69,10 +75,14 @@ export function setupMacroBridge(): void {
       const id = randomUUID();
       const vbsPath = path.join(macrosDir, `${id}.vbs`);
       const tsvPath = path.join(macrosDir, `${id}.tsv`);
+      const inputPaths: string[] = [];
 
       const cleanup = (): void => {
         try { rmSync(vbsPath, { force: true }); } catch (_) {}
         try { rmSync(tsvPath, { force: true }); } catch (_) {}
+        for (const p of inputPaths) {
+          try { rmSync(p, { force: true }); } catch (_) {}
+        }
       };
 
       // Debug-log путь — VBS пишет checkpoint'ы туда, 1:1 c Kotlin
@@ -82,6 +92,16 @@ export function setupMacroBridge(): void {
       try {
         // Запись VBS без BOM. Node `writeFileSync` с 'utf8' не добавляет BOM.
         writeFileSync(vbsPath, vbsSource, { encoding: 'utf8' });
+        const extraEnv: Record<string, string> = {};
+        for (const item of Array.isArray(opts?.inputFiles) ? opts.inputFiles : []) {
+          const envName = String(item?.envName || '').trim();
+          if (!/^[A-Z0-9_]{3,64}$/.test(envName)) continue;
+          const safeName = String(item.filename || `${envName.toLowerCase()}.txt`).replace(/[^\w.-]+/g, '_');
+          const filePath = path.join(macrosDir, `${id}-${safeName}`);
+          writeFileSync(filePath, String(item.content ?? ''), { encoding: 'utf8' });
+          inputPaths.push(filePath);
+          extraEnv[envName] = filePath;
+        }
 
         let stdoutBuf = '';
         let stderrBuf = '';
@@ -98,6 +118,7 @@ export function setupMacroBridge(): void {
           const child = spawn('cscript', ['//Nologo', vbsPath], {
             env: {
               ...process.env,
+              ...extraEnv,
               OTL_MACRO_OUTPUT: tsvPath,
               OTL_MACRO_DEBUG_LOG: debugLogPath,
             },

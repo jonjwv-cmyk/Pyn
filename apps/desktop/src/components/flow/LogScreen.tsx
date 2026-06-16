@@ -220,12 +220,15 @@ export function LogScreen(): JSX.Element {
               const dur = fmtDuration(r.started_at, r.finished_at);
               const delta = r.total_after - r.total_before;
               const hasTotals = r.total_before > 0 || r.total_after > 0;
+              const failed = Number(r.ok ?? 1) === 0;
               // «Тихий» прогон — формирование не изменилось и в ВГХ ничего не подтянулось.
               const quiet = delta === 0 && !r.staging_upserted;
               return (
                 <div
                   key={r.id}
-                  className="flex items-start gap-3 rounded-lg border border-border-subtle bg-bg-surface/40 px-3 py-2"
+                  className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${
+                    failed ? 'border-rose-300/60 bg-rose-50/40' : 'border-border-subtle bg-bg-surface/40'
+                  }`}
                 >
                   {/* Аватар со статусом (presence) — на обе строки. */}
                   <span className="relative mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center">
@@ -270,6 +273,11 @@ export function LogScreen(): JSX.Element {
                       )}
                       {quiet && <span className="text-[11px] text-text-muted/70">без изменений</span>}
                     </div>
+                    {failed && (
+                      <div className="text-[11.5px] text-rose-600" title={r.error || ''}>
+                        ошибка: {r.error || 'нет данных'}
+                      </div>
+                    )}
                   </div>
                 </div>
               );

@@ -260,6 +260,9 @@ export interface FlowImportRun {
   total_before: number;
   total_after: number;
   deleted: number;
+  /** 1 — успех, 0 — ошибка (текст в error). */
+  ok?: number;
+  error?: string;
 }
 
 /**

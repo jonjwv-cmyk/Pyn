@@ -98,6 +98,9 @@ declare global {
       macro: {
         runVbs: (
           vbsSource: string,
+          opts?: {
+            inputFiles?: Array<{ envName: string; filename?: string; content: string }>;
+          },
         ) => Promise<{ ok: boolean; tsv?: string; error?: string }>;
       };
       /** Auto-update — download + install с поддержкой SHA verify и кэша. */
