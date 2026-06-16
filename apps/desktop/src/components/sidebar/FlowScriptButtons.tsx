@@ -15,6 +15,11 @@ import { useUsersStore } from '@/lib/stores';
 import { Avatar } from '@/components/ui/Avatar';
 import { computeInitials } from '@/lib/initials';
 import { formatFullYek } from '@/lib/format-time';
+import { runFlowSapAction, FLOW_SAP_PASSWORD, type FlowSapActionId } from '@/components/flow/flow-sap-run';
+import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
+
+/** Кнопки с РЕАЛЬНЫМ прогоном SAP (остальные — пока фиксируют нажатие). СЭД/OBD(открытые)/zm_vl(сверка). */
+const SAP_IDS = new Set<FlowScriptId>(['sed', 'obd', 'zmvl']);
 
 /**
  * 4 кнопки-скрипта прямо в сайдбаре (юзер 2026-06-11): OBD / zm_vl / СЭД / МОЛы,
@@ -46,6 +51,9 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
   const [presses, setPresses] = useState<Map<string, FlowScriptPress>>(() => new Map());
   const [running, setRunning] = useState<Set<string>>(() => new Set());
   const [hover, setHover] = useState<string | null>(null);
+  // id, ждущий ввода пароля (SAP-прогон) + последний итог прогона по id (показываем в hover-карточке).
+  const [pwFor, setPwFor] = useState<FlowSapActionId | null>(null);
+  const [results, setResults] = useState<Map<string, { ok: boolean; msg: string }>>(() => new Map());
   const users = useUsersStore((s) => s.users);
   const timersRef = useRef<Map<string, number>>(new Map());
 
@@ -89,8 +97,30 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
     markRunning(id);
   });
 
+  // Прямое управление свечением для РЕАЛЬНЫХ SAP-прогонов (длятся дольше стаб-таймера): держим,
+  // пока бежит SAP+reconcile, снимаем по завершении.
+  const stopRunning = (id: string): void => {
+    const tm = timersRef.current.get(id);
+    if (tm) { window.clearTimeout(tm); timersRef.current.delete(id); }
+    setRunning((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  // SAP-прогон: пароль → SAP-макрос → reconcile (итог в hover-карточку + журнал LOG).
+  const runSap = async (id: FlowSapActionId, password: string): Promise<void> => {
+    setRunning((prev) => new Set(prev).add(id));
+    void flowScriptPress(api, id).catch(() => undefined); // фиксируем кто/когда + LOG + glow остальным
+    const res = await runFlowSapAction(id, password);
+    setResults((prev) => new Map(prev).set(id, res));
+    stopRunning(id);
+  };
+
   const press = (id: FlowScriptId): void => {
-    markRunning(id); // оптимистично — сразу подсветка
+    if (SAP_IDS.has(id)) { setPwFor(id as FlowSapActionId); return; } // SAP — через пароль
+    markRunning(id); // прочие (контакты/МОЛы/OTIF5) — пока фиксируют нажатие
     void flowScriptPress(api, id).catch(() => undefined);
   };
 
@@ -113,6 +143,7 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
           const p = presses.get(id);
           const who = p ? userByLogin.get(p.by) : undefined;
           const isRunning = running.has(id);
+          const res = results.get(id);
           const buttonEl = (
             <button
               type="button"
@@ -152,34 +183,62 @@ export function FlowScriptButtons({ collapsed }: { collapsed: boolean }): JSX.El
               {/* Свёрнутый сайдбар — ЕДИНАЯ подсказка сайдбара (тот же механизм/стиль/отступ,
                   что у пунктов навигации Поток/Чаты/…; меняется только текст = desc). */}
               {collapsed ? <SidebarTooltip label={desc}>{buttonEl}</SidebarTooltip> : buttonEl}
-              {/* hover-карточка «кто запускал» — только в развёрнутом (в свёрнутом — тултип desc). */}
-              {!collapsed && hover === id && p && (
-                <div className="absolute left-1/2 top-full z-50 mt-1 w-[180px] -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-xl">
-                  <div className="flex items-center gap-2">
-                    <Avatar
-                      initials={computeInitials(who?.fullName || p.byName || p.by)}
-                      size={26}
-                      login={p.by}
-                      avatarUrl={who?.avatarUrl}
-                      avatarBlobKey={who?.avatarBlobKey ?? undefined}
-                      avatarBlobNonce={who?.avatarBlobNonce ?? undefined}
-                    />
-                    <div className="min-w-0">
-                      <div className="truncate text-[12px] font-medium text-text-strong">
-                        {who?.fullName || p.byName || p.by}
-                      </div>
-                      <div className="text-[10px] text-text-muted/70">
-                        {isRunning ? 'запускает сейчас' : 'последний запуск'}
-                        {p.at ? ` · ${formatFullYek(p.at)}` : ''}
+              {/* hover-карточка «кто запускал» + итог прогона — только в развёрнутом. */}
+              {!collapsed && hover === id && (p || res) && (
+                <div className="absolute left-1/2 top-full z-50 mt-1 w-[200px] -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-xl">
+                  {p && (
+                    <div className="flex items-center gap-2">
+                      <Avatar
+                        initials={computeInitials(who?.fullName || p.byName || p.by)}
+                        size={26}
+                        login={p.by}
+                        avatarUrl={who?.avatarUrl}
+                        avatarBlobKey={who?.avatarBlobKey ?? undefined}
+                        avatarBlobNonce={who?.avatarBlobNonce ?? undefined}
+                      />
+                      <div className="min-w-0">
+                        <div className="truncate text-[12px] font-medium text-text-strong">
+                          {who?.fullName || p.byName || p.by}
+                        </div>
+                        <div className="text-[10px] text-text-muted/70">
+                          {isRunning ? 'запускает сейчас' : 'последний запуск'}
+                          {p.at ? ` · ${formatFullYek(p.at)}` : ''}
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
+                  {res && (
+                    <div
+                      className={cn(
+                        'text-[10px] leading-snug',
+                        p && 'mt-1.5 border-t border-border-subtle pt-1.5',
+                        res.ok ? 'text-text-secondary' : 'text-danger',
+                      )}
+                    >
+                      {res.msg}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           );
         })}
       </div>
+      <SheetsPasswordPrompt
+        open={pwFor != null}
+        actionLabel={pwFor ? (SCRIPTS.find((s) => s.id === pwFor)?.desc ?? 'SAP-выгрузка') : ''}
+        onSubmit={(pw) => {
+          const id = pwFor;
+          setPwFor(null);
+          if (!id) return;
+          if (pw !== FLOW_SAP_PASSWORD) {
+            setResults((prev) => new Map(prev).set(id, { ok: false, msg: 'Неверный пароль' }));
+            return;
+          }
+          void runSap(id, pw);
+        }}
+        onCancel={() => setPwFor(null)}
+      />
     </div>
   );
 }

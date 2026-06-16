@@ -13,8 +13,6 @@ import { FlowPlanFormButton } from './FlowPlanFormButton';
 import { FlowPlanFixButton } from './FlowPlanFixButton';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
 import { FlowImportIndicator, type FlowImportRunner } from './FlowImportIndicator';
-import { FlowZmVlButton } from './FlowZmVlButton';
-import { FlowSedButton, FlowZmvlOpenButton } from './FlowSapButtons';
 
 /** Этапы плана: формирование → план → отчёт. Транспорт — отдельный раздел сайдбара. */
 type FlowStage = 'form' | 'plan' | 'report';
@@ -111,13 +109,8 @@ export function FlowScreen(): JSX.Element {
               <FlowPlanFixButton />
             </>
           )}
-          {stage === 'report' && (
-            <>
-              <FlowSedButton />
-              <FlowZmVlButton />
-              <FlowZmvlOpenButton />
-            </>
-          )}
+          {/* SAP-актуализация (СЭД / zm_vl / открытые) переехала в ЛЕВЫЙ САЙДБАР
+              (FlowScriptButtons) — юзер 2026-06-16: «думал они в сайдбаре слева, не сверху отчёта». */}
         </div>
       </div>
       <WorkspaceCard>

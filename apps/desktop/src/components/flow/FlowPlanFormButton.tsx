@@ -26,18 +26,30 @@ export function FlowPlanFormButton(): JSX.Element {
   }, []);
 
   /** Даты из колонки DAY формирования (сколько строк ждёт каждую дату).
-   *  Позиции с уже АКТИВНОЙ поставкой не считаем — они в плане, повторно не соберутся. */
+   *  Частичная отгрузка (юзер 2026-06-16): позицию считаем, пока есть ОСТАТОК
+   *  (кол-во выгрузки − Σ открытых поставок > 0); полностью покрытую планом — нет. */
   const loadDates = (): void => {
     setDates(null);
     setMsg('');
     void Promise.all([flowWorkflowGet(api), flowDeliveriesGet(api)])
       .then(([rows, dlv]) => {
-        const planned = new Set(dlv.map((d) => `${d.ord}|${d.it}`));
+        // Σ кол-ва ОТКРЫТЫХ поставок по якорю (occupies: без факта и не увезли/не увезли).
+        const openByAnchor = new Map<string, number>();
+        for (const d of dlv) {
+          const done = String(d.done_stat ?? '');
+          if (d.fact_qty != null || done === 'увезли' || done === 'не увезли') continue;
+          const k = `${d.ord}|${d.it}`;
+          openByAnchor.set(k, (openByAnchor.get(k) ?? 0) + (Number(d.qty) || 0));
+        }
         const byDate = new Map<string, number>();
         for (const r of rows) {
           const d = (r.day_wk || '').trim();
           if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
-          if (planned.has(`${r.ord}|${r.it}`)) continue;
+          const open = openByAnchor.get(`${r.ord}|${r.it}`) ?? 0;
+          if (open > 0) {
+            const q = Number(r.qty);
+            if (!Number.isFinite(q) || q - open <= 1e-6) continue; // покрыта планом целиком
+          }
           byDate.set(d, (byDate.get(d) ?? 0) + 1);
         }
         const list = [...byDate.entries()]

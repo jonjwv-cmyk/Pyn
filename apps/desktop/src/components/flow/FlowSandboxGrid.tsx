@@ -500,12 +500,12 @@ function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; p
   // (fact_qty) ИЛИ статус «увезли», а НЕ цвет «выполнено» из импорта отчёта (он без факта и красил
   // бы формирование зря). Обманка = реально увезли + заказ снова открыт тем же кол-вом.
   const delivered = Number(d.fixation_id) > 0 && posted;
-  // ЗАНИМАЕТ позицию (скрывает из формирования). Освобождают ТОЛЬКО: реальная отгрузка
-  // (факт zm_vl или «увезли» — выгрузка заказов уже уменьшена, остаток виден) и «не увезли»
-  // (возврат). «Выполнено» БЕЗ факта (цвет отчёта, выгрузка НЕ уменьшена) — ЗАНИМАЕТ (прячем,
-  // как 1.2.77): помечено сделанным, повторно не планируем (юзер 2026-06-15). Зеркало OCCUPIES_SQL.
+  // ЗАНИМАЕТ позицию (вычитает кол-во из формирования) по ФАКТУ НАЛИЧИЯ поставки (юзер 2026-06-16):
+  // подписано/не подписано в СЭД, есть проводка или нет, «увезли» — РОЛИ НЕ ИГРАЕТ. Раз поставка
+  // создана и не удалена — её кол-во из формирования ушло. Освобождает ТОЛЬКО удаление (reserved,
+  // строка уходит из карты) и «не увезли» (возврат груза). Зеркало серверного OCCUPIES_SQL.
   const done = String(d.done_stat ?? '');
-  const occupies = d.fact_qty == null && done !== 'увезли' && done !== 'не увезли';
+  const occupies = done !== 'не увезли';
   return {
     a: `${d.ord}|${d.it}`, qty: d.qty == null ? 0 : Number(d.qty), uom: String(d.uom ?? ''),
     posted, delivered, occupies,
@@ -1313,13 +1313,9 @@ export function FlowSandboxGrid(): JSX.Element {
     }
     return m;
   }, [dlvInfoById]);
-  // Якоря с ОТКРЫТОЙ попыткой — только они держат позицию вне Формирования. Закрытые эпизоды
-  // (не увезли+причина/выполнено/перенос) позицию ОТПУСКАЮТ → она снова в формировании (R3.7).
-  const activeDlvAnchors = useMemo(
-    () => new Set([...dlvInfoById.values()].filter((v) => v.occupies).map((v) => v.a)),
-    [dlvInfoById],
-  );
-  // Σ кол-ва ОТКРЫТЫХ (незакрытых) поставок по якорю — сколько уже «занято планом».
+  // Σ кол-ва ОТКРЫТЫХ (незакрытых) поставок по якорю — сколько уже «занято планом». Якорь с открытой
+  // попыткой держит позицию вне Формирования ровно на это кол-во; закрытые эпизоды (не увезли+причина/
+  // выполнено/перенос) поставку ОТПУСКАЮТ (occupies=false) → остаток позиции снова доступен (R3.7).
   const plannedOpenByAnchor = useMemo(() => {
     const m = new Map<string, number>();
     for (const v of dlvInfoById.values()) {
@@ -1381,14 +1377,18 @@ export function FlowSandboxGrid(): JSX.Element {
     const sumByGroup = new Map<string, number>();
     for (const r of rows) {
       if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
-      // Позиция уже в плане (активная поставка) — в формировании её нет, в норму НЕ считаем
-      // (норма = доступный к транспорту остаток по живым строкам; юзер 2026-06-14). Иначе сумма
-      // раздувается спланированными → «мало» не срабатывает, хотя нижний расчёт показывает недобор.
-      if (activeDlvAnchors.has(`${r.ord}|${r.it}`)) continue;
+      // Норма = доступный к транспорту ОСТАТОК (юзер 2026-06-16). Из кол-ва выгрузки вычитаем
+      // Σ НЕЗАКРЫТЫХ поставок по якорю: полностью покрытая планом позиция (остаток ≤ 0) в формировании
+      // не показана и в норму НЕ идёт; частичная (создали поставку 400 из 500) идёт ОСТАТКОМ (100) —
+      // норма транспортная считается ровно на остаток, как видит юзер. Проведённые поставки уже
+      // отражены в кол-ве выгрузки (occupies=false) → не вычитаем.
       const q = typeof r.qty === 'number' ? r.qty : Number(r.qty);
       if (!Number.isFinite(q)) continue;
+      const open = plannedOpenByAnchor.get(`${r.ord}|${r.it}`) ?? 0;
+      const eff = open > 0 ? q - open : q;
+      if (eff <= 1e-6) continue;
       const g = `${r.fr}|${r.to_wh}|${normVghKey(r.no_num)}|${r.uom}|${r.mat}`;
-      sumByGroup.set(g, (sumByGroup.get(g) ?? 0) + q);
+      sumByGroup.set(g, (sumByGroup.get(g) ?? 0) + eff);
     }
     for (const r of rows) {
       if (String(r.day_wk ?? '').toUpperCase() === 'OFF') {
@@ -1397,7 +1397,10 @@ export function FlowSandboxGrid(): JSX.Element {
       }
       const noKey = normVghKey(r.no_num);
       const fr = String(r.fr ?? '').trim();
-      const qtyNum = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+      const q0 = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+      const open = plannedOpenByAnchor.get(`${r.ord}|${r.it}`) ?? 0;
+      // Штучный недобор (<1 ШТ) — тоже по ОСТАТКУ: поставка частично закрыла позицию.
+      const qtyNum = open > 0 ? q0 - open : q0;
       const hasQty = Number.isFinite(qtyNum);
       const minQty = vghByKey.get(noKey)?.min_qty;
       const hasNorm = minQty != null && Number.isFinite(minQty);
@@ -1422,7 +1425,7 @@ export function FlowSandboxGrid(): JSX.Element {
       map.set(r.id, { auto, undershoot });
     }
     return map;
-  }, [rows, vghByKey, whById, activeDlvAnchors]);
+  }, [rows, vghByKey, whById, plannedOpenByAnchor]);
 
   // CLST — ЖИВОЙ из нашего графика. Колонка ПО ДНЯМ НЕДЕЛИ (ПН-ПТ) из графика
   // ВЫБРАННОГО месяца; внутри дня кластер выводим суффиксом: ВЫЕЗД/КХП («ПН КХП»,
@@ -1538,13 +1541,32 @@ export function FlowSandboxGrid(): JSX.Element {
   // позиция ОСТАЁТСЯ в формировании (раньше любая поставка прятала её целиком — терялся остаток).
   // Проведённые поставки уже отражены в qty выгрузки → не вычитаем.
   const visibleRows = useMemo<FlowSandboxRow[]>(() => {
-    return liveRows.filter((r) => {
-      if (!showOff && String(r.day_wk ?? '').toUpperCase() === 'OFF') return false;
+    const out: FlowSandboxRow[] = [];
+    for (const r of liveRows) {
+      if (String(r.day_wk ?? '').toUpperCase() === 'OFF') {
+        if (showOff) out.push(r); // OFF — фантом, остаток не считаем
+        continue;
+      }
       const open = plannedOpenByAnchor.get(`${r.ord}|${r.it}`) ?? 0;
-      if (open <= 0) return true; // незакрытых поставок нет — позиция доступна
-      const avail = (r.qty ?? 0) - open;
-      return avail > 1e-6; // полностью покрыта планом → в Плане, из формирования убираем
-    });
+      if (open <= 0) {
+        out.push(r); // незакрытых поставок нет — позиция доступна целиком
+        continue;
+      }
+      const q0 = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+      const avail = (Number.isFinite(q0) ? q0 : 0) - open;
+      if (avail <= 1e-6) continue; // полностью покрыта планом → в Плане, из формирования убираем
+      // Частичная отгрузка (юзер 2026-06-16): создали поставку 400 из 500 → в формировании остаётся
+      // ОСТАТОК 100. Показываем QTY = остаток; КГ/V масштабируем пропорционально (liveRows посчитал их
+      // от полного кол-ва). Норма транспортная (statMetaById) и добор по выделению (selNorm) считают по
+      // этому же остатку — всё идёт от viewRows. Якорь-строка в БД не меняется (qty=кол-во выгрузки),
+      // это слой показа. Удалили поставку → open уходит, остаток снова = полному кол-ву.
+      const f = q0 > 0 ? avail / q0 : 0;
+      const kg =
+        typeof r.kg === 'number' && Number.isFinite(r.kg) ? Math.round(r.kg * f * 1000) / 1000 : r.kg;
+      const v = typeof r.v === 'number' && Number.isFinite(r.v) ? r.v * f : r.v;
+      out.push({ ...r, qty: Math.round(avail * 1000) / 1000, kg, v });
+    }
+    return out;
   }, [liveRows, plannedOpenByAnchor, showOff]);
 
   // Допустимые РУЧНЫЕ значения STAT по строке (для пунктов выпадашки И валидации в applyEdits).
