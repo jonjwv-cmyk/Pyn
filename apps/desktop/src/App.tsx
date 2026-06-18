@@ -40,6 +40,7 @@ import { wireToChatMessage, wireToChatPartnerFromMessage } from '@/lib/repositor
 import { extractPresenceFromChatWires } from '@/lib/repositories/presence-fill';
 import { isAuthFailure } from '@/lib/version';
 import { triggerAppLockWipe, wipeUserData } from '@/lib/wipe';
+import { useSessionRemaining } from '@/lib/use-session-remaining';
 import {
   useAuthFailureHandler,
   useInitI18n,
@@ -320,19 +321,45 @@ export function App() {
 
   useInitI18n();
 
+  const logoutInFlightRef = useRef(false);
+  // Единый выход из аккаунта: UI → LoginScreen сразу, тяжёлую очистку добиваем в фоне.
+  const doLogout = useCallback(() => {
+    if (logoutInFlightRef.current) return;
+    logoutInFlightRef.current = true;
+    api.setToken(null);
+    setSession(null);
+    setActiveChatId(null);
+    void wipeUserData()
+      .catch((err) => {
+        console.warn('[pyn:logout] wipe failed:', err);
+      })
+      .finally(() => {
+        logoutInFlightRef.current = false;
+      });
+  }, [setActiveChatId]);
+
   useAuthFailureHandler(
     useCallback((code: string) => {
-      if (code === 'session_expired_window') {
-        window.pyn?.debugLog?.('auth-failure', 'session_expired_window — ignoring wipe to keep main UI visible (dev restarts often hit this)');
+      // В DEV `session_expired_window` — частый артефакт рестарта Electron-окна (HMR): не выкидываем,
+      // чтобы не логиниться каждый раз. В ПРОДЕ это реальное истечение окна сессии → выходим СРАЗУ
+      // (юзер 2026-06-17: «должно выкидывать сразу как только время сессии истекло»).
+      if (code === 'session_expired_window' && import.meta.env.DEV) {
+        window.pyn?.debugLog?.('auth-failure', 'session_expired_window — dev: keep UI');
         return;
       }
-      void (async () => {
-        await wipeUserData();
-        setSession(null);
-        setActiveChatId(null);
-      })();
-    }, [setActiveChatId]),
+      doLogout();
+    }, [doLogout]),
   );
+
+  // Проактивный выход РОВНО в момент истечения — не ждём следующего серверного вызова, чтобы статус
+  // не «краснел» без выхода. Реактивный путь (auth-failure) остаётся бэкстопом. DEV не трогаем.
+  const { remainingMs: sessionRemainingMs, hasInfo: hasSessionInfo } = useSessionRemaining();
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    if (!session || !hasSessionInfo || sessionRemainingMs > 0) return;
+    window.pyn?.debugLog?.('session-expiry', 'remaining=0 → авто-выход на вход');
+    doLogout();
+  }, [session, hasSessionInfo, sessionRemainingMs, doLogout]);
 
   // Restore persisted session на mount.
   useEffect(() => {
@@ -344,6 +371,16 @@ export function App() {
       await initDeviceId().catch((err) => {
         debug(`initDeviceId failed: ${err instanceof Error ? err.message : String(err)}`);
       });
+      if (cancelled) return;
+      // ПРОД: сессия НЕ переживает перезапуск приложения (юзер 2026-06-17: «закрыл → при следующем
+      // запуске вход заново, сессию не сохраняем»). Чистим сохранённый токен и показываем LoginScreen.
+      // DEV — восстанавливаем (частые рестарты HMR не должны требовать повторный вход).
+      if (!import.meta.env.DEV) {
+        try { await sessionStore.clear(); } catch { /* токен мог быть пуст — ок */ }
+        debug('prod: сессия не восстанавливается между запусками — LoginScreen');
+        setHydrating(false);
+        return;
+      }
       let restored: Session | null = null;
       try {
         restored = await sessionStore.load();
@@ -592,13 +629,9 @@ export function App() {
 
   // desktop_kicked → wipe всё.
   useWsEvent('desktop_kicked', () => {
-    void (async () => {
-      // eslint-disable-next-line no-console
-      console.log('[pyn:ws] desktop_kicked received, wiping session + cache');
-      await wipeUserData();
-      setSession(null);
-      setActiveChatId(null);
-    })();
+    // eslint-disable-next-line no-console
+    console.log('[pyn:ws] desktop_kicked received, wiping session + cache');
+    doLogout();
   });
 
   // §pyn-1.2.32 — focus-refetch fallback. В корп окружениях где WS не открывается
@@ -1122,11 +1155,7 @@ export function App() {
               onSectionClick={setActiveSection}
               onOpenSettings={() => setShowSettings(true)}
               onLogout={() => {
-                void (async () => {
-                  await wipeUserData();
-                  setSession(null);
-                  setActiveChatId(null);
-                })();
+                doLogout();
               }}
               updatePill={updateInfo ? {
                 stage: updateStage,
