@@ -1,8 +1,9 @@
-import { ipcMain, session as electronSession } from 'electron';
+import { ipcMain } from 'electron';
 import { gunzipSync } from 'node:zlib';
 import { decryptBlob } from '@pyn/core';
 import { resolveMediaUrl } from '../network/media-url';
 import { getProxyState } from './api-bridge';
+import { fetchMediaBytes } from '../network/media-fetch';
 
 /**
  * Скачивание snapshot'a справочника МОЛ.
@@ -46,11 +47,7 @@ export function setupMolBridge(): void {
       const finalUrl = resolveMediaUrl(url, getProxyState());
       // §pyn-1.2.61 — cache:'no-store': снапшот кэшируется в нашем cache-store,
       // HTTP-кэш Chromium на холодном старте даёт net::ERR_CACHE_READ_FAILURE.
-      const resp = await electronSession.defaultSession.fetch(finalUrl, { cache: 'no-store' });
-      if (!resp.ok) {
-        throw new Error(`snapshot_fetch_${resp.status}`);
-      }
-      const encrypted = new Uint8Array(await resp.arrayBuffer());
+      const encrypted = await fetchMediaBytes(finalUrl, 'snapshot');
 
       // AES-256-GCM decrypt envelope → gzipped JSON bytes.
       const gzipped = decryptBlob({

@@ -1,8 +1,9 @@
-import { ipcMain, session as electronSession } from 'electron';
+import { ipcMain } from 'electron';
 import { gunzipSync } from 'node:zlib';
 import { decryptBlob } from '@pyn/core';
 import { resolveMediaUrl } from '../network/media-url';
 import { getProxyState } from './api-bridge';
+import { fetchMediaBytes } from '../network/media-fetch';
 
 /**
  * Скачивание слепка базы ПЕРСОН (вкладка «Контакты») — один-в-один с
@@ -27,11 +28,7 @@ export function setupPersonsBridge(): void {
       }
 
       const finalUrl = resolveMediaUrl(url, getProxyState());
-      const resp = await electronSession.defaultSession.fetch(finalUrl, { cache: 'no-store' });
-      if (!resp.ok) {
-        throw new Error(`snapshot_fetch_${resp.status}`);
-      }
-      const encrypted = new Uint8Array(await resp.arrayBuffer());
+      const encrypted = await fetchMediaBytes(finalUrl, 'snapshot');
 
       const gzipped = decryptBlob({
         encrypted,
