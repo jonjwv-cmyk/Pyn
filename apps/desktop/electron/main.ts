@@ -29,9 +29,14 @@ import { unlinkSync } from 'node:fs';
 // быть ДО любого `console.log` ниже, чтобы захватить.
 setupMainLog();
 
-// Stage 11: DNS override для Chromium net stack. `api.otlhelper.com` → IP VPS.
-// Должно быть ДО `app.whenReady()` — Chromium init читает switch'и однократно.
-app.commandLine.appendSwitch('host-resolver-rules', 'MAP api.otlhelper.com 45.12.239.5');
+// Stage 11: DNS override для Chromium net stack. ВСЕ хосты бэкенда → IP VPS (слепой релей),
+// чтобы клиент НИКОГДА не ходил на Cloudflare напрямую (принцип юзера 2026-06-17 «всё через VPS»).
+// `api` = action/ws/E2E; `cdn` = R2-блобы (раньше в direct-режиме уходил на CF — единственная утечка).
+// Должно быть ДО `app.whenReady()` — Chromium init читает switch'и однократно. Пин обоих — tls.ts.
+app.commandLine.appendSwitch(
+  'host-resolver-rules',
+  'MAP api.otlhelper.com 45.12.239.5,MAP cdn.otlhelper.com 45.12.239.5',
+);
 
 // §fix-gray-gpu — в dev на macOS (особенно с Vite HMR + <webview> + Metal) GPU процесс часто
 // крашится (exit_code=15, "GPU state invalid", network service crash). Это делает окно

@@ -12,8 +12,14 @@ import type { ProxyConfig } from './proxy';
  */
 export const VPS_SPKI_PIN_SHA256_B64 = 'IvrWDtD7Arjrtu/gI0J68V+RAuuHxU3BHXiet00E5w8=';
 
-/** Host, для которого включён pinning. */
+/** Основной pinned-хост (action/ws/E2E). WS ходит только сюда. */
 export const PINNED_HOST = 'api.otlhelper.com';
+
+/** Хосты, для которых включён pinning в HTTP cert-verify — ВСЕ через слепой VPS-релей (один
+ *  self-signed cert, SAN покрывает оба). `api` = E2E action; `cdn` = R2-блобы (аватары/медиа/снимки
+ *  базы). Принцип (юзер 2026-06-17): приложение НЕ ходит на Cloudflare напрямую — всё через VPS, даже
+ *  в direct-режиме (cdn раньше в direct уходил на CF напрямую — это была единственная утечка). */
+export const PINNED_HOSTS = new Set([PINNED_HOST, 'cdn.otlhelper.com']);
 
 /**
  * Включает TLS pinning через `setCertificateVerifyProc`.
@@ -39,7 +45,7 @@ export async function configureTls(ses: Session, _proxy: ProxyConfig | null): Pr
       `[pyn:tls] verify ${hostname} chromium=${verificationResult}(${errorCode}) issuer=${certificate.issuerName} subject=${certificate.subjectName}`,
     );
 
-    if (hostname !== PINNED_HOST) {
+    if (!PINNED_HOSTS.has(hostname)) {
       callback(-3);
       return;
     }
