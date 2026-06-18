@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { History, X } from 'lucide-react';
 import type { FlowDeliveryRow, FlowDeliveryEvent } from '@pyn/core';
 
@@ -60,6 +60,11 @@ function ts(s: string): string {
 export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
   const [data, setData] = useState<{ episodes: FlowDeliveryRow[]; events: FlowDeliveryEvent[] } | null>(null);
   const [loading, setLoading] = useState(false);
+  const loadRef = useRef(load);
+
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
 
   useEffect(() => {
     if (!target) {
@@ -69,12 +74,12 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
     let alive = true;
     setLoading(true);
     setData(null);
-    load(target.ord, target.it)
+    loadRef.current(target.ord, target.it)
       .then((d) => { if (alive) setData(d); })
       .catch(() => { if (alive) setData({ episodes: [], events: [] }); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [target, load]);
+  }, [target?.ord, target?.it]);
 
   if (!target) return null;
 
