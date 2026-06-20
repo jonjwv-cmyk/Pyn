@@ -64,6 +64,7 @@ function ts(s: string): string {
 export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
   const [data, setData] = useState<{ episodes: FlowDeliveryRow[]; events: FlowDeliveryEvent[] } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sedOpen, setSedOpen] = useState<number | null>(null); // id эпизода с раскрытым деревом СЭД
   const loadRef = useRef(load);
   const dataRef = useRef(data);
   const anchorKeyRef = useRef('');
@@ -124,34 +125,25 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
     return m;
   }, [persons]);
 
-  // СЭД ПО ПОСТАВКЕ: берём самую свежую поставку с номером (по запуску СЭД/плану). Если в истории
-  // несколько поставок — показываем СЭД активной/последней (выбор конкретной — позже). Цепочка
-  // движения = события sed_update в хронологии; текущий этап (последний) обводим.
-  const sedView = useMemo(() => {
-    const eps = data?.episodes ?? [];
-    const withDlv = eps.filter((e) => String(e.dlv ?? '').trim() !== '');
-    const pick = [...withDlv].sort((a, b) =>
-      String(b.sed_launch_at || b.plan_date || '').localeCompare(String(a.sed_launch_at || a.plan_date || '')),
-    )[0];
-    if (!pick) return null;
-    const status = sedComputed(pick.sed_status, Number(pick.sap_open) === 1);
-    const tab = String(pick.sed_who_tab ?? '').trim();
+  // СЭД у КАЖДОЙ поставки своя (ТЗ §5, юзер 2026-06-20): статус + на ком (ФИО/телефон/контакт из
+  // базы по табельному) + цепочка движения ИМЕННО этой поставки (sed_update с её номером). По клику
+  // на пилл — раскрытие дерева движения. Чистая функция (зовём per-episode в рендере).
+  const sedFor = (e: FlowDeliveryRow) => {
+    const dlv = String(e.dlv ?? '').trim();
+    const tab = String(e.sed_who_tab ?? '').trim();
     const person = tab ? personByTab.get(tab) : undefined;
-    const until = person?.warehouses?.find((w) => whKey(w.code) === whKey(pick.to_wh))?.until || '';
-    const chain = (data?.events ?? [])
-      .filter((e) => e.event_kind === 'sed_update')
-      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
     return {
-      dlv: String(pick.dlv ?? ''),
-      status,
-      holder: String(pick.sed_holder ?? ''),
+      status: sedComputed(e.sed_status, Number(e.sap_open) === 1),
+      holder: String(e.sed_holder ?? ''),
       phone: person?.mobile || person?.work || '',
       contactStatus: person?.status ?? '',
       isMol: !!person?.isMol,
-      until,
-      chain,
+      until: person?.warehouses?.find((w) => whKey(w.code) === whKey(e.to_wh))?.until || '',
+      chain: (data?.events ?? [])
+        .filter((ev) => ev.event_kind === 'sed_update' && (dlv ? String(ev.dlv ?? '').trim() === dlv : true))
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))),
     };
-  }, [data, personByTab]);
+  };
 
   if (!target) return null;
 
@@ -164,7 +156,7 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="flex max-h-[80vh] w-[840px] max-w-[calc(100vw-2rem)] flex-col rounded-xl border border-black/10 bg-[#FDFDFB] shadow-[0_18px_60px_rgba(0,0,0,0.28)]"
+        className="flex max-h-[80vh] w-[600px] max-w-[calc(100vw-2rem)] flex-col rounded-xl border border-black/10 bg-[#FDFDFB] shadow-[0_18px_60px_rgba(0,0,0,0.28)]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Шапка */}
@@ -191,7 +183,6 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
           </button>
         </div>
 
-        <div className="flex min-h-0 flex-1 divide-x divide-black/5">
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {loading && <div className="py-8 text-center text-[12px] text-[#9C9892]">Загрузка…</div>}
           {!loading && episodes.length === 0 && events.length === 0 && (
@@ -249,6 +240,61 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
                           {veh && <span className="tabular-nums">{veh}</span>}
                         </div>
                       )}
+                      {/* СЭД ЭТОЙ поставки: пилл-статус + раскрытие дерева движения (ТЗ §5). */}
+                      {(e.dlv || '').trim() !== '' && (() => {
+                        const sed = sedFor(e);
+                        const isOpen = sedOpen === e.id;
+                        return (
+                          <div className="mt-1.5 border-t border-black/5 pt-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setSedOpen(isOpen ? null : e.id)}
+                              className="flex w-full items-center gap-1.5 text-[11px]"
+                            >
+                              <FileText size={11} strokeWidth={2} className="shrink-0 text-[#9C9892]" />
+                              <span className="text-[#9C9892]">СЭД</span>
+                              <span
+                                className="inline-flex items-center rounded px-1.5 py-0.5 font-medium"
+                                style={{ background: `${SED_COLOR[sed.status]}1A`, color: SED_COLOR[sed.status] }}
+                              >
+                                {SED_LABEL[sed.status]}
+                              </span>
+                              {sed.holder && <span className="truncate text-[#6B6862]">· {sed.holder}</span>}
+                              <span className="ml-auto shrink-0 text-[#9C9892]">{isOpen ? '▾' : '▸'}</span>
+                            </button>
+                            {isOpen && (
+                              <div className="mt-1.5 flex flex-col gap-1 pl-[18px]">
+                                {(sed.phone || sed.contactStatus || (sed.isMol && sed.until)) && (
+                                  <div className="text-[11px] text-[#6B6862]">
+                                    {sed.phone && <span className="tabular-nums">📞 {sed.phone}</span>}
+                                    {sed.contactStatus && <span className="ml-2 text-[#9C9892]">{sed.contactStatus}</span>}
+                                    {sed.isMol && sed.until && <span className="ml-2 text-[#9C9892]">· МОЛ по {sed.until}</span>}
+                                  </div>
+                                )}
+                                {sed.chain.length === 0 ? (
+                                  <div className="text-[11px] text-[#9C9892]">движение ещё не зафиксировано</div>
+                                ) : (
+                                  sed.chain.map((ev, i) => {
+                                    const current = i === sed.chain.length - 1;
+                                    return (
+                                      <div
+                                        key={ev.id}
+                                        className={`rounded px-2 py-1 text-[11px] ${current ? 'bg-[#FBEFEA] ring-1 ring-[#D97757]/40' : 'bg-black/[0.02]'}`}
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="font-medium text-[#2A2925]">{ev.done_stat || 'СЭД'}</span>
+                                          <span className="tabular-nums text-[#9C9892]">{ts(ev.created_at)}</span>
+                                        </div>
+                                        {ev.full_name && <div className="text-[#6B6862]">{ev.full_name}</div>}
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}
@@ -281,67 +327,6 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
               </div>
             </div>
           )}
-        </div>
-        {/* ПРАВО: СЭД по поставке (ТЗ §5) — статус + на ком (ФИО/телефон/контакт) + цепочка движения. */}
-        <div className="min-h-0 w-[320px] shrink-0 overflow-y-auto bg-[#FAFAF7] px-4 py-3">
-          <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#9C9892]">
-            <FileText size={12} strokeWidth={2} className="text-[#D97757]" />
-            СЭД{sedView?.dlv ? ` · поставка ${sedView.dlv}` : ''}
-          </div>
-          {!sedView ? (
-            <div className="py-8 text-center text-[12px] text-[#9C9892]">
-              Поставок по этой позиции ещё не создавалось.
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2.5">
-              <div
-                className="inline-flex w-fit items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium"
-                style={{ background: `${SED_COLOR[sedView.status]}1A`, color: SED_COLOR[sedView.status] }}
-              >
-                <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: SED_COLOR[sedView.status] }} />
-                {SED_LABEL[sedView.status]}
-              </div>
-              {sedView.holder && (
-                <div className="rounded-lg border border-black/10 bg-white px-3 py-2">
-                  <div className="text-[12px] font-medium text-[#2A2925]">{sedView.holder}</div>
-                  {sedView.phone && <div className="mt-0.5 tabular-nums text-[11px] text-[#6B6862]">📞 {sedView.phone}</div>}
-                  {(sedView.contactStatus || (sedView.isMol && sedView.until)) && (
-                    <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-[#9C9892]">
-                      {sedView.contactStatus && <span>{sedView.contactStatus}</span>}
-                      {sedView.isMol && sedView.until && <span>· МОЛ по {sedView.until}</span>}
-                    </div>
-                  )}
-                </div>
-              )}
-              <div>
-                <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#9C9892]">
-                  Движение ({sedView.chain.length})
-                </div>
-                {sedView.chain.length === 0 ? (
-                  <div className="text-[11px] text-[#9C9892]">движение ещё не зафиксировано</div>
-                ) : (
-                  <div className="flex flex-col gap-1">
-                    {sedView.chain.map((ev, i) => {
-                      const current = i === sedView.chain.length - 1;
-                      return (
-                        <div
-                          key={ev.id}
-                          className={`rounded-md px-2 py-1.5 text-[11px] ${current ? 'bg-[#FBEFEA] ring-1 ring-[#D97757]/50' : 'border border-black/5 bg-white'}`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-medium text-[#2A2925]">{ev.done_stat || 'СЭД'}</span>
-                            <span className="tabular-nums text-[#9C9892]">{ts(ev.created_at)}</span>
-                          </div>
-                          {ev.full_name && <div className="mt-0.5 text-[#6B6862]">{ev.full_name}</div>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
         </div>
       </div>
     </div>
