@@ -147,7 +147,6 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   // поставки под разные машины. Группировка плана: fr+to+уровень (flow_plan_form).
   { id: 'split_level', title: 'УР', width: 44, kind: 'dropdown',
     options: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], editable: true },
-  { id: 'sed', title: 'СЭД', width: 150, kind: 'text' },
   { id: 'history', title: 'ИСТОРИЯ', width: 64, kind: 'history' },
   { id: 'no_num', title: 'NO. №', width: 86, kind: 'text' },
   { id: 'mat', title: 'MAT', width: 210, kind: 'mat' },

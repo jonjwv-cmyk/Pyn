@@ -17,6 +17,8 @@ import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
+import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
+import { FlowAnchorHistoryCard, type FlowAnchorHistoryTarget } from './FlowAnchorHistoryCard';
 import { VghEditCard } from '@/components/vgh/VghEditCard';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { flowVehicleRenderer, type FlowVehicleCell, type FlowVehicleOption } from './flow-vehicle-cell';
@@ -29,6 +31,7 @@ import { useFlowColumnFilters } from './flow-column-filter';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import {
   flowDeliveriesGet,
+  flowDeliveryEventsGet,
   flowDeliveriesEdit,
   flowDeliveriesDelete,
   flowTransfer,
@@ -110,6 +113,7 @@ const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'vehicle', title: 'ГАРАЖНЫЙ', width: 170, editable: true },
   { id: 'note', title: 'NOTE', width: 230, editable: true },
   { id: 'flag', title: 'ПРОВЕРКА', width: 92 },
+  { id: 'history', title: 'ИСТ', width: 56 },
 ];
 
 /** Отчёт — те же поставки, но только зафиксированные + отметки выполнения.
@@ -135,9 +139,9 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'vehicleType', title: 'ТИП ТС', width: 130, editable: true },
   { id: 'vehicle', title: 'ГАРАЖНЫЙ', width: 170, editable: true },
   { id: 'status', title: 'STAT', width: 210, editable: true },
-  { id: 'sed', title: 'СЭД', width: 170 },
   { id: 'note', title: 'NOTE', width: 230, editable: true },
   { id: 'request', title: 'ЗАПРОС', width: 130 },
+  { id: 'history', title: 'ИСТ', width: 56 },
 ];
 
 /** Причины невывоза (юзер 2026-06-14) — зеркало серверного списка (валидация). */
@@ -174,7 +178,7 @@ function decodeStatus(opt: string): { done_stat: string; fail_reason: string } {
   return { done_stat: 'не увезли', fail_reason: opt }; // выбрана причина
 }
 
-const PLAN_RENDERERS = [flowDropdownRenderer, flowMolRenderer, flowMatRenderer, flowDriverRenderer, flowVehicleRenderer];
+const PLAN_RENDERERS = [flowDropdownRenderer, flowMolRenderer, flowMatRenderer, flowHistoryRenderer, flowDriverRenderer, flowVehicleRenderer];
 
 /** Дата плана YYYY-MM-DD → «12 июня» (короткий показ в колонке). */
 function fmtPlanDate(s: string): string {
@@ -414,6 +418,13 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   const [vghCard, setVghCard] = useState<{ noNum: string; mat: string; uom: string; note?: string } | null>(null);
   const openVghCard = useCallback((r: FlowDeliveryRow) => {
     setVghCard({ noNum: String(r.no_num ?? ''), mat: String(r.mat ?? ''), uom: String(r.uom ?? '') });
+  }, []);
+  // §5: карточка Истории движения позиции (с зоной СЭД по каждой поставке). Клик по колонке «История».
+  const [historyCard, setHistoryCard] = useState<FlowAnchorHistoryTarget | null>(null);
+  const openHistoryCard = useCallback((r: FlowDeliveryRow) => {
+    const ord = String(r.ord ?? '').trim();
+    if (!ord) return;
+    setHistoryCard({ ord, it: String(r.it ?? '').trim(), mat: String(r.mat ?? ''), noNum: String(r.no_num ?? '') });
   }, []);
   // Контейнер DataEditor — также для проверки видимости вкладки в ⌘Z-хоткее.
   const measureRef = useRef<HTMLDivElement | null>(null);
@@ -1180,6 +1191,19 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         };
         return cell;
       }
+      if (spec.id === 'history') {
+        // §5: значок Истории движения позиции (внутри — СЭД по каждой поставке). Строки с заказом
+        // (есть якорь → есть эпизоды). Клик → карточка.
+        if (!(r.ord || '').trim()) {
+          return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
+        }
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: false,
+          copyData: '',
+          data: { kind: 'flow-history' },
+        } satisfies FlowHistoryCell;
+      }
       if (spec.id === 'status') {
         // P4: объединённая отметка отчёта — одна выпадашка «увезли / не увезли — <причина>».
         const v = statusValue(r);
@@ -1788,8 +1812,9 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const r = viewRows[row];
       if (!spec || !r) return;
       if (spec.id === 'no') openVghCard(r);
+      else if (spec.id === 'history') openHistoryCard(r);
     },
-    [COLS, viewRows, openVghCard],
+    [COLS, viewRows, openVghCard, openHistoryCard],
   );
 
   // Подсветка строк: ERROR — красная, DUPLICATE — янтарная, черновик — чуть приглушён.
@@ -2221,6 +2246,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         seed={vghCard ? { mat: vghCard.mat, uom: vghCard.uom } : null}
         note={vghCard?.note}
         onClose={() => setVghCard(null)}
+      />
+      {/* §5: карточка Истории (с зоной СЭД по каждой поставке) — клик по колонке «История». */}
+      <FlowAnchorHistoryCard
+        target={historyCard}
+        load={(ord, it) => flowDeliveryEventsGet(api, ord, it)}
+        onClose={() => setHistoryCard(null)}
       />
       {pendingTransfer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
