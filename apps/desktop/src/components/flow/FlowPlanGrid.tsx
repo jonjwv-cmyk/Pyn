@@ -16,6 +16,7 @@ import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
+import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { flowVehicleRenderer, type FlowVehicleCell, type FlowVehicleOption } from './flow-vehicle-cell';
 import { colZeroRowSelection } from './flow-grid-selection';
@@ -57,7 +58,7 @@ import {
 } from '@/lib/schedule/use-schedule-sync';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
-import { fmtNum3, MONTH_ABBR_RU, parseMol, compactFio } from './flow-sandbox.fixtures';
+import { fmtNum3, MONTH_ABBR_RU, parseMol, compactFio, matCardLines, needsWarn } from './flow-sandbox.fixtures';
 import {
   exportPlanForExpeditors,
   exportPlanFull,
@@ -171,7 +172,7 @@ function decodeStatus(opt: string): { done_stat: string; fail_reason: string } {
   return { done_stat: 'не увезли', fail_reason: opt }; // выбрана причина
 }
 
-const PLAN_RENDERERS = [flowDropdownRenderer, flowMolRenderer, flowDriverRenderer, flowVehicleRenderer];
+const PLAN_RENDERERS = [flowDropdownRenderer, flowMolRenderer, flowMatRenderer, flowDriverRenderer, flowVehicleRenderer];
 
 /** Дата плана YYYY-MM-DD → «12 июня» (короткий показ в колонке). */
 function fmtPlanDate(s: string): string {
@@ -1148,6 +1149,24 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             options: opts,
             // R3.1: телефон в ЯЧЕЙКЕ не показываем (только ФИО); телефон есть в выпадашке-карточке.
             phoneDisplay: '',
+          },
+        };
+        return cell;
+      }
+      if (spec.id === 'mat') {
+        // MAT-карточка (read-only) — те же данные, что в Формировании: Создал/Выгружен/Удалён/
+        // Вывезено%/тех-имя. Источник — ЯКОРЬ (живой расчёт; до фиксации пересчёт виден везде).
+        // Доступна на ВСЕХ строках (это просмотр, ограничение 7 дней не применяем). ТЗ §7.
+        const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
+        const cell: FlowMatCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: true,
+          copyData: r.mat ?? '',
+          data: {
+            kind: 'flow-mat',
+            name: r.mat ?? '',
+            warn: anchor ? needsWarn(anchor) : false,
+            lines: anchor ? matCardLines(anchor) ?? [] : [],
           },
         };
         return cell;

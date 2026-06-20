@@ -231,7 +231,7 @@ export function fmtPct(frac: number | null | undefined): string {
 
 /** Доля закрытия строки (живой пересчёт: 1 − qty/chg). null если нечего / ≤0.
  *  В Google-формуле был сдвиг (счёт с 3-й строки) — считаем сами, корректно. */
-export function livePct(row: FlowSandboxRow): number | null {
+export function livePct(row: { qty: number | null; chg: number | null }): number | null {
   const q = row.qty; // сколько сейчас
   const c = row.chg; // сколько было по заказу
   if (q == null || c == null || c === 0) return null;
@@ -355,7 +355,7 @@ export function dayState(row: FlowSandboxRow): { label: string; color?: string }
  *  • создан НЕ Гроховским (ручной заказ) — как было; ИЛИ
  *  • номер заказа начинается на «43» (особая группа; у нас заказы 44* / 42* / 43*).
  *  Юзер 2026-06-05: к правилу «кто создал» добавили правило на номер «43*». */
-export function needsWarn(row: FlowSandboxRow): boolean {
+export function needsWarn(row: { created_by: string; ord: string }): boolean {
   const by = (row.created_by || '').trim().toUpperCase();
   const manual = by !== '' && by !== 'GROKHOVSKIJ';
   const ord43 = (row.ord || '').trim().startsWith('43');
@@ -527,35 +527,53 @@ export function formatDateRu(s: string): string {
 }
 
 /** Карточка/подсказка колонки строками. null — нет. */
+/** Структурный набор полей якоря для MAT-карточки — общий для Формирования (FlowSandboxRow)
+ *  и Плана/Отчёта (FlowRow-якорь). ТЗ §7: одна и та же карточка во всех видах. */
+export interface MatCardRow {
+  created_by: string;
+  load_dt: string;
+  time_at: string;
+  day_wk: string;
+  off_at?: string;
+  qty: number | null;
+  chg: number | null;
+  uom: string;
+  mat_full: string;
+}
+
+/** Read-only строки карточки материала: Создал → Выгружен → (Удалён) → Вывезено% → тех-имя.
+ *  Единый источник (ТЗ §7) — данные из ЯКОРЯ (живой расчёт, до фиксации меняется везде). */
+export function matCardLines(row: MatCardRow): FlowCardLine[] | null {
+  const lines: FlowCardLine[] = [];
+  if (row.created_by) {
+    const cd = formatDateRu(row.load_dt);
+    lines.push({ t: `Создал: ${row.created_by}${cd ? ` — ${cd}` : ''}`, muted: true, nowrap: true });
+  }
+  const up = formatDateRu(row.time_at);
+  if (up) lines.push({ t: `Выгружен: ${up}`, muted: true, nowrap: true });
+  // Дата удаления — для OFF-строк (когда заказ пропал из выгрузки).
+  if (row.day_wk === 'OFF' && row.off_at) {
+    const off = formatDateRu(row.off_at);
+    if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
+  }
+  // В КАРТОЧКЕ показываем вывоз всегда, когда есть данные (в т.ч. 0%); в КОЛОНКЕ 0 не пишем.
+  const p = livePct(row);
+  if (p != null && row.qty != null && row.chg != null) {
+    const uom = row.uom ? ` ${row.uom}` : '';
+    lines.push({
+      t: `Вывезено ${Math.round(p * 100)}% — ${fmtNum3(row.chg - row.qty)} из ${fmtNum3(row.chg)}${uom}`,
+      nowrap: true,
+    });
+  }
+  // Тех-имя ПЕРЕНОСИТСЯ, если длиннее стандарта (ширину задаёт шапка карточки).
+  if (row.mat_full) lines.push({ t: row.mat_full });
+  return lines.length ? lines : null;
+}
+
 export function flowCard(spec: FlowColumnSpec, row: FlowSandboxRow): FlowCardLine[] | null {
   switch (spec.id) {
-    case 'mat': {
-      // Карточка материала: кто создал → когда выгрузили → процент → тех-имя (целиком).
-      const lines: FlowCardLine[] = [];
-      if (row.created_by) {
-        const cd = formatDateRu(row.load_dt);
-        lines.push({ t: `Создал: ${row.created_by}${cd ? ` — ${cd}` : ''}`, muted: true, nowrap: true });
-      }
-      const up = formatDateRu(row.time_at);
-      if (up) lines.push({ t: `Выгружен: ${up}`, muted: true, nowrap: true });
-      // Дата удаления — для OFF-строк (когда заказ пропал из выгрузки).
-      if (row.day_wk === 'OFF' && row.off_at) {
-        const off = formatDateRu(row.off_at);
-        if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
-      }
-      // В КАРТОЧКЕ показываем вывоз всегда, когда есть данные (в т.ч. 0%); в КОЛОНКЕ 0 не пишем.
-      const p = livePct(row);
-      if (p != null && row.qty != null && row.chg != null) {
-        const uom = row.uom ? ` ${row.uom}` : '';
-        lines.push({
-          t: `Вывезено ${Math.round(p * 100)}% — ${fmtNum3(row.chg - row.qty)} из ${fmtNum3(row.chg)}${uom}`,
-          nowrap: true,
-        });
-      }
-      // Тех-имя ПЕРЕНОСИТСЯ, если длиннее стандарта (ширину задаёт шапка карточки).
-      if (row.mat_full) lines.push({ t: row.mat_full });
-      return lines.length ? lines : null;
-    }
+    case 'mat':
+      return matCardLines(row);
     case 'mol': {
       const m = parseMol(row.mol);
       if (!m) return null;
