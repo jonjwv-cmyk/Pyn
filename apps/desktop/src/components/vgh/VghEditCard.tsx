@@ -195,11 +195,25 @@ export function VghEditCard({ noNum, addMode = false, seed, note, onClose }: Vgh
   const minQtyWipe =
     !minLocked && origMinQty != null && origMinQty > 0 && (effMinQty == null || effMinQty <= 0);
 
+  // Габариты (мм): если заданы — ЦЕЛОЕ ≥1 мм, БЕЗ запятой (юзер 2026-06-20). 0/дробь → нельзя
+  // сохранить (как нулевой вес). Пустой габарит допустим (объём просто не посчитается).
+  const dimInvalid = (s: string): boolean => {
+    const t = s.trim();
+    if (t === '') return false;
+    const n = parseNum(t);
+    return n == null || !Number.isInteger(n) || n < 1;
+  };
+  const lenInvalid = dimInvalid(form.len_mm);
+  const widInvalid = dimInvalid(form.wid_mm);
+  const hgtInvalid = dimInvalid(form.hgt_mm);
+  const dimsOk = !lenInvalid && !widInvalid && !hgtInvalid;
+
   // Добавление НОВОЙ: обязательны номенклатура + наименование + ЕИ + вес>0 + ≥1 склад-отправитель.
   // Правка/дубль — данные уже есть, но вес>0 и не-обнуление нормы проверяем всегда.
   const canSave =
     weightValid &&
     !minQtyWipe &&
+    dimsOk &&
     (editing ||
       (editNoNum !== '' && form.mat.trim() !== '' && form.uom.trim() !== '' && whList.length > 0));
 
@@ -286,9 +300,9 @@ export function VghEditCard({ noNum, addMode = false, seed, note, onClose }: Vgh
                 )}
               </div>
               <div className="grid grid-cols-3 gap-2.5">
-                <Field label="Длина, мм" value={form.len_mm} onChange={(v) => set('len_mm', v)} mono />
-                <Field label="Ширина, мм" value={form.wid_mm} onChange={(v) => set('wid_mm', v)} mono />
-                <Field label="Высота, мм" value={form.hgt_mm} onChange={(v) => set('hgt_mm', v)} mono />
+                <Field label="Длина, мм" value={form.len_mm} onChange={(v) => set('len_mm', v)} mono invalid={lenInvalid} hint={lenInvalid ? 'целое ≥1 мм, без запятой' : undefined} />
+                <Field label="Ширина, мм" value={form.wid_mm} onChange={(v) => set('wid_mm', v)} mono invalid={widInvalid} hint={widInvalid ? 'целое ≥1 мм, без запятой' : undefined} />
+                <Field label="Высота, мм" value={form.hgt_mm} onChange={(v) => set('hgt_mm', v)} mono invalid={hgtInvalid} hint={hgtInvalid ? 'целое ≥1 мм, без запятой' : undefined} />
               </div>
               <div className="grid grid-cols-2 gap-2.5">
                 <div>
