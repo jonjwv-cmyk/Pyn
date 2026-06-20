@@ -208,93 +208,98 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
                   const mol = (e.snap_mol || '').trim();
                   const exps = [e.exp1, e.exp2].filter(Boolean).join(', ');
                   const veh = [e.ride_id, e.vehicle].filter(Boolean).join(' · ');
+                  const hasDlv = (e.dlv || '').trim() !== '';
+                  const sed = hasDlv ? sedFor(e) : null;
+                  const isOpen = sedOpen === e.id;
                   return (
                     <div
                       key={e.id}
                       className={`rounded-lg border px-3 py-2 ${reserved ? 'border-black/5 bg-black/[0.02] opacity-70' : 'border-black/10 bg-white'}`}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 text-[12px] font-medium text-[#2A2925]">
-                          <span
-                            className="inline-block h-1.5 w-1.5 rounded-full"
-                            style={{ background: statusColor(e.done_stat, e.fail_reason) }}
-                          />
-                          {statusText(e.done_stat, e.fail_reason)}
-                          {reserved && <span className="text-[11px] font-normal text-[#9C9892]">· снято</span>}
+                      <div className="flex items-start justify-between gap-3">
+                        {/* ЛЕВО — судьба поставки */}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 text-[12px] font-medium text-[#2A2925]">
+                            <span
+                              className="inline-block h-1.5 w-1.5 rounded-full"
+                              style={{ background: statusColor(e.done_stat, e.fail_reason) }}
+                            />
+                            {statusText(e.done_stat, e.fail_reason)}
+                            {reserved && <span className="text-[11px] font-normal text-[#9C9892]">· снято</span>}
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-[#6B6862]">
+                            <span>{e.dlv ? `поставка ${e.dlv}${e.dlv_pos ? `/${e.dlv_pos}` : ''}` : 'черновик (без №)'}</span>
+                            {active && <span className="font-medium text-[#B45309]">активна</span>}
+                            {e.qty != null && <span>{e.qty} {e.uom}</span>}
+                            {Number(e.fixation_id) > 0 && <span>зафикс.</span>}
+                            {e.fact_qty != null && <span className="text-[#1F7A33]">факт {e.fact_qty}{e.fact_dt ? ` · ${e.fact_dt}` : ''}</span>}
+                          </div>
+                          {(mol || exps || veh) && (
+                            <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[#6B6862]">
+                              {mol && <span>МОЛ: {mol}</span>}
+                              {exps && <span>возил: {exps}</span>}
+                              {veh && <span className="tabular-nums">{veh}</span>}
+                            </div>
+                          )}
                         </div>
-                        <div className="text-[11px] tabular-nums text-[#6B6862]">
-                          {e.plan_date || '—'}
-                        </div>
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-[#6B6862]">
-                        <span>{e.dlv ? `поставка ${e.dlv}${e.dlv_pos ? `/${e.dlv_pos}` : ''}` : 'черновик (без №)'}</span>
-                        {active && <span className="font-medium text-[#B45309]">активна</span>}
-                        {e.qty != null && <span>{e.qty} {e.uom}</span>}
-                        {Number(e.fixation_id) > 0 && <span>зафикс.</span>}
-                        {e.fact_qty != null && <span className="text-[#1F7A33]">факт {e.fact_qty}{e.fact_dt ? ` · ${e.fact_dt}` : ''}</span>}
-                      </div>
-                      {(mol || exps || veh) && (
-                        <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[#6B6862]">
-                          {mol && <span>МОЛ: {mol}</span>}
-                          {exps && <span>возил: {exps}</span>}
-                          {veh && <span className="tabular-nums">{veh}</span>}
-                        </div>
-                      )}
-                      {/* СЭД ЭТОЙ поставки: пилл-статус + раскрытие дерева движения (ТЗ §5). */}
-                      {(e.dlv || '').trim() !== '' && (() => {
-                        const sed = sedFor(e);
-                        const isOpen = sedOpen === e.id;
-                        return (
-                          <div className="mt-1.5 border-t border-black/5 pt-1.5">
-                            <button
-                              type="button"
-                              onClick={() => setSedOpen(isOpen ? null : e.id)}
-                              className="flex w-full items-center gap-1.5 text-[11px]"
-                            >
-                              <FileText size={11} strokeWidth={2} className="shrink-0 text-[#9C9892]" />
-                              <span className="text-[#9C9892]">СЭД</span>
+                        {/* ПРАВО — дата + ПИЛЛ СЭД (статус + ФИО); клик → плавное раскрытие движения */}
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          <span className="text-[10px] tabular-nums text-[#9C9892]">{e.plan_date || '—'}</span>
+                          {sed && (
+                            <button type="button" onClick={() => setSedOpen(isOpen ? null : e.id)} className="flex flex-col items-end gap-0.5">
                               <span
-                                className="inline-flex items-center rounded px-1.5 py-0.5 font-medium"
+                                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium"
                                 style={{ background: `${SED_COLOR[sed.status]}1A`, color: SED_COLOR[sed.status] }}
                               >
+                                <FileText size={10} strokeWidth={2} />
                                 {SED_LABEL[sed.status]}
+                                <span className="opacity-70">{isOpen ? '▾' : '▸'}</span>
                               </span>
-                              {sed.holder && <span className="truncate text-[#6B6862]">· {sed.holder}</span>}
-                              <span className="ml-auto shrink-0 text-[#9C9892]">{isOpen ? '▾' : '▸'}</span>
+                              {sed.holder && <span className="max-w-[150px] truncate text-[10px] text-[#6B6862]">{sed.holder}</span>}
                             </button>
-                            {isOpen && (
-                              <div className="mt-1.5 flex flex-col gap-1 pl-[18px]">
-                                {(sed.phone || sed.contactStatus || (sed.isMol && sed.until)) && (
-                                  <div className="text-[11px] text-[#6B6862]">
-                                    {sed.phone && <span className="tabular-nums">📞 {sed.phone}</span>}
-                                    {sed.contactStatus && <span className="ml-2 text-[#9C9892]">{sed.contactStatus}</span>}
-                                    {sed.isMol && sed.until && <span className="ml-2 text-[#9C9892]">· МОЛ по {sed.until}</span>}
-                                  </div>
-                                )}
-                                {sed.chain.length === 0 ? (
-                                  <div className="text-[11px] text-[#9C9892]">движение ещё не зафиксировано</div>
-                                ) : (
-                                  sed.chain.map((ev, i) => {
+                          )}
+                        </div>
+                      </div>
+                      {/* ПЛАВНОЕ раскрытие движения СЭД этой поставки — этапы по времени (таймлайн). */}
+                      {sed && (
+                        <div className={`grid overflow-hidden transition-[grid-template-rows] duration-300 ease-out ${isOpen ? 'mt-2 grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                          <div className="min-h-0">
+                            <div className="border-t border-black/5 pt-2">
+                              {(sed.phone || sed.contactStatus || (sed.isMol && sed.until)) && (
+                                <div className="mb-2 text-[11px] text-[#6B6862]">
+                                  {sed.phone && <span className="tabular-nums">📞 {sed.phone}</span>}
+                                  {sed.contactStatus && <span className="ml-2 text-[#9C9892]">{sed.contactStatus}</span>}
+                                  {sed.isMol && sed.until && <span className="ml-2 text-[#9C9892]">· МОЛ по {sed.until}</span>}
+                                </div>
+                              )}
+                              {sed.chain.length === 0 ? (
+                                <div className="text-[11px] text-[#9C9892]">движение по СЭД ещё не зафиксировано</div>
+                              ) : (
+                                <div className="flex flex-col">
+                                  {sed.chain.map((ev, i) => {
                                     const current = i === sed.chain.length - 1;
                                     return (
-                                      <div
-                                        key={ev.id}
-                                        className={`rounded px-2 py-1 text-[11px] ${current ? 'bg-[#FBEFEA] ring-1 ring-[#D97757]/40' : 'bg-black/[0.02]'}`}
-                                      >
-                                        <div className="flex items-center justify-between gap-2">
-                                          <span className="font-medium text-[#2A2925]">{ev.done_stat || 'СЭД'}</span>
-                                          <span className="tabular-nums text-[#9C9892]">{ts(ev.created_at)}</span>
+                                      <div key={ev.id} className="flex gap-2">
+                                        <div className="flex flex-col items-center pt-1">
+                                          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: current ? '#D97757' : '#C9C6C0' }} />
+                                          {!current && <span className="w-px flex-1 bg-black/10" />}
                                         </div>
-                                        {ev.full_name && <div className="text-[#6B6862]">{ev.full_name}</div>}
+                                        <div className={`mb-1.5 flex-1 rounded-md px-2 py-1 text-[11px] ${current ? 'bg-[#FBEFEA]' : 'bg-black/[0.02]'}`}>
+                                          <div className="flex items-center justify-between gap-2">
+                                            <span className="font-medium text-[#2A2925]">{ev.done_stat || 'СЭД'}</span>
+                                            <span className="tabular-nums text-[#9C9892]">{ts(ev.created_at)}</span>
+                                          </div>
+                                          {ev.full_name && <div className="text-[#6B6862]">{ev.full_name}</div>}
+                                        </div>
                                       </div>
                                     );
-                                  })
-                                )}
-                              </div>
-                            )}
+                                  })}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        );
-                      })()}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
