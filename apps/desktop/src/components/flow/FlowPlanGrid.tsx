@@ -93,8 +93,8 @@ const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'trz', title: 'ТЗ', width: 86, editable: true },
   { id: 'fr', title: 'FR', width: 52 },
   { id: 'to', title: 'TO', width: 52 },
-  { id: 'graph', title: 'GRAPH', width: 74 },
-  { id: 'clst', title: 'CLST', width: 72 },
+  { id: 'graph', title: 'ГРАФ', width: 56 },
+  { id: 'clst', title: 'CLST', width: 64 },
   { id: 'mol', title: 'МОЛ', width: 150, editable: true },
   { id: 'approved', title: 'СОГЛ.', width: 130, editable: true },
   { id: 'mat', title: 'MAT', width: 280 },
@@ -119,8 +119,8 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'fr', title: 'FR', width: 52 },
   { id: 'to', title: 'TO', width: 52 },
   { id: 'pr', title: 'PR', width: 64 },
-  { id: 'graph', title: 'GRAPH', width: 74 },
-  { id: 'clst', title: 'CLST', width: 72 },
+  { id: 'graph', title: 'ГРАФ', width: 56 },
+  { id: 'clst', title: 'CLST', width: 64 },
   { id: 'mol', title: 'МОЛ', width: 150 },
   { id: 'no', title: 'NO. №', width: 96 },
   { id: 'mat', title: 'MAT', width: 280 },
@@ -881,11 +881,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           } else if (m && canUseLiveWarehouseScheduleForMonth(m.year, m.month) && (!meta || meta.exists !== false)) {
             day = wh && Number(wh.in_schedule) === 1 ? wh.delivery_day : null;
           }
-          return day || 'не в графике';
+          return day || '—';
         }
         case 'clst': {
-          // Только кластер (ВЫЕЗД/КХП), без дня — день теперь в колонке GRAPH (ТЗ §6).
-          return (whMapGet(whByKey, r.to_wh)?.cluster ?? '').trim();
+          // Только ВЫЕЗД/КХП (НТМК и прочие кластеры — пусто). День — в GRAPH (ТЗ §6).
+          const c = (whMapGet(whByKey, r.to_wh)?.cluster ?? '').trim().toUpperCase();
+          return c === 'ВЫЕЗД' || c === 'КХП' ? c : '';
         }
         case 'done':
           return r.done_stat || '';
@@ -1121,9 +1122,14 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         const selected = opts.find((o) => personKey(o.fio) === key);
         const resolved = key ? molByKey.get(key) : undefined;
         const fullFio = selected?.fio ?? resolved?.fio ?? rawFio;
+        // «Нет МОЛа» ПО ФАКТУ (ТЗ §3): у склада нет валидных МОЛов → плашка на всех его живых
+        // строках (как в Формировании). Зафиксированный Отчёт (snapshot) = история отправки:
+        // его НЕ перекрашиваем по текущему складу — только явный текст «нет мол».
+        const isSnapshot = Number(r.fixation_id) > 0;
+        const hasValidMol = opts.some((o) => molUntilStatus(o.until) !== 'expired');
         const noMol =
           rawFio.toUpperCase().includes('НЕТ МОЛ') ||
-          (!!selected && molUntilStatus(selected.until) === 'expired' && !opts.some((o) => molUntilStatus(o.until) !== 'expired'));
+          (!isSnapshot && !!String(r.to_wh ?? '').trim() && !hasValidMol);
         const cell: FlowMolCell = {
           kind: GridCellKind.Custom,
           // МОЛ в Отчёте — ВСЕГДА на ПРОСМОТР (юзер 2026-06-15: «молы просто смотрим»), даже на
@@ -1756,6 +1762,11 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         const flag = flagById.get(r.id) ?? '';
         if (flag === 'ERROR') return { bgCell: '#FBE3E0', textDark: '#8A1F11' };
         if (flag === 'DUPLICATE') return { bgCell: '#FCEFD9', textDark: '#7A4B0F' };
+        // «Нет МОЛа» по факту (ТЗ §3): у склада нет валидных МОЛов → красим строку (живой план).
+        const wh = String(r.to_wh ?? '').trim();
+        if (wh && !molsForWh(wh).some((o) => molUntilStatus(o.until) !== 'expired')) {
+          return { bgCell: '#FBE3E0', textDark: '#7C1812' };
+        }
       }
       if (mode === 'report') {
         // Зеркало исходного отчёта: выполнено = зелёный, причина (не увезено) = серый,
@@ -1767,7 +1778,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       if (!(r.dlv || '').trim()) return { textDark: '#5A5752' };
       return undefined;
     },
-    [viewRows, flagById, mode, rowLocked],
+    [viewRows, flagById, mode, rowLocked, molsForWh],
   );
 
   const selectedCount = selection.rows.length;

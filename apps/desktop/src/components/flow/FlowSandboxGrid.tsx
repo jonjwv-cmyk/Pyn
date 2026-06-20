@@ -516,18 +516,18 @@ function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; p
   };
 }
 
+// «Нет МОЛа» — ПО ФАКТУ (ТЗ §3): склад есть, но валидных (не просроченных) МОЛов у него нет
+// → плашка на ВСЕХ строках склада, независимо от текста в ячейке (пусто/истёк/«нет мол»).
+// Если валидные МОЛы есть — не красим: есть кого выбрать (авто-эффект подставит/снимет).
+// Работает и для НОВЫХ строк (макрос/скрипт): вердикт от склада, а не от содержимого ячейки.
 function molIsGone(
   row: FlowSandboxRow,
   molByWarehouse: ReadonlyMap<string, readonly FlowMolOption[]>,
 ): boolean {
-  const raw = String(row.mol ?? '');
-  if (!raw.trim()) return false;
-  if (raw.toUpperCase().includes('НЕТ МОЛ')) return true;
-  const opts = whMapGet(molByWarehouse, row.to_wh) ?? [];
-  const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
-  if (!sel || molUntilStatus(sel.until) !== 'expired') return false;
-  // Просроченный выбранный МОЛ → «Нет МОЛа» ТОЛЬКО если валидных молов у склада не осталось
-  // (он был единственным). Если валидные есть — авто-эффект подставит одного либо снимет.
+  const wh = String(row.to_wh ?? '').trim();
+  if (!wh) return false; // нет склада-получателя — не наш кейс
+  if (String(row.mol ?? '').toUpperCase().includes('НЕТ МОЛ')) return true;
+  const opts = whMapGet(molByWarehouse, wh) ?? [];
   return !opts.some((o) => molUntilStatus(o.until) !== 'expired');
 }
 
@@ -728,6 +728,11 @@ function statFilterRank(stat: string): number {
  * спиннера), затем фоновый refetch + реалтайм догоняют. Живёт на время сессии.
  */
 let flowRowsCache: FlowSandboxRow[] | null = null;
+// Кэш карты поставок (id→инфо) на время сессии: без него dlvInfoById на каждом входе пуст →
+// «занято-планом» ещё не посчитано → строки-якоря с уже созданной поставкой ПОКАЗЫВАЮТСЯ, а
+// через миг (поставки загрузились) ПРЯЧУТСЯ — видимый прыжок. С кэшем на повторных входах
+// расчёт сразу верный, мигания нет.
+let flowDlvInfoCache: Map<number, ReturnType<typeof dlvInfoOf>> | null = null;
 
 export function FlowSandboxGrid(): JSX.Element {
   // Стартуем из кэша (мгновенно) если он есть; иначе пусто + спиннер до первой загрузки.
@@ -1289,7 +1294,7 @@ export function FlowSandboxGrid(): JSX.Element {
     a: string; qty: number; uom: string; posted: boolean; delivered: boolean; occupies: boolean;
     sedStatus: string; sedHolder: string; sapOpen: boolean;
   };
-  const [dlvInfoById, setDlvInfoById] = useState<Map<number, DlvInfo>>(() => new Map());
+  const [dlvInfoById, setDlvInfoById] = useState<Map<number, DlvInfo>>(() => flowDlvInfoCache ?? new Map());
   // СЭД по якорю — статус движения документа + на ком (с активной поставки позиции). Для колонки СЭД
   // в Формировании (казусы: возили, а 2 дня не подписано / кто отклонил). Незакрытая = sapOpen.
   const sedByAnchor = useMemo(() => {
@@ -1512,6 +1517,8 @@ export function FlowSandboxGrid(): JSX.Element {
       return next;
     });
   });
+  // Кэшируем карту поставок на сессию (мгновенный верный расчёт «занято-планом» на повторных входах).
+  useEffect(() => { if (dlvInfoById.size > 0) flowDlvInfoCache = dlvInfoById; }, [dlvInfoById]);
   // Служебный тумблер «показать OFF/фантомы» (P2) — по умолчанию OFF скрыты.
   const [showOff, setShowOff] = useState(false);
   const offCount = useMemo(

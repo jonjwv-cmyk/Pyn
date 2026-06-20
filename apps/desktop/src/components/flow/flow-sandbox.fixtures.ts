@@ -130,7 +130,7 @@ export const FLOW_STAT_DROPDOWN = ['мало', 'заявка', 'вопрос', '
  * и уходят в карточку материала. Правятся только вспомогательные (editable).
  */
 export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
-  { id: 'clst', title: 'CLST', width: 70, kind: 'text' },
+  { id: 'clst', title: 'ГРАФ', width: 70, kind: 'text' },
   { id: 'ord', title: 'ORD', width: 128, kind: 'order' },
   { id: 'fr', title: 'FR', width: 62, kind: 'text', editable: true },
   { id: 'to_wh', title: 'TO', width: 62, kind: 'to', editable: true },
