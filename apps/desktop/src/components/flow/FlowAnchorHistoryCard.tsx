@@ -61,6 +61,19 @@ function ts(s: string): string {
   return v.length >= 16 ? v.slice(0, 16) : v;
 }
 
+/** Дата СЭД в формате Pyn: «мес дата [год если не текущий] чч:мм» (юзер 2026-06-20). */
+const SED_MON = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+function fmtSedTs(s: string): string {
+  const m = (s || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+  if (!m) return (s || '').slice(0, 16);
+  const y = Number(m[1] ?? '');
+  const mo = Number(m[2] ?? '');
+  const d = Number(m[3] ?? '');
+  const yr = y && y !== new Date().getFullYear() ? ` ${y}` : '';
+  const time = m[4] ? ` ${m[4]}:${m[5] ?? ''}` : '';
+  return `${SED_MON[mo - 1] ?? ''} ${d}${yr}${time}`;
+}
+
 export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
   const [data, setData] = useState<{ episodes: FlowDeliveryRow[]; events: FlowDeliveryEvent[] } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -139,15 +152,39 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
       contactStatus: person?.status ?? '',
       isMol: !!person?.isMol,
       until: person?.warehouses?.find((w) => whKey(w.code) === whKey(e.to_wh))?.until || '',
+      launchAt: String(e.sed_launch_at ?? '').trim(),
+      signedAt: String(e.sed_signed_at ?? '').trim(),
       chain: (data?.events ?? [])
         .filter((ev) => ev.event_kind === 'sed_update' && (dlv ? String(ev.dlv ?? '').trim() === dlv : true))
         .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))),
     };
   };
 
+  // ДЕДУП эпизодов (юзер 2026-06-20): одна поставка = ОДНА запись, а не 6 снимков фиксаций
+  // («ожидание/увезено» повторами). Группируем по dlv|dlv_pos (черновик без номера — по id),
+  // берём САМУЮ свежую версию (row_version). Свежие по плановой дате — сверху.
+  const dedupedEpisodes = useMemo(() => {
+    const byKey = new Map<string, FlowDeliveryRow>();
+    for (const e of data?.episodes ?? []) {
+      const dlv = String(e.dlv ?? '').trim();
+      const key = dlv ? `${dlv}|${String(e.dlv_pos ?? '').trim()}` : `draft-${e.id}`;
+      const cur = byKey.get(key);
+      if (
+        !cur ||
+        Number(e.row_version) > Number(cur.row_version) ||
+        (Number(e.row_version) === Number(cur.row_version) && e.id > cur.id)
+      ) {
+        byKey.set(key, e);
+      }
+    }
+    return [...byKey.values()].sort(
+      (a, b) => String(b.plan_date || '').localeCompare(String(a.plan_date || '')) || b.id - a.id,
+    );
+  }, [data]);
+
   if (!target) return null;
 
-  const episodes = data?.episodes ?? [];
+  const episodes = dedupedEpisodes;
   const events = data?.events ?? [];
 
   return (
@@ -242,20 +279,31 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
                             </div>
                           )}
                         </div>
-                        {/* ПРАВО — дата + ПИЛЛ СЭД (статус + ФИО); клик → плавное раскрытие движения */}
+                        {/* ПРАВО — ОТДЕЛЬНЫЙ ПРЯМОУГОЛЬНИК СЭД: статус + ФИО + дата документа; клик → дерево */}
                         <div className="flex shrink-0 flex-col items-end gap-1">
                           <span className="text-[10px] tabular-nums text-[#9C9892]">{e.plan_date || '—'}</span>
                           {sed && (
-                            <button type="button" onClick={() => setSedOpen(isOpen ? null : e.id)} className="flex flex-col items-end gap-0.5">
-                              <span
-                                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium"
-                                style={{ background: `${SED_COLOR[sed.status]}1A`, color: SED_COLOR[sed.status] }}
-                              >
-                                <FileText size={10} strokeWidth={2} />
-                                {SED_LABEL[sed.status]}
-                                <span className="opacity-70">{isOpen ? '▾' : '▸'}</span>
-                              </span>
-                              {sed.holder && <span className="max-w-[150px] truncate text-[10px] text-[#6B6862]">{sed.holder}</span>}
+                            <button
+                              type="button"
+                              onClick={() => setSedOpen(isOpen ? null : e.id)}
+                              className="flex w-[156px] flex-col gap-1 rounded-lg border border-black/10 bg-[#FAFAF7] p-2 text-left transition-colors hover:border-[#D97757]/40"
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span
+                                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                                  style={{ background: `${SED_COLOR[sed.status]}1A`, color: SED_COLOR[sed.status] }}
+                                >
+                                  <FileText size={9} strokeWidth={2} />
+                                  {SED_LABEL[sed.status]}
+                                </span>
+                                <span className="text-[#9C9892]">{isOpen ? '▾' : '▸'}</span>
+                              </div>
+                              {sed.holder && <span className="truncate text-[11px] font-medium text-[#2A2925]">{sed.holder}</span>}
+                              {sed.signedAt ? (
+                                <span className="text-[10px] text-[#9C9892]">подписан {fmtSedTs(sed.signedAt)}</span>
+                              ) : sed.launchAt ? (
+                                <span className="text-[10px] text-[#9C9892]">запущен {fmtSedTs(sed.launchAt)}</span>
+                              ) : null}
                             </button>
                           )}
                         </div>
@@ -287,7 +335,7 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
                                         <div className={`mb-1.5 flex-1 rounded-md px-2 py-1 text-[11px] ${current ? 'bg-[#FBEFEA]' : 'bg-black/[0.02]'}`}>
                                           <div className="flex items-center justify-between gap-2">
                                             <span className="font-medium text-[#2A2925]">{ev.done_stat || 'СЭД'}</span>
-                                            <span className="tabular-nums text-[#9C9892]">{ts(ev.created_at)}</span>
+                                            <span className="tabular-nums text-[#9C9892]">{fmtSedTs(ev.created_at)}</span>
                                           </div>
                                           {ev.full_name && <div className="text-[#6B6862]">{ev.full_name}</div>}
                                         </div>
