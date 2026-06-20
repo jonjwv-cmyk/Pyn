@@ -25,6 +25,7 @@ import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cel
 import { flowTwoToneRenderer, type FlowTwoCell } from './flow-composed-cells';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
+import { whKey, whMapGet } from './flow-warehouse';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
 import { flowToRenderer, type FlowToCell, type FlowToOption } from './flow-to-cell';
 import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
@@ -521,7 +522,7 @@ function molIsGone(
   const raw = String(row.mol ?? '');
   if (!raw.trim()) return false;
   if (raw.toUpperCase().includes('НЕТ МОЛ')) return true;
-  const opts = molByWarehouse.get(row.to_wh) ?? [];
+  const opts = whMapGet(molByWarehouse, row.to_wh) ?? [];
   const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
   if (!sel || molUntilStatus(sel.until) !== 'expired') return false;
   // Просроченный выбранный МОЛ → «Нет МОЛа» ТОЛЬКО если валидных молов у склада не осталось
@@ -769,7 +770,7 @@ export function FlowSandboxGrid(): JSX.Element {
       const color = COLOR[molStatusKind(r.status)];
       const k = molKey(r.fio);
       if (k && !byKey.has(k)) byKey.set(k, { fio: r.fio, color });
-      const wid = (r.warehouseId || '').trim();
+      const wid = whKey(r.warehouseId);
       if (!wid) continue;
       const phone = r.mobile || r.work || '';
       const opt: FlowMolOption = {
@@ -796,23 +797,10 @@ export function FlowSandboxGrid(): JSX.Element {
     }
     return { molByWarehouse: byWh, molByKey: byKey };
   }, [molRecords]);
-  // Опции МОЛ по складу с защитой от расхождения ведущих нулей (P1): to_wh приходит
-  // 4-символьным («0122»); база МОЛ обычно такая же, но на случай «122» пробуем оба.
+  // Опции МОЛ по складу — зеро-нечувствительно через единый whKey (карта собрана им же),
+  // закрывает расхождение ведущих нулей «0122»/«122», «4801»/«04801» (ТЗ §3).
   const molsForWh = useCallback(
-    (wh: string): readonly FlowMolOption[] => {
-      const direct = molByWarehouse.get(wh);
-      if (direct && direct.length) return direct;
-      const stripped = wh.replace(/^0+/, '');
-      if (stripped && stripped !== wh) {
-        const alt = molByWarehouse.get(stripped);
-        if (alt && alt.length) return alt;
-      }
-      if (/^\d{1,3}$/.test(wh)) {
-        const alt = molByWarehouse.get(wh.padStart(4, '0'));
-        if (alt && alt.length) return alt;
-      }
-      return direct ?? [];
-    },
+    (wh: string): readonly FlowMolOption[] => whMapGet(molByWarehouse, wh) ?? [],
     [molByWarehouse],
   );
   // Авто-МОЛ (P1) — эффект ниже, ПОСЛЕ writeCells/syncEdits (он персистит правки): пустой
@@ -2016,7 +2004,7 @@ export function FlowSandboxGrid(): JSX.Element {
       }
       if (spec.kind === 'mol') {
         const rawMol = String(rowData.mol ?? '');
-        const opts = molByWarehouse.get(rowData.to_wh) ?? [];
+        const opts = whMapGet(molByWarehouse, rowData.to_wh) ?? [];
         // «Нет МОЛа» (красная пилюля + красная строка) если в данных явно «нет мола» ЛИБО
         // выбранный МОЛ ПРОСРОЧЕН (договор истёк по живой базе) — автоматически. В выпадашке
         // он всё равно виден (но с красной пилюлей «по дату» = неактивен, выбрать нельзя).
@@ -2331,7 +2319,7 @@ export function FlowSandboxGrid(): JSX.Element {
       let contractErr: { kind: 'expired' | 'not-covered'; fio: string; until?: string } | null = null;
       const molUntilFor = (toWh: string, molRaw: string): string | undefined => {
         const key = molKey(parseMol(molRaw)?.fio ?? molRaw);
-        return (molByWarehouse.get(toWh) ?? []).find((o) => molKey(o.fio) === key)?.until;
+        return (whMapGet(molByWarehouse, toWh) ?? []).find((o) => molKey(o.fio) === key)?.until;
       };
       // Срок договора МОЛ vs дата доставки: 'expired' (истёк) / 'not-covered' (дата позже
       // конца договора) / null (срока нет, даты нет, либо дата покрывается — дедлайн включителен).
@@ -2417,7 +2405,7 @@ export function FlowSandboxGrid(): JSX.Element {
           const fioStr = String(newVal ?? '').trim();
           if (fioStr) {
             const wantKey = molKey(parseMol(fioStr)?.fio ?? fioStr);
-            const opts = molByWarehouse.get(viewRow.to_wh) ?? [];
+            const opts = whMapGet(molByWarehouse, viewRow.to_wh) ?? [];
             const opt = opts.find((o) => molKey(o.fio) === wantKey);
             if (!opt) {
               molRejects.push({

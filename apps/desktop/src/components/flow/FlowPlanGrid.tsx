@@ -39,6 +39,8 @@ import {
   type FlowDeliveriesChangedEvent,
   type FlowVehicle,
   type FlowVehiclesChangedEvent,
+  type VghChangedEvent,
+  type VghRow,
 } from '@pyn/core';
 import { api } from '@/lib/api';
 import { useWsEvent } from '@/lib/ws';
@@ -46,7 +48,8 @@ import { useMolStore } from '@/lib/stores';
 import { usePersonsStore } from '@/lib/persons-store';
 import { initPersons, savePerson } from '@/lib/persons-repo';
 import { useVghStore, normVghKey } from '@/lib/vgh-store';
-import { ensureVghLoaded } from '@/lib/vgh-repo';
+import { ensureVghLoaded, applyVghChanged } from '@/lib/vgh-repo';
+import { whKey, whMapGet, whDisplay } from './flow-warehouse';
 import {
   canUseLiveWarehouseScheduleForMonth,
   useScheduleMonthsMeta,
@@ -182,30 +185,8 @@ function displayFailReason(reason: string): string {
   return m ? `${TRANSFER_REASON}: ${fmtPlanDate(m[1] ?? '')}` : raw;
 }
 
-/** Код склада в канон для lookup: `606` → `0606`; буквенные (`825Т`) не ломаем. */
-function normWhCode(raw: string | null | undefined): string {
-  const s = String(raw ?? '').trim().toUpperCase();
-  if (/^\d{1,3}$/.test(s)) return s.padStart(4, '0');
-  return s;
-}
-
-function whLookupKeys(raw: string | null | undefined): string[] {
-  const direct = String(raw ?? '').trim().toUpperCase();
-  const normed = normWhCode(direct);
-  const out: string[] = [];
-  for (const k of [direct, normed, normed.replace(/^0+/, '')]) {
-    if (k && !out.includes(k)) out.push(k);
-  }
-  return out;
-}
-
-function getByWarehouseCode<T>(map: ReadonlyMap<string, T>, raw: string | null | undefined): T | undefined {
-  for (const k of whLookupKeys(raw)) {
-    const hit = map.get(k);
-    if (hit) return hit;
-  }
-  return undefined;
-}
+// Нормализация кода склада — единый helper для всего Потока: ./flow-warehouse
+//   whKey (сравнение/ключи карт, zero-insensitive) · whMapGet (map.get) · whDisplay (показ).
 
 /** Ключ сопоставления людей — первые два слова ФИО, как в Формировании. */
 function personKey(fio: string): string {
@@ -287,11 +268,11 @@ function frozenWeekdayOf(
   shops: ReadonlyArray<{ rows: ReadonlyArray<{ weekday: string; warehouses: ReadonlyArray<{ code: string }> }> }>,
   code: string,
 ): string | null {
-  const target = normWhCode(code);
+  const target = whKey(code);
   if (!target) return null;
   for (const shop of shops) {
     for (const row of shop.rows) {
-      if (row.warehouses.some((w) => normWhCode(w.code) === target)) return row.weekday;
+      if (row.warehouses.some((w) => whKey(w.code) === target)) return row.weekday;
     }
   }
   return null;
@@ -432,6 +413,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
 
   // CLST: кластер/день доставки склада-получателя из живой базы складов.
   const whById = useWarehousesStore((st) => st.byId);
+  // Стор ключует по сырому w.id — перекладываем на канон whKey (zero-insensitive), чтобы
+  // поиск склада по to_wh совпадал так же, как в карте МОЛ (ТЗ §3, «нет МОЛа» одинаково).
+  const whByKey = useMemo(
+    () => new Map(Array.from(whById.values(), (w) => [whKey(w.id), w] as const)),
+    [whById],
+  );
   const scheduleMonths = useMemo(() => {
     const seen = new Set<string>();
     const out: { year: number; month: number }[] = [];
@@ -451,6 +438,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   useEffect(() => {
     void ensureVghLoaded();
   }, []);
+  // Реалтайм VGH (вес/объём/тех-имя MAT) — подписка живёт и в Плане/Отчёте, не только в
+  // Формировании: правка карточки ВГХ обновляет КГ/V/MAT сразу, даже если Песочница не
+  // смонтирована. Стор общий — applyVghChanged идемпотентно мержит по ключу (ТЗ §7/§1).
+  useWsEvent<VghChangedEvent>('vgh_changed', (e) => {
+    if (Array.isArray(e.rows)) applyVghChanged(e.rows as unknown as VghRow[]);
+  });
   const molRecords = useMolStore((s) => s.records);
   const { molByWarehouse, molByKey } = useMemo(() => {
     const COLOR = { ok: '#3FB950', error: '#F85149', neutral: '#9AA0A6' } as const;
@@ -461,7 +454,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const color = COLOR[molStatusKind(r.status)];
       const k = personKey(r.fio);
       if (k && !byKey.has(k)) byKey.set(k, { fio: r.fio, color });
-      const wid = normWhCode(r.warehouseId);
+      const wid = whKey(r.warehouseId);
       if (!wid) continue;
       const phone = r.mobile || r.work || '';
       const opt: FlowMolOption = {
@@ -487,10 +480,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     return { molByWarehouse: byWh, molByKey: byKey };
   }, [molRecords]);
   const molsForWh = useCallback(
-    (wh: string): readonly FlowMolOption[] => {
-      const direct = getByWarehouseCode(molByWarehouse, wh);
-      return direct ?? [];
-    },
+    (wh: string): readonly FlowMolOption[] => whMapGet(molByWarehouse, wh) ?? [],
     [molByWarehouse],
   );
 
@@ -878,7 +868,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return b === 0 ? '' : b === 1 ? 'план' : `доп ${b}`;
         }
         case 'clst': {
-          const wh = getByWarehouseCode(whById, r.to_wh);
+          const wh = whMapGet(whByKey, r.to_wh);
           const m = monthOfDate(r.plan_date);
           const meta = m ? scheduleMetaMap.get(monthKey(m.year, m.month)) : undefined;
           let day: string | null = null;
@@ -911,11 +901,11 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         case 'fr':
           return r.fr || '';
         case 'to':
-          return normWhCode(r.to_wh);
+          return whDisplay(r.to_wh);
         case 'pr': {
           // «Склад до» (Был/прежний получатель): зафикс. → snapshot, черновик → живьём с якоря.
           const raw = Number(r.fixation_id) > 0 ? r.snap_pr || '' : (anchor?.pr || '');
-          return raw ? normWhCode(raw) : '';
+          return raw ? whDisplay(raw) : '';
         }
         case 'mol': {
           // Зафиксированное (ТЗ §3.8 / B) читает ЗАМОРОЖЕННЫЙ snapshot, черновик — живьём
@@ -1369,7 +1359,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       if (!opt) {
         return {
           value: '',
-          error: `${resolvePersonName(fioStr, molByKey) || fioStr} не может быть МОЛом на складе ${normWhCode(r.to_wh) || '(склад не задан)'}`,
+          error: `${resolvePersonName(fioStr, molByKey) || fioStr} не может быть МОЛом на складе ${whDisplay(r.to_wh) || '(склад не задан)'}`,
         };
       }
       const contract = checkPersonDate(opt.until, r.plan_date || '');
@@ -1462,7 +1452,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
               sameRowIds,
               ids: multi ? sameRowIds : [r.id],
               keepDlv: true,
-              label: dlv ? `поставка ${dlv}` : `1 строка · ${normWhCode(r.to_wh) || r.to_wh || ''}`,
+              label: dlv ? `поставка ${dlv}` : `1 строка · ${whDisplay(r.to_wh) || r.to_wh || ''}`,
               step: multi ? 'ask' : 'date',
             });
             setMsg('');

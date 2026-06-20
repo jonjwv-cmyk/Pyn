@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { History, X } from 'lucide-react';
-import type { FlowDeliveryRow, FlowDeliveryEvent } from '@pyn/core';
+import type { FlowDeliveryRow, FlowDeliveryEvent, FlowDeliveriesChangedEvent } from '@pyn/core';
+import { useWsEvent } from '@/lib/ws';
 
 /**
  * Карточка ИСТОРИИ движения позиции по ЯКОРЮ (заказ+позиция) — «как в Транспорте».
@@ -61,12 +62,16 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
   const [data, setData] = useState<{ episodes: FlowDeliveryRow[]; events: FlowDeliveryEvent[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const loadRef = useRef(load);
+  const dataRef = useRef(data);
+  const anchorKeyRef = useRef('');
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    loadRef.current = load;
-  }, [load]);
+  useEffect(() => { loadRef.current = load; }, [load]);
+  useEffect(() => { dataRef.current = data; }, [data]);
 
+  // Первичная загрузка по смене якоря (+ индикатор). setData(null) гасит прошлую позицию.
   useEffect(() => {
+    anchorKeyRef.current = target ? `${target.ord}|${target.it}` : '';
     if (!target) {
       setData(null);
       return;
@@ -80,6 +85,32 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [target?.ord, target?.it]);
+
+  // Реалтайм: пока карточка открыта — тихо подтягиваем изменения по СВОЕМУ якорю
+  // (статус/МОЛ/перенос/факт zm_vl/СЭД/удаление) без индикатора и прыжков. ТЗ §1: открытая
+  // карточка истории/СЭД обновляется по событиям, не требуя переоткрытия.
+  useWsEvent<FlowDeliveriesChangedEvent>('flow_deliveries_changed', (e) => {
+    if (!target) return;
+    const incoming = Array.isArray(e.rows) ? (e.rows as unknown as FlowDeliveryRow[]) : [];
+    const touchesAnchor = incoming.some(
+      (r) => String(r.ord) === target.ord && String(r.it) === target.it,
+    );
+    const deleted = new Set(Array.isArray(e.deleted) ? e.deleted : []);
+    const touchesShown =
+      deleted.size > 0 && (dataRef.current?.episodes ?? []).some((ep) => deleted.has(ep.id));
+    if (!touchesAnchor && !touchesShown) return;
+    // Дебаунс: одна перезагрузка на пачку событий (bulk-сверка шлёт чанками).
+    const { ord, it } = target;
+    const key = `${ord}|${it}`;
+    if (reloadTimer.current) clearTimeout(reloadTimer.current);
+    reloadTimer.current = setTimeout(() => {
+      loadRef.current(ord, it)
+        .then((d) => { if (anchorKeyRef.current === key) setData(d); })
+        .catch(() => { /* транзиент — оставляем что было */ });
+    }, 250);
+  });
+
+  useEffect(() => () => { if (reloadTimer.current) clearTimeout(reloadTimer.current); }, []);
 
   if (!target) return null;
 
