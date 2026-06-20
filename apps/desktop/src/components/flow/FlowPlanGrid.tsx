@@ -89,11 +89,12 @@ const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'date', title: 'DAY', width: 78 },
   { id: 'fix', title: 'FIX', width: 60 },
   // ПОСТАВКА·ЗАКАЗ — одна ячейка в 2 строки (П9): сверху поставка|П/П, снизу заказ|П/З.
-  { id: 'dlvord', title: 'DLV · ORD', width: 132 },
+  { id: 'dlvord', title: 'OBD · ORD', width: 132 },
   { id: 'trz', title: 'ТЗ', width: 86, editable: true },
   { id: 'fr', title: 'FR', width: 52 },
   { id: 'to', title: 'TO', width: 52 },
-  { id: 'clst', title: 'CLST', width: 86 },
+  { id: 'graph', title: 'GRAPH', width: 74 },
+  { id: 'clst', title: 'CLST', width: 72 },
   { id: 'mol', title: 'МОЛ', width: 150, editable: true },
   { id: 'approved', title: 'СОГЛ.', width: 130, editable: true },
   { id: 'mat', title: 'MAT', width: 280 },
@@ -114,11 +115,12 @@ const PLAN_COLS: readonly PlanColSpec[] = [
 const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'date', title: 'DAY', width: 78 },
   { id: 'fix', title: 'FIX', width: 60 },
-  { id: 'dlvord', title: 'DLV · ORD', width: 132 },
+  { id: 'dlvord', title: 'OBD · ORD', width: 132 },
   { id: 'fr', title: 'FR', width: 52 },
   { id: 'to', title: 'TO', width: 52 },
   { id: 'pr', title: 'PR', width: 64 },
-  { id: 'clst', title: 'CLST', width: 86 },
+  { id: 'graph', title: 'GRAPH', width: 74 },
+  { id: 'clst', title: 'CLST', width: 72 },
   { id: 'mol', title: 'МОЛ', width: 150 },
   { id: 'no', title: 'NO. №', width: 96 },
   { id: 'mat', title: 'MAT', width: 280 },
@@ -295,6 +297,7 @@ const REPORT_HPAD = 8; // горизонтальный padding ячейки (с 
 /** Колонки с мягким переносом по словам (растут в высоту, ширина клампится). */
 const WRAP_COLS = new Set(['mat', 'note', 'vehicleType', 'sed']);
 const PLAN_COL_FONT_PX: Record<string, number> = {
+  graph: 7,
   clst: 7,
   date: 8,
   status: 8,
@@ -867,7 +870,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           const b = Number(r.batch_seq) || 0;
           return b === 0 ? '' : b === 1 ? 'план' : `доп ${b}`;
         }
-        case 'clst': {
+        case 'graph': {
+          // День доставки склада из графика ТЕКУЩЕГО месяца (ТЗ §6). Нет в графике — так и пишем.
           const wh = whMapGet(whByKey, r.to_wh);
           const m = monthOfDate(r.plan_date);
           const meta = m ? scheduleMetaMap.get(monthKey(m.year, m.month)) : undefined;
@@ -877,8 +881,11 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           } else if (m && canUseLiveWarehouseScheduleForMonth(m.year, m.month) && (!meta || meta.exists !== false)) {
             day = wh && Number(wh.in_schedule) === 1 ? wh.delivery_day : null;
           }
-          if (!day) return 'Нет';
-          return wh?.cluster === 'ВЫЕЗД' || wh?.cluster === 'КХП' ? `${day} ${wh.cluster}` : day;
+          return day || 'не в графике';
+        }
+        case 'clst': {
+          // Только кластер (ВЫЕЗД/КХП), без дня — день теперь в колонке GRAPH (ТЗ §6).
+          return (whMapGet(whByKey, r.to_wh)?.cluster ?? '').trim();
         }
         case 'done':
           return r.done_stat || '';
