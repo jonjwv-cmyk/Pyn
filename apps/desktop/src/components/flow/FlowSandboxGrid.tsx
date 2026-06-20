@@ -26,6 +26,7 @@ import { flowTwoToneRenderer, type FlowTwoCell } from './flow-composed-cells';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { whKey, whMapGet } from './flow-warehouse';
+import { sedComputed, SED_LABEL, flowSignalKind, SIGNAL_SWEEP } from './flow-signal';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
 import { flowToRenderer, type FlowToCell, type FlowToOption } from './flow-to-cell';
 import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
@@ -2071,9 +2072,11 @@ export function FlowSandboxGrid(): JSX.Element {
         } satisfies FlowToCell;
       }
       if (spec.id === 'sed') {
-        // СЭД движение документа по активной поставке позиции: статус + на ком; «●» = незакрыта.
+        // СЭД движение документа по активной поставке позиции: ЕДИНЫЙ computed-статус
+        // (ТЗ §9: сводит sed_status + открытость OBD) + на ком. «подписан · OBD открыта» =
+        // контрольный случай (документ есть, проводки нет).
         const s = sedByAnchor.get(`${rowData.ord}|${rowData.it}`);
-        const head = s ? (s.open && s.status ? `● ${s.status}` : s.status) : '';
+        const head = s ? SED_LABEL[sedComputed(s.status, s.open)] : '';
         const txt = s ? (s.holder ? `${head}\n${s.holder}` : head) : '';
         return {
           kind: GridCellKind.Text,
@@ -3112,9 +3115,15 @@ export function FlowSandboxGrid(): JSX.Element {
       // «Обманка отчёта» (увезли = открыто снова, кол-во по ЕИ совпадает) — РАДУЖНЫЙ перелив,
       // ВЫСШИЙ приоритет (важнее OFF/NEW): это ошибка-сигнал, её надо видеть сразу. Расхождение
       // кол-ва (остаток) обманкой НЕ считается (isCheatRow). Иначе — обычный sweep по типу строки.
-      const cheat = r ? isCheatRow(r) : false;
-      const sweep = cheat
-        ? null
+      // ТЗ §4: RGB по реальной причине. flowSignalKind — единый вердикт сигнала строки:
+      // repeat_done (повторяшка → радуга), signed_open (СЭД подписан, OBD открыта → кислотный
+      // пурпур), sed_pending (СЭД не подписан/отклонён → приглушённый красный). Сигнал поставки/
+      // СЭД важнее стадии строки; нет сигнала → обычный sweep по типу строки (OFF/нет/new/вопрос).
+      const sig = r ? flowSignalKind(isCheatRow(r), sedByAnchor.get(`${r.ord}|${r.it}`)) : null;
+      const rainbow = sig === 'repeat_done';
+      const sigSweep = sig === 'signed_open' || sig === 'sed_pending' ? SIGNAL_SWEEP[sig] : null;
+      const sweep = rainbow || sigSweep
+        ? sigSweep
         : r
           ? r.day_wk === 'OFF'
             ? null
@@ -3128,7 +3137,7 @@ export function FlowSandboxGrid(): JSX.Element {
           : null;
       const lastColUnderlay = col === FLOW_COLUMNS.length - 1;
       const lastRowUnderlay = row === viewRows.length - 1;
-      if (cheat) {
+      if (rainbow) {
         const W = gridPxWidthRef.current || rect.x + rect.width * 4;
         const phase = (performance.now() / RAINBOW_CYCLE_MS) % 1;
         const g = ctx.createLinearGradient(0, 0, W, 0);
@@ -3185,7 +3194,7 @@ export function FlowSandboxGrid(): JSX.Element {
         ctx.restore();
       }
     },
-    [viewRows, isCheatRow],
+    [viewRows, isCheatRow, sedByAnchor],
   );
 
   // Индикаторы в шапке поверх дефолта Glide, в одной точке справа: стрелка МЕНЮ (▾)
