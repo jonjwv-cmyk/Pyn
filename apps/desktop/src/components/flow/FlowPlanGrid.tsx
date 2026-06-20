@@ -17,6 +17,7 @@ import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
+import { VghEditCard } from '@/components/vgh/VghEditCard';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { flowVehicleRenderer, type FlowVehicleCell, type FlowVehicleOption } from './flow-vehicle-cell';
 import { colZeroRowSelection } from './flow-grid-selection';
@@ -98,6 +99,7 @@ const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'clst', title: 'CLST', width: 64 },
   { id: 'mol', title: 'МОЛ', width: 150, editable: true },
   { id: 'approved', title: 'СОГЛ.', width: 130, editable: true },
+  { id: 'no', title: 'NO. №', width: 96 },
   { id: 'mat', title: 'MAT', width: 280 },
   { id: 'uom', title: 'UoM', width: 42 },
   { id: 'qty', title: 'QTY', width: 86, editable: true },
@@ -406,6 +408,13 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     rows: CompactSelection.empty(),
   });
   const gridRef = useRef<DataEditorRef | null>(null);
+  // §7-B: карточка ИЗМЕНЕНИЯ материала (вес/объём/норма) — двойной клик по NO.№ (как в
+  // Формировании). Правка пересчитывает KG/V live (подписка vgh_changed). Для Плана действует
+  // до фиксации; зафикс.строки/допы — снимок, не меняются.
+  const [vghCard, setVghCard] = useState<{ noNum: string; mat: string; uom: string; note?: string } | null>(null);
+  const openVghCard = useCallback((r: FlowDeliveryRow) => {
+    setVghCard({ noNum: String(r.no_num ?? ''), mat: String(r.mat ?? ''), uom: String(r.uom ?? '') });
+  }, []);
   // Контейнер DataEditor — также для проверки видимости вкладки в ⌘Z-хоткее.
   const measureRef = useRef<HTMLDivElement | null>(null);
   const autoDriverRoleSigRef = useRef('');
@@ -1771,6 +1780,18 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     [onCellEdited],
   );
 
+  // §7-B: двойной клик (Enter) по НОМЕНКЛАТУРЕ (NO.№) → карточка изменения материала.
+  const onCellActivated = useCallback(
+    (cell: Item) => {
+      const [col, row] = cell;
+      const spec = COLS[col];
+      const r = viewRows[row];
+      if (!spec || !r) return;
+      if (spec.id === 'no') openVghCard(r);
+    },
+    [COLS, viewRows, openVghCard],
+  );
+
   // Подсветка строк: ERROR — красная, DUPLICATE — янтарная, черновик — чуть приглушён.
   const getRowThemeOverride = useCallback(
     (row: number): Partial<Theme> | undefined => {
@@ -2144,6 +2165,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             columns={columns}
             rows={viewRows.length}
             getCellContent={getCellContent}
+            onCellActivated={onCellActivated}
             onCellEdited={onCellEdited}
             onCellsEdited={onCellsEdited}
             onPaste={onPaste}
@@ -2191,6 +2213,14 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         onClear={colFilters.onClear}
         onDeselectAll={colFilters.onDeselectAll}
         onClose={colFilters.closeMenu}
+      />
+      {/* §7-B: карточка изменения материала (двойной клик по NO.№). Правка вес/объём/норма →
+          пересчёт KG/V у всех живых строк (vgh_changed). */}
+      <VghEditCard
+        noNum={vghCard?.noNum ?? null}
+        seed={vghCard ? { mat: vghCard.mat, uom: vghCard.uom } : null}
+        note={vghCard?.note}
+        onClose={() => setVghCard(null)}
       />
       {pendingTransfer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
