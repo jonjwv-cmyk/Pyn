@@ -322,6 +322,26 @@ export function FlowTransportGrid(): JSX.Element {
   const [rows, setRows] = useState<FlowTransportRow[]>(() => trRowsCache ?? []);
   const [vehicles, setVehicles] = useState<FlowVehicle[]>(() => trVehCache ?? []);
   const [loading, setLoading] = useState(() => trRowsCache === null);
+  // §8: машины с НАШИМИ зафикс. поставками (значок истории только им). Ключ `ГАРАЖ|ДАТА`.
+  const [tripKeys, setTripKeys] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    let alive = true;
+    void flowDeliveriesGet(api)
+      .then((ds) => {
+        if (!alive) return;
+        const s = new Set<string>();
+        for (const d of ds) {
+          if (Number(d.fixation_id) <= 0) continue;
+          const date = String(d.plan_date || '').slice(0, 10);
+          for (const id of String(d.ride_id || '').split(/\r?\n|;/).map((x) => x.trim()).filter(Boolean)) {
+            s.add(`${id.toUpperCase()}|${date}`);
+          }
+        }
+        setTripKeys(s);
+      })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [selection, setSelection] = useState<GridSelection>({
@@ -719,7 +739,11 @@ export function FlowTransportGrid(): JSX.Element {
         return cell;
       }
       if (spec.id === 'trip') {
-        // ИСТОРИЯ — иконка-часы (lucide History), двойной клик → карточка истории машины.
+        // §8: значок истории ТОЛЬКО где есть НАШИ зафикс. поставки на эту машину+день; иначе пусто
+        // (отмена/отклонённые/открытые без поставок — без значка). Двойной клик → карточка.
+        if (!tripKeys.has(`${(r.garage_no || '').toUpperCase()}|${r.tdate}`)) {
+          return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
+        }
         const cell: FlowHistoryCell = {
           kind: GridCellKind.Custom,
           allowOverlay: false,
@@ -799,7 +823,7 @@ export function FlowTransportGrid(): JSX.Element {
         themeOverride: fontOverride,
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions, driverByFio, cols],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions, driverByFio, cols, tripKeys],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -1890,10 +1914,11 @@ function TransportTripCard({
     };
   }, [row]);
 
-  const { exps, fromWhs, toWhs } = useMemo(() => {
+  const { exps, fromWhs, toWhs, obdCount } = useMemo(() => {
     const e = new Set<string>();
-    const from = new Map<string, boolean>(); // склад → есть «увезли»
+    const from = new Map<string, boolean>(); // склад → есть «выполнено»
     const to = new Map<string, boolean>();
+    const obd = new Set<string>(); // §8: кол-во поставок = уникальные OBD, не строки позиций
     for (const d of dlv ?? []) {
       for (const raw of [d.exp1, d.exp2]) {
         for (const part of String(raw || '').split(/\r?\n|;/)) {
@@ -1901,12 +1926,15 @@ function TransportTripCard({
           if (fio) e.add(fio);
         }
       }
-      const ok = d.done_stat === 'увезли';
+      // §8: «выполнено» считаем шире «увезли» — текущая принятая логика: увезли/выполнено/есть факт.
+      const ok = d.done_stat === 'увезли' || d.done_stat === 'выполнено' || d.fact_qty != null || !!(d.fact_dt || '').trim();
       if ((d.fr || '').trim()) from.set(d.fr, (from.get(d.fr) ?? false) || ok);
       if ((d.to_wh || '').trim()) to.set(d.to_wh, (to.get(d.to_wh) ?? false) || ok);
+      const num = String(d.dlv || '').trim();
+      if (num) obd.add(num);
     }
     const sortEntries = (m: Map<string, boolean>) => [...m.entries()].sort((a, b) => cmpWh(a[0], b[0]));
-    return { exps: [...e], fromWhs: sortEntries(from), toWhs: sortEntries(to) };
+    return { exps: [...e], fromWhs: sortEntries(from), toWhs: sortEntries(to), obdCount: obd.size };
   }, [dlv]);
 
   const pill = ([wh, ok]: [string, boolean]) => (
@@ -1947,15 +1975,15 @@ function TransportTripCard({
               </div>
             )}
             <div>
-              <div className="text-[10px] uppercase tracking-wide text-text-muted/60">ОТ (склады-отправители)</div>
+              <div className="text-[10px] uppercase tracking-wide text-text-muted/60">Склады отгрузки</div>
               <div className="mt-0.5 flex flex-wrap gap-1">{fromWhs.map(pill)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wide text-text-muted/60">СП (получатели)</div>
+              <div className="text-[10px] uppercase tracking-wide text-text-muted/60">Склады выгрузки</div>
               <div className="mt-0.5 flex flex-wrap gap-1">{toWhs.map(pill)}</div>
             </div>
             <div className="text-[10px] text-text-muted/60">
-              зелёный — увезли · серый — отменено/не увезено · {dlv.length} поставок
+              зелёный — выполнено · серый — нет · {obdCount} поставок (уникальные OBD)
             </div>
           </div>
         )}
