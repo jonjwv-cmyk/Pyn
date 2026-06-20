@@ -160,31 +160,37 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
     };
   };
 
-  // ДЕДУП эпизодов (юзер 2026-06-20): одна поставка = ОДНА запись, а не 6 снимков фиксаций
-  // («ожидание/увезено» повторами). Группируем по dlv|dlv_pos (черновик без номера — по id),
-  // берём САМУЮ свежую версию (row_version). Свежие по плановой дате — сверху.
-  const dedupedEpisodes = useMemo(() => {
-    const byKey = new Map<string, FlowDeliveryRow>();
+  // ГРУППИРОВКА по поставке (OBD) для раскладки «история | СЭД» (юзер 2026-06-20): одна поставка =
+  // одна ГРУППА. Внутри — попытки по ДАТАМ (несколько отчётов по поставке → несколько блоков истории),
+  // снимки одной даты схлопываем (берём свежую row_version). Справа — ОДИН блок СЭД на поставку.
+  const obdGroups = useMemo(() => {
+    const byObd = new Map<string, { key: string; dlv: string; byDate: Map<string, FlowDeliveryRow> }>();
     for (const e of data?.episodes ?? []) {
       const dlv = String(e.dlv ?? '').trim();
       const key = dlv ? `${dlv}|${String(e.dlv_pos ?? '').trim()}` : `draft-${e.id}`;
-      const cur = byKey.get(key);
-      if (
-        !cur ||
-        Number(e.row_version) > Number(cur.row_version) ||
-        (Number(e.row_version) === Number(cur.row_version) && e.id > cur.id)
-      ) {
-        byKey.set(key, e);
+      let g = byObd.get(key);
+      if (!g) {
+        g = { key, dlv, byDate: new Map() };
+        byObd.set(key, g);
+      }
+      const dateKey = String(e.plan_date ?? '').trim() || `id-${e.id}`;
+      const cur = g.byDate.get(dateKey);
+      if (!cur || Number(e.row_version) > Number(cur.row_version) || (Number(e.row_version) === Number(cur.row_version) && e.id > cur.id)) {
+        g.byDate.set(dateKey, e);
       }
     }
-    return [...byKey.values()].sort(
-      (a, b) => String(b.plan_date || '').localeCompare(String(a.plan_date || '')) || b.id - a.id,
-    );
+    return [...byObd.values()]
+      .map((g) => {
+        const eps = [...g.byDate.values()].sort(
+          (a, b) => String(b.plan_date || '').localeCompare(String(a.plan_date || '')) || b.id - a.id,
+        );
+        return { key: g.key, dlv: g.dlv, episodes: eps, rep: eps[0] as FlowDeliveryRow };
+      })
+      .sort((a, b) => String(b.rep?.plan_date || '').localeCompare(String(a.rep?.plan_date || '')) || b.rep.id - a.rep.id);
   }, [data]);
 
   if (!target) return null;
 
-  const episodes = dedupedEpisodes;
   const events = data?.events ?? [];
 
   return (
@@ -222,97 +228,101 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {loading && <div className="py-8 text-center text-[12px] text-[#9C9892]">Загрузка…</div>}
-          {!loading && episodes.length === 0 && events.length === 0 && (
+          {!loading && obdGroups.length === 0 && events.length === 0 && (
             <div className="py-8 text-center text-[12px] text-[#9C9892]">
               По этой позиции движения ещё не было.
             </div>
           )}
 
-          {/* ЭПИЗОДЫ — строки поставок (включая резервные), судьба каждой попытки. */}
-          {!loading && episodes.length > 0 && (
+          {/* ПОСТАВКИ: каждая — РЯД из двух прямоугольников. СЛЕВА история (попытки по отчётам —
+              несколько блоков, если возили 2+ раза), СПРАВА ОДИН блок СЭД на поставку. Клик по СЭД →
+              плавное дерево движения под рядом (этапы по времени, текущий выделен). ТЗ §5. */}
+          {!loading && obdGroups.length > 0 && (
             <div className="mb-4">
               <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#9C9892]">
-                Поставки ({episodes.length})
+                Поставки ({obdGroups.length})
               </div>
-              <div className="flex flex-col gap-1.5">
-                {episodes.map((e) => {
-                  const reserved = Number(e.reserved) === 1;
-                  // «Активна» — есть номер SAP, не в резерве, ещё не увезена/без факта: поставка ЖИВА
-                  // у нас (важный сигнал, если позиция при этом числится не увезённой/вернулась).
-                  const active =
-                    !reserved && (e.dlv || '').trim() !== '' && e.fact_qty == null &&
-                    e.done_stat !== 'увезли' && e.done_stat !== 'выполнено';
-                  const mol = (e.snap_mol || '').trim();
-                  const exps = [e.exp1, e.exp2].filter(Boolean).join(', ');
-                  const veh = [e.ride_id, e.vehicle].filter(Boolean).join(' · ');
-                  const hasDlv = (e.dlv || '').trim() !== '';
-                  const sed = hasDlv ? sedFor(e) : null;
-                  const isOpen = sedOpen === e.id;
+              <div className="flex flex-col gap-2.5">
+                {obdGroups.map((g) => {
+                  const sed = g.dlv ? sedFor(g.rep) : null;
+                  const isOpen = sedOpen === g.rep.id;
                   return (
-                    <div
-                      key={e.id}
-                      className={`rounded-lg border px-3 py-2 ${reserved ? 'border-black/5 bg-black/[0.02] opacity-70' : 'border-black/10 bg-white'}`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        {/* ЛЕВО — судьба поставки */}
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5 text-[12px] font-medium text-[#2A2925]">
-                            <span
-                              className="inline-block h-1.5 w-1.5 rounded-full"
-                              style={{ background: statusColor(e.done_stat, e.fail_reason) }}
-                            />
-                            {statusText(e.done_stat, e.fail_reason)}
-                            {reserved && <span className="text-[11px] font-normal text-[#9C9892]">· снято</span>}
-                          </div>
-                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-[#6B6862]">
-                            <span>{e.dlv ? `поставка ${e.dlv}${e.dlv_pos ? `/${e.dlv_pos}` : ''}` : 'черновик (без №)'}</span>
-                            {active && <span className="font-medium text-[#B45309]">активна</span>}
-                            {e.qty != null && <span>{e.qty} {e.uom}</span>}
-                            {Number(e.fixation_id) > 0 && <span>зафикс.</span>}
-                            {e.fact_qty != null && <span className="text-[#1F7A33]">факт {e.fact_qty}{e.fact_dt ? ` · ${e.fact_dt}` : ''}</span>}
-                          </div>
-                          {(mol || exps || veh) && (
-                            <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[#6B6862]">
-                              {mol && <span>МОЛ: {mol}</span>}
-                              {exps && <span>возил: {exps}</span>}
-                              {veh && <span className="tabular-nums">{veh}</span>}
-                            </div>
-                          )}
-                        </div>
-                        {/* ПРАВО — ОТДЕЛЬНЫЙ ПРЯМОУГОЛЬНИК СЭД: статус + ФИО + дата документа; клик → дерево */}
-                        <div className="flex shrink-0 flex-col items-end gap-1">
-                          <span className="text-[10px] tabular-nums text-[#9C9892]">{e.plan_date || '—'}</span>
-                          {sed && (
-                            <button
-                              type="button"
-                              onClick={() => setSedOpen(isOpen ? null : e.id)}
-                              className="flex w-[156px] flex-col gap-1 rounded-lg border border-black/10 bg-[#FAFAF7] p-2 text-left transition-colors hover:border-[#D97757]/40"
-                            >
-                              <div className="flex items-center justify-between gap-1">
-                                <span
-                                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
-                                  style={{ background: `${SED_COLOR[sed.status]}1A`, color: SED_COLOR[sed.status] }}
-                                >
-                                  <FileText size={9} strokeWidth={2} />
-                                  {SED_LABEL[sed.status]}
-                                </span>
-                                <span className="text-[#9C9892]">{isOpen ? '▾' : '▸'}</span>
+                    <div key={g.key}>
+                      <div className="flex items-stretch gap-2">
+                        {/* ЛЕВО — прямоугольник(и) истории: попытки по датам */}
+                        <div className="flex min-w-0 flex-1 flex-col gap-1">
+                          {g.episodes.map((e) => {
+                            const reserved = Number(e.reserved) === 1;
+                            const active =
+                              !reserved && (e.dlv || '').trim() !== '' && e.fact_qty == null &&
+                              e.done_stat !== 'увезли' && e.done_stat !== 'выполнено';
+                            const mol = (e.snap_mol || '').trim();
+                            const exps = [e.exp1, e.exp2].filter(Boolean).join(', ');
+                            const veh = [e.ride_id, e.vehicle].filter(Boolean).join(' · ');
+                            return (
+                              <div
+                                key={e.id}
+                                className={`rounded-lg border px-3 py-2 ${reserved ? 'border-black/5 bg-black/[0.02] opacity-70' : 'border-black/10 bg-white'}`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-1.5 text-[12px] font-medium text-[#2A2925]">
+                                    <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: statusColor(e.done_stat, e.fail_reason) }} />
+                                    {statusText(e.done_stat, e.fail_reason)}
+                                    {reserved && <span className="text-[11px] font-normal text-[#9C9892]">· снято</span>}
+                                  </div>
+                                  <span className="text-[10px] tabular-nums text-[#9C9892]">{e.plan_date || '—'}</span>
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-[#6B6862]">
+                                  <span>{e.dlv ? `поставка ${e.dlv}${e.dlv_pos ? `/${e.dlv_pos}` : ''}` : 'черновик (без №)'}</span>
+                                  {active && <span className="font-medium text-[#B45309]">активна</span>}
+                                  {e.qty != null && <span>{e.qty} {e.uom}</span>}
+                                  {Number(e.fixation_id) > 0 && <span>зафикс.</span>}
+                                  {e.fact_qty != null && <span className="text-[#1F7A33]">факт {e.fact_qty}{e.fact_dt ? ` · ${e.fact_dt}` : ''}</span>}
+                                </div>
+                                {(mol || exps || veh) && (
+                                  <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[#6B6862]">
+                                    {mol && <span>МОЛ: {mol}</span>}
+                                    {exps && <span>возил: {exps}</span>}
+                                    {veh && <span className="tabular-nums">{veh}</span>}
+                                  </div>
+                                )}
                               </div>
-                              {sed.holder && <span className="truncate text-[11px] font-medium text-[#2A2925]">{sed.holder}</span>}
-                              {sed.signedAt ? (
-                                <span className="text-[10px] text-[#9C9892]">подписан {fmtSedTs(sed.signedAt)}</span>
-                              ) : sed.launchAt ? (
-                                <span className="text-[10px] text-[#9C9892]">запущен {fmtSedTs(sed.launchAt)}</span>
-                              ) : null}
-                            </button>
-                          )}
+                            );
+                          })}
                         </div>
+                        {/* ПРАВО — ОДИН прямоугольник СЭД на поставку: статус + ФИО + дата документа */}
+                        {sed && (
+                          <button
+                            type="button"
+                            onClick={() => setSedOpen(isOpen ? null : g.rep.id)}
+                            className="flex w-[160px] shrink-0 flex-col gap-1 self-start rounded-lg border border-black/10 bg-[#FAFAF7] p-2 text-left transition-colors hover:border-[#D97757]/40"
+                          >
+                            <div className="flex items-center justify-between gap-1">
+                              <span
+                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                                style={{ background: `${SED_COLOR[sed.status]}1A`, color: SED_COLOR[sed.status] }}
+                              >
+                                <FileText size={9} strokeWidth={2} />
+                                {SED_LABEL[sed.status]}
+                              </span>
+                              <span className="text-[#9C9892]">{isOpen ? '▾' : '▸'}</span>
+                            </div>
+                            {sed.holder && <span className="truncate text-[11px] font-medium text-[#2A2925]">{sed.holder}</span>}
+                            {sed.signedAt ? (
+                              <span className="text-[10px] text-[#9C9892]">подписан {fmtSedTs(sed.signedAt)}</span>
+                            ) : sed.launchAt ? (
+                              <span className="text-[10px] text-[#9C9892]">запущен {fmtSedTs(sed.launchAt)}</span>
+                            ) : (
+                              <span className="text-[10px] text-[#9C9892]">нет данных СЭД</span>
+                            )}
+                          </button>
+                        )}
                       </div>
-                      {/* ПЛАВНОЕ раскрытие движения СЭД этой поставки — этапы по времени (таймлайн). */}
+                      {/* ПЛАВНОЕ раскрытие движения СЭД под рядом — этапы по времени (таймлайн). */}
                       {sed && (
-                        <div className={`grid overflow-hidden transition-[grid-template-rows] duration-300 ease-out ${isOpen ? 'mt-2 grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                        <div className={`grid overflow-hidden transition-[grid-template-rows] duration-300 ease-out ${isOpen ? 'mt-1.5 grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                           <div className="min-h-0">
-                            <div className="border-t border-black/5 pt-2">
+                            <div className="rounded-lg border border-[#D97757]/25 bg-[#FFFBF9] p-2">
                               {(sed.phone || sed.contactStatus || (sed.isMol && sed.until)) && (
                                 <div className="mb-2 text-[11px] text-[#6B6862]">
                                   {sed.phone && <span className="tabular-nums">📞 {sed.phone}</span>}
