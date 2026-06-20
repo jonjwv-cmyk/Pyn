@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { flowVghEdit } from '@pyn/core';
@@ -132,10 +132,18 @@ export function VghEditCard({ noNum, addMode = false, seed, note, onClose }: Vgh
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, addMode]);
 
-  // Синхронизация формы с базой: правка/дубль → данные из базы (в добавлении номер набирает
-  // пользователь — его не перетираем); ушли с существующей на новый номер → очистить подтянутое.
+  // Синхронизация формы с базой ТОЛЬКО при смене материала / открытии / ПЕРВОМ появлении базы —
+  // НЕ на каждой смене ссылки base/seed. Иначе любой ре-рендер родителя (анимация грида/WS/hover
+  // даёт новый инлайн-`seed`) или обновление живого стора ВГХ пере-сбрасывали форму и затирали
+  // ввод (баг «0,003 в весе/норме стирается сразу»). После синка ввод пользователя не трогаем.
+  const syncedRef = useRef<{ key: string; hadBase: boolean }>({ key: '', hadBase: false });
   useEffect(() => {
-    if (!open) return;
+    if (!open) { syncedRef.current = { key: '', hadBase: false }; return; }
+    const key = `${addMode ? 'add' : 'edit'}:${editNoNum}`;
+    const hadBase = !!base;
+    // Уже синхронизировали этот материал и база была/осталась недоступна → НЕ перетираем ввод.
+    if (syncedRef.current.key === key && (syncedRef.current.hadBase || !hadBase)) return;
+    syncedRef.current = { key, hadBase };
     setSaving(false);
     if (base) {
       setForm((f) => ({
@@ -159,7 +167,7 @@ export function VghEditCard({ noNum, addMode = false, seed, note, onClose }: Vgh
       setWhList(seed?.fr ? [seed.fr.trim()] : []);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, base, seed, noNum, addMode]);
+  }, [open, editNoNum, addMode, base]);
 
   const set = <K extends keyof FormState>(key: K, value: string) => setForm((p) => ({ ...p, [key]: value }));
 
