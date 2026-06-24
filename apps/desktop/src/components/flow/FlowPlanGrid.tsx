@@ -28,7 +28,9 @@ import { FlowDayPicker } from './FlowDayPicker';
 import { useFlowGridSearch, type FlowSearchColumn } from './flow-grid-search';
 import { FlowHeaderMenu } from './FlowHeaderMenu';
 import { useFlowColumnFilters } from './flow-column-filter';
+import { sedComputed, SED_LABEL } from './flow-signal';
 import { useWarehousesStore } from '@/lib/warehouses-store';
+import { sessionStore } from '@/lib/token-store';
 import {
   flowDeliveriesGet,
   flowDeliveryEventsGet,
@@ -146,7 +148,7 @@ const REPORT_COLS: readonly PlanColSpec[] = [
 
 /** Причины невывоза (юзер 2026-06-14) — зеркало серверного списка (валидация). */
 const FAIL_REASONS = ['нет на центральном складе', 'менее транспортной нормы', 'брак',
-  'на приёмке', 'на входном контроле', 'отказ цеха', 'перенос на другой день',
+  'на приёмке', 'на входном контроле', 'отказ цеха', 'самовывоз', 'перенос на другой день',
   'нет МОЛа', 'иные причины'] as const;
 
 /** ТИП ТС (юзер 2026-06-15) — НАШ маркер кузова, НЕ тянется из машины. До 3 на строку
@@ -785,9 +787,20 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     d.setDate(d.getDate() - 7);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }, []);
+  // Замок 7 дней — ТОЛЬКО для admin. Разработчик (developer/superadmin) правит отчёт без ограничения
+  // (юзер 2026-06-21). Роль читаем из сессии один раз.
+  const [isDev, setIsDev] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void sessionStore.load().then((s) => {
+      const role = String(s?.role ?? '').toLowerCase();
+      if (alive) setIsDev(role === 'developer' || role === 'superadmin');
+    }).catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
   const rowLocked = useCallback(
-    (r: FlowDeliveryRow) => mode === 'report' && (r.plan_date || '') < reportCutoff,
-    [mode, reportCutoff],
+    (r: FlowDeliveryRow) => !isDev && mode === 'report' && (r.plan_date || '') < reportCutoff,
+    [mode, reportCutoff, isDev],
   );
   const canEditMol = useCallback(
     (r: FlowDeliveryRow) => Number(r.fixation_id) === 0 || (mode === 'report' && isManualRow(r)),
@@ -878,6 +891,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     [rows],
   );
 
+  // Эффективное кол-во ДЛЯ ПОКАЗА: в Отчёте — фактическое из zm_vl (что реально провели), если есть;
+  // иначе план. КГ/V и зависимые ячейки считаются от него. План-снимок остаётся в истории карточки.
+  const effQty = useCallback(
+    (r: FlowDeliveryRow): number | null => (mode === 'report' && r.fact_qty != null ? r.fact_qty : r.qty),
+    [mode],
+  );
   const cellText = useCallback(
     (spec: PlanColSpec, r: FlowDeliveryRow): string => {
       const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
@@ -952,16 +971,22 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           // ЕИ из zm_vl/выгрузки НЕНАДЁЖНА (может писать Т вместо Л). Ориентир — БАЗА НОМЕНКЛАТУР
           // (ВГХ по no_num, как КГ/V); нет номенклатуры в базе → берём ЕИ с формирования/строки.
           return (vghByKey.get(normVghKey(r.no_num))?.uom || '').trim() || r.uom || '';
-        case 'qty':
-          return r.qty == null ? '' : fmtNum3(r.qty);
+        case 'qty': {
+          // Отчёт ПОДМЕНЯЕТ кол-во на ФАКТ из zm_vl (юзер 2026-06-22): что реально увезли/провели,
+          // а не план. План остаётся снимком в истории карточки. Нет факта (не увезли) → план.
+          const q = effQty(r);
+          return q == null ? '' : fmtNum3(q);
+        }
         case 'kg': {
+          const q = effQty(r);
           const w = vghByKey.get(normVghKey(r.no_num))?.weight_kg;
-          if (w != null && r.qty != null) return fmtNum3(Math.round(r.qty * w * 1000) / 1000);
+          if (w != null && q != null) return fmtNum3(Math.round(q * w * 1000) / 1000);
           return '—';
         }
         case 'v': {
+          const q = effQty(r);
           const vol = vghByKey.get(normVghKey(r.no_num))?.volume_m3;
-          if (vol != null && r.qty != null) return fmtSmart(r.qty * vol, 3);
+          if (vol != null && q != null) return fmtSmart(q * vol, 3);
           return '—';
         }
         case 'exp':
@@ -976,11 +1001,11 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchor?.note ?? '');
         case 'sed': {
           // СЭД-движение документа: статус (подписан/на подписании/…) + на ком сейчас (ФИО подписанта).
-          // Незакрытая поставка (sap_open) помечается «●». История движения — в карточке (клик).
+          // «Нет проводки» показываем только по OPEN/ZM_VL-open (sap_open=1).
           const st = (r.sed_status || '').trim();
           const who = (r.sed_holder || '').trim();
           if (!st && !who) return '';
-          const head = Number(r.sap_open) === 1 && st ? `● ${st}` : st;
+          const head = st ? SED_LABEL[sedComputed(st, Number(r.sap_open) === 1)] : '';
           return who ? `${head}\n${who}` : head;
         }
         case 'request':
@@ -992,7 +1017,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return '';
       }
     },
-    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName, transferChainDates],
+    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName, transferChainDates, effQty],
   );
 
   // ── Поиск как в Формировании (подсветка/перелёт, не фильтр) ───────────────────
@@ -1192,9 +1217,11 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         return cell;
       }
       if (spec.id === 'history') {
-        // §5: значок Истории движения позиции (внутри — СЭД по каждой поставке). Строки с заказом
-        // (есть якорь → есть эпизоды). Клик → карточка.
-        if (!(r.ord || '').trim()) {
+        // §5: значок Истории движения позиции (внутри — СЭД по каждой поставке). Показываем ТОЛЬКО
+        // у ВЫПОЛНЕННЫХ (увезли/выполнено) — там есть движение/СЭД. У «не увезли»/без результата
+        // истории-СЭД нет, значок не нужен (юзер 2026-06-21).
+        const ds = String(r.done_stat || '').trim();
+        if (!(r.ord || '').trim() || (ds !== 'выполнено' && ds !== 'увезли')) {
           return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
         }
         return {
@@ -2013,7 +2040,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         setMsg(mode === 'report' ? 'Отчёт пуст — нечего выгружать' : 'План пуст — нечего выгружать');
         return;
       }
-      if (variant === 'full') exportPlanFull(viewRows, exportCtx);
+      if (variant === 'full') exportPlanFull(viewRows, exportCtx, mode === 'report');
       else if (variant === 'expeditors') exportPlanForExpeditors(viewRows, exportCtx);
       else exportWarehouseSheet(viewRows, exportCtx);
       setMsg('');

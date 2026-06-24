@@ -4,6 +4,7 @@ import { session } from 'electron';
 import { base64ToBytes } from '@pyn/core';
 import { getProxyState } from '../../ipc/api-bridge';
 import { createTunnel, type BridgeConfig } from './tunnel';
+import { setBridgeProxyEndpoint } from './state';
 
 /**
  * Google-bridge (клиент). Когда обнаружен корп-прокси, заворачивает webview
@@ -90,11 +91,6 @@ function buildPacScript(): string {
  */
 export async function configureBridge(url: string, ticket: string): Promise<boolean> {
   const proxy = getProxyState();
-  if (!proxy) {
-    // eslint-disable-next-line no-console
-    console.log('[pyn:bridge] no corp proxy — bridge disabled (webview direct)');
-    return false;
-  }
   if (typeof url !== 'string' || typeof ticket !== 'string' || !url || !ticket) {
     // eslint-disable-next-line no-console
     console.warn('[pyn:bridge] configure ignored — bad url/ticket');
@@ -103,6 +99,16 @@ export async function configureBridge(url: string, ticket: string): Promise<bool
 
   await startLocalProxy();
   cfg = { url: url.replace(/\/+$/, ''), ticket, relayPubKey: base64ToBytes(BRIDGE_PUBKEY_B64) };
+  setBridgeProxyEndpoint({ host: '127.0.0.1', port: localPort });
+
+  if (!proxy) {
+    // На не-корп сети webview Google-таблиц оставляем direct, но карта всё равно
+    // может тянуть Google-спутник через VPS-релей: это убирает прямой Google из
+    // renderer/main и даёт одинаковый маршрут в офисе и дома.
+    // eslint-disable-next-line no-console
+    console.log(`[pyn:bridge] no corp proxy — webview direct, map tiles via bridge ${cfg.url} (local 127.0.0.1:${localPort})`);
+    return false;
+  }
 
   const pac = buildPacScript();
   const dataUrl = 'data:application/x-ns-proxy-autoconfig;base64,' + Buffer.from(pac).toString('base64');

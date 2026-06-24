@@ -1,4 +1,4 @@
-import { Archive, CalendarRange, Database, History, MessageSquare, Newspaper, Rss, Scale, Truck, Waves } from 'lucide-react';
+import { Archive, CalendarRange, Database, History, MapPinned, MessageSquare, Newspaper, Rss, Scale, Truck, Waves } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -95,6 +95,21 @@ export const NAV_BROADCAST: NavSection = {
   // Транспорт-amber / База-blue.
   icon: Rss,
   iconColor: 'text-rose-400',
+};
+
+/**
+ * Раздел «Карта» — снимок территории НТМК + точки складов (склад может быть в
+ * нескольких точках), области цехов, нарисованные дороги и логистическая
+ * оптимизация расположения склада отгрузки. Тот же изолированный admin/developer-
+ * контур, что «Поток»/«Транспорт» (флаг `showMap`); вне `NAV_SECTIONS`.
+ */
+export const NAV_MAP: NavSection = {
+  id: 'map',
+  get label() { return i18next.t('sidebar.nav_map', 'Карта'); },
+  // Цветной значок (карта/местность) — emerald, в семье Поток-teal / Транспорт-amber /
+  // База-blue / Рассылка-rose.
+  icon: MapPinned,
+  iconColor: 'text-emerald-400',
 };
 
 // Группа «Лента».

@@ -13,6 +13,7 @@ import { LogScreen } from '@/components/flow/LogScreen';
 import { BroadcastScreen } from '@/components/broadcast/BroadcastScreen';
 import { VghScreen } from '@/components/vgh';
 import { TransportScreen } from '@/components/flow/TransportScreen';
+import { MapScreen } from '@/components/map/MapScreen';
 import { MolScreen } from '@/components/mol';
 import { PersonEditDialog } from '@/components/mol/PersonEditDialog';
 import { distinctStatuses } from '@/lib/persons-view';
@@ -29,6 +30,7 @@ import { SettingsScreen } from '@/components/settings';
 import { LoginScreen } from '@/components/auth/LoginScreen';
 import { SplashScreen } from '@/components/auth/SplashScreen';
 import { SessionExpiryWatch } from '@/components/auth/SessionExpiryWatch';
+import { DevApiModeToggle } from '@/components/dev/DevApiModeToggle';
 import { api } from '@/lib/api';
 import { sessionStore } from '@/lib/token-store';
 import { useWsEvent } from '@/lib/ws';
@@ -229,6 +231,7 @@ export function App() {
     activeSection === 'transport' ||
     activeSection === 'log' ||
     activeSection === 'broadcast' ||
+    activeSection === 'map' ||
     activeSection === 'news' ||
     activeSection === 'chats' ||
     activeSection.startsWith('sheet:')
@@ -245,7 +248,7 @@ export function App() {
   // Иначе контентная область остаётся пустой и видно только bg-bg-deep (серое окно).
   useEffect(() => {
     if (!session) return;
-    const known = new Set(['proba', 'mol', 'vault', 'flow', 'vgh', 'transport', 'log', 'broadcast', 'news', 'chats']);
+    const known = new Set(['proba', 'mol', 'vault', 'flow', 'vgh', 'transport', 'log', 'broadcast', 'map', 'news', 'chats']);
     const isSheet = activeSection.startsWith('sheet:');
     if (!known.has(activeSection) && !isSheet) {
       // mol — текущая работа (Контакты / диалог с Согласующими)
@@ -1047,15 +1050,15 @@ export function App() {
           <button
             onClick={() => {
               console.log('[pyn:debug] Force un-gray clicked');
-              (window as any).pyn?.debugForceUnGray?.();
-              (window as any).pyn?.debugForceMol?.();
+              (window as any).__pyn_dev?.debugForceUnGray?.();
+              (window as any).__pyn_dev?.debugForceMol?.();
             }}
             className="px-4 py-2 text-sm font-medium rounded border-2 border-blue-500 bg-blue-600/20 hover:bg-blue-600/40 active:bg-blue-600/60 text-blue-200"
           >
             DEV: FORCE SHOW INTERFACE (un-gray + База/mol)
           </button>
         )}
-        <div className="text-[10px] opacity-60">Still gray? Cmd+Opt+I here → console → paste: window.pyn.debugForceUnGray()</div>
+        <div className="text-[10px] opacity-60">Still gray? Cmd+Opt+I here → console → paste: window.__pyn_dev.debugForceUnGray()</div>
       </div>
     );
   }
@@ -1075,6 +1078,7 @@ export function App() {
     // применяется ТОЛЬКО на card, не на wrapper.
     return (
       <Tooltip.Provider delayDuration={200} skipDelayDuration={1500} disableHoverableContent>
+        <DevApiModeToggle />
         {splashStage !== 'done' && (
           <SplashScreen
             targetY={splashTargetY}
@@ -1127,6 +1131,7 @@ export function App() {
 
   return (
     <Tooltip.Provider delayDuration={200} skipDelayDuration={1500} disableHoverableContent>
+      <DevApiModeToggle />
       <SessionExpiryWatch />
       <div className="relative flex h-full w-full bg-bg-deep">
         {/* §v1.2.14 — Main UI всегда mounted. Settings рендерится
@@ -1150,6 +1155,7 @@ export function App() {
               showVgh={isAdminLike(session.role)}
               showLog={isAdminLike(session.role)}
               showBroadcast={isAdminLike(session.role)}
+              showMap={isAdminLike(session.role)}
               onToggleCollapsed={() => setCollapsed((v) => !v)}
               onAiClick={() => useAiStore.getState().setOpen(true)}
               onSectionClick={setActiveSection}
@@ -1183,6 +1189,7 @@ export function App() {
                 activeSection === 'transport' ||
                 activeSection === 'log' ||
                 activeSection === 'broadcast' ||
+                activeSection === 'map' ||
                 activeSection === 'news' ||
                 activeSection === 'chats' ||
                 activeSection.startsWith('sheet:')
@@ -1240,6 +1247,11 @@ export function App() {
             {isAdminLike(session.role) && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'broadcast' ? 'flex' : 'none' }}>
                 <BroadcastScreen />
+              </div>
+            )}
+            {isAdminLike(session.role) && (
+              <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'map' ? 'flex' : 'none' }}>
+                <MapScreen />
               </div>
             )}
 

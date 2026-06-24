@@ -64,13 +64,13 @@ function molFull(r: FlowDeliveryRow, ctx: ExportCtx): string {
 function noteOf(r: FlowDeliveryRow, ctx: ExportCtx): string {
   return T(ctx.anchorByKey.get(`${r.ord}|${r.it}`)?.note);
 }
-function kgOf(r: FlowDeliveryRow, ctx: ExportCtx): number | null {
+function kgOf(r: FlowDeliveryRow, ctx: ExportCtx, q: number | null = r.qty): number | null {
   const w = ctx.vghByKey.get(normVghKey(r.no_num))?.weight_kg;
-  return w != null && r.qty != null ? Math.round(r.qty * w * 1000) / 1000 : null;
+  return w != null && q != null ? Math.round(q * w * 1000) / 1000 : null;
 }
-function vOf(r: FlowDeliveryRow, ctx: ExportCtx): number | null {
+function vOf(r: FlowDeliveryRow, ctx: ExportCtx, q: number | null = r.qty): number | null {
   const vol = ctx.vghByKey.get(normVghKey(r.no_num))?.volume_m3;
-  return vol != null && r.qty != null ? Math.round(r.qty * vol * 1000) / 1000 : null;
+  return vol != null && q != null ? Math.round(q * vol * 1000) / 1000 : null;
 }
 function planDateRu(s: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || '');
@@ -134,27 +134,33 @@ function expeditorsOf(r: FlowDeliveryRow): string[] {
   return out;
 }
 
-/** Вариант 1 — полный план (без схлопывания), МОЛ «Фамилия И.О.» без телефона. */
-export function exportPlanFull(rows: FlowDeliveryRow[], ctx: ExportCtx): void {
+/** Вариант 1 — полный план/отчёт (без схлопывания), МОЛ «Фамилия И.О.» без телефона.
+ *  `useFact` (Отчёт полный, юзер 2026-06-22): кол-во/КГ/V = ФАКТ из zm_vl, если есть (что реально
+ *  увезли). План полный (этап План) и листы Кладовщикам/Экспедиторам — по ПЛАНУ (грузим по плану). */
+export function exportPlanFull(rows: FlowDeliveryRow[], ctx: ExportCtx, useFact = false): void {
   const header = ['Дата плана', 'CLST', 'Поставка', 'Заказ', 'Откуда', 'Куда', 'МОЛ',
     'Материал', 'Коммент', 'ЕИ', 'Кол-во', 'КГ', 'V', 'ID', 'Эксп.'];
-  const out = sortAplan(rows, ctx).map((r) => [
-    planDateRu(r.plan_date),
-    clstText(r.to_wh, ctx),
-    T(r.dlv) ? `${r.dlv}${T(r.dlv_pos) ? `|${r.dlv_pos}` : ''}` : 'черновик',
-    `${r.ord}${r.it ? `|${r.it}` : ''}`,
-    r.fr || '',
-    r.to_wh || '',
-    shortenPatronymic(molFio(r, ctx)),
-    r.mat || '',
-    noteOf(r, ctx),
-    r.uom || '',
-    r.qty == null ? '' : fmtNum3(r.qty),
-    num(kgOf(r, ctx)),
-    num(vOf(r, ctx)),
-    r.ride_id || '',
-    expeditorsOf(r).join(', '),
-  ]);
+  const effQty = (r: FlowDeliveryRow): number | null => (useFact && r.fact_qty != null ? r.fact_qty : r.qty);
+  const out = sortAplan(rows, ctx).map((r) => {
+    const q = effQty(r);
+    return [
+      planDateRu(r.plan_date),
+      clstText(r.to_wh, ctx),
+      T(r.dlv) ? `${r.dlv}${T(r.dlv_pos) ? `|${r.dlv_pos}` : ''}` : 'черновик',
+      `${r.ord}${r.it ? `|${r.it}` : ''}`,
+      r.fr || '',
+      r.to_wh || '',
+      shortenPatronymic(molFio(r, ctx)),
+      r.mat || '',
+      noteOf(r, ctx),
+      r.uom || '',
+      q == null ? '' : fmtNum3(q),
+      num(kgOf(r, ctx, q)),
+      num(vOf(r, ctx, q)),
+      r.ride_id || '',
+      expeditorsOf(r).join(', '),
+    ];
+  });
   downloadCsv(csvText(header, out), `План_${stamp()}.csv`);
 }
 

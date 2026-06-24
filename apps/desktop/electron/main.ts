@@ -19,6 +19,7 @@ import { setupTrayBridge } from './ipc/tray-bridge';
 import { setupUpdateBridge } from './ipc/update-bridge';
 import { setupWsBridge } from './ipc/ws-bridge';
 import { startVpsPing, stopVpsPing } from './network/vps-ping';
+import { registerMapTileScheme, setupMapTiles } from './network/map-tiles';
 import { selfInstallIfNeeded } from './self-install';
 import { unlinkSync } from 'node:fs';
 
@@ -38,13 +39,21 @@ app.commandLine.appendSwitch(
   'MAP api.otlhelper.com 45.12.239.5,MAP cdn.otlhelper.com 45.12.239.5',
 );
 
-// §fix-gray-gpu — в dev на macOS (особенно с Vite HMR + <webview> + Metal) GPU процесс часто
-// крашится (exit_code=15, "GPU state invalid", network service crash). Это делает окно
-// полностью серым/пустым (renderer мёртв), даже если React-код живой и есть DEV-кнопки.
-// Отключаем hardware GPU только в dev — используем SwiftShader (software). Окно остаётся
-// paintable, кнопки "DEV: Force main UI" внизу слева видны, можно кликнуть bypass.
-// В prod оставляем как есть (для perf).
-if (process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === 'development') {
+// Карта: схема `pyn-tile://` для спутника Google (тянется через VPS-релей в
+// main, см. network/map-tiles.ts). Привилегированная регистрация — строго ДО
+// app.whenReady() (Chromium читает реестр схем однократно при инициализации).
+registerMapTileScheme();
+
+// §fix-gray-gpu — раньше dev на macOS принудительно переводился в SwiftShader.
+// На Electron 33 это может дать обратный эффект: renderer/React живые, но окно
+// красит только backgroundColor BrowserWindow (пустой серый экран). Поэтому
+// software-GPU оставлен как ручной fallback, а по умолчанию используем штатный
+// compositor. Если старый GPU-crash вернётся, запустить можно с
+// PYN_ELECTRON_SOFTWARE_GPU=1.
+if (
+  (process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === 'development')
+  && process.env.PYN_ELECTRON_SOFTWARE_GPU === '1'
+) {
   app.commandLine.appendSwitch('disable-gpu');
   app.commandLine.appendSwitch('disable-gpu-sandbox');
   app.commandLine.appendSwitch('use-gl', 'swiftshader');
@@ -144,6 +153,23 @@ function createMainWindow(): void {
   });
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    // eslint-disable-next-line no-console
+    console.log(`[render:console:${level}] ${message} (${sourceId}:${line})`);
+  });
+  mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[render:did-fail-load] ${code} ${desc} ${url}`);
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    // eslint-disable-next-line no-console
+    console.error(`[render:process-gone] reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  mainWindow.on('unresponsive', () => {
+    // eslint-disable-next-line no-console
+    console.warn('[main-window] unresponsive');
+  });
 
   // §pyn-1.2.15 — close (X на title-bar) минимизирует в tray, не quit.
   // Полностью закрыть Pyn можно только через tray menu → «Выйти». Это
@@ -356,6 +382,9 @@ app.whenReady().then(async () => {
   // Network: detect proxy → configure session → register IPC handler.
   // Делаем до createWindow чтобы первый renderer fetch уже видел готовый bridge.
   await setupApiBridge();
+  // Карта: обработчик схемы `pyn-tile://` + тайл-сессия (после detectProxy —
+  // прокси уже известен; мост перенастроит сессию позже через configureBridge).
+  setupMapTiles();
   // Persistent session storage через safeStorage. После whenReady — safeStorage
   // готов (требует app ready event).
   setupTokenBridge();

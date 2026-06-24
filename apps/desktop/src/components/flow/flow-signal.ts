@@ -8,32 +8,40 @@
 /** Единый вердикт СЭД с учётом открытости OBD (ТЗ §9). Сводит сырой sed_status сервера
  *  («не передан/на подписании/подписан/отклонен/аннулирован») + sap_open в один статус. */
 export type SedComputed =
-  | 'not_started' // не запущен (нет передачи в СЭД)
+  | 'no_data' // нет в СЭД (ни разу не сверяли / поставки нет в выгрузке СЭД)
+  | 'not_started' // в СЭД есть, но не передан на подписание
+  | 'awaiting_shipment' // документ у кладовщика склада отгрузки — ждём отгрузку
   | 'pending' // на подписании
   | 'rejected' // отклонён/аннулирован
   | 'signed' // подписан И OBD закрыта (проводка есть) — всё хорошо
-  | 'signed_open'; // подписан, НО OBD ещё открыта (проводки нет) — отдельная проблема
+  | 'signed_open'; // подписан, НО OBD есть в OPEN (проводки нет) — отдельная проблема
 
 export function sedComputed(sedStatus: string | null | undefined, sapOpen: boolean): SedComputed {
   const s = String(sedStatus ?? '').trim().toLowerCase();
+  if (!s) return 'no_data'; // пусто = по поставке нет данных СЭД (≠ «не запущен»)
   if (s === 'отклонен' || s === 'отклонён' || s === 'аннулирован') return 'rejected';
   if (s === 'подписан') return sapOpen ? 'signed_open' : 'signed';
+  if (s === 'ожидает отгрузки') return 'awaiting_shipment';
   if (s === 'на подписании') return 'pending';
-  return 'not_started'; // '' | 'не передан' | прочее
+  return 'not_started'; // 'не передан' | прочее (поставка в СЭД, но на подписание не ушла)
 }
 
 /** Короткая подпись статуса СЭД (колонка СЭД, карточка Истории, фильтры). */
 export const SED_LABEL: Record<SedComputed, string> = {
+  no_data: 'нет в СЭД',
   not_started: 'не запущен',
+  awaiting_shipment: 'ожидает отгрузки',
   pending: 'на подписании',
   rejected: 'отклонён',
   signed: 'подписан',
-  signed_open: 'подписан · OBD открыта',
+  signed_open: 'подписан - нет проводки',
 };
 
 /** Цвет статуса СЭД (пилюля/текст). Централизованная палитра. */
 export const SED_COLOR: Record<SedComputed, string> = {
+  no_data: '#9C9892', // серый — данных СЭД нет
   not_started: '#9C9892', // серый — ещё не запускали
+  awaiting_shipment: '#B7791F', // охра — ждём действия склада отгрузки
   pending: '#B45309', // янтарь — в работе
   rejected: '#E5484D', // красный — проблема
   signed: '#1F7A33', // зелёный — закрыто
@@ -45,7 +53,8 @@ export const SED_COLOR: Record<SedComputed, string> = {
 export type FlowSignalKind =
   | 'repeat_done' // повторно попало ПОСЛЕ выполненной поставки (увезли = снова открыто, кол-во совпало) — радуга
   | 'signed_open' // СЭД подписан, но OBD ещё открыта (нет проводки) — контрольный, кислотный
-  | 'sed_pending'; // СЭД не подписан / на подписании / отклонён — нужно довести документ
+  | 'transfer_no_day' // «перенос на другой день» БЕЗ назначенной даты, поставка ещё жива — внимание (янтарь)
+  | 'sed_pending'; // СЭД отсутствует/не подписан/отклонён — нужно довести документ
 
 /**
  * Вердикт RGB-сигнала строки по реальному бизнес-состоянию (приоритет сверху вниз).
@@ -55,17 +64,25 @@ export type FlowSignalKind =
 export function flowSignalKind(
   cheat: boolean,
   sed: { status: string; open: boolean } | undefined,
+  transferNoDay = false,
 ): FlowSignalKind | null {
+  // RGB = ТОЛЬКО противоречие (юзер 2026-06-21), НЕ «СЭД просто не закрыт».
+  //  • repeat_done — мы «увезли», а позиция снова открыта тем же кол-вом (обман).
+  //  • signed_open — подписано в СЭД, но проводки нет (позиция в незакрытых) — контрольный.
+  //  • transfer_no_day — «перенос на другой день» без назначенной даты, поставка ещё жива:
+  //    не противоречие, но ТРЕБУЕТ ВНИМАНИЯ (юзер 2026-06-22: «внимание нужно, а rgb нет — странно»).
+  // Широкое срабатывание на любой незакрытый СЭД (на подписании/не запущен/…) УБРАНО — давало
+  // ложные RGB на согласованных «не увезли». Полная модель противоречий (с учётом нашей отметки
+  // и «нет в zm_vl») — раздел N мастер-файла, делается следующим шагом.
   if (cheat) return 'repeat_done';
-  if (!sed) return null;
-  const c = sedComputed(sed.status, sed.open);
-  if (c === 'signed_open') return 'signed_open';
-  if (c === 'pending' || c === 'rejected') return 'sed_pending';
-  return null; // signed (закрыто) / not_started — RGB-сигнала нет
+  if (sed && sedComputed(sed.status, sed.open) === 'signed_open') return 'signed_open';
+  if (transferNoDay) return 'transfer_no_day';
+  return null;
 }
 
 /** Конфиг анимированного «вжуха» для не-радужных сигналов (rgb + базовая/пиковая альфа). */
 export const SIGNAL_SWEEP: Record<Exclude<FlowSignalKind, 'repeat_done'>, { rgb: string; base: number; peak: number }> = {
   signed_open: { rgb: '192,38,211', base: 0.16, peak: 0.5 }, // кислотный пурпур (= SED_COLOR.signed_open)
+  transfer_no_day: { rgb: '255,183,43', base: 0.16, peak: 0.46 }, // янтарь — перенос без дня, нужно назначить
   sed_pending: { rgb: '201,75,75', base: 0.16, peak: 0.46 }, // приглушённый красный
 };

@@ -1,5 +1,6 @@
 import { session, type Session } from 'electron';
 import type { ProxyConfig } from './proxy';
+import { getApiMode, CLOUD_API_URL } from './api-mode';
 
 /**
  * Chrome 120 на Windows — стабильно whitelisted в корп-прокси.
@@ -35,6 +36,8 @@ export const PROXY_API_URL = 'https://45-12-239-5.sslip.io/api';
  *     и идёт прямо на VPS. 1:1 c Kotlin `MediaUrlResolver.resolve()`.
  */
 export function pickApiUrl(proxy: ProxyConfig | null): string {
+  // DEV-режим 'cloud' (юзер 2026-06-22): VPS недоступен → бьём прямо в CF Worker, минуя VPS.
+  if (getApiMode() === 'cloud') return CLOUD_API_URL;
   return proxy ? PROXY_API_URL : DIRECT_API_URL;
 }
 

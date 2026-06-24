@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
       CSP. blob:/data: разрешены для расшифрованных blob'ов (аватары, attachments).
+      worker-src нужен MapLibre: он рендерит карту через WebWorker.
       'unsafe-inline' для style/script нужен Vite HMR в dev и Radix/Tailwind inline styles.
       connect-src 'self' ws: для Vite HMR + IPC доступ к main.
     -->
@@ -14,9 +15,10 @@
         default-src 'self' blob: data:;
         script-src 'self' 'unsafe-inline';
         style-src 'self' 'unsafe-inline';
-        img-src 'self' blob: data: https:;
+        img-src 'self' blob: data: https: pyn-tile:;
         media-src 'self' blob:;
-        connect-src 'self' ws: http: https:;
+        worker-src 'self' blob:;
+        connect-src 'self' ws: http: https: blob: data: pyn-tile:;
       "
     />
     <title>Pyn</title>

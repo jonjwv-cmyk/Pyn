@@ -225,6 +225,8 @@ export interface FlowDeliveryEvent {
   login: string;
   full_name: string;
   created_at: string;
+  /** Доп. данные шага (для sed_step: { kind:'launch'|'sign'|'restart'|'wait', tab, seq }). */
+  payload_json?: string;
 }
 
 /** Поля ручного добавления строки поставки (план/отчёт). Все, кроме target/planDate, опциональны. */

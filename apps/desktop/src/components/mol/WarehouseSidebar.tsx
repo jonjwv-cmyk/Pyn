@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
+  MapPinned,
   Pencil,
   Phone,
   Plus,
@@ -28,6 +29,8 @@ import { ScrollToBottomButton } from '@/components/ui/ScrollToBottomButton';
 import { LockedEditorContent } from '@/components/schedule/EditorLockedOverlay';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { saveWarehouse } from '@/lib/warehouses-repo';
+import { useUiStateStore } from '@/lib/stores';
+import { useMapStore } from '@/lib/map-store';
 import type { ContactActionRequest } from './ContactActionDialog';
 
 interface WarehouseSidebarProps {
@@ -89,9 +92,12 @@ export function WarehouseSidebar({ warehouseIds, onContactAction }: WarehouseSid
 export function WarehouseCard({
   warehouseId,
   onContactAction,
+  hideMapLink = false,
 }: {
   warehouseId: string;
   onContactAction: (req: ContactActionRequest) => void;
+  /** Скрыть ссылку «На карте» (когда карточка уже рендерится внутри раздела «Карта»). */
+  hideMapLink?: boolean;
 }) {
   const { t } = useTranslation();
   const warehouse = useWarehousesStore((s) => s.byId.get(warehouseId));
@@ -122,12 +128,28 @@ export function WarehouseCard({
       'rounded-lg border px-3.5 py-3 text-[12.5px] leading-snug transition-colors',
       stateClasses,
     )}>
-      {/* Top: «Склад 8022» + кнопка «Редактировать» (cluster+day+phones в одном окне) */}
+      {/* Top: «Склад 8022» + «На карте» + кнопка «Редактировать» */}
       <div className="mb-2 flex items-center justify-between gap-2">
         <h3 className="text-[15px] font-bold tabular-nums text-text-strong">
           {t('mol.warehouse')} {warehouse.id}
         </h3>
-        <EditDialog warehouse={warehouse} />
+        <div className="flex items-center gap-1">
+          {!hideMapLink && (
+            <button
+              type="button"
+              onClick={() => {
+                useMapStore.getState().requestFocusWarehouse(warehouse.id);
+                useUiStateStore.getState().setActiveSection('map');
+              }}
+              className="flex h-6 items-center gap-1 rounded px-1.5 text-[11px] font-medium text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-emerald-400"
+              title="Показать склад на карте"
+            >
+              <MapPinned className="h-3 w-3" strokeWidth={1.75} />
+              На карте
+            </button>
+          )}
+          <EditDialog warehouse={warehouse} />
+        </div>
       </div>
 
       {/* Shop name */}

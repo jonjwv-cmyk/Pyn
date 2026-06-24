@@ -10,6 +10,7 @@
 import {
   warehousesVersion,
   warehousesDownloadUrl,
+  warehousesDownload,
   warehouseUpdate,
   parseWarehousesSnapshotJson,
   type Warehouse,
@@ -105,16 +106,30 @@ export async function refreshWarehousesFromServer(opts: { force?: boolean } = {}
       return false;
     }
 
-    const info = await warehousesDownloadUrl(api);
-    if (!info.url || !info.blobKeyB64 || !info.blobNonceB64) {
-      throw new Error('warehouses_download_url returned empty fields');
+    // Эффективный путь — зашифрованный gzip-слепок из R2 через preload. Если слепок недоступен
+    // (cdn раздаёт VPS; в DEV cloud-режиме воркер base-снимки не отдаёт) — fallback на прямой JSON
+    // (warehousesDownload через E2E-API → идёт через воркер, работает и в cloud). 1:1 как у persons.
+    let warehouses: Warehouse[] | null = null;
+    const hasBridge = typeof window.pyn?.warehouses?.fetchSnapshot === 'function';
+    if (hasBridge) {
+      try {
+        const info = await warehousesDownloadUrl(api);
+        if (info.url && info.blobKeyB64 && info.blobNonceB64) {
+          const plainJson = await window.pyn.warehouses.fetchSnapshot(
+            info.url,
+            info.blobKeyB64,
+            info.blobNonceB64,
+          );
+          warehouses = parseWarehousesSnapshotJson(plainJson).warehouses;
+        }
+      } catch (blobErr) {
+        // eslint-disable-next-line no-console
+        console.warn('[pyn:wh] blob path failed, falling back to direct JSON:', blobErr);
+      }
     }
-    const plainJson = await window.pyn.warehouses.fetchSnapshot(
-      info.url,
-      info.blobKeyB64,
-      info.blobNonceB64,
-    );
-    const { warehouses } = parseWarehousesSnapshotJson(plainJson);
+    if (!warehouses) {
+      warehouses = (await warehousesDownload(api)).warehouses;
+    }
     useWarehousesStore.getState().setLoaded({ warehouses, meta: serverMeta });
     useWarehousesStore.getState().setRefreshOutcome('updated');
     await saveCache();

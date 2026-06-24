@@ -2,6 +2,7 @@ import { ipcMain, session } from 'electron';
 import { detectProxy, type ProxyConfig } from '../network/proxy';
 import { configureSession, pickApiUrl, postRaw } from '../network/fetch';
 import { configureTls } from '../network/tls';
+import { devModeAllowed, getApiMode, initApiMode, setApiMode, type ApiMode } from '../network/api-mode';
 
 const CHANNEL = 'pyn:api';
 
@@ -23,12 +24,17 @@ export async function setupApiBridge(): Promise<void> {
   console.log(`[pyn:bridge] proxy=${proxyState ? `${proxyState.host}:${proxyState.port}` : 'direct'}`);
   await configureSession(session.defaultSession, proxyState);
   await configureTls(session.defaultSession, proxyState);
+  initApiMode(); // DEV-переключатель VPS/Cloud (в проде всегда VPS)
 
   // Прокидываем renderer console.log в main stdout — для диагностики.
   ipcMain.on('pyn:debug-log', (_evt, tag: string, message: string) => {
     // eslint-disable-next-line no-console
     console.log(`[render:${tag}] ${message}`);
   });
+
+  // DEV-ONLY: чтение/смена сетевого маршрута (VPS ↔ прямой Cloudflare). В проде смена игнорируется.
+  ipcMain.handle('pyn:dev:get-api-mode', () => ({ mode: getApiMode(), allowed: devModeAllowed() }));
+  ipcMain.handle('pyn:dev:set-api-mode', (_evt, next: ApiMode) => ({ mode: setApiMode(next), allowed: devModeAllowed() }));
 
   ipcMain.handle(
     CHANNEL,

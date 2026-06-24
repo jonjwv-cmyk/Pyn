@@ -1,4 +1,8 @@
 import type { ProxyConfig } from './proxy';
+import { getApiMode } from './api-mode';
+
+/** DEV cloud-режим: хост api/cdn → прямой CF Worker (минуя VPS). */
+const CLOUD_HOST = 'otl-api.jond-horizon.workers.dev';
 
 /**
  * Переписывание media-URL (аватары / attachments / МОЛ snapshot / update-exe).
@@ -38,6 +42,14 @@ export function resolveMediaUrl(rawUrl: string, proxy: ProxyConfig | null): stri
   if (typeof rawUrl !== 'string' || !rawUrl.startsWith('https://')) return rawUrl;
   try {
     const u = new URL(rawUrl);
+    // DEV cloud-режим (юзер 2026-06-22): и api, и cdn идут прямо в CF Worker, минуя мёртвый VPS.
+    // Обычный CF-cert (без пина). База-снимки (cdn/base/*) воркером не раздаются → клиент возьмёт
+    // из локального кэша; здесь хотя бы не виснем на недоступном VPS.
+    if (getApiMode() === 'cloud' && (u.hostname === 'api.otlhelper.com' || u.hostname === 'cdn.otlhelper.com')) {
+      u.hostname = CLOUD_HOST;
+      u.port = '';
+      return u.toString();
+    }
     if (u.hostname === 'cdn.otlhelper.com') {
       // CDN-blob → префикс /r2/. Path начинается со слеша: '/<key>' → '/r2/<key>'.
       u.hostname = SSLIP_HOST;

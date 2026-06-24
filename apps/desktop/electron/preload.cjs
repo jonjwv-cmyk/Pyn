@@ -45,6 +45,18 @@ contextBridge.exposeInMainWorld('pyn', {
     ipcRenderer.send('pyn:debug-log', String(tag), String(message));
   },
   /**
+   * DEV-ONLY: сетевой маршрут VPS ↔ прямой Cloudflare. Только для разработки на Mac
+   * (VPS отпал). В упакованном проде смена игнорируется (allowed=false), всегда VPS.
+   */
+  devApiMode: {
+    get: function pynDevApiModeGet() {
+      return ipcRenderer.invoke('pyn:dev:get-api-mode');
+    },
+    set: function pynDevApiModeSet(mode) {
+      return ipcRenderer.invoke('pyn:dev:set-api-mode', mode);
+    },
+  },
+  /**
    * Persistent session storage через Electron safeStorage (Mac Keychain /
    * Win DPAPI). Renderer общается только через IPC — файл хранится в main.
    */

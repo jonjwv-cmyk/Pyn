@@ -496,23 +496,53 @@ function buildContractError(kind: 'expired' | 'not-covered', fio: string, until?
 /** Поставка → инфо для расчёта доступного остатка (якорь, кол-во, проведена ли).
  *  Проведена = есть факт прихода (zm_vl) ИЛИ отмечена «увезли» — такая уже отражена в
  *  уменьшенном кол-ве выгрузки, в «занято планом» НЕ вычитается. */
-function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; posted: boolean; delivered: boolean; occupies: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean } {
-  const posted = d.fact_qty != null || d.done_stat === 'увезли';
+/** Причины возврата, требующие внимания → авто-«вопрос» в Формировании (если иного статуса нет). */
+const RETURN_Q_REASONS = new Set(['приемка', 'приёмка', 'входной контроль', 'брак', 'нет на складе', 'нет в наличии']);
+
+function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; factQty: number | null; claimed: boolean; proved: boolean; returnQuestion: boolean; posted: boolean; delivered: boolean; occupies: boolean; reserved: boolean; real: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean; transferNoDay: boolean } {
+  // РЕЗЕРВ (удалена/снята) держим в карте — но ТОЛЬКО ради значка истории (anchorsWithHistory):
+  // все «рабочие» флаги гасим, чтобы резерв не занимал позицию и не считался доставленным.
+  const reserved = Number(d.reserved) === 1;
+  // «Реальная» история (значок ИСТОРИЯ): есть номер поставки / статус отчёта / факт / фиксация.
+  // Брошенные черновики плана (резерв без всего) — НЕ история (юзеру не нужны попытки включить в план).
+  const real = !!(String(d.dlv ?? '').trim() || String(d.done_stat ?? '').trim() || d.fact_qty != null || Number(d.fixation_id) > 0);
+  const posted = !reserved && (d.fact_qty != null || String(d.fact_dt ?? '').trim() !== '' || d.done_stat === 'увезли');
   // «Реально отгружено» для ОБМАНКИ (юзер 2026-06-15): нужен ФАКТ отгрузки — приход из zm_vl
   // (fact_qty) ИЛИ статус «увезли», а НЕ цвет «выполнено» из импорта отчёта (он без факта и красил
   // бы формирование зря). Обманка = реально увезли + заказ снова открыт тем же кол-вом.
-  const delivered = Number(d.fixation_id) > 0 && posted;
+  const delivered = !reserved && Number(d.fixation_id) > 0 && posted;
   // ЗАНИМАЕТ позицию (вычитает кол-во из формирования) по ФАКТУ НАЛИЧИЯ поставки (юзер 2026-06-16):
   // подписано/не подписано в СЭД, есть проводка или нет, «увезли» — РОЛИ НЕ ИГРАЕТ. Раз поставка
-  // создана и не удалена — её кол-во из формирования ушло. Освобождает ТОЛЬКО удаление (reserved,
-  // строка уходит из карты) и «не увезли» (возврат груза). Зеркало серверного OCCUPIES_SQL.
+  // создана и не удалена — её кол-во из формирования ушло. Освобождает ТОЛЬКО удаление (reserved)
+  // и «не увезли» (возврат груза). Зеркало серверного OCCUPIES_SQL.
   const done = String(d.done_stat ?? '');
-  const occupies = done !== 'не увезли';
+  const occupies = !reserved && done !== 'не увезли';
+  // ОБМАНКА (юзер 2026-06-22, переосмыслено): «claimed» = МЫ пометили «выполнено/увезли»; «proved» =
+  // zm_vl подтвердил проводку (есть КолПрихода=fact_qty). Обманка = claimed БЕЗ proved (сказали что
+  // увезли, а по факту нет). Над-/недовоз/остаток с фактом — РЕАЛЬНО возили, НЕ обманка.
+  const claimed = !reserved && (done === 'выполнено' || done === 'увезли');
+  // «proved» = доказательство, что РЕАЛЬНО возили: проводка (КолПрихода) ЛИБО СЭД-документ дошёл до
+  // подписания/подписан (груз поехал, оформляется). «ожидает отгрузки»/пусто = ещё не возили. Без
+  // этого «на подписании»-поставки ложно краснели как обманка (4200017755|10, 4300642970|20).
+  const sedLow = String(d.sed_status ?? '').trim().toLowerCase();
+  const sedInFlow = sedLow === 'на подписании' || sedLow === 'подписан';
+  const proved = !reserved && (d.fact_qty != null || sedInFlow);
+  // «Вопрос» (юзер 2026-06-22): вернулось с причиной, требующей внимания (приёмка/входной контроль/
+  // брак/нет на складе/нет в наличии), и не разрешено (нет факта) → авто-метка «вопрос» в Формировании,
+  // ЕСЛИ иного статуса нет (см. statMetaById). Снимается ручным статусом.
+  const returnQuestion = !reserved && done === 'не увезли' && d.fact_qty == null &&
+    RETURN_Q_REASONS.has(String(d.fail_reason ?? '').trim().toLowerCase());
+  // «Перенос-без-дня» (юзер 2026-06-22): отмечен «перенос на другой день» БЕЗ даты (импорт/ручная
+  // заливка пишет голую причину; настоящий перенос — «…: YYYY-MM-DD» + строка-получатель), поставка
+  // ещё открыта в SAP (sap_open=1, нет факта). Сигнал «нужно назначить день» в Формировании.
+  const transferNoDay = !reserved && d.fact_qty == null && Number(d.sap_open) === 1 &&
+    String(d.fail_reason ?? '').trim() === 'перенос на другой день';
   return {
     a: `${d.ord}|${d.it}`, qty: d.qty == null ? 0 : Number(d.qty), uom: String(d.uom ?? ''),
-    posted, delivered, occupies,
+    factQty: d.fact_qty == null ? null : Number(d.fact_qty), claimed, proved, returnQuestion,
+    posted, delivered, occupies, reserved, real,
     sedStatus: String(d.sed_status ?? ''), sedHolder: String(d.sed_holder ?? ''),
-    sapOpen: Number(d.sap_open) === 1,
+    sapOpen: Number(d.sap_open) === 1, transferNoDay,
   };
 }
 
@@ -1291,8 +1321,9 @@ export function FlowSandboxGrid(): JSX.Element {
   // поставка УЖЕ отражена в уменьшенном кол-ве выгрузки (SAP списал), потому в «доступный
   // остаток» НЕ вычитается; незакрытая (черновик/план без факта) — вычитается (юзер 2026-06-14).
   type DlvInfo = {
-    a: string; qty: number; uom: string; posted: boolean; delivered: boolean; occupies: boolean;
-    sedStatus: string; sedHolder: string; sapOpen: boolean;
+    a: string; qty: number; uom: string; factQty: number | null; claimed: boolean; proved: boolean;
+    returnQuestion: boolean; posted: boolean; delivered: boolean; occupies: boolean; reserved: boolean;
+    real: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean; transferNoDay: boolean;
   };
   const [dlvInfoById, setDlvInfoById] = useState<Map<number, DlvInfo>>(() => flowDlvInfoCache ?? new Map());
   // СЭД по якорю — статус движения документа + на ком (с активной поставки позиции). Для колонки СЭД
@@ -1300,10 +1331,13 @@ export function FlowSandboxGrid(): JSX.Element {
   const sedByAnchor = useMemo(() => {
     const m = new Map<string, { status: string; holder: string; open: boolean }>();
     for (const v of dlvInfoById.values()) {
-      if (!v.sedStatus && !v.sedHolder) continue;
+      if (v.reserved) continue; // снятая поставка не несёт актуального СЭД-сигнала формирования
+      if (!v.sedStatus && !v.sedHolder && !v.sapOpen) continue;
       const cur = m.get(v.a);
-      // приоритет — у кого есть статус; незакрытая важнее (open=true перебивает).
-      if (!cur || (v.sapOpen && !cur.open)) m.set(v.a, { status: v.sedStatus, holder: v.sedHolder, open: v.sapOpen });
+      // приоритет — у кого есть статус; OPEN важнее спокойного подписанного статуса.
+      if (!cur || (v.sapOpen && !cur.open)) {
+        m.set(v.a, { status: v.sedStatus, holder: v.sedHolder, open: v.sapOpen });
+      }
     }
     return m;
   }, [dlvInfoById]);
@@ -1322,38 +1356,59 @@ export function FlowSandboxGrid(): JSX.Element {
   // «Обманка отчёта» (юзер 2026-06-15): отчёт говорит «увезли» РОВНО столько же по ЕИ, сколько
   // снова открыто в формировании → сигнал «поставка жива у нас». Если в формировании БОЛЬШЕ
   // (отчёт 30 / формирование 50) — это законный ОСТАТОК (ещё 20), НЕ обманка.
-  const deliveredByAnchor = useMemo(() => {
-    const m = new Map<string, { qty: number; uom: string }>();
-    for (const v of dlvInfoById.values()) {
-      if (!v.delivered) continue;
-      const cur = m.get(v.a);
-      if (cur) cur.qty += v.qty;
-      else m.set(v.a, { qty: v.qty, uom: v.uom });
-    }
-    return m;
+  // ОБМАНКА = «сказали увезли, а по факту нет» (юзер 2026-06-22). Два множества якорей:
+  //  • claimedAnchors — мы пометили «выполнено/увезли» (наша отметка отчёта);
+  //  • provedAnchors  — zm_vl подтвердил проводку (есть КолПрихода=fact) хоть по одной поставке.
+  // Обманка = claimed И НЕ proved (см. isCheatRow). Над-/недовоз/остаток с фактом = реально возили.
+  const claimedAnchors = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of dlvInfoById.values()) if (v.claimed) s.add(v.a);
+    return s;
   }, [dlvInfoById]);
-  // RGB-маркер = ТОЛЬКО ПОЛНАЯ ПОВТОРЯШКА (юзер 2026-06-15): статус «выполнено/увезли» И в
-  // формировании ТОЧНО столько же по ЕИ. Любое расхождение (стало меньше/больше — изменили заказ
-  // или zm_vl поправил факт) — это НЕ повторяшка: RGB НЕТ, только значок истории. Не-доставленные
-  // статусы (мало/на приёмке/нет на складе…) вообще не дают RGB — их возврат в формирование штатный.
+  const provedAnchors = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of dlvInfoById.values()) if (v.proved) s.add(v.a);
+    return s;
+  }, [dlvInfoById]);
+  // Якоря с «переносом-без-дня» (юзер 2026-06-22): живая поставка отмечена «перенос на другой день»,
+  // но день так и не назначили → сигнал внимания в Формировании (см. flowSignalKind/SIGNAL_SWEEP).
+  const transferNoDayByAnchor = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of dlvInfoById.values()) if (v.transferNoDay) s.add(v.a);
+    return s;
+  }, [dlvInfoById]);
+  // Якоря с возвратом «требует внимания» (приёмка/входной контроль/брак/нет в наличии, не разрешено) →
+  // авто-«вопрос» в STAT, если иного ярлыка нет (юзер 2026-06-22).
+  const returnQuestionByAnchor = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of dlvInfoById.values()) if (v.returnQuestion && !v.proved) s.add(v.a);
+    return s;
+  }, [dlvInfoById]);
+  // ОБМАНКА (юзер 2026-06-22, переосмыслено по реальным данным): «пометили увезли, а по факту НЕ
+  // возили». Срабатывает когда: мы отметили выполнено/увезли (claimed), НО zm_vl не подтвердил
+  // проводку (нет КолПрихода ни по одной поставке якоря, !proved), И по SAP реально НИЧЕГО не ушло
+  // (открытое кол-во ≥ изначального заказа: «вообще не возили»). Над-/недовоз, остаток, любое кол-во
+  // С ФАКТОМ — реально возили → НЕ обманка (раньше ошибочно краснело: 4400903675/4400910512/…). Частичная
+  // отгрузка (open < ordered_init) — что-то ушло → не «вообще не возили».
   const isCheatRow = useCallback(
     (r: FlowSandboxRow): boolean => {
-      const d = deliveredByAnchor.get(`${r.ord}|${r.it}`);
-      if (!d) return false;
-      const fq = typeof r.qty === 'number' ? r.qty : Number(r.qty);
-      if (!Number.isFinite(fq)) return false;
-      const sameUom =
-        !d.uom || !r.uom || String(d.uom).trim().toUpperCase() === String(r.uom).trim().toUpperCase();
-      return sameUom && Math.abs(fq - d.qty) < 1e-6; // ТОЧНОЕ совпадение кол-ва
+      const a = `${r.ord}|${r.it}`;
+      if (!claimedAnchors.has(a) || provedAnchors.has(a)) return false;
+      const init = r.ordered_init;
+      const open = typeof r.qty === 'number' ? r.qty : Number(r.qty);
+      if (init != null && Number.isFinite(open) && open < Number(init) - 1e-6) return false; // что-то ушло
+      return true;
     },
-    [deliveredByAnchor],
+    [claimedAnchors, provedAnchors],
   );
 
-  // Якоря, у которых ЕСТЬ история движения (хоть один эпизод поставки): только им показываем
-  // значок ИСТОРИЯ (юзер 2026-06-15: «значок если история есть, нет — не показываем, не путаем»).
-  // Ключ ord|it → история живёт, пока жив заказ-позиция (переживает смену месяца формирования).
+  // Якоря с РЕАЛЬНОЙ историей движения (поставка с номером / статус отчёта / факт / фиксация —
+  // включая снятые после этого): только им значок ИСТОРИЯ (юзер: «значок если история есть»). Резерв
+  // учитываем (позиция, у которой все поставки сняты, не теряет историю), а вот брошенные черновики
+  // плана (резерв без результата) историей НЕ считаем — они юзеру не нужны. Ключ ord|it переживает
+  // смену месяца формирования.
   const anchorsWithHistory = useMemo(
-    () => new Set([...dlvInfoById.values()].map((v) => v.a)),
+    () => new Set([...dlvInfoById.values()].filter((v) => v.real).map((v) => v.a)),
     [dlvInfoById],
   );
 
@@ -1405,7 +1460,7 @@ export function FlowSandboxGrid(): JSX.Element {
         const g = `${r.fr}|${r.to_wh}|${noKey}|${r.uom}|${r.mat}`;
         undershoot = (sumByGroup.get(g) ?? 0) * MIN_QTY_TOLERANCE < (minQty as number);
       }
-      const auto = masloLabel
+      let auto = masloLabel
         ? hasNorm && undershoot
           ? 'мало'
           : masloLabel
@@ -1416,10 +1471,14 @@ export function FlowSandboxGrid(): JSX.Element {
               ? 'заявка'
               : 'мет_ок'
             : '';
+      // «Вопрос» — САМЫЙ НИЗКИЙ приоритет (юзер 2026-06-22: «лишь если нет иного»): ставим только когда
+      // иначе было бы пусто/мет_ок, а позиция вернулась с проблемной причиной (приёмка/брак/…). Жёлтым
+      // обращает внимание; снимается ручным статусом (stat_manual перекрывает).
+      if ((auto === '' || auto === 'мет_ок') && returnQuestionByAnchor.has(`${r.ord}|${r.it}`)) auto = 'вопрос';
       map.set(r.id, { auto, undershoot });
     }
     return map;
-  }, [rows, vghByKey, whById, plannedOpenByAnchor]);
+  }, [rows, vghByKey, whById, plannedOpenByAnchor, returnQuestionByAnchor]);
 
   // CLST — ЖИВОЙ из нашего графика. Колонка ПО ДНЯМ НЕДЕЛИ (ПН-ПТ) из графика
   // ВЫБРАННОГО месяца; внутри дня кластер выводим суффиксом: ВЫЕЗД/КХП («ПН КХП»,
@@ -1495,7 +1554,10 @@ export function FlowSandboxGrid(): JSX.Element {
   // позиция возвращается. Держим карту id поставки → якорь `ord|it` (реалтайм; стейт объявлен выше).
   useEffect(() => {
     let alive = true;
-    void flowDeliveriesGet(api)
+    // includeReserved: резервные нужны для значка ИСТОРИЯ (anchorsWithHistory) — иначе позиция,
+    // у которой все поставки сняты, теряет историю в Формировании. Флаги резерва погашены в dlvInfoOf,
+    // поэтому в расчёт остатка/доставки/СЭД они не попадают.
+    void flowDeliveriesGet(api, { includeReserved: true })
       .then((dlv) => {
         if (!alive) return;
         setDlvInfoById(new Map(dlv.map((d) => [d.id, dlvInfoOf(d)] as const)));
@@ -1508,11 +1570,14 @@ export function FlowSandboxGrid(): JSX.Element {
   useWsEvent<FlowDeliveriesChangedEvent>('flow_deliveries_changed', (e) => {
     setDlvInfoById((prev) => {
       const next = new Map(prev);
-      for (const id of Array.isArray(e.deleted) ? e.deleted : []) next.delete(Number(id));
+      // «deleted» = ушедшие в РЕЗЕРВ (id без данных). Не выкидываем из карты, а помечаем снятыми
+      // (флаги гасим) — позиция освобождается, но значок истории остаётся.
+      for (const id of Array.isArray(e.deleted) ? e.deleted : []) {
+        const cur = next.get(Number(id));
+        if (cur) next.set(Number(id), { ...cur, reserved: true, occupies: false, delivered: false, posted: false, claimed: false, proved: false, returnQuestion: false, transferNoDay: false });
+      }
       for (const r of Array.isArray(e.rows) ? e.rows : []) {
-        const id = Number(r.id);
-        if (Number((r as { reserved?: number }).reserved) === 1) next.delete(id);
-        else next.set(id, dlvInfoOf(r as unknown as FlowDeliveryRow));
+        next.set(Number(r.id), dlvInfoOf(r as unknown as FlowDeliveryRow));
       }
       return next;
     });
@@ -1550,7 +1615,13 @@ export function FlowSandboxGrid(): JSX.Element {
       }
       const q0 = typeof r.qty === 'number' ? r.qty : Number(r.qty);
       const avail = (Number.isFinite(q0) ? q0 : 0) - open;
-      if (avail <= 1e-6) continue; // полностью покрыта планом → в Плане, из формирования убираем
+      if (avail <= 1e-6) {
+        // Контрольная строка: OBD уже забрала всё количество, но по ней есть СЭД/RGB-проблема
+        // (нет в СЭД, не запущен, на подписании, отклонён, подписан при открытой OBD). Показываем
+        // её в Формировании как сигнал, но серверная сборка плана всё равно пропустит занятый якорь.
+        if (flowSignalKind(isCheatRow(r), sedByAnchor.get(`${r.ord}|${r.it}`), transferNoDayByAnchor.has(`${r.ord}|${r.it}`))) out.push(r);
+        continue; // полностью покрыта планом → в Плане/контроле, повторно не собираем
+      }
       // Частичная отгрузка (юзер 2026-06-16): создали поставку 400 из 500 → в формировании остаётся
       // ОСТАТОК 100. Показываем QTY = остаток; КГ/V масштабируем пропорционально (liveRows посчитал их
       // от полного кол-ва). Норма транспортная (statMetaById) и добор по выделению (selNorm) считают по
@@ -1563,7 +1634,7 @@ export function FlowSandboxGrid(): JSX.Element {
       out.push({ ...r, qty: Math.round(avail * 1000) / 1000, kg, v });
     }
     return out;
-  }, [liveRows, plannedOpenByAnchor, showOff]);
+  }, [liveRows, plannedOpenByAnchor, showOff, isCheatRow, sedByAnchor, transferNoDayByAnchor]);
 
   // Допустимые РУЧНЫЕ значения STAT по строке (для пунктов выпадашки И валидации в applyEdits).
   // Универсальные маркеры (вопрос/самовывоз/отказ/неликвиды) — на любой строке. «заявка» руками —
@@ -2042,14 +2113,22 @@ export function FlowSandboxGrid(): JSX.Element {
         } satisfies FlowMolCell;
       }
       if (spec.kind === 'day') {
-        const s = dayState(rowData);
+        // Авто-сброс ПРОШЕДШЕЙ даты DAY (юзер 2026-06-22: «дата ушла → сброс по Екб»). Дата строго
+        // раньше сегодня (Екатеринбург, UTC+5) показывается ПУСТОЙ — новую ставим вручную (руками
+        // прошлую дату и так нельзя). DB не трогаем: «Сформировать план» прошлые даты не берёт.
+        let rawDay = (rowData.day_wk ?? '').trim();
+        if (/^\d{4}-\d{2}-\d{2}/.test(rawDay)) {
+          const todayYek = new Date(Date.now() + 5 * 3_600_000).toISOString().slice(0, 10);
+          if (rawDay < todayYek) rawDay = '';
+        }
+        const s = dayState({ ...rowData, day_wk: rawDay });
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
           // Копируем СЫРОЕ значение (ISO-дата / OFF / пусто), а не подпись — тогда при
           // вставке в другую DAY-ячейку условная заливка (зелёная YES) тянется за датой.
-          copyData: rowData.day_wk ?? '',
-          data: { kind: 'flow-day', value: rowData.day_wk ?? '', label: s.label, color: s.color },
+          copyData: rawDay,
+          data: { kind: 'flow-day', value: rawDay, label: s.label, color: s.color },
         } satisfies FlowDayCell;
       }
       if (spec.kind === 'mat') {
@@ -3126,9 +3205,9 @@ export function FlowSandboxGrid(): JSX.Element {
       // repeat_done (повторяшка → радуга), signed_open (СЭД подписан, OBD открыта → кислотный
       // пурпур), sed_pending (СЭД не подписан/отклонён → приглушённый красный). Сигнал поставки/
       // СЭД важнее стадии строки; нет сигнала → обычный sweep по типу строки (OFF/нет/new/вопрос).
-      const sig = r ? flowSignalKind(isCheatRow(r), sedByAnchor.get(`${r.ord}|${r.it}`)) : null;
+      const sig = r && r.day_wk !== 'OFF' ? flowSignalKind(isCheatRow(r), sedByAnchor.get(`${r.ord}|${r.it}`), transferNoDayByAnchor.has(`${r.ord}|${r.it}`)) : null;
       const rainbow = sig === 'repeat_done';
-      const sigSweep = sig === 'signed_open' || sig === 'sed_pending' ? SIGNAL_SWEEP[sig] : null;
+      const sigSweep = sig === 'signed_open' || sig === 'sed_pending' || sig === 'transfer_no_day' ? SIGNAL_SWEEP[sig] : null;
       const sweep = rainbow || sigSweep
         ? sigSweep
         : r
@@ -3201,7 +3280,7 @@ export function FlowSandboxGrid(): JSX.Element {
         ctx.restore();
       }
     },
-    [viewRows, isCheatRow, sedByAnchor],
+    [viewRows, isCheatRow, sedByAnchor, transferNoDayByAnchor],
   );
 
   // Индикаторы в шапке поверх дефолта Glide, в одной точке справа: стрелка МЕНЮ (▾)

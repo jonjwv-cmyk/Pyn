@@ -26,6 +26,15 @@ declare global {
       ) => Promise<Uint8Array>;
       /** Renderer console.log → main stdout (для диагностики). */
       debugLog: (tag: string, message: string) => void;
+      /**
+       * DEV-ONLY: сетевой маршрут — 'vps' (штатный, через VPS) или 'cloud' (прямой Cloudflare,
+       * минуя VPS). Только для разработки на Mac (VPS отпал). В проде смена игнорируется
+       * (`allowed=false`), всегда 'vps'.
+       */
+      devApiMode: {
+        get: () => Promise<{ mode: 'vps' | 'cloud'; allowed: boolean }>;
+        set: (mode: 'vps' | 'cloud') => Promise<{ mode: 'vps' | 'cloud'; allowed: boolean }>;
+      };
       /** Persistent session storage через safeStorage в main process. */
       tokenStore: {
         load: () => Promise<Session | null>;

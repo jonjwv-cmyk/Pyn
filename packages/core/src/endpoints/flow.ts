@@ -327,7 +327,7 @@ export async function flowImport(
  * сопоставляет колонки реальной выгрузки (по ИМЕНАМ заголовков, см. `parseZmvlTsv`)
  * в эти поля и шлёт на сервер `flow_zmvl_reconcile`. Карта: Поставка→dlv, Позиция→
  * dlv_pos, НомЗаказа→ord, ПозЗаказа→it, Номер транспортного заказа→trz, Отп_Склад→fr,
- * Пол_Склад→to_wh, Объем Пост→qty(план), ДатаПлановОМ→plan_date, КолПрихода→fact_qty,
+ * Пол_Склад→to_wh, Объем поставки→qty(план), ДатаПлановОМ→plan_date, КолПрихода→fact_qty,
  * Дата проводки→fact_dt, Создал→sap_created_by, Дата создания+Время→sap_created_at,
  * места с остатком→stock_note, Удалить→deleted.
  */
@@ -422,7 +422,10 @@ export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
   const iTrz = col('Номер транспортного заказа');
   const iFr = col('Отп_Склад');
   const iTo = col('Пол_Склад');
-  const iQty = col('Объем Пост', 'Объем поставки');
+  // ⚠️ qty = «Объем поставки» (кол-во поставки, col 15). НЕ «Объем Пост» (col 104) — он в выгрузках
+  // ВСЕГДА 0 (проверено на эталонах zm_vl). Раньше брали 'Объем Пост' первым → qty=0 у создаваемых
+  // поставок. Порядок кандидатов: сначала верная колонка, 'Объем Пост' оставлен лишь как фолбэк.
+  const iQty = col('Объем поставки', 'Объем Пост');
   const iPlanDt = col('ДатаПлановОМ');
   const iFactQty = col('КолПрихода');
   const iFactDt = col('Дата проводки', 'ДатаДокДвМат');
@@ -439,7 +442,7 @@ export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
   const fixed = {
     dlv: 6, pos: 7, trz: 8, fr: 2, to: 3, no: 11, mat: 12, uom: 13,
     ord: 22, it: 23, creBy: 24, creDt: 25, creTm: 26, factDt: 64, planDt: 68,
-    factQty: 86, qty: 103, del: 143,
+    factQty: 86, qty: 14, del: 143, // qty=col15 «Объем поставки» (0-based 14); col104 «Объем Пост»=0
     stock: [[30, 21], [32, 33], [34, 35], [36, 37]] as Array<[number, number]>,
   };
   const ix = (named: number, fallback: number): number => (hasHeader ? named : fallback);

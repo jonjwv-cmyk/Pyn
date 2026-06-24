@@ -7,6 +7,7 @@ import {
   NAV_TRANSPORT,
   NAV_LOG,
   NAV_BROADCAST,
+  NAV_MAP,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
 } from '@/lib/nav-sections';
@@ -64,6 +65,8 @@ interface SidebarProps {
   showLog: boolean;
   /** Показывать ли раздел «Рассылка» — тот же admin/developer-контур. */
   showBroadcast: boolean;
+  /** Показывать ли раздел «Карта» — тот же admin/developer-контур. */
+  showMap: boolean;
   onToggleCollapsed: () => void;
   onAiClick: () => void;
   onSectionClick: (id: NavSectionId) => void;
@@ -134,6 +137,7 @@ export function Sidebar({
   showVgh,
   showLog,
   showBroadcast,
+  showMap,
   onToggleCollapsed,
   onAiClick,
   onSectionClick,
@@ -327,6 +331,9 @@ export function Sidebar({
 
         {/* 3. «Транспорт». */}
         {showVgh && renderNavItem(NAV_TRANSPORT)}
+
+        {/* 3b. «Карта» — точки складов / области / дороги / оптимум (логистическая семья с Транспортом). */}
+        {showMap && renderNavItem(NAV_MAP)}
 
         {/* 4. «База» (Контакты/МОЛы / Склады) — hover-флайаут листов; выбор листа → переход. */}
         <BaseNavRow

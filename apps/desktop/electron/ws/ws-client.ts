@@ -19,6 +19,7 @@ import {
   PINNED_HOST,
   VPS_SPKI_PIN_SHA256_B64,
 } from '../network/tls';
+import { getApiMode, CLOUD_WS_URL } from '../network/api-mode';
 
 /**
  * WS клиент в main process.
@@ -230,17 +231,24 @@ function connect(): void {
   }
 
   const proxy = state.proxy;
-  const url = proxy ? WS_URL_PROXY : WS_URL_DIRECT;
+  // DEV-режим 'cloud' (юзер 2026-06-22): WS прямо в CF Worker, минуя VPS, обычный CF-cert (без пина).
+  const cloud = getApiMode() === 'cloud';
+  const url = cloud ? CLOUD_WS_URL : proxy ? WS_URL_PROXY : WS_URL_DIRECT;
   // eslint-disable-next-line no-console
   console.log(
     `[pyn:ws] connecting to ${url}` +
-      (proxy
-        ? ` via proxy ${proxy.host}:${proxy.port} (sslip.io / LE cert, no pin)`
-        : ` (direct, pinned → ${PINNED_IP})`),
+      (cloud
+        ? ' (DEV cloud: прямой Cloudflare, no pin)'
+        : proxy
+          ? ` via proxy ${proxy.host}:${proxy.port} (sslip.io / LE cert, no pin)`
+          : ` (direct, pinned → ${PINNED_IP})`),
   );
 
   let wsOptions: ClientOptions;
-  if (proxy) {
+  if (cloud) {
+    // Cloud: workers.dev с валидным CF-сертификатом — стандартная верификация, без proxy и без пина.
+    wsOptions = {} as ClientOptions;
+  } else if (proxy) {
     // Proxy mode: HTTP CONNECT tunnel через https-proxy-agent. URL — sslip.io
     // (LE-сертификат, проходит системный truststore). SPKI-pin не делаем —
     // payload защищён вторым слоем E2E. Proxy auth (NTLM/Negotiate) Node-ws
@@ -270,10 +278,9 @@ function connect(): void {
   state.ws = ws;
 
   ws.on('upgrade', (response: IncomingMessage) => {
-    // Proxy mode: cert уже проверен `rejectUnauthorized: true` против системного
-    // truststore (LE-цепочка). Доп. SPKI-pin не нужен — корп-прокси MITM-сценарии
-    // покрываются E2E-payload encryption.
-    if (proxy) {
+    // Proxy/Cloud mode: cert уже проверен против системного truststore (LE/CF цепочка).
+    // Доп. SPKI-pin не нужен — MITM-сценарии покрываются E2E-payload encryption.
+    if (proxy || cloud) {
       state.pinVerified = true;
       return;
     }
