@@ -265,6 +265,12 @@ export {
 } from './flow';
 
 export {
+  mapGet,
+  mapSet,
+  type MapDocResult,
+} from './map';
+
+export {
   flowDeliveriesGet,
   flowDeliveriesEdit,
   flowDeliveriesDelete,

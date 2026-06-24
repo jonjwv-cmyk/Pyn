@@ -1,24 +1,35 @@
 /**
- * map-repo — локальная персистентность карты (v1, без сервера). Точки/области/
- * дороги живут в зашифрованном кэше `flow-map` (safeStorage, как базы).
+ * map-repo — персистентность карты. ОБЩИЙ документ на сервере (D1 `map_state`,
+ * endpoints map_get/map_set) + локальный зашифрованный кэш `flow-map` как
+ * быстрый старт / офлайн-фоллбэк.
  *
- *   • initMap()  — на старте грузит кэш в store + включает авто-сохранение.
- *   • авто-сохранение — подписка на useMapStore: любое изменение `doc` → debounce
- *     400мс → cache.save.
+ *   • initMap() — кэш (мгновенно) → дотягивает с сервера; если сервер пуст, а
+ *     локально нарисовано — заливает локальное на сервер (миграция).
+ *   • любое изменение doc → debounce → cache.save + push на сервер (map_set).
+ *   • WS `map_changed` (другой клиент сохранил) → refreshMapFromServer() → у всех
+ *     одинаковая карта реалтайм. Эхо своих правок гасим по `version`.
  */
 
+import { mapGet, mapSet } from '@pyn/core';
 import { legacyNormToLatLng } from '@/components/map/geo';
 import { EMPTY_MAP_DOC, VEHICLE_TYPES, type LatLng, type MapDoc, type VehicleType } from '@/components/map/map-types';
 import { stitchRoadSegments } from '@/components/map/road-network';
+import { api } from './api';
 import { useMapStore } from './map-store';
 
 const CACHE_NAME = 'flow-map';
 const BACKUP_NAME = 'pyn:flow-map:plain-backup:v1';
 const SAVE_DEBOUNCE_MS = 120;
+const PUSH_DEBOUNCE_MS = 700;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let subscribed = false;
 let lastSavedDoc: MapDoc | null = null;
+/** Последняя известная версия серверного документа (для гашения эха своих правок). */
+let serverVersion = 0;
+/** true пока применяем входящий серверный документ — не пушим его обратно. */
+let applyingRemote = false;
 
 function toLatLng(raw: unknown): LatLng | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -186,7 +197,74 @@ export async function loadMapFromCache(): Promise<boolean> {
   return true;
 }
 
-/** Грузит кэш + включает авто-сохранение (идемпотентно). */
+// ─── Серверная синхронизация (общий документ карты) ──────────────────────────
+
+/** Применить документ с сервера в стор (без обратного пуша). */
+function applyServerDoc(raw: string, version: number): void {
+  let doc: MapDoc;
+  try {
+    doc = normalizeDoc(JSON.parse(raw) as Partial<MapDoc> & Record<string, unknown>);
+  } catch {
+    return;
+  }
+  applyingRemote = true;
+  try {
+    useMapStore.getState().setDoc(doc);
+    lastSavedDoc = doc;   // не триггерим повторный cache-save / push на этот doc
+    serverVersion = version;
+    void flush(doc);      // в локальный кэш как есть
+  } finally {
+    applyingRemote = false;
+  }
+}
+
+/** Отправить текущий документ на сервер (admin). Обновляет serverVersion. */
+async function pushNow(doc: MapDoc): Promise<void> {
+  try {
+    const res = await mapSet(api, JSON.stringify(doc));
+    serverVersion = res.version;
+    lastSavedDoc = doc;
+  } catch (err) {
+    // Не admin (403) / нет сети — остаёмся на локальном кэше, попробуем позже.
+    // eslint-disable-next-line no-console
+    console.warn('[pyn:map] server push failed:', err);
+  }
+}
+
+function schedulePush(doc: MapDoc): void {
+  if (pushTimer) clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => { void pushNow(doc); }, PUSH_DEBOUNCE_MS);
+}
+
+/** Догнать сервер, если там версия новее нашей. Вызывается на WS `map_changed`. */
+export async function refreshMapFromServer(): Promise<void> {
+  try {
+    const res = await mapGet(api);
+    if (res.doc && res.version > serverVersion) applyServerDoc(res.doc, res.version);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[pyn:map] server refresh failed:', err);
+  }
+}
+
+/** Первичная синхронизация: применить серверное ИЛИ залить локальное (миграция). */
+async function syncFromServerInitial(): Promise<void> {
+  try {
+    const res = await mapGet(api);
+    if (res.doc && res.version > 0) {
+      applyServerDoc(res.doc, res.version);            // сервер = источник правды
+    } else {
+      serverVersion = res.version;
+      const localDoc = useMapStore.getState().doc;
+      if (scoreDoc(localDoc) > 0) await pushNow(localDoc); // сервер пуст → заливаем своё
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[pyn:map] initial server sync failed (остаёмся на кэше):', err);
+  }
+}
+
+/** Грузит кэш + сервер + включает авто-сохранение (локально + на сервер). */
 export async function initMap(): Promise<void> {
   await loadMapFromCache();
   useMapStore.getState().setLoaded(true);
@@ -194,7 +272,10 @@ export async function initMap(): Promise<void> {
   if (!subscribed) {
     subscribed = true;
     useMapStore.subscribe((state) => {
-      if (state.doc !== lastSavedDoc) scheduleSave(state.doc);
+      if (state.doc !== lastSavedDoc) {
+        scheduleSave(state.doc);
+        if (!applyingRemote) schedulePush(state.doc);
+      }
     });
     window.addEventListener('beforeunload', () => {
       const doc = useMapStore.getState().doc;
@@ -206,6 +287,9 @@ export async function initMap(): Promise<void> {
       void flushMapNow();
     });
   }
+
+  // После локального кэша — синхронизируемся с сервером (общая карта у всех).
+  void syncFromServerInitial();
 }
 
 /** Принудительный сброс на диск (например, перед logout/wipe). */

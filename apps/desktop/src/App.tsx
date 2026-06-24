@@ -18,6 +18,7 @@ import { MolScreen } from '@/components/mol';
 import { PersonEditDialog } from '@/components/mol/PersonEditDialog';
 import { distinctStatuses } from '@/lib/persons-view';
 import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
+import { refreshMapFromServer } from '@/lib/map-repo';
 import { initPersons, refreshPersonsFromServer } from '@/lib/persons-repo';
 import { usePersonsStore } from '@/lib/persons-store';
 import { prefetchScheduleMonthsMeta } from '@/lib/schedule/use-schedule-sync';
@@ -621,6 +622,11 @@ export function App() {
   // Склады: админ/разработчик правит карточку → server broadcast → refetch у всех.
   useWsEvent<WarehousesChangedEvent>('warehouses_changed', () => {
     void refreshWarehousesFromServer({ force: true });
+  });
+  // Карта: админ/разработчик правит точки/дороги/особенности → server broadcast →
+  // дотягиваем общий документ у всех (общая карта реалтайм).
+  useWsEvent('map_changed', () => {
+    void refreshMapFromServer();
   });
   // Контакты: правка/создание контакта → broadcast → refetch ТОЛЬКО у тех, кто
   // уже открывал вкладку (база 19.6k не грузится фоном тем, кто туда не заходил).
