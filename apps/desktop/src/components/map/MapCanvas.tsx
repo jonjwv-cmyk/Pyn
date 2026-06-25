@@ -3,7 +3,21 @@ import maplibregl, { type Map as MapLibreMap, type Marker } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { getWarehouseState, type Warehouse } from '@pyn/core';
 import { useWarehousesStore } from '@/lib/warehouses-store';
-import { NTMK_CENTER, NTMK_ZOOM, vehicleShort, type LatLng, type MapArea, type MapDoc, type MapPoint, type MapRoad, type MapRoadSuggestion, type MapTool, type RoadAccess } from './map-types';
+import {
+  NTMK_CENTER,
+  NTMK_ZOOM,
+  roadPaintOption,
+  vehicleShort,
+  type LatLng,
+  type MapArea,
+  type MapDoc,
+  type MapPoint,
+  type MapRoad,
+  type MapRoadSuggestion,
+  type MapTool,
+  type RoadAccess,
+  type RoadPaintMode,
+} from './map-types';
 import type { OptimizeResult } from './optimize';
 import { distanceMeters, nearestPointOnPolyline } from './geo';
 
@@ -29,6 +43,9 @@ interface MapCanvasProps {
   /** null = все точки видимы; иначе — только эти id. */
   visiblePointIds: Set<string> | null;
   selection: MapSelection | null;
+  showRoadSuggestions: boolean;
+  roadPaintMode: RoadPaintMode;
+  movingPointId: string | null;
   onSelect: (sel: MapSelection | null) => void;
   onCreatePoint: (latlng: LatLng) => void;
   onMovePoint: (id: string, latlng: LatLng) => void;
@@ -36,6 +53,9 @@ interface MapCanvasProps {
   onCreateRoad: (vertices: LatLng[]) => void;
   onConfirmRoadTrace: (vertices: LatLng[]) => void;
   onCreateRoadAccess: (vertices: LatLng[]) => void;
+  onStartMovePointByMap: (id: string) => void;
+  onFinishMovePointByMap: (id: string, latlng: LatLng) => void;
+  onCancelMovePointByMap: () => void;
   /** Esc в режиме инструмента — выйти в «Выбор» (курсор перестаёт «носить» инструмент). */
   onCancelTool: () => void;
   optimizeOverlay: OptimizeOverlay | null;
@@ -78,6 +98,9 @@ export function MapCanvas({
   tool,
   visiblePointIds,
   selection,
+  showRoadSuggestions,
+  roadPaintMode,
+  movingPointId,
   onSelect,
   onCreatePoint,
   onMovePoint,
@@ -85,6 +108,9 @@ export function MapCanvas({
   onCreateRoad,
   onConfirmRoadTrace,
   onCreateRoadAccess,
+  onStartMovePointByMap,
+  onFinishMovePointByMap,
+  onCancelMovePointByMap,
   onCancelTool,
   optimizeOverlay,
   onGhostMove,
@@ -106,6 +132,7 @@ export function MapCanvas({
   const [cursor, setCursor] = useState<LatLng | null>(null);
   const [styleReady, setStyleReady] = useState(false);
   const [viewMetrics, setViewMetrics] = useState<ViewMetrics | null>(null);
+  const movingPoint = movingPointId ? doc.points.find((p) => p.id === movingPointId) ?? null : null;
 
   useEffect(() => {
     const el = elRef.current;
@@ -166,14 +193,14 @@ export function MapCanvas({
   const appendConfirmTracePoint = useCallback((raw: LatLng) => {
     // Режим подтверждения: НИЧЕГО нового не рисуем — берём только точки, лежащие
     // на красной линии. Курсор вне красной — пропускаем (отдельно от «своей дороги»).
-    const snapped = snapToRoadSuggestions(raw, doc.roadSuggestions, CONFIRM_TRACE_SNAP_METERS);
+    const snapped = snapToRoadSuggestions(raw, showRoadSuggestions ? doc.roadSuggestions : [], CONFIRM_TRACE_SNAP_METERS);
     if (!snapped) return;
     setDraft((points) => {
       const prev = points[points.length - 1];
       if (prev && distanceMeters(prev, snapped) < CONFIRM_TRACE_MIN_GAP_METERS) return points;
       return [...points, snapped];
     });
-  }, [doc.roadSuggestions]);
+  }, [doc.roadSuggestions, showRoadSuggestions]);
 
   const appendFreehandRoadPoint = useCallback((p: LatLng) => {
     setDraft((points) => {
@@ -281,7 +308,7 @@ export function MapCanvas({
     const onMove = (e: maplibregl.MapMouseEvent) => {
       const raw = toLatLng(e.lngLat);
       const current = tool === 'confirmRoad'
-        ? snapToRoadSuggestions(raw, doc.roadSuggestions, CONFIRM_TRACE_SNAP_METERS) ?? raw
+        ? snapToRoadSuggestions(raw, showRoadSuggestions ? doc.roadSuggestions : [], CONFIRM_TRACE_SNAP_METERS) ?? raw
         : tool === 'vehicles'
           ? snapToRoads(raw, doc.roads, VEHICLE_TRACE_SNAP_METERS) ?? raw
           : raw;
@@ -311,7 +338,7 @@ export function MapCanvas({
       vehicleDrawingRef.current = false;
       map.dragPan.enable();
     };
-  }, [tool, doc.roadSuggestions, doc.roads, appendConfirmTracePoint, appendFreehandRoadPoint, appendVehicleTracePoint, finishDraft, onCreatePoint, onGhostMove, onSelect]);
+  }, [tool, doc.roadSuggestions, doc.roads, showRoadSuggestions, appendConfirmTracePoint, appendFreehandRoadPoint, appendVehicleTracePoint, finishDraft, onCreatePoint, onGhostMove, onSelect]);
 
   useEffect(() => {
     const previousTool = prevToolRef.current;
@@ -352,13 +379,19 @@ export function MapCanvas({
         skipAutoCommitRef.current = true; // не коммитить недорисованное при выходе
         mapRef.current?.dragPan.enable();
         setDraft([]);
+        onCancelMovePointByMap();
         onCancelTool();
+      }
+      if (e.key === 'Enter' && movingPointId && mapRef.current) {
+        e.preventDefault();
+        onFinishMovePointByMap(movingPointId, toLatLng(mapRef.current.getCenter()));
+        return;
       }
       if (e.key === 'Enter') finishDraft();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finishDraft, onCancelTool]);
+  }, [finishDraft, movingPointId, onCancelMovePointByMap, onCancelTool, onFinishMovePointByMap]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -393,10 +426,10 @@ export function MapCanvas({
 
     setSourceData(map, 'map-areas', buildAreasData(doc.areas, selection));
     setSourceData(map, 'map-roads', buildRoadsData(doc.roads, selection));
-    setSourceData(map, 'map-road-suggestions', buildRoadSuggestionsData(doc.roadSuggestions, selection));
+    setSourceData(map, 'map-road-suggestions', showRoadSuggestions ? buildRoadSuggestionsData(doc.roadSuggestions, selection) : EMPTY_FEATURES);
     setSourceData(map, 'map-road-access', buildRoadAccessData(doc.roadAccess, selection));
     setSourceData(map, 'map-opt-rays', buildOptimizeRaysData(optimizeOverlay));
-    setSourceData(map, 'map-draft', buildDraftData(tool, draft, cursor));
+    setSourceData(map, 'map-draft', buildDraftData(tool, draft, cursor, roadPaintMode));
 
     clearMarkers(markerRefs.current);
     markerRefs.current = [];
@@ -413,9 +446,9 @@ export function MapCanvas({
 
     // Подписи «особенностей» — короткие коды машин в середине участка.
     for (const access of doc.roadAccess) {
-      if (access.vehicles.length === 0 || access.vertices.length < 2) continue;
-      const text = access.vehicles.map(vehicleShort).join(' · ');
-      const label = createLabelElement(text, ROAD_ACCESS_COLOR);
+      if (access.vertices.length < 2 || (access.kind !== 'closed' && access.vehicles.length === 0)) continue;
+      const text = roadAccessLabel(access);
+      const label = createLabelElement(text, roadAccessColor(access));
       markerRefs.current.push(
         new maplibregl.Marker({ element: label, anchor: 'center' })
           .setLngLat(toCoord(midpointOfPolyline(access.vertices)))
@@ -433,9 +466,11 @@ export function MapCanvas({
         point,
         warehouse,
         selected,
-        draggable: tool === 'select',
+        draggable: tool === 'select' && movingPointId !== point.id,
+        hidden: movingPointId === point.id,
         onSelect,
         onMovePoint,
+        onStartMovePointByMap,
       });
       markerRefs.current.push(marker);
     }
@@ -444,15 +479,19 @@ export function MapCanvas({
     doc.roads,
     doc.roadSuggestions,
     doc.roadAccess,
+    showRoadSuggestions,
     visiblePoints,
     warehouses,
     selection,
     tool,
+    roadPaintMode,
+    movingPointId,
     draft,
     cursor,
     optimizeOverlay,
     onSelect,
     onMovePoint,
+    onStartMovePointByMap,
     onGhostMove,
     styleReady,
   ]);
@@ -462,6 +501,17 @@ export function MapCanvas({
       <div ref={elRef} className="h-full w-full bg-[#101419] [&_.maplibregl-canvas]:outline-none" />
       <MapZoomButtons onZoomIn={zoomIn} onZoomOut={zoomOut} />
       <MapStatusBar metrics={viewMetrics} cursor={cursor} />
+      {movingPoint && (
+        <MovePointOverlay
+          point={movingPoint}
+          onCancel={onCancelMovePointByMap}
+          onSave={() => {
+            const map = mapRef.current;
+            if (!map) return;
+            onFinishMovePointByMap(movingPoint.id, toLatLng(map.getCenter()));
+          }}
+        />
+      )}
       {(tool === 'area' || tool === 'road' || tool === 'confirmRoad' || tool === 'vehicles') && (
         <div className="pointer-events-none absolute left-1/2 top-3 z-[3] -translate-x-1/2">
           <div className="pointer-events-auto flex items-center gap-2 rounded-md bg-bg-deep/88 px-3 py-1 text-[11.5px] text-text-secondary shadow">
@@ -472,7 +522,9 @@ export function MapCanvas({
                   ? 'Своя дорога: кликните старт и ведите мышью'
                   : tool === 'confirmRoad'
                     ? 'Подтверждение: ведите курсором по красной линии (новая не рисуется)'
-                    : 'Особенности: обведите курсором кусок дороги'} · Enter — сохранить · Esc — отмена
+                    : roadPaintMode === 'erase'
+                      ? 'Ластик: проведите по окрашенному участку дороги'
+                      : `Закраска: ${roadPaintOption(roadPaintMode).label}`} · Enter — сохранить · Esc — отмена
             </span>
             {((tool === 'road' && draft.length >= 2) || (tool === 'confirmRoad' && draft.length >= 2) || (tool === 'vehicles' && draft.length >= 2) || (tool === 'area' && draft.length >= 3)) && (
               <button
@@ -514,6 +566,41 @@ function MapZoomButtons({ onZoomIn, onZoomOut }: { onZoomIn: () => void; onZoomO
       >
         -
       </button>
+    </div>
+  );
+}
+
+function MovePointOverlay({
+  point,
+  onSave,
+  onCancel,
+}: {
+  point: MapPoint;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-[5]">
+      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-full">
+        {createFixedPointPreview(point)}
+      </div>
+      <div className="pointer-events-auto absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2 rounded-md bg-bg-deep/90 px-3 py-1.5 text-[11.5px] text-text-secondary shadow-xl backdrop-blur">
+        <span>Точка стоит на экране. Двигайте карту под ней · Enter — сохранить · Esc — отмена</span>
+        <button
+          type="button"
+          onClick={onSave}
+          className="h-6 rounded border border-emerald-400/40 px-2 text-[11px] font-semibold text-emerald-300 outline-none transition-colors hover:bg-emerald-400/10"
+        >
+          Сохранить
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="h-6 rounded border border-border-subtle px-2 text-[11px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+        >
+          Отмена
+        </button>
+      </div>
     </div>
   );
 }
@@ -695,12 +782,12 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     source: 'map-road-access',
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
-      'line-color': ROAD_ACCESS_COLOR,
+      'line-color': ['get', 'color'],
       'line-width': ['case', ['boolean', ['get', 'selected'], false],
         ['interpolate', ['linear'], ['zoom'], 12, 4, 16, 6, 20, 9],
         ['interpolate', ['linear'], ['zoom'], 12, 3, 16, 4.5, 20, 7],
       ],
-      'line-opacity': ['case', ['boolean', ['get', 'hasVehicles'], false], 0.75, 0.45],
+      'line-opacity': ['case', ['==', ['get', 'kind'], 'closed'], 0.82, 0.72],
     },
   });
   addLayer(map, {
@@ -731,7 +818,7 @@ function ensureOverlayLayers(map: MapLibreMap): void {
       'line-color': [
         'case',
         ['==', ['get', 'kind'], 'confirmRoad'], '#6FBF8E',
-        ['==', ['get', 'kind'], 'vehicles'], '#22D3EE',
+        ['==', ['get', 'kind'], 'vehicles'], ['coalesce', ['get', 'color'], '#22D3EE'],
         ['==', ['get', 'kind'], 'road'], '#F4D58D',
         '#E8836B',
       ],
@@ -760,7 +847,7 @@ function ensureOverlayLayers(map: MapLibreMap): void {
       'circle-color': [
         'case',
         ['==', ['get', 'kind'], 'confirmRoad'], '#6FBF8E',
-        ['==', ['get', 'kind'], 'vehicles'], '#22D3EE',
+        ['==', ['get', 'kind'], 'vehicles'], ['coalesce', ['get', 'color'], '#22D3EE'],
         '#E8836B',
       ],
       'circle-stroke-color': '#ffffff',
@@ -835,7 +922,9 @@ function buildRoadAccessData(items: RoadAccess[], selection: MapSelection | null
         properties: {
           id: access.id,
           kind: 'roadAccess',
-          hasVehicles: access.vehicles.length > 0,
+          accessKind: access.kind,
+          color: roadAccessColor(access),
+          label: roadAccessLabel(access),
           selected: selection?.type === 'roadAccess' && selection.id === access.id,
         },
         geometry: {
@@ -844,6 +933,18 @@ function buildRoadAccessData(items: RoadAccess[], selection: MapSelection | null
         },
       })),
   };
+}
+
+function roadAccessColor(access: RoadAccess): string {
+  if (access.kind === 'closed') return roadPaintOption('closed').color;
+  if (access.vehicles.length === 1) return roadPaintOption(access.vehicles[0]!).color;
+  return ROAD_ACCESS_COLOR;
+}
+
+function roadAccessLabel(access: RoadAccess): string {
+  if (access.kind === 'closed') return 'НЕТ ПРОЕЗДА';
+  if (access.vehicles.length === 0) return '';
+  return access.vehicles.map(vehicleShort).join(' · ');
 }
 
 function buildRoadSuggestionsData(suggestions: MapRoadSuggestion[], selection: MapSelection | null): FeatureCollection {
@@ -881,12 +982,13 @@ function buildOptimizeRaysData(ov: OptimizeOverlay | null): FeatureCollection {
   };
 }
 
-function buildDraftData(tool: MapTool, draft: LatLng[], cursor: LatLng | null): FeatureCollection {
+function buildDraftData(tool: MapTool, draft: LatLng[], cursor: LatLng | null, roadPaintMode: RoadPaintMode): FeatureCollection {
   if (draft.length === 0 || (tool !== 'area' && tool !== 'road' && tool !== 'confirmRoad' && tool !== 'vehicles')) return EMPTY_FEATURES;
   const pts = [...draft, ...(cursor ? [cursor] : [])];
+  const draftColor = tool === 'vehicles' ? roadPaintOption(roadPaintMode).color : undefined;
   const features: FeatureCollection['features'] = draft.map((p, index) => ({
     type: 'Feature',
-    properties: { id: `draft-point-${index}`, kind: tool },
+    properties: { id: `draft-point-${index}`, kind: tool, color: draftColor },
     geometry: { type: 'Point', coordinates: toCoord(p) },
   }));
   if (tool === 'area') {
@@ -905,9 +1007,10 @@ function buildDraftData(tool: MapTool, draft: LatLng[], cursor: LatLng | null): 
     }
   } else if (pts.length >= 2) {
     const kind = tool === 'confirmRoad' ? 'confirmRoad' : tool === 'vehicles' ? 'vehicles' : 'road';
+    const paint = roadPaintOption(roadPaintMode);
     features.push({
       type: 'Feature',
-      properties: { id: 'draft-road', kind },
+      properties: { id: 'draft-road', kind, color: tool === 'vehicles' ? paint.color : undefined },
       geometry: { type: 'LineString', coordinates: pts.map(toCoord) },
     });
   }
@@ -961,25 +1064,35 @@ function createPointMarker({
   warehouse,
   selected,
   draggable,
+  hidden,
   onSelect,
   onMovePoint,
+  onStartMovePointByMap,
 }: {
   map: MapLibreMap;
   point: MapPoint;
   warehouse: Warehouse | undefined;
   selected: boolean;
   draggable: boolean;
+  hidden: boolean;
   onSelect: (sel: MapSelection | null) => void;
   onMovePoint: (id: string, latlng: LatLng) => void;
+  onStartMovePointByMap: (id: string) => void;
 }): Marker {
   const color = warehouse
     ? ({ removed: '#D96666', shipping: '#C99BE0', scheduled: '#6FBF8E', idle: '#5BA3D0' }[getWarehouseState(warehouse)])
     : '#9AA4B2';
   const label = point.label || warehouse?.id || '';
   const el = createPinElement(color, label, selected);
+  if (hidden) el.style.display = 'none';
   el.addEventListener('click', (event) => {
     event.stopPropagation();
     onSelect({ type: 'point', id: point.id });
+  });
+  el.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onStartMovePointByMap(point.id);
   });
   const marker = new maplibregl.Marker({ element: el, anchor: 'bottom', draggable })
     .setLngLat(toCoord(point))
@@ -1073,6 +1186,24 @@ function createPinElement(color: string, label: string, selected: boolean): HTML
       </svg>
     </div>`;
   return el;
+}
+
+function createFixedPointPreview(point: MapPoint): JSX.Element {
+  const label = point.label || point.warehouseId || 'Точка';
+  return (
+    <div className="flex flex-col items-center drop-shadow-[0_3px_8px_rgba(0,0,0,.75)]">
+      <div className="mb-0.5 max-w-[110px] truncate rounded bg-[#080b11]/85 px-1.5 py-0.5 text-[11px] font-bold text-white">
+        {label}
+      </div>
+      <div className="relative h-[42px] w-[30px]">
+        <div className="absolute left-[6px] top-[8px] h-5 w-5 rounded-full bg-emerald-400/25 ring-8 ring-emerald-400/15" />
+        <svg width="30" height="42" viewBox="-15 -42 30 42" className="absolute left-0 top-0">
+          <path d="M0 0 C -9 -14 -13 -20 -13 -28 a 13 13 0 1 1 26 0 C 13 -20 9 -14 0 0 Z" fill="#34D399" stroke="#0c0f14" strokeWidth="2.2" />
+          <circle cx="0" cy="-28" r="4.8" fill="#0c0f14" fillOpacity=".86" />
+        </svg>
+      </div>
+    </div>
+  );
 }
 
 function createLabelElement(text: string, color: string): HTMLDivElement {

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Phone, Trash2, X } from 'lucide-react';
+import { LocateFixed, MapPinned, Phone, Trash2, X } from 'lucide-react';
 import { groupByWarehouse, type MolRecord } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import { splitAndFormatWorkPhones } from '@/lib/mol-format';
@@ -7,19 +7,32 @@ import { useWarehousesStore } from '@/lib/warehouses-store';
 import { useMolStore } from '@/lib/stores';
 import { WarehouseCard } from '@/components/mol/WarehouseSidebar';
 import { useMapStore } from '@/lib/map-store';
-import { AREA_COLORS, VEHICLE_TYPES, type MapPoint, type MapRoadSuggestion, type VehicleType } from './map-types';
+import {
+  AREA_COLORS,
+  EMPTY_POINT_EQUIPMENT,
+  VEHICLE_TYPES,
+  roadPaintOption,
+  vehicleLabel,
+  type LatLng,
+  type MapPoint,
+  type MapRoadSuggestion,
+  type VehicleType,
+} from './map-types';
 import type { MapSelection } from './MapCanvas';
 
 interface Props {
   selection: MapSelection;
   onClose: () => void;
+  onSelect: (selection: MapSelection) => void;
+  onFocus: (latlng: LatLng) => void;
+  onMovePointByMap: (id: string) => void;
 }
 
 /** Правая панель деталей выбранного объекта карты (точка / область / дорога). */
-export function MapDetailPanel({ selection, onClose }: Props) {
+export function MapDetailPanel({ selection, onClose, onSelect, onFocus, onMovePointByMap }: Props) {
   return (
-    <aside className="flex w-[340px] shrink-0 flex-col border-l border-border-subtle bg-bg-surface">
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border-subtle px-3">
+    <aside className="flex w-[360px] shrink-0 flex-col border-l border-border-subtle/70 bg-bg-deep/20">
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border-subtle/70 px-3">
         <span className="text-[12.5px] font-semibold text-text-strong">
           {selection.type === 'point'
             ? 'Точка склада'
@@ -39,8 +52,16 @@ export function MapDetailPanel({ selection, onClose }: Props) {
           <X className="h-3.5 w-3.5" strokeWidth={1.75} />
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto p-3">
-        {selection.type === 'point' && <PointEditor id={selection.id} onDeleted={onClose} />}
+      <div className="flex-1 overflow-y-auto p-2.5">
+        {selection.type === 'point' && (
+          <PointEditor
+            id={selection.id}
+            onDeleted={onClose}
+            onSelect={onSelect}
+            onFocus={onFocus}
+            onMoveByMap={onMovePointByMap}
+          />
+        )}
         {selection.type === 'area' && <AreaEditor id={selection.id} onDeleted={onClose} />}
         {selection.type === 'road' && <RoadEditor id={selection.id} onDeleted={onClose} />}
         {selection.type === 'roadSuggestion' && <RoadSuggestionEditor id={selection.id} onDone={onClose} />}
@@ -52,16 +73,29 @@ export function MapDetailPanel({ selection, onClose }: Props) {
 
 // ─── Точка ──────────────────────────────────────────────────────────────────
 
-function PointEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
+function PointEditor({
+  id,
+  onDeleted,
+  onSelect,
+  onFocus,
+  onMoveByMap,
+}: {
+  id: string;
+  onDeleted: () => void;
+  onSelect: (selection: MapSelection) => void;
+  onFocus: (latlng: LatLng) => void;
+  onMoveByMap: (id: string) => void;
+}) {
   const point = useMapStore((s) => s.doc.points.find((p) => p.id === id));
+  const allPoints = useMapStore((s) => s.doc.points);
   const updatePoint = useMapStore((s) => s.updatePoint);
   const removePoint = useMapStore((s) => s.removePoint);
-  const warehouses = useWarehousesStore((s) => s.warehouses);
 
   if (!point) return null;
+  const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2.5">
       <WarehousePicker
         value={point.warehouseId}
         onPick={(wid) => updatePoint(id, { warehouseId: wid })}
@@ -78,6 +112,16 @@ function PointEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
 
       {/* МОЛы склада */}
       {point.warehouseId && <MolBlock warehouseId={point.warehouseId} />}
+
+      {point.warehouseId && (
+        <WarehousePointsBlock
+          currentId={id}
+          warehouseId={point.warehouseId}
+          points={allPoints}
+          onSelect={(pointId) => onSelect({ type: 'point', id: pointId })}
+          onFocus={(p) => onFocus({ lat: p.lat, lng: p.lng })}
+        />
+      )}
 
       {/* Поля точки */}
       <Field label="Подпись на карте">
@@ -109,7 +153,54 @@ function PointEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
         />
       </Field>
 
+      <Field label="Оснастка на месте">
+        <div className="grid grid-cols-3 gap-1">
+          <ToggleChip
+            label="Кран"
+            active={equipment.crane}
+            onClick={() => updatePoint(id, { equipment: { ...equipment, crane: !equipment.crane } })}
+          />
+          <ToggleChip
+            label="Погрузчик"
+            active={equipment.forklift}
+            onClick={() => updatePoint(id, { equipment: { ...equipment, forklift: !equipment.forklift } })}
+          />
+          <ToggleChip
+            label="Штабелер"
+            active={equipment.stacker}
+            onClick={() => updatePoint(id, { equipment: { ...equipment, stacker: !equipment.stacker } })}
+          />
+        </div>
+        {!equipment.crane && !equipment.forklift && !equipment.stacker && (
+          <p className="mt-1 rounded border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
+            Оснастка не выбрана — считаем ручную погрузку.
+          </p>
+        )}
+      </Field>
+
+      <button
+        type="button"
+        onClick={() => updatePoint(id, { rearUnload: !point.rearUnload })}
+        className={cn(
+          'flex h-7 w-full items-center justify-between rounded border px-2 text-[12px] outline-none transition-colors',
+          point.rearUnload
+            ? 'border-emerald-400/45 bg-emerald-400/10 text-emerald-200'
+            : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+        )}
+      >
+        <span>ТМЦ сзади</span>
+        <span>{point.rearUnload ? 'да' : 'нет'}</span>
+      </button>
+
       <CoordsBlock point={point} />
+
+      <button
+        type="button"
+        onClick={() => onMoveByMap(id)}
+        className="flex h-7 w-full items-center justify-center gap-1.5 rounded border border-emerald-400/35 text-[12px] font-medium text-emerald-300 outline-none transition-colors hover:bg-emerald-400/10"
+      >
+        <LocateFixed className="h-3.5 w-3.5" strokeWidth={1.75} /> Переместить картой
+      </button>
 
       <button
         type="button"
@@ -134,6 +225,56 @@ function CoordsBlock({ point }: { point: MapPoint }) {
         onClick={() => void navigator.clipboard?.writeText(`${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`)}
         className="mt-0.5 text-[10.5px] text-text-muted underline-offset-2 outline-none hover:text-accent-clay hover:underline"
       >копировать GPS</button>
+    </div>
+  );
+}
+
+function WarehousePointsBlock({
+  currentId,
+  warehouseId,
+  points,
+  onSelect,
+  onFocus,
+}: {
+  currentId: string;
+  warehouseId: string;
+  points: MapPoint[];
+  onSelect: (id: string) => void;
+  onFocus: (point: MapPoint) => void;
+}) {
+  const siblings = points.filter((p) => p.warehouseId === warehouseId);
+  if (siblings.length <= 1) return null;
+  return (
+    <div className="rounded-lg border border-border-subtle bg-bg-elevated/35 px-3 py-2.5">
+      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+        Точки склада {warehouseId}
+      </p>
+      <div className="space-y-1">
+        {siblings.map((p, index) => {
+          const active = p.id === currentId;
+          const title = p.label.trim() || p.comment.trim() || `${warehouseId} · точка ${index + 1}`;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => {
+                onSelect(p.id);
+                onFocus(p);
+              }}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-[12px] outline-none transition-colors',
+                active
+                  ? 'border-emerald-400/45 bg-emerald-400/10 text-text-strong'
+                  : 'border-border-subtle text-text-secondary hover:bg-bg-hover',
+              )}
+            >
+              <MapPinned className="h-3.5 w-3.5 shrink-0 text-emerald-300" strokeWidth={1.75} />
+              <span className="min-w-0 flex-1 truncate">{title}</span>
+              {p.rearUnload && <span className="shrink-0 rounded bg-emerald-400/15 px-1 text-[10px] text-emerald-200">сзади</span>}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -342,20 +483,35 @@ function RoadAccessEditor({ id, onDeleted }: { id: string; onDeleted: () => void
   const toggle = (v: VehicleType) => {
     const has = access.vehicles.includes(v);
     updateRoadAccess(id, {
+      kind: 'limited',
       vehicles: has ? access.vehicles.filter((x) => x !== v) : [...access.vehicles, v],
     });
   };
+  const closed = access.kind === 'closed';
 
   return (
     <div className="space-y-3">
       <p className="rounded-md border border-[#22D3EE]/30 bg-[#22D3EE]/10 px-2.5 py-2 text-[11.5px] text-text-secondary">
-        Обведённый участок дороги. Отметьте, какие машины здесь проедут — по плану будет видно проходимость.
+        Окрашенный участок дороги. Если ограничений нет — участок не красим: он считается проездным для всех.
       </p>
 
-      <Field label="Кто может ехать">
+      <Field label="Режим участка">
+        <button
+          type="button"
+          onClick={() => updateRoadAccess(id, { kind: 'closed', vehicles: [] })}
+          className={cn(
+            'mb-1 flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-[12.5px] outline-none transition-colors',
+            closed
+              ? 'border-red-400/55 bg-red-400/12 text-red-200'
+              : 'border-border-default text-text-secondary hover:bg-bg-hover',
+          )}
+        >
+          <span className="h-3 w-3 rounded-full" style={{ backgroundColor: roadPaintOption('closed').color }} />
+          <span className="flex-1">{roadPaintOption('closed').label}</span>
+        </button>
         <div className="space-y-1">
           {VEHICLE_TYPES.map((v) => {
-            const on = access.vehicles.includes(v.id);
+            const on = !closed && access.vehicles.includes(v.id);
             return (
               <button
                 key={v.id}
@@ -367,11 +523,11 @@ function RoadAccessEditor({ id, onDeleted }: { id: string; onDeleted: () => void
                     ? 'border-[#22D3EE]/50 bg-[#22D3EE]/12 text-text-strong'
                     : 'border-border-default text-text-secondary hover:bg-bg-hover',
                 )}
-              >
+                >
                 <span className={cn('flex h-4 w-4 items-center justify-center rounded-[3px] border text-[10px]', on ? 'border-[#22D3EE] bg-[#22D3EE] text-bg-deep' : 'border-border-default')}>
                   {on && '✓'}
                 </span>
-                <span className="flex-1">{v.label}</span>
+                <span className="flex-1">{vehicleLabel(v.id)}</span>
                 <span className="font-mono text-[10.5px] text-text-muted">{v.short}</span>
               </button>
             );
@@ -404,6 +560,23 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">{label}</span>
       {children}
     </label>
+  );
+}
+
+function ToggleChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'min-h-7 rounded-md border px-1.5 text-[11.5px] outline-none transition-colors',
+        active
+          ? 'border-emerald-400/45 bg-emerald-400/10 text-emerald-200'
+          : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+      )}
+    >
+      {label}
+    </button>
   );
 }
 

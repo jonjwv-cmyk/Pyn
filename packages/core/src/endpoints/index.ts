@@ -267,7 +267,9 @@ export {
 export {
   mapGet,
   mapSet,
+  mapRoadSuggestionsGet,
   type MapDocResult,
+  type MapRoadSuggestionWire,
 } from './map';
 
 export {

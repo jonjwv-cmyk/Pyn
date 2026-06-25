@@ -28,7 +28,23 @@ export interface MapPoint extends LatLng {
    * По умолчанию 1. Чем больше — тем сильнее точка «тянет» оптимум к себе.
    */
   weight: number;
+  /** Оснастка на месте выгрузки. Если всё false — считаем, что погрузка ручная. */
+  equipment: PointEquipment;
+  /** Нюанс точки: ТМЦ ставить/забирать сзади. */
+  rearUnload: boolean;
 }
+
+export interface PointEquipment {
+  crane: boolean;
+  forklift: boolean;
+  stacker: boolean;
+}
+
+export const EMPTY_POINT_EQUIPMENT: PointEquipment = {
+  crane: false,
+  forklift: false,
+  stacker: false,
+};
 
 /** Область (полигон) — «выделяем область, пишем: это конвертерный». */
 export interface MapArea {
@@ -56,11 +72,11 @@ export interface MapRoad {
 export type VehicleType = 'pullman9' | 'pullman12' | 'bortovik' | 'gazelle' | 'furgon_khp';
 
 export const VEHICLE_TYPES: ReadonlyArray<{ id: VehicleType; label: string; short: string }> = [
-  { id: 'pullman9', label: 'Пульман (9 м)', short: 'П9' },
-  { id: 'pullman12', label: 'Пульман (12 м)', short: 'П12' },
-  { id: 'bortovik', label: 'Бортовик', short: 'Борт' },
+  { id: 'pullman9', label: 'ПУЛЬМАН (9м)', short: 'П9' },
+  { id: 'pullman12', label: 'ПУЛЬМАН (12м)', short: 'П12' },
+  { id: 'bortovik', label: 'БОРТ', short: 'БОРТ' },
   { id: 'gazelle', label: 'ГАЗЕЛЬ', short: 'ГАЗ' },
-  { id: 'furgon_khp', label: 'Фургон КХП', short: 'КХП' },
+  { id: 'furgon_khp', label: 'ФУРГОН КХП', short: 'КХП' },
 ];
 
 export function vehicleLabel(id: VehicleType): string {
@@ -78,8 +94,32 @@ export function vehicleShort(id: VehicleType): string {
 export interface RoadAccess {
   id: string;
   vertices: LatLng[];
+  kind: 'limited' | 'closed';
   vehicles: VehicleType[];
   note: string;
+}
+
+export type RoadPaintMode = 'closed' | VehicleType | 'erase';
+
+export const ROAD_PAINT_OPTIONS: ReadonlyArray<{
+  id: RoadPaintMode;
+  label: string;
+  short: string;
+  color: string;
+  vehicles: VehicleType[];
+  kind: RoadAccess['kind'] | 'erase';
+}> = [
+  { id: 'closed', label: 'НЕТ ПРОЕЗДА', short: 'СТОП', color: '#EF4444', kind: 'closed', vehicles: [] },
+  { id: 'bortovik', label: 'БОРТ', short: 'БОРТ', color: '#F59E0B', kind: 'limited', vehicles: ['bortovik'] },
+  { id: 'pullman9', label: 'ПУЛЬМАН (9м)', short: 'П9', color: '#8B5CF6', kind: 'limited', vehicles: ['pullman9'] },
+  { id: 'pullman12', label: 'ПУЛЬМАН (12м)', short: 'П12', color: '#A855F7', kind: 'limited', vehicles: ['pullman12'] },
+  { id: 'gazelle', label: 'ГАЗЕЛЬ', short: 'ГАЗ', color: '#22C55E', kind: 'limited', vehicles: ['gazelle'] },
+  { id: 'furgon_khp', label: 'ФУРГОН КХП', short: 'КХП', color: '#06B6D4', kind: 'limited', vehicles: ['furgon_khp'] },
+  { id: 'erase', label: 'ЛАСТИК', short: 'CLR', color: '#94A3B8', kind: 'erase', vehicles: [] },
+];
+
+export function roadPaintOption(id: RoadPaintMode) {
+  return ROAD_PAINT_OPTIONS.find((o) => o.id === id) ?? ROAD_PAINT_OPTIONS[0]!;
 }
 
 /** Черновая дорога из внешней/ИИ-подсказки. До подтверждения не участвует в маршрутах. */

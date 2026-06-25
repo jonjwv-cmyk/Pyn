@@ -12,7 +12,15 @@
 
 import { mapGet, mapSet } from '@pyn/core';
 import { legacyNormToLatLng } from '@/components/map/geo';
-import { EMPTY_MAP_DOC, VEHICLE_TYPES, type LatLng, type MapDoc, type VehicleType } from '@/components/map/map-types';
+import {
+  EMPTY_MAP_DOC,
+  EMPTY_POINT_EQUIPMENT,
+  VEHICLE_TYPES,
+  type LatLng,
+  type MapDoc,
+  type PointEquipment,
+  type VehicleType,
+} from '@/components/map/map-types';
 import { stitchRoadSegments } from '@/components/map/road-network';
 import { api } from './api';
 import { useMapStore } from './map-store';
@@ -57,6 +65,8 @@ function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
         label: typeof r.label === 'string' ? r.label : '',
         comment: typeof r.comment === 'string' ? r.comment : '',
         weight: typeof r.weight === 'number' ? r.weight : 1,
+        equipment: normalizePointEquipment(r.equipment),
+        rearUnload: r.rearUnload === true,
       }];
     })
     : [];
@@ -114,9 +124,11 @@ function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
       const vehicles = Array.isArray(r.vehicles)
         ? (r.vehicles.filter((v): v is VehicleType => typeof v === 'string' && validVehicles.has(v)))
         : [];
+      const kind: 'limited' | 'closed' = r.kind === 'closed' ? 'closed' : 'limited';
       return [{
         id: typeof r.id === 'string' ? r.id : crypto.randomUUID(),
         vertices: verts,
+        kind,
         vehicles,
         note: typeof r.note === 'string' ? r.note : '',
       }];
@@ -130,6 +142,16 @@ function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
     roads: stitchRoadSegments(roads),
     roadSuggestions,
     roadAccess,
+  };
+}
+
+function normalizePointEquipment(raw: unknown): PointEquipment {
+  if (!raw || typeof raw !== 'object') return { ...EMPTY_POINT_EQUIPMENT };
+  const r = raw as Record<string, unknown>;
+  return {
+    crane: r.crane === true,
+    forklift: r.forklift === true,
+    stacker: r.stacker === true,
   };
 }
 

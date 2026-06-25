@@ -17,9 +17,13 @@ import {
   type MapPoint,
   type MapRoad,
   type MapRoadSuggestion,
+  type RoadPaintMode,
   type RoadAccess,
 } from '@/components/map/map-types';
 import { confirmTraceToRoad, smoothPolyline, stitchRoadSegments } from '@/components/map/road-network';
+import { distancePointToPolylineMeters } from '@/components/map/geo';
+
+const ROAD_ACCESS_ERASE_TOLERANCE_METERS = 10;
 
 interface MapState {
   doc: MapDoc;
@@ -53,7 +57,8 @@ interface MapState {
   clearRoadSuggestions(): void;
 
   // ── Особенности дорог (какие машины проедут) ──
-  addRoadAccess(vertices: LatLng[]): string;
+  addRoadAccess(vertices: LatLng[], mode?: RoadPaintMode): string;
+  eraseRoadAccessTrace(vertices: LatLng[]): void;
   updateRoadAccess(id: string, fields: Partial<RoadAccess>): void;
   removeRoadAccess(id: string): void;
 
@@ -173,12 +178,27 @@ export const useMapStore = create<MapState>((set) => ({
   clearRoadSuggestions: () =>
     set((s) => ({ doc: { ...s.doc, roadSuggestions: [] } })),
 
-  addRoadAccess: (vertices) => {
+  addRoadAccess: (vertices, mode = 'gazelle') => {
     const id = makeId();
-    const access: RoadAccess = { id, vertices, vehicles: [], note: '' };
+    const access: RoadAccess = mode === 'closed'
+      ? { id, vertices, kind: 'closed', vehicles: [], note: '' }
+      : {
+        id,
+        vertices,
+        kind: 'limited',
+        vehicles: mode === 'erase' ? [] : [mode],
+        note: '',
+      };
     set((s) => ({ doc: { ...s.doc, roadAccess: [...s.doc.roadAccess, access] } }));
     return id;
   },
+  eraseRoadAccessTrace: (vertices) =>
+    set((s) => ({
+      doc: {
+        ...s.doc,
+        roadAccess: s.doc.roadAccess.filter((access) => !roadAccessTouchesTrace(access, vertices)),
+      },
+    })),
   updateRoadAccess: (id, fields) =>
     set((s) => ({
       doc: {
@@ -192,3 +212,14 @@ export const useMapStore = create<MapState>((set) => ({
   requestFocusWarehouse: (id) => set({ focusWarehouseId: id }),
   clearFocusWarehouse: () => set({ focusWarehouseId: null }),
 }));
+
+function roadAccessTouchesTrace(access: RoadAccess, trace: LatLng[]): boolean {
+  if (trace.length < 2 || access.vertices.length < 2) return false;
+  for (const p of access.vertices) {
+    if (distancePointToPolylineMeters(p, trace) <= ROAD_ACCESS_ERASE_TOLERANCE_METERS) return true;
+  }
+  for (const p of trace) {
+    if (distancePointToPolylineMeters(p, access.vertices) <= ROAD_ACCESS_ERASE_TOLERANCE_METERS) return true;
+  }
+  return false;
+}

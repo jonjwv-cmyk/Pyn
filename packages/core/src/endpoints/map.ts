@@ -15,6 +15,13 @@ export interface MapDocResult {
   updatedAt: string;
 }
 
+export interface MapRoadSuggestionWire {
+  id?: string;
+  name?: string;
+  source?: 'osm' | 'ai';
+  vertices?: Array<{ lat?: number; lng?: number }>;
+}
+
 interface MapWire {
   ok?: boolean;
   doc?: string;
@@ -22,6 +29,11 @@ interface MapWire {
   updated_by?: string;
   updated_by_name?: string;
   updated_at?: string;
+}
+
+interface MapSuggestionsWire {
+  ok?: boolean;
+  items?: MapRoadSuggestionWire[];
 }
 
 function wireToResult(w: MapWire): MapDocResult {
@@ -44,4 +56,10 @@ export async function mapGet(client: ApiClient): Promise<MapDocResult> {
 export async function mapSet(client: ApiClient, doc: string): Promise<MapDocResult> {
   const wire = await client.call<MapWire>('map_set', { doc });
   return wireToResult(wire);
+}
+
+/** Загрузить красный черновик дорог через наш API/VPS, без прямого выхода клиента наружу. */
+export async function mapRoadSuggestionsGet(client: ApiClient): Promise<MapRoadSuggestionWire[]> {
+  const wire = await client.call<MapSuggestionsWire>('map_road_suggestions_get', {}, { timeoutMs: 90_000 });
+  return Array.isArray(wire.items) ? wire.items : [];
 }
