@@ -32,6 +32,11 @@ export interface MapPoint extends LatLng {
   equipment: PointEquipment;
   /** Нюанс точки: ТМЦ ставить/забирать сзади. */
   rearUnload: boolean;
+  /**
+   * Какие машины могут заехать именно в эту точку. Пустой массив = без
+   * ограничения, заехать можно всем.
+   */
+  allowedVehicles: VehicleType[];
 }
 
 export interface PointEquipment {

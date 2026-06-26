@@ -31,6 +31,8 @@ interface MapState {
   loaded: boolean;
   /** Склад, на который надо навестись (из карточки «Цеха»). null — нет запроса. */
   focusWarehouseId: string | null;
+  /** Конкретная точка карты, на которую надо навестись. */
+  focusPointId: string | null;
 
   setDoc(doc: MapDoc): void;
   setLoaded(v: boolean): void;
@@ -64,6 +66,7 @@ interface MapState {
 
   // ── Фокус из «Цеха» ──
   requestFocusWarehouse(id: string): void;
+  requestFocusPoint(id: string): void;
   clearFocusWarehouse(): void;
 }
 
@@ -71,6 +74,7 @@ export const useMapStore = create<MapState>((set) => ({
   doc: EMPTY_MAP_DOC,
   loaded: false,
   focusWarehouseId: null,
+  focusPointId: null,
 
   setDoc: (doc) => set({ doc }),
   setLoaded: (loaded) => set({ loaded }),
@@ -210,7 +214,8 @@ export const useMapStore = create<MapState>((set) => ({
     set((s) => ({ doc: { ...s.doc, roadAccess: s.doc.roadAccess.filter((a) => a.id !== id) } })),
 
   requestFocusWarehouse: (id) => set({ focusWarehouseId: id }),
-  clearFocusWarehouse: () => set({ focusWarehouseId: null }),
+  requestFocusPoint: (id) => set({ focusPointId: id }),
+  clearFocusWarehouse: () => set({ focusWarehouseId: null, focusPointId: null }),
 }));
 
 function roadAccessTouchesTrace(access: RoadAccess, trace: LatLng[]): boolean {

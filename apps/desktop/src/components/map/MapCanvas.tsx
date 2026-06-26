@@ -6,6 +6,7 @@ import { useWarehousesStore } from '@/lib/warehouses-store';
 import {
   NTMK_CENTER,
   NTMK_ZOOM,
+  ROAD_PAINT_OPTIONS,
   roadPaintOption,
   vehicleShort,
   type LatLng,
@@ -44,6 +45,8 @@ interface MapCanvasProps {
   visiblePointIds: Set<string> | null;
   selection: MapSelection | null;
   showRoadSuggestions: boolean;
+  showRoadAccess: boolean;
+  routePath: LatLng[] | null;
   roadPaintMode: RoadPaintMode;
   movingPointId: string | null;
   onSelect: (sel: MapSelection | null) => void;
@@ -99,6 +102,8 @@ export function MapCanvas({
   visiblePointIds,
   selection,
   showRoadSuggestions,
+  showRoadAccess,
+  routePath,
   roadPaintMode,
   movingPointId,
   onSelect,
@@ -427,7 +432,8 @@ export function MapCanvas({
     setSourceData(map, 'map-areas', buildAreasData(doc.areas, selection));
     setSourceData(map, 'map-roads', buildRoadsData(doc.roads, selection));
     setSourceData(map, 'map-road-suggestions', showRoadSuggestions ? buildRoadSuggestionsData(doc.roadSuggestions, selection) : EMPTY_FEATURES);
-    setSourceData(map, 'map-road-access', buildRoadAccessData(doc.roadAccess, selection));
+    setSourceData(map, 'map-road-access', showRoadAccess ? buildRoadAccessData(doc.roadAccess, selection) : EMPTY_FEATURES);
+    setSourceData(map, 'map-route', buildRouteData(routePath));
     setSourceData(map, 'map-opt-rays', buildOptimizeRaysData(optimizeOverlay));
     setSourceData(map, 'map-draft', buildDraftData(tool, draft, cursor, roadPaintMode));
 
@@ -440,18 +446,6 @@ export function MapCanvas({
       markerRefs.current.push(
         new maplibregl.Marker({ element: label, anchor: 'center' })
           .setLngLat(toCoord(centroid(area.vertices)))
-          .addTo(map),
-      );
-    }
-
-    // Подписи «особенностей» — короткие коды машин в середине участка.
-    for (const access of doc.roadAccess) {
-      if (access.vertices.length < 2 || (access.kind !== 'closed' && access.vehicles.length === 0)) continue;
-      const text = roadAccessLabel(access);
-      const label = createLabelElement(text, roadAccessColor(access));
-      markerRefs.current.push(
-        new maplibregl.Marker({ element: label, anchor: 'center' })
-          .setLngLat(toCoord(midpointOfPolyline(access.vertices)))
           .addTo(map),
       );
     }
@@ -480,6 +474,8 @@ export function MapCanvas({
     doc.roadSuggestions,
     doc.roadAccess,
     showRoadSuggestions,
+    showRoadAccess,
+    routePath,
     visiblePoints,
     warehouses,
     selection,
@@ -501,6 +497,7 @@ export function MapCanvas({
       <div ref={elRef} className="h-full w-full bg-[#101419] [&_.maplibregl-canvas]:outline-none" />
       <MapZoomButtons onZoomIn={zoomIn} onZoomOut={zoomOut} />
       <MapStatusBar metrics={viewMetrics} cursor={cursor} />
+      <RoadLegend visible={showRoadAccess} items={doc.roadAccess} />
       {movingPoint && (
         <MovePointOverlay
           point={movingPoint}
@@ -629,6 +626,30 @@ function MapStatusBar({ metrics, cursor }: { metrics: ViewMetrics | null; cursor
   );
 }
 
+function RoadLegend({ visible, items }: { visible: boolean; items: RoadAccess[] }) {
+  if (!visible || items.length === 0) return null;
+  const active = new Set<string>();
+  for (const item of items) {
+    if (item.kind === 'closed') active.add('closed');
+    for (const vehicle of item.vehicles) active.add(vehicle);
+  }
+  const rows = ROAD_PAINT_OPTIONS.filter((item) => item.id !== 'erase' && active.has(item.id));
+  if (rows.length === 0) return null;
+  return (
+    <div className="pointer-events-none absolute bottom-11 right-2 z-[3] rounded-lg border border-white/10 bg-[#080b11]/82 px-2.5 py-2 text-[11px] text-white/82 shadow-lg backdrop-blur">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/45">Легенда дорог</div>
+      <div className="grid gap-1">
+        {rows.map((row) => (
+          <div key={row.id} className="flex items-center gap-1.5">
+            <span className="h-2.5 w-5 rounded-full" style={{ backgroundColor: row.color }} />
+            <span>{row.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function googleRasterStyle(): unknown {
   return {
     version: 8,
@@ -693,6 +714,7 @@ function ensureOverlayLayers(map: MapLibreMap): void {
   addGeoJsonSource(map, 'map-roads');
   addGeoJsonSource(map, 'map-road-suggestions');
   addGeoJsonSource(map, 'map-road-access');
+  addGeoJsonSource(map, 'map-route');
   addGeoJsonSource(map, 'map-opt-rays');
   addGeoJsonSource(map, 'map-draft');
 
@@ -783,9 +805,10 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
       'line-color': ['get', 'color'],
-      'line-width': ['case', ['boolean', ['get', 'selected'], false],
-        ['interpolate', ['linear'], ['zoom'], 12, 4, 16, 6, 20, 9],
-        ['interpolate', ['linear'], ['zoom'], 12, 3, 16, 4.5, 20, 7],
+      'line-width': ['interpolate', ['linear'], ['zoom'],
+        12, ['case', ['boolean', ['get', 'selected'], false], 4, 3],
+        16, ['case', ['boolean', ['get', 'selected'], false], 6, 4.5],
+        20, ['case', ['boolean', ['get', 'selected'], false], 9, 7],
       ],
       'line-opacity': ['case', ['==', ['get', 'kind'], 'closed'], 0.82, 0.72],
     },
@@ -796,6 +819,29 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     source: 'map-road-access',
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': '#ffffff', 'line-width': 18, 'line-opacity': 0.01 },
+  });
+  addLayer(map, {
+    id: 'map-route-casing',
+    type: 'line',
+    source: 'map-route',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': '#07111C',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 5.5, 16, 8, 20, 12],
+      'line-opacity': 0.88,
+    },
+  });
+  addLayer(map, {
+    id: 'map-route-line',
+    type: 'line',
+    source: 'map-route',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': '#38BDF8',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 2.4, 16, 4.5, 20, 7],
+      'line-opacity': 0.96,
+      'line-dasharray': [1, 1.35],
+    },
   });
   addLayer(map, {
     id: 'map-draft-fill',
@@ -838,10 +884,25 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     },
   });
   addLayer(map, {
+    id: 'map-draft-paint-cursor',
+    type: 'circle',
+    source: 'map-draft',
+    filter: ['==', 'kind', 'paintCursor'],
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 11, 16, 18, 20, 28],
+      'circle-color': ['coalesce', ['get', 'color'], '#22D3EE'],
+      'circle-opacity': 0.22,
+      'circle-blur': 0.45,
+      'circle-stroke-color': ['coalesce', ['get', 'color'], '#22D3EE'],
+      'circle-stroke-opacity': 0.45,
+      'circle-stroke-width': 1.2,
+    },
+  });
+  addLayer(map, {
     id: 'map-draft-points',
     type: 'circle',
     source: 'map-draft',
-    filter: ['==', '$type', 'Point'],
+    filter: ['all', ['==', '$type', 'Point'], ['!=', 'kind', 'paintCursor']],
     paint: {
       'circle-radius': 4,
       'circle-color': [
@@ -935,6 +996,21 @@ function buildRoadAccessData(items: RoadAccess[], selection: MapSelection | null
   };
 }
 
+function buildRouteData(routePath: LatLng[] | null): FeatureCollection {
+  if (!routePath || routePath.length < 2) return EMPTY_FEATURES;
+  return {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: { id: 'active-route', kind: 'route' },
+      geometry: {
+        type: 'LineString',
+        coordinates: routePath.map(toCoord),
+      },
+    }],
+  };
+}
+
 function roadAccessColor(access: RoadAccess): string {
   if (access.kind === 'closed') return roadPaintOption('closed').color;
   if (access.vehicles.length === 1) return roadPaintOption(access.vehicles[0]!).color;
@@ -983,14 +1059,25 @@ function buildOptimizeRaysData(ov: OptimizeOverlay | null): FeatureCollection {
 }
 
 function buildDraftData(tool: MapTool, draft: LatLng[], cursor: LatLng | null, roadPaintMode: RoadPaintMode): FeatureCollection {
-  if (draft.length === 0 || (tool !== 'area' && tool !== 'road' && tool !== 'confirmRoad' && tool !== 'vehicles')) return EMPTY_FEATURES;
+  if (tool !== 'area' && tool !== 'road' && tool !== 'confirmRoad' && tool !== 'vehicles') return EMPTY_FEATURES;
   const pts = [...draft, ...(cursor ? [cursor] : [])];
   const draftColor = tool === 'vehicles' ? roadPaintOption(roadPaintMode).color : undefined;
-  const features: FeatureCollection['features'] = draft.map((p, index) => ({
-    type: 'Feature',
-    properties: { id: `draft-point-${index}`, kind: tool, color: draftColor },
-    geometry: { type: 'Point', coordinates: toCoord(p) },
-  }));
+  const features: FeatureCollection['features'] = [];
+  if (tool === 'vehicles' && cursor) {
+    features.push({
+      type: 'Feature',
+      properties: { id: 'paint-cursor', kind: 'paintCursor', color: draftColor },
+      geometry: { type: 'Point', coordinates: toCoord(cursor) },
+    });
+  }
+  draft.forEach((p, index) => {
+    features.push({
+      type: 'Feature',
+      properties: { id: `draft-point-${index}`, kind: tool, color: draftColor },
+      geometry: { type: 'Point', coordinates: toCoord(p) },
+    });
+  });
+  if (draft.length === 0) return { type: 'FeatureCollection', features };
   if (tool === 'area') {
     if (pts.length >= 3) {
       features.push({

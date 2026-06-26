@@ -31,6 +31,11 @@ import { useWarehousesStore } from '@/lib/warehouses-store';
 import { saveWarehouse } from '@/lib/warehouses-repo';
 import { useUiStateStore } from '@/lib/stores';
 import { useMapStore } from '@/lib/map-store';
+import {
+  EMPTY_POINT_EQUIPMENT,
+  vehicleShort,
+  type MapPoint,
+} from '@/components/map/map-types';
 import type { ContactActionRequest } from './ContactActionDialog';
 
 interface WarehouseSidebarProps {
@@ -101,6 +106,11 @@ export function WarehouseCard({
 }) {
   const { t } = useTranslation();
   const warehouse = useWarehousesStore((s) => s.byId.get(warehouseId));
+  const allMapPoints = useMapStore((s) => s.doc.points);
+  const mapPoints = useMemo(
+    () => allMapPoints.filter((p) => p.warehouseId === warehouseId),
+    [allMapPoints, warehouseId],
+  );
 
   if (!warehouse) {
     // Склад из search-результата отсутствует в нашей БД — показываем minimal-card
@@ -178,6 +188,10 @@ export function WarehouseCard({
         )}
       </div>
 
+      {!hideMapLink && mapPoints.length > 0 && (
+        <WarehouseMapPoints warehouseId={warehouse.id} points={mapPoints} />
+      )}
+
       {/* Phones */}
       {phones.length > 0 && (
         <div className="mt-2.5 space-y-1">
@@ -213,6 +227,62 @@ export function WarehouseCard({
       )}
     </article>
   );
+}
+
+function WarehouseMapPoints({ warehouseId, points }: { warehouseId: string; points: MapPoint[] }) {
+  return (
+    <div className="mt-2.5 border-t border-border-subtle/30 pt-2">
+      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Точки выгрузки</p>
+      <div className="space-y-1">
+        {points.map((point, index) => {
+          const title = point.label.trim() || point.comment.trim() || `${warehouseId} · точка ${index + 1}`;
+          const badges = pointBadges(point);
+          return (
+            <button
+              key={point.id}
+              type="button"
+              onClick={() => {
+                useMapStore.getState().requestFocusPoint(point.id);
+                useUiStateStore.getState().setActiveSection('map');
+              }}
+              className="flex w-full items-start gap-2 rounded-md px-1.5 py-1 text-left outline-none transition-colors hover:bg-bg-hover"
+              title="Открыть точку на карте"
+            >
+              <MapPinned className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300" strokeWidth={1.75} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-medium text-text-secondary">{title}</span>
+                {point.comment.trim() && point.comment.trim() !== title && (
+                  <span className="block truncate text-[10.5px] text-text-muted">{point.comment.trim()}</span>
+                )}
+                {badges.length > 0 && (
+                  <span className="mt-0.5 flex flex-wrap gap-1">
+                    {badges.map((badge) => (
+                      <span key={badge} className="rounded bg-bg-hover px-1 text-[9.5px] font-medium text-text-muted">
+                        {badge}
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function pointBadges(point: MapPoint): string[] {
+  const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
+  const badges: string[] = [];
+  if (point.rearUnload) badges.push('ТМЦ сзади');
+  if (equipment.crane) badges.push('кран');
+  if (equipment.forklift) badges.push('погрузчик');
+  if (equipment.stacker) badges.push('штабелер');
+  if ((point.allowedVehicles ?? []).length > 0) {
+    badges.push((point.allowedVehicles ?? []).map(vehicleShort).join(' '));
+  }
+  return badges;
 }
 
 // ─── 3-month delivery schedule ───────────────────────────────────────────────

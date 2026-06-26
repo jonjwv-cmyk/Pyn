@@ -20,6 +20,7 @@ import {
 import { MapCanvas, type MapSelection, type OptimizeOverlay } from './MapCanvas';
 import { MapDetailPanel } from './MapDetailPanel';
 import { optimize, totalCost, type DemandPoint } from './optimize';
+import { computeFastestRoute, type RouteResult } from './route-network';
 import { loadNtmkOsmRoadSuggestions } from './road-suggestions';
 
 /**
@@ -43,6 +44,7 @@ export function MapScreen(): JSX.Element {
   const addRoadSuggestions = useMapStore((s) => s.addRoadSuggestions);
   const clearRoadSuggestions = useMapStore((s) => s.clearRoadSuggestions);
   const focusWarehouseId = useMapStore((s) => s.focusWarehouseId);
+  const focusPointId = useMapStore((s) => s.focusPointId);
   const clearFocusWarehouse = useMapStore((s) => s.clearFocusWarehouse);
   const warehouses = useWarehousesStore((s) => s.byId);
 
@@ -54,8 +56,10 @@ export function MapScreen(): JSX.Element {
   const [openedOnDefaultPoint, setOpenedOnDefaultPoint] = useState(false);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [showRoadSuggestions, setShowRoadSuggestions] = useState(true);
+  const [showRoadAccess, setShowRoadAccess] = useState(true);
   const [roadPaintMode, setRoadPaintMode] = useState<RoadPaintMode>('gazelle');
   const [moveByMapPointId, setMoveByMapPointId] = useState<string | null>(null);
+  const [routeSourcePointId, setRouteSourcePointId] = useState<string | null>(null);
 
   useEffect(() => { void initMap(); }, []);
 
@@ -87,6 +91,16 @@ export function MapScreen(): JSX.Element {
 
   // ── Фокус из карточки склада в «Цеха» ──
   useEffect(() => {
+    if (focusPointId) {
+      const pt = doc.points.find((p) => p.id === focusPointId);
+      if (pt) {
+        setTool('select');
+        setSelection({ type: 'point', id: pt.id });
+        setFocus({ latlng: { lat: pt.lat, lng: pt.lng }, nonce: Date.now(), zoom: NTMK_ZOOM });
+      }
+      clearFocusWarehouse();
+      return;
+    }
     if (!focusWarehouseId) return;
     const pt = doc.points.find((p) => p.warehouseId === focusWarehouseId);
     if (pt) {
@@ -95,7 +109,7 @@ export function MapScreen(): JSX.Element {
       setFocus({ latlng: { lat: pt.lat, lng: pt.lng }, nonce: Date.now(), zoom: NTMK_ZOOM });
     }
     clearFocusWarehouse();
-  }, [focusWarehouseId, doc.points, clearFocusWarehouse]);
+  }, [focusPointId, focusWarehouseId, doc.points, clearFocusWarehouse]);
 
   useEffect(() => {
     if (!loaded || openedOnDefaultPoint || selection || doc.points.length === 0) return;
@@ -117,6 +131,7 @@ export function MapScreen(): JSX.Element {
       weight: 1,
       equipment: { ...EMPTY_POINT_EQUIPMENT },
       rearUnload: false,
+      allowedVehicles: [],
     });
     setTool('select');
     setSelection({ type: 'point', id });
@@ -202,6 +217,23 @@ export function MapScreen(): JSX.Element {
     ? { source: { lat: sourcePoint.lat, lng: sourcePoint.lng }, demand, result: optResult, ghost }
     : null;
 
+  const selectedPoint = selection?.type === 'point'
+    ? doc.points.find((p) => p.id === selection.id) ?? null
+    : null;
+  const routeSourcePoint = routeSourcePointId
+    ? doc.points.find((p) => p.id === routeSourcePointId) ?? null
+    : null;
+  const routeResult: RouteResult | null = useMemo(() => {
+    if (!routeSourcePoint || !selectedPoint || routeSourcePoint.id === selectedPoint.id) return null;
+    return computeFastestRoute(doc.roads, routeSourcePoint, selectedPoint);
+  }, [doc.roads, routeSourcePoint, selectedPoint]);
+
+  useEffect(() => {
+    if (routeSourcePointId && !doc.points.some((p) => p.id === routeSourcePointId)) {
+      setRouteSourcePointId(null);
+    }
+  }, [doc.points, routeSourcePointId]);
+
   const showDetail = tool !== 'optimize' && selection !== null;
 
   return (
@@ -218,8 +250,10 @@ export function MapScreen(): JSX.Element {
             roadSuggestionCount={doc.roadSuggestions.length}
             suggestionsLoading={suggestionsLoading}
             showRoadSuggestions={showRoadSuggestions}
+            showRoadAccess={showRoadAccess}
             roadPaintMode={roadPaintMode}
             onToggleRoadSuggestions={() => setShowRoadSuggestions((v) => !v)}
+            onToggleRoadAccess={() => setShowRoadAccess((v) => !v)}
             onRoadPaintModeChange={setRoadPaintMode}
             onStitchRoads={stitchRoads}
             onLoadRoadSuggestions={handleLoadRoadSuggestions}
@@ -252,6 +286,8 @@ export function MapScreen(): JSX.Element {
                 visiblePointIds={visiblePointIds}
                 selection={selection}
                 showRoadSuggestions={showRoadSuggestions}
+                showRoadAccess={showRoadAccess}
+                routePath={routeResult?.path ?? null}
                 roadPaintMode={roadPaintMode}
                 movingPointId={moveByMapPointId}
                 onSelect={setSelection}
@@ -303,6 +339,10 @@ export function MapScreen(): JSX.Element {
               onClose={() => setSelection(null)}
               onSelect={setSelection}
               onFocus={(latlng) => setFocus({ latlng, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) })}
+              routeSourcePointId={routeSourcePointId}
+              routeResult={selection.type === 'point' ? routeResult : null}
+              onSetRouteFromPoint={setRouteSourcePointId}
+              onClearRoute={() => setRouteSourcePointId(null)}
               onMovePointByMap={(id) => {
                 const pt = doc.points.find((p) => p.id === id);
                 if (pt) setFocus({ latlng: { lat: pt.lat, lng: pt.lng }, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) });
@@ -340,9 +380,11 @@ function ToolMenu({
   roadSuggestionCount,
   suggestionsLoading,
   showRoadSuggestions,
+  showRoadAccess,
   roadPaintMode,
   onChange,
   onToggleRoadSuggestions,
+  onToggleRoadAccess,
   onRoadPaintModeChange,
   onDeleteRoad,
   onStitchRoads,
@@ -354,9 +396,11 @@ function ToolMenu({
   roadSuggestionCount: number;
   suggestionsLoading: boolean;
   showRoadSuggestions: boolean;
+  showRoadAccess: boolean;
   roadPaintMode: RoadPaintMode;
   onChange: (tool: MapTool) => void;
   onToggleRoadSuggestions: () => void;
+  onToggleRoadAccess: () => void;
   onRoadPaintModeChange: (mode: RoadPaintMode) => void;
   onDeleteRoad: (id: string) => void;
   onStitchRoads: () => void;
@@ -421,6 +465,14 @@ function ToolMenu({
           <p className="px-2 pb-1 text-[11px] text-text-muted">
             Активно: <span className="font-semibold text-text-secondary">{paint.label}</span>
           </p>
+          <button
+            type="button"
+            onClick={onToggleRoadAccess}
+            className="mb-1 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
+          >
+            <span className={cn('h-2.5 w-2.5 rounded-full', showRoadAccess ? 'bg-[#22D3EE]' : 'bg-text-muted')} />
+            <span className="flex-1 truncate">{showRoadAccess ? 'Скрыть закраску дорог' : 'Показать закраску дорог'}</span>
+          </button>
           <div className="my-1.5 h-px bg-border-subtle" />
           <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
             <span>Дорожная сеть</span>

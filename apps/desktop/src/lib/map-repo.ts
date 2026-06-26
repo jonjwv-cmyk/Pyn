@@ -53,6 +53,7 @@ function toLatLng(raw: unknown): LatLng | null {
 }
 
 function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
+  const validVehicles = new Set<string>(VEHICLE_TYPES.map((v) => v.id));
   const points = Array.isArray(raw.points)
     ? raw.points.flatMap((p) => {
       const ll = toLatLng(p);
@@ -67,6 +68,9 @@ function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
         weight: typeof r.weight === 'number' ? r.weight : 1,
         equipment: normalizePointEquipment(r.equipment),
         rearUnload: r.rearUnload === true,
+        allowedVehicles: Array.isArray(r.allowedVehicles)
+          ? r.allowedVehicles.filter((v): v is VehicleType => typeof v === 'string' && validVehicles.has(v))
+          : [],
       }];
     })
     : [];
@@ -114,7 +118,6 @@ function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
       }];
     })
     : [];
-  const validVehicles = new Set<string>(VEHICLE_TYPES.map((v) => v.id));
   const roadAccess = Array.isArray(raw.roadAccess)
     ? raw.roadAccess.flatMap((entry) => {
       if (!entry || typeof entry !== 'object') return [];

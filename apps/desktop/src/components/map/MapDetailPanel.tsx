@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { LocateFixed, MapPinned, Phone, Trash2, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { LocateFixed, MapPinned, Navigation, Phone, Trash2, X } from 'lucide-react';
 import { groupByWarehouse, type MolRecord } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import { splitAndFormatWorkPhones } from '@/lib/mol-format';
@@ -19,6 +19,8 @@ import {
   type VehicleType,
 } from './map-types';
 import type { MapSelection } from './MapCanvas';
+import { formatDistanceMeters } from './geo';
+import type { RouteResult } from './route-network';
 
 interface Props {
   selection: MapSelection;
@@ -26,10 +28,24 @@ interface Props {
   onSelect: (selection: MapSelection) => void;
   onFocus: (latlng: LatLng) => void;
   onMovePointByMap: (id: string) => void;
+  routeSourcePointId: string | null;
+  routeResult: RouteResult | null;
+  onSetRouteFromPoint: (id: string) => void;
+  onClearRoute: () => void;
 }
 
 /** Правая панель деталей выбранного объекта карты (точка / область / дорога). */
-export function MapDetailPanel({ selection, onClose, onSelect, onFocus, onMovePointByMap }: Props) {
+export function MapDetailPanel({
+  selection,
+  onClose,
+  onSelect,
+  onFocus,
+  onMovePointByMap,
+  routeSourcePointId,
+  routeResult,
+  onSetRouteFromPoint,
+  onClearRoute,
+}: Props) {
   return (
     <aside className="flex w-[360px] shrink-0 flex-col border-l border-border-subtle/70 bg-bg-deep/20">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-border-subtle/70 px-3">
@@ -60,6 +76,10 @@ export function MapDetailPanel({ selection, onClose, onSelect, onFocus, onMovePo
             onSelect={onSelect}
             onFocus={onFocus}
             onMoveByMap={onMovePointByMap}
+            routeSourcePointId={routeSourcePointId}
+            routeResult={routeResult}
+            onSetRouteFromPoint={onSetRouteFromPoint}
+            onClearRoute={onClearRoute}
           />
         )}
         {selection.type === 'area' && <AreaEditor id={selection.id} onDeleted={onClose} />}
@@ -79,118 +99,198 @@ function PointEditor({
   onSelect,
   onFocus,
   onMoveByMap,
+  routeSourcePointId,
+  routeResult,
+  onSetRouteFromPoint,
+  onClearRoute,
 }: {
   id: string;
   onDeleted: () => void;
   onSelect: (selection: MapSelection) => void;
   onFocus: (latlng: LatLng) => void;
   onMoveByMap: (id: string) => void;
+  routeSourcePointId: string | null;
+  routeResult: RouteResult | null;
+  onSetRouteFromPoint: (id: string) => void;
+  onClearRoute: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
   const point = useMapStore((s) => s.doc.points.find((p) => p.id === id));
   const allPoints = useMapStore((s) => s.doc.points);
   const updatePoint = useMapStore((s) => s.updatePoint);
   const removePoint = useMapStore((s) => s.removePoint);
 
+  useEffect(() => {
+    if (point && !point.warehouseId) setEditing(true);
+  }, [point]);
+
   if (!point) return null;
   const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
+  const allowedVehicles = point.allowedVehicles ?? [];
+  const siblingPointCount = point.warehouseId
+    ? allPoints.filter((p) => p.warehouseId === point.warehouseId).length
+    : 0;
 
   return (
     <div className="space-y-2.5">
-      <WarehousePicker
-        value={point.warehouseId}
-        onPick={(wid) => updatePoint(id, { warehouseId: wid })}
+      <PointSummary point={point} />
+      <RoutePointBlock
+        point={point}
+        routeSourcePointId={routeSourcePointId}
+        routeResult={routeResult}
+        onSetRouteFromPoint={onSetRouteFromPoint}
+        onClearRoute={onClearRoute}
       />
-
-      {/* Карточка склада «как в Цеха» (название цеха, телефоны, статус, график) */}
-      {point.warehouseId && (
-        <WarehouseCard
-          warehouseId={point.warehouseId}
-          hideMapLink
-          onContactAction={(req) => { void navigator.clipboard?.writeText(req.target); }}
-        />
-      )}
-
-      {/* МОЛы склада */}
-      {point.warehouseId && <MolBlock warehouseId={point.warehouseId} />}
-
-      {point.warehouseId && (
-        <WarehousePointsBlock
-          currentId={id}
-          warehouseId={point.warehouseId}
-          points={allPoints}
-          onSelect={(pointId) => onSelect({ type: 'point', id: pointId })}
-          onFocus={(p) => onFocus({ lat: p.lat, lng: p.lng })}
-        />
-      )}
-
-      {/* Поля точки */}
-      <Field label="Подпись на карте">
-        <input
-          value={point.label}
-          onChange={(e) => updatePoint(id, { label: e.target.value })}
-          placeholder={point.warehouseId ?? 'Точка'}
-          className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
-        />
-      </Field>
-
-      <Field label="Что выгружаем / место выгрузки">
-        <textarea
-          value={point.comment}
-          onChange={(e) => updatePoint(id, { comment: e.target.value })}
-          rows={2}
-          className="w-full resize-none rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
-        />
-      </Field>
-
-      <Field label="Объём отгрузок (вес для оптимизации)">
-        <input
-          type="number"
-          min={0}
-          step={1}
-          value={point.weight}
-          onChange={(e) => updatePoint(id, { weight: Math.max(0, Number(e.target.value) || 0) })}
-          className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 font-mono text-[12.5px] tabular-nums text-text-primary outline-none focus:border-accent-clay/40"
-        />
-      </Field>
-
-      <Field label="Оснастка на месте">
-        <div className="grid grid-cols-3 gap-1">
-          <ToggleChip
-            label="Кран"
-            active={equipment.crane}
-            onClick={() => updatePoint(id, { equipment: { ...equipment, crane: !equipment.crane } })}
-          />
-          <ToggleChip
-            label="Погрузчик"
-            active={equipment.forklift}
-            onClick={() => updatePoint(id, { equipment: { ...equipment, forklift: !equipment.forklift } })}
-          />
-          <ToggleChip
-            label="Штабелер"
-            active={equipment.stacker}
-            onClick={() => updatePoint(id, { equipment: { ...equipment, stacker: !equipment.stacker } })}
-          />
-        </div>
-        {!equipment.crane && !equipment.forklift && !equipment.stacker && (
-          <p className="mt-1 rounded border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
-            Оснастка не выбрана — считаем ручную погрузку.
-          </p>
-        )}
-      </Field>
 
       <button
         type="button"
-        onClick={() => updatePoint(id, { rearUnload: !point.rearUnload })}
-        className={cn(
-          'flex h-7 w-full items-center justify-between rounded border px-2 text-[12px] outline-none transition-colors',
-          point.rearUnload
-            ? 'border-emerald-400/45 bg-emerald-400/10 text-emerald-200'
-            : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
-        )}
+        onClick={() => setEditing((v) => !v)}
+        className="flex h-7 w-full items-center justify-between rounded border border-border-default px-2 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
       >
-        <span>ТМЦ сзади</span>
-        <span>{point.rearUnload ? 'да' : 'нет'}</span>
+        <span>{editing ? 'Скрыть правку точки' : 'Редактировать точку'}</span>
+        <span>{editing ? '−' : '+'}</span>
       </button>
+
+      {editing && (
+        <WarehousePicker
+          value={point.warehouseId}
+          onPick={(wid) => updatePoint(id, { warehouseId: wid })}
+        />
+      )}
+
+      {/* Карточка склада «как в Цеха» (название цеха, телефоны, статус, график) */}
+      {point.warehouseId && (
+        <FoldBlock title="Карточка склада" defaultOpen>
+          <WarehouseCard
+            warehouseId={point.warehouseId}
+            hideMapLink
+            onContactAction={(req) => { void navigator.clipboard?.writeText(req.target); }}
+          />
+        </FoldBlock>
+      )}
+
+      {/* МОЛы склада */}
+      {point.warehouseId && (
+        <FoldBlock title="МОЛы и телефоны" defaultOpen>
+          <MolBlock warehouseId={point.warehouseId} />
+        </FoldBlock>
+      )}
+
+      {point.warehouseId && siblingPointCount > 1 && (
+        <FoldBlock title="Точки выгрузки" defaultOpen>
+          <WarehousePointsBlock
+            currentId={id}
+            warehouseId={point.warehouseId}
+            points={allPoints}
+            onSelect={(pointId) => onSelect({ type: 'point', id: pointId })}
+            onFocus={(p) => onFocus({ lat: p.lat, lng: p.lng })}
+          />
+        </FoldBlock>
+      )}
+
+      {editing && (
+        <>
+          {/* Поля точки */}
+          <Field label="Подпись на карте">
+            <input
+              value={point.label}
+              onChange={(e) => updatePoint(id, { label: e.target.value })}
+              placeholder={point.warehouseId ?? 'Точка'}
+              className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
+            />
+          </Field>
+
+          <Field label="Что выгружаем / место выгрузки">
+            <textarea
+              value={point.comment}
+              onChange={(e) => updatePoint(id, { comment: e.target.value })}
+              rows={2}
+              className="w-full resize-none rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
+            />
+          </Field>
+
+          <Field label="Объём отгрузок (вес для оптимизации)">
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={point.weight}
+              onChange={(e) => updatePoint(id, { weight: Math.max(0, Number(e.target.value) || 0) })}
+              className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 font-mono text-[12.5px] tabular-nums text-text-primary outline-none focus:border-accent-clay/40"
+            />
+          </Field>
+
+          <Field label="Оснастка на месте">
+            <div className="grid grid-cols-3 gap-1">
+              <ToggleChip label="Кран" active={equipment.crane} onClick={() => updatePoint(id, { equipment: { ...equipment, crane: !equipment.crane } })} />
+              <ToggleChip label="Погрузчик" active={equipment.forklift} onClick={() => updatePoint(id, { equipment: { ...equipment, forklift: !equipment.forklift } })} />
+              <ToggleChip label="Штабелер" active={equipment.stacker} onClick={() => updatePoint(id, { equipment: { ...equipment, stacker: !equipment.stacker } })} />
+            </div>
+            {!equipment.crane && !equipment.forklift && !equipment.stacker && (
+              <p className="mt-1 rounded border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
+                Оснастка не выбрана — считаем ручную погрузку.
+              </p>
+            )}
+          </Field>
+
+          <Field label="Какая машина заедет в точку">
+            <div className="space-y-1">
+              <button
+                type="button"
+                onClick={() => updatePoint(id, { allowedVehicles: [] })}
+                className={cn(
+                  'flex h-7 w-full items-center justify-between rounded border px-2 text-[12px] outline-none transition-colors',
+                  allowedVehicles.length === 0
+                    ? 'border-emerald-400/45 bg-emerald-400/10 text-emerald-200'
+                    : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+                )}
+              >
+                <span>Все машины</span>
+                <span>{allowedVehicles.length === 0 ? '✓' : ''}</span>
+              </button>
+              <div className="grid grid-cols-2 gap-1">
+                {VEHICLE_TYPES.map((vehicle) => {
+                  const active = allowedVehicles.includes(vehicle.id);
+                  return (
+                    <button
+                      key={vehicle.id}
+                      type="button"
+                      onClick={() => {
+                        const next = active
+                          ? allowedVehicles.filter((id) => id !== vehicle.id)
+                          : [...allowedVehicles, vehicle.id];
+                        updatePoint(id, { allowedVehicles: next });
+                      }}
+                      className={cn(
+                        'min-h-7 rounded-md border px-1.5 text-[11.5px] outline-none transition-colors',
+                        active
+                          ? 'border-[#22D3EE]/50 bg-[#22D3EE]/12 text-text-strong'
+                          : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+                      )}
+                    >
+                      {vehicle.short}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </Field>
+
+          <button
+            type="button"
+            onClick={() => updatePoint(id, { rearUnload: !point.rearUnload })}
+            className={cn(
+              'flex h-7 w-full items-center justify-between rounded border px-2 text-[12px] outline-none transition-colors',
+              point.rearUnload
+                ? 'border-emerald-400/45 bg-emerald-400/10 text-emerald-200'
+                : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+            )}
+          >
+            <span>ТМЦ сзади</span>
+            <span>{point.rearUnload ? 'да' : 'нет'}</span>
+          </button>
+        </>
+      )}
 
       <CoordsBlock point={point} />
 
@@ -210,6 +310,125 @@ function PointEditor({
         <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} /> Удалить точку
       </button>
     </div>
+  );
+}
+
+function PointSummary({ point }: { point: MapPoint }) {
+  const warehouse = useWarehousesStore((s) => (point.warehouseId ? s.byId.get(point.warehouseId) : undefined));
+  const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
+  const equipmentList = [
+    equipment.crane ? 'кран' : null,
+    equipment.forklift ? 'погрузчик' : null,
+    equipment.stacker ? 'штабелер' : null,
+  ].filter(Boolean) as string[];
+  const allowedVehicles = point.allowedVehicles ?? [];
+  const title = point.warehouseId
+    ? `Склад ${point.warehouseId}`
+    : point.label.trim() || 'Точка без склада';
+  const place = point.comment.trim() || point.label.trim() || 'место выгрузки не подписано';
+  const vehicles = allowedVehicles.length === 0
+    ? 'Все машины'
+    : allowedVehicles.map(vehicleLabel).join(', ');
+
+  return (
+    <section className="rounded-lg border border-border-subtle bg-bg-elevated/35 px-3 py-2.5">
+      <div className="flex items-start gap-2">
+        <MapPinned className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" strokeWidth={1.75} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[14px] font-bold text-text-strong">{title}</p>
+          {warehouse?.shop_name && <p className="mt-0.5 truncate text-[12px] text-text-muted">{warehouse.shop_name}</p>}
+          <p className="mt-1 text-[12.5px] text-text-secondary">{place}</p>
+        </div>
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-1.5 text-[11.5px]">
+        <InfoPill label="Заезд" value={vehicles} />
+        <InfoPill label="Оснастка" value={equipmentList.length > 0 ? equipmentList.join(', ') : 'ручная погрузка'} />
+        {point.rearUnload && <InfoPill label="Нюанс" value="ТМЦ сзади" />}
+        {point.weight > 1 && <InfoPill label="Вес" value={String(point.weight)} />}
+      </div>
+    </section>
+  );
+}
+
+function RoutePointBlock({
+  point,
+  routeSourcePointId,
+  routeResult,
+  onSetRouteFromPoint,
+  onClearRoute,
+}: {
+  point: MapPoint;
+  routeSourcePointId: string | null;
+  routeResult: RouteResult | null;
+  onSetRouteFromPoint: (id: string) => void;
+  onClearRoute: () => void;
+}) {
+  const isSource = routeSourcePointId === point.id;
+  const hasSource = routeSourcePointId !== null;
+  return (
+    <section className="rounded-lg border border-sky-400/25 bg-sky-400/[0.08] px-3 py-2.5 text-[12px]">
+      <div className="flex items-start gap-2">
+        <Navigation className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" strokeWidth={1.75} />
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold text-text-strong">Маршрут по дорогам</p>
+          {!hasSource && <p className="mt-0.5 text-text-muted">Выберите эту точку стартом, затем кликните точку назначения.</p>}
+          {isSource && <p className="mt-0.5 text-sky-200">Эта точка выбрана стартом маршрута.</p>}
+          {hasSource && !isSource && routeResult && (
+            <p className="mt-0.5 font-mono tabular-nums text-sky-200">
+              {formatDistanceMeters(routeResult.distanceMeters)} · узлов {routeResult.nodes}
+            </p>
+          )}
+          {hasSource && !isSource && !routeResult && (
+            <p className="mt-0.5 text-amber-200">Маршрут не найден: рядом нет сшитой дорожной сети.</p>
+          )}
+        </div>
+      </div>
+      <div className="mt-2 flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => onSetRouteFromPoint(point.id)}
+          className="h-7 flex-1 rounded border border-sky-400/35 px-2 text-[12px] font-medium text-sky-200 outline-none transition-colors hover:bg-sky-400/10"
+        >
+          {isSource ? 'Старт выбран' : 'Маршрут отсюда'}
+        </button>
+        {hasSource && (
+          <button
+            type="button"
+            onClick={onClearRoute}
+            className="h-7 rounded border border-border-subtle px-2 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+          >
+            Сбросить
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function InfoPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-md border border-border-subtle bg-bg-deep/35 px-2 py-1">
+      <p className="text-[10px] uppercase tracking-[0.06em] text-text-muted">{label}</p>
+      <p className="truncate text-text-secondary" title={value}>{value}</p>
+    </div>
+  );
+}
+
+function FoldBlock({ title, defaultOpen = false, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-lg border border-border-subtle/80 bg-bg-deep/[0.18]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-8 w-full items-center justify-between px-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted outline-none transition-colors hover:text-text-secondary"
+      >
+        <span>{title}</span>
+        <span className="text-[14px] leading-none">{open ? '−' : '+'}</span>
+      </button>
+      {open && <div className="px-2 pb-2">{children}</div>}
+    </section>
   );
 }
 
