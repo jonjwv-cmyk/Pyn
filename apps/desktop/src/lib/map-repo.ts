@@ -138,6 +138,33 @@ function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
     })
     : [];
 
+  const crossings = Array.isArray(raw.crossings)
+    ? raw.crossings.flatMap((entry) => {
+      const ll = toLatLng(entry);
+      if (!ll || !entry || typeof entry !== 'object') return [];
+      const r = entry as unknown as Record<string, unknown>;
+      return [{
+        id: typeof r.id === 'string' ? r.id : crypto.randomUUID(),
+        ...ll,
+        name: typeof r.name === 'string' ? r.name : '',
+        note: typeof r.note === 'string' ? r.note : '',
+      }];
+    })
+    : [];
+  const railways = Array.isArray(raw.railways)
+    ? raw.railways.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const r = entry as unknown as Record<string, unknown>;
+      const verts = Array.isArray(r.vertices) ? r.vertices.map(toLatLng).filter(Boolean) as LatLng[] : [];
+      if (verts.length < 2) return [];
+      return [{
+        id: typeof r.id === 'string' ? r.id : crypto.randomUUID(),
+        name: typeof r.name === 'string' ? r.name : '',
+        vertices: verts,
+      }];
+    })
+    : [];
+
   return {
     version: EMPTY_MAP_DOC.version,
     points,
@@ -145,6 +172,8 @@ function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
     roads: stitchRoadSegments(roads),
     roadSuggestions,
     roadAccess,
+    crossings,
+    railways,
   };
 }
 
@@ -153,8 +182,11 @@ function normalizePointEquipment(raw: unknown): PointEquipment {
   const r = raw as Record<string, unknown>;
   return {
     crane: r.crane === true,
-    forklift: r.forklift === true,
+    craneBeam: r.craneBeam === true,
+    // Авто-кран добавлен позже; старый «погрузчик» (forklift) больше не используем.
+    autoCrane: r.autoCrane === true,
     stacker: r.stacker === true,
+    manual: r.manual === true,
   };
 }
 
@@ -196,7 +228,7 @@ function loadPlainBackup(): MapDoc | null {
 
 function scoreDoc(doc: MapDoc | null): number {
   if (!doc) return -1;
-  return doc.points.length * 10 + doc.areas.length * 10 + doc.roads.length * 100 + doc.roadSuggestions.length + doc.roadAccess.length * 5;
+  return doc.points.length * 10 + doc.areas.length * 10 + doc.roads.length * 100 + doc.roadSuggestions.length + doc.roadAccess.length * 5 + (doc.crossings?.length ?? 0) * 5 + (doc.railways?.length ?? 0) * 10;
 }
 
 /** Загрузка карты из кэша (encrypted). true если найдена. */
@@ -232,6 +264,18 @@ function applyServerDoc(raw: string, version: number): void {
   } catch {
     return;
   }
+  // 🛡️ Сервер прислал ПУСТО, а у нас локально ЕСТЬ контент → не затираем себя
+  // пустым (общий doc мог быть ошибочно очищен). Запоминаем версию, чтобы не
+  // зациклиться, и ВОССТАНАВЛИВАЕМ сервер своим непустым документом.
+  const localDoc = useMapStore.getState().doc;
+  if (scoreDoc(doc) === 0 && scoreDoc(localDoc) > 0) {
+    serverVersion = version;
+    everHadContent = true;
+    // eslint-disable-next-line no-console
+    console.warn('[pyn:map] сервер пуст, а локально есть данные — восстанавливаю сервер');
+    schedulePush(localDoc);
+    return;
+  }
   applyingRemote = true;
   try {
     useMapStore.getState().setDoc(doc);
@@ -243,8 +287,21 @@ function applyServerDoc(raw: string, version: number): void {
   }
 }
 
+/** Видели ли мы за сессию НЕпустой документ (был контент на сервере/локально). */
+let everHadContent = false;
+
 /** Отправить текущий документ на сервер (admin). Обновляет serverVersion. */
 async function pushNow(doc: MapDoc): Promise<void> {
+  // 🛡️ ЗАЩИТА ОТ ПОТЕРИ ДАННЫХ: не затираем общий документ карты ПУСТЫМ. Если за
+  // сессию был контент (точки/дороги), а теперь doc пуст — это почти наверняка
+  // сбой загрузки/синхронизации, а не «удалили всё». Пустое НЕ пушим — пусть на
+  // сервере останется как было; контент вернётся при следующей успешной загрузке.
+  if (scoreDoc(doc) > 0) everHadContent = true;
+  else if (everHadContent) {
+    // eslint-disable-next-line no-console
+    console.warn('[pyn:map] пропускаю push ПУСТОГО документа — не затираем общую карту');
+    return;
+  }
   try {
     const res = await mapSet(api, JSON.stringify(doc));
     serverVersion = res.version;

@@ -141,6 +141,19 @@ contextBridge.exposeInMainWorld('pyn', {
     },
   },
   /**
+   * Погода для раздела «Карта»: радар осадков (RainViewer) + сводка (Open-Meteo),
+   * всё через тайл-сессию/мост. Возвращает { ok, frame, weather }.
+   */
+  mapWeather: function pynMapWeather(lat, lng) {
+    return ipcRenderer.invoke('pyn:map-weather', lat, lng);
+  },
+  mapWeatherField: function pynMapWeatherField(bounds) {
+    return ipcRenderer.invoke('pyn:map-weather-field', bounds);
+  },
+  mapElevation: function pynMapElevation(lat, lng) {
+    return ipcRenderer.invoke('pyn:map-elevation', lat, lng);
+  },
+  /**
    * Google account flow для embedded Google Sheets (раздел «Таблицы»).
    * Cookies хранятся в persist:google-sheets partition, общий с webview.
    */

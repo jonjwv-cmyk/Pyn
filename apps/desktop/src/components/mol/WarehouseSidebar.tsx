@@ -277,8 +277,10 @@ function pointBadges(point: MapPoint): string[] {
   const badges: string[] = [];
   if (point.rearUnload) badges.push('ТМЦ сзади');
   if (equipment.crane) badges.push('кран');
-  if (equipment.forklift) badges.push('погрузчик');
+  if (equipment.craneBeam) badges.push('кран-балка');
+  if (equipment.autoCrane) badges.push('авто-кран');
   if (equipment.stacker) badges.push('штабелер');
+  if (equipment.manual) badges.push('ручное');
   if ((point.allowedVehicles ?? []).length > 0) {
     badges.push((point.allowedVehicles ?? []).map(vehicleShort).join(' '));
   }

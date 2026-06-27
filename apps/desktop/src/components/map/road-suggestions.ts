@@ -1,11 +1,15 @@
-import { mapRoadSuggestionsGet } from '@pyn/core';
+import { mapRoadSuggestionsGet, type MapBBox } from '@pyn/core';
 import { api } from '@/lib/api';
 import { polylineLengthMeters } from './geo';
 import type { LatLng, MapRoadSuggestion } from './map-types';
 
-/** Красный черновик дорог грузим через наш E2E API/VPS, не прямым fetch наружу. */
-export async function loadNtmkOsmRoadSuggestions(): Promise<MapRoadSuggestion[]> {
-  const items = await mapRoadSuggestionsGet(api);
+/**
+ * Красный черновик дорог грузим через наш E2E API/VPS, не прямым fetch наружу.
+ * `bbox` — текущая видимая область карты: грузим дороги по экрану (Кушва, Н.Тагил
+ * и т.д.), а не только площадку НТМК. Без bbox сервер возьмёт НТМК по умолчанию.
+ */
+export async function loadNtmkOsmRoadSuggestions(bbox?: MapBBox): Promise<MapRoadSuggestion[]> {
+  const items = await mapRoadSuggestionsGet(api, bbox);
   return items.flatMap((item) => {
     const vertices: LatLng[] = Array.isArray(item.vertices)
       ? item.vertices.flatMap((p) => (

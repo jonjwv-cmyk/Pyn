@@ -410,6 +410,71 @@ export function smoothPolyline(vertices: LatLng[], iterations = 2): LatLng[] {
   return pts;
 }
 
+const MIN_ERASED_PIECE_LENGTH_METERS = 4;
+
+/**
+ * Частичный «ластик»: стирает КУСОК дороги под трассой, а не всю дорогу. Дорога —
+ * это паутина/сеть, поэтому вырезаем участок [eMin..eMax] (по дуге), где ластик
+ * прошёл близко, и возвращаем уцелевшие куски (до и после выреза) как отдельные
+ * дороги — образуется разрыв, в который можно дорисовать свою линию.
+ */
+export function eraseRoadByTrace(road: MapRoad, trace: LatLng[], toleranceMeters: number): MapRoad[] {
+  const poly = road.vertices;
+  if (poly.length < 2 || trace.length < 1) return [road];
+
+  const arcs = cumulativeArcs(poly);
+  const total = arcs[arcs.length - 1]!;
+  let eMin = Infinity;
+  let eMax = -Infinity;
+  for (const p of trace) {
+    const hit = nearestPointOnPolyline(p, poly);
+    if (!hit || hit.distance > toleranceMeters) continue;
+    const arc = posFromHit(arcs, hit.segmentIndex, hit.t).arc;
+    if (arc < eMin) eMin = arc;
+    if (arc > eMax) eMax = arc;
+  }
+  if (!Number.isFinite(eMin)) return [road]; // ластик не задел эту дорогу
+
+  // Расширяем вырез на радиус ластика с каждой стороны — чтобы был видимый разрыв.
+  eMin = Math.max(0, eMin - toleranceMeters);
+  eMax = Math.min(total, eMax + toleranceMeters);
+
+  const pieces: MapRoad[] = [];
+  const before = subPolyline(poly, posFromArc(arcs, 0), posFromArc(arcs, eMin));
+  const after = subPolyline(poly, posFromArc(arcs, eMax), posFromArc(arcs, total));
+  if (polylineLengthMeters(before) >= MIN_ERASED_PIECE_LENGTH_METERS) {
+    pieces.push({ ...road, vertices: before });
+  }
+  if (polylineLengthMeters(after) >= MIN_ERASED_PIECE_LENGTH_METERS) {
+    pieces.push({ ...road, id: makeId(), vertices: after });
+  }
+  return pieces;
+}
+
+function posFromArc(arcs: number[], arc: number): PolyPos {
+  const clamped = Math.max(0, Math.min(arcs[arcs.length - 1]!, arc));
+  for (let i = 0; i < arcs.length - 1; i++) {
+    const segLen = arcs[i + 1]! - arcs[i]!;
+    if (clamped <= arcs[i + 1]! || i === arcs.length - 2) {
+      const t = segLen > 0 ? (clamped - arcs[i]!) / segLen : 0;
+      return { segmentIndex: i, t: Math.max(0, Math.min(1, t)), arc: clamped };
+    }
+  }
+  return { segmentIndex: 0, t: 0, arc: 0 };
+}
+
+/**
+ * «Выпрямить» нарисованную от руки дорогу: сильное прореживание (Douglas-Peucker)
+ * убирает дрожание и делает участки прямыми, затем лёгкий Чайкин скругляет реальные
+ * повороты, чтобы линия не выглядела «угловатой». Концы сохраняются.
+ */
+export function straightenPolyline(vertices: LatLng[], toleranceMeters = 4): LatLng[] {
+  if (vertices.length <= 2) return cleanupVertices(vertices);
+  const simplified = simplifyPolyline(cleanupVertices(vertices), toleranceMeters);
+  if (simplified.length <= 2) return simplified;
+  return smoothPolyline(simplified, 1);
+}
+
 function cleanupVertices(vertices: LatLng[]): LatLng[] {
   const cleaned: LatLng[] = [];
   for (const vertex of vertices) {

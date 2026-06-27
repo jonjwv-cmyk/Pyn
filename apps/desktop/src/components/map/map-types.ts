@@ -41,15 +41,53 @@ export interface MapPoint extends LatLng {
 
 export interface PointEquipment {
   crane: boolean;
-  forklift: boolean;
+  /** Кран-балка (мостовой/опорный кран в пролёте). */
+  craneBeam: boolean;
+  /** Авто-кран (стреловой кран на шасси). */
+  autoCrane: boolean;
   stacker: boolean;
+  /** Ручная выгрузка/погрузка. */
+  manual: boolean;
 }
 
 export const EMPTY_POINT_EQUIPMENT: PointEquipment = {
   crane: false,
-  forklift: false,
+  craneBeam: false,
+  autoCrane: false,
   stacker: false,
+  manual: false,
 };
+
+/** Описание оснастки для карточки точки (обозначения как просил пользователь). */
+export const EQUIPMENT_META: ReadonlyArray<{ key: keyof PointEquipment; label: string; short: string }> = [
+  { key: 'crane', label: 'КРАН', short: 'Кр' },
+  { key: 'craneBeam', label: 'КРАН-БАЛКА', short: 'КБ' },
+  { key: 'autoCrane', label: 'АВТО-КРАН', short: 'АК' },
+  { key: 'stacker', label: 'ШТАБЕЛЕР', short: 'Шт' },
+  { key: 'manual', label: 'РУЧНОЕ', short: 'Руч' },
+];
+
+/**
+ * Категория точки для фильтра — выводится АВТОМАТИЧЕСКИ из статуса склада в
+ * графике (ничего вручную проставлять не нужно):
+ *   • shipping    — склад отгружается (активен в плане) → «Отгрузка»
+ *   • unloading   — склад запланирован → «Выгрузка»
+ *   • offSchedule — склада нет в графике / свободная точка → «Вне графика»
+ */
+export type PointCategory = 'shipping' | 'unloading' | 'offSchedule';
+
+export const POINT_CATEGORY_META: ReadonlyArray<{ id: PointCategory; label: string; color: string }> = [
+  { id: 'shipping', label: 'Отгрузка', color: '#C99BE0' },
+  { id: 'unloading', label: 'Выгрузка', color: '#6FBF8E' },
+  { id: 'offSchedule', label: 'Вне графика', color: '#5BA3D0' },
+];
+
+/** Категория точки по строке состояния склада из `getWarehouseState`. */
+export function categoryFromWarehouseState(state: string | undefined | null): PointCategory {
+  if (state === 'shipping') return 'shipping';
+  if (state === 'scheduled') return 'unloading';
+  return 'offSchedule';
+}
 
 /** Область (полигон) — «выделяем область, пишем: это конвертерный». */
 export interface MapArea {
@@ -71,17 +109,27 @@ export interface MapRoad {
 }
 
 /**
+ * Ж/д путь (ломаная) — рисуем по желанию (не обязателен; обычно достаточно
+ * отметить переезды). Это ВИЗУАЛЬНЫЙ слой, в авто-маршрутах не участвует.
+ */
+export interface MapRailway {
+  id: string;
+  name: string;
+  vertices: LatLng[];
+}
+
+/**
  * Тип машины для «особенностей» дороги — кто может проехать по участку.
  * Фиксированный список (юзер 2026-06-24). Два «Пульмана» — это разный метраж.
  */
 export type VehicleType = 'pullman9' | 'pullman12' | 'bortovik' | 'gazelle' | 'furgon_khp';
 
 export const VEHICLE_TYPES: ReadonlyArray<{ id: VehicleType; label: string; short: string }> = [
-  { id: 'pullman9', label: 'ПУЛЬМАН (9м)', short: 'П9' },
-  { id: 'pullman12', label: 'ПУЛЬМАН (12м)', short: 'П12' },
-  { id: 'bortovik', label: 'БОРТ', short: 'БОРТ' },
-  { id: 'gazelle', label: 'ГАЗЕЛЬ', short: 'ГАЗ' },
   { id: 'furgon_khp', label: 'ФУРГОН КХП', short: 'КХП' },
+  { id: 'gazelle', label: 'ГАЗЕЛЬ', short: 'ГАЗ' },
+  { id: 'pullman9', label: 'ПУЛЬМАН 9м', short: 'П9' },
+  { id: 'pullman12', label: 'ПУЛЬМАН 12м', short: 'П12' },
+  { id: 'bortovik', label: 'БОРТОВИК', short: 'БОРТ' },
 ];
 
 export function vehicleLabel(id: VehicleType): string {
@@ -90,6 +138,13 @@ export function vehicleLabel(id: VehicleType): string {
 export function vehicleShort(id: VehicleType): string {
   return VEHICLE_TYPES.find((v) => v.id === id)?.short ?? id;
 }
+/** Фирменный цвет машины (берём из палитры закраски дорог). */
+export function vehicleColor(id: VehicleType): string {
+  return ROAD_PAINT_OPTIONS.find((o) => o.id === id)?.color ?? ROAD_ACCESS_FALLBACK_COLOR;
+}
+
+/** Бирюзовый — цвет участка со смешанными ограничениями (несколько машин). */
+export const ROAD_ACCESS_FALLBACK_COLOR = '#22D3EE';
 
 /**
  * «Особенность» участка дороги — обведённый кусок (лежит на дорогах) + какие
@@ -114,17 +169,27 @@ export const ROAD_PAINT_OPTIONS: ReadonlyArray<{
   vehicles: VehicleType[];
   kind: RoadAccess['kind'] | 'erase';
 }> = [
-  { id: 'closed', label: 'НЕТ ПРОЕЗДА', short: 'СТОП', color: '#EF4444', kind: 'closed', vehicles: [] },
-  { id: 'bortovik', label: 'БОРТ', short: 'БОРТ', color: '#F59E0B', kind: 'limited', vehicles: ['bortovik'] },
-  { id: 'pullman9', label: 'ПУЛЬМАН (9м)', short: 'П9', color: '#8B5CF6', kind: 'limited', vehicles: ['pullman9'] },
-  { id: 'pullman12', label: 'ПУЛЬМАН (12м)', short: 'П12', color: '#A855F7', kind: 'limited', vehicles: ['pullman12'] },
-  { id: 'gazelle', label: 'ГАЗЕЛЬ', short: 'ГАЗ', color: '#22C55E', kind: 'limited', vehicles: ['gazelle'] },
-  { id: 'furgon_khp', label: 'ФУРГОН КХП', short: 'КХП', color: '#06B6D4', kind: 'limited', vehicles: ['furgon_khp'] },
-  { id: 'erase', label: 'ЛАСТИК', short: 'CLR', color: '#94A3B8', kind: 'erase', vehicles: [] },
+  { id: 'closed', label: 'Закрыто', short: 'Закрыто', color: '#EF4444', kind: 'closed', vehicles: [] },
+  { id: 'furgon_khp', label: 'ФУРГОН КХП', short: 'ФУРГОН КХП', color: '#06B6D4', kind: 'limited', vehicles: ['furgon_khp'] },
+  { id: 'gazelle', label: 'ГАЗЕЛЬ', short: 'ГАЗЕЛЬ', color: '#22C55E', kind: 'limited', vehicles: ['gazelle'] },
+  { id: 'pullman9', label: 'ПУЛЬМАН 9м', short: 'ПУЛЬМАН 9м', color: '#8B5CF6', kind: 'limited', vehicles: ['pullman9'] },
+  { id: 'pullman12', label: 'ПУЛЬМАН 12м', short: 'ПУЛЬМАН 12м', color: '#A855F7', kind: 'limited', vehicles: ['pullman12'] },
+  { id: 'bortovik', label: 'БОРТОВИК', short: 'БОРТОВИК', color: '#F59E0B', kind: 'limited', vehicles: ['bortovik'] },
+  { id: 'erase', label: 'Ластик', short: 'Ластик', color: '#94A3B8', kind: 'erase', vehicles: [] },
 ];
 
 export function roadPaintOption(id: RoadPaintMode) {
   return ROAD_PAINT_OPTIONS.find((o) => o.id === id) ?? ROAD_PAINT_OPTIONS[0]!;
+}
+
+/**
+ * Ж/д переезд — точка пересечения дороги с ж/д путём. Это просто ФАКТ переезда
+ * (риск задержки в расчётах) — никаких данных про шлагбаум/светофор не собираем.
+ */
+export interface MapCrossing extends LatLng {
+  id: string;
+  name: string;
+  note: string;
 }
 
 /** Черновая дорога из внешней/ИИ-подсказки. До подтверждения не участвует в маршрутах. */
@@ -143,10 +208,24 @@ export interface MapDoc {
   roads: MapRoad[];
   roadSuggestions: MapRoadSuggestion[];
   roadAccess: RoadAccess[];
+  /** Ж/д переезды. Может отсутствовать в старых документах — читать через `?? []`. */
+  crossings: MapCrossing[];
+  /** Ж/д пути (по желанию). Может отсутствовать в старых документах — `?? []`. */
+  railways: MapRailway[];
 }
 
 /** Инструмент на тулбаре карты. */
-export type MapTool = 'select' | 'point' | 'area' | 'road' | 'confirmRoad' | 'vehicles' | 'optimize';
+export type MapTool =
+  | 'select'
+  | 'point'
+  | 'area'
+  | 'road'
+  | 'eraseRoad'
+  | 'confirmRoad'
+  | 'vehicles'
+  | 'crossing'
+  | 'railway'
+  | 'optimize';
 
 /** Палитра цветов для областей (Linear-приглушённые тона). */
 export const AREA_COLORS: string[] = [
@@ -168,10 +247,12 @@ export function makeId(): string {
 }
 
 export const EMPTY_MAP_DOC: MapDoc = {
-  version: 4,
+  version: 6,
   points: [],
   areas: [],
   roads: [],
   roadSuggestions: [],
   roadAccess: [],
+  crossings: [],
+  railways: [],
 };

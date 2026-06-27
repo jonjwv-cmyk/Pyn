@@ -6,6 +6,7 @@ import { setupApiBridge } from './ipc/api-bridge';
 import { setupAppLockBridge } from './ipc/app-lock-bridge';
 import { setupBlobBridge } from './ipc/blob-bridge';
 import { setupCacheBridge } from './ipc/cache-bridge';
+import { setupMapWeatherBridge } from './ipc/map-weather-bridge';
 import { setupFsBridge } from './ipc/fs-bridge';
 import { setupPrintBridge } from './ipc/print-bridge';
 import { setupGoogleBridge } from './ipc/google-bridge';
@@ -397,6 +398,8 @@ app.whenReady().then(async () => {
   // Stale-while-revalidate cache в `userData/cache/<name>.bin` (safeStorage).
   // Zustand persist в renderer'е использует pyn:cache:* IPC handlers.
   setupCacheBridge();
+  // Погода для карты (радар RainViewer + сводка Open-Meteo) через тайл-сессию.
+  setupMapWeatherBridge();
   // МОЛ snapshot download: fetch encrypted R2 blob → AES decrypt → gunzip →
   // отдать renderer'у plain JSON. Save/load базы — через pyn:cache:* (имя
   // 'mol-base').

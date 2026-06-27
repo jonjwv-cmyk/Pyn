@@ -58,8 +58,23 @@ export async function mapSet(client: ApiClient, doc: string): Promise<MapDocResu
   return wireToResult(wire);
 }
 
-/** Загрузить красный черновик дорог через наш API/VPS, без прямого выхода клиента наружу. */
-export async function mapRoadSuggestionsGet(client: ApiClient): Promise<MapRoadSuggestionWire[]> {
-  const wire = await client.call<MapSuggestionsWire>('map_road_suggestions_get', {}, { timeoutMs: 90_000 });
+/** Прямоугольник видимой области карты (для подгрузки дорог «по экрану»). */
+export interface MapBBox {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}
+
+/**
+ * Загрузить красный черновик дорог через наш API/VPS, без прямого выхода клиента
+ * наружу. `bbox` — текущая видимая область; сервер ограничивает её по размеру.
+ * Без bbox сервер берёт площадку НТМК по умолчанию (обратная совместимость).
+ */
+export async function mapRoadSuggestionsGet(client: ApiClient, bbox?: MapBBox): Promise<MapRoadSuggestionWire[]> {
+  const params = bbox
+    ? { south: bbox.south, west: bbox.west, north: bbox.north, east: bbox.east }
+    : {};
+  const wire = await client.call<MapSuggestionsWire>('map_road_suggestions_get', params, { timeoutMs: 90_000 });
   return Array.isArray(wire.items) ? wire.items : [];
 }

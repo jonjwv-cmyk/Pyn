@@ -86,6 +86,52 @@ declare global {
         clear: (name: string) => Promise<void>;
         clearAll: () => Promise<void>;
       };
+      /** Погода карты: радар осадков (RainViewer) + сводка (Open-Meteo) через мост. */
+      mapWeather?: (
+        lat: number,
+        lng: number,
+      ) => Promise<{
+        ok: boolean;
+        frame: number;
+        weather: null | {
+          tempC: number | null;
+          windMs: number | null;
+          precipMm: number | null;
+          code: number | null;
+          pressureHpa: number | null;
+          isPrecip: boolean;
+          hourly: Array<{
+            time: string;
+            tempC: number | null;
+            precipMm: number | null;
+            rainMm: number | null;
+            snowCm: number | null;
+            precipProb: number | null;
+            code: number | null;
+            windMs: number | null;
+            windDir: number | null;
+            gustMs: number | null;
+          }>;
+        };
+      }>;
+      /** Поле ветра/давления по видимой области карты (Open-Meteo через VPS-мост). */
+      mapWeatherField?: (
+        bounds: { south: number; west: number; north: number; east: number },
+      ) => Promise<{
+        ok: boolean;
+        points: Array<{
+          lat: number;
+          lng: number;
+          windMs: number | null;
+          windDir: number | null;
+          gustMs: number | null;
+          precipMm: number | null;
+          code: number | null;
+          pressureHpa: number | null;
+        }>;
+      }>;
+      /** Высота точки над уровнем моря (Open-Meteo) через мост. */
+      mapElevation?: (lat: number, lng: number) => Promise<{ ok: boolean; elevation: number | null }>;
       /** Google account flow для embedded Sheets. */
       google: {
         openLogin: () => Promise<boolean>;

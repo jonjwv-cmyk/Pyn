@@ -12,9 +12,8 @@ import { getBridgeProxyEndpoint } from './bridge/state';
  *
  * Main перехватывает их и тянет реальный спутниковый тайл через ВЫДЕЛЕННУЮ
  * тайл-сессию:
- *   • есть корп-прокси → проксируем на локальный CONNECT-мост (тот же
- *     шифр-туннель к VPS-релею, что и Таблицы) → Google;
- *   • нет корп-прокси → напрямую.
+ *   • есть корп-прокси → корп-прокси → локальный CONNECT-мост → VPS-реле → Google;
+ *   • нет корп-прокси → локальный CONNECT-мост → VPS-реле → Google.
  *
  * Тайлы кэшируются на диск (`userData/map-tiles/...`) — карта работает офлайн
  * после первого просмотра и не дёргает релей повторно (бережём канал/лимиты).
@@ -36,10 +35,30 @@ const MEMORY_TILE_LIMIT = 1200;
 
 let tileSession: Session | null = null;
 const memoryTiles = new Map<string, { body: Buffer; contentType: string }>();
+/** Текущий кадр радара осадков RainViewer (обновляется из weather-bridge). */
+const rainFrame = { host: '', path: '' };
 
 function getTileSession(): Session {
   if (!tileSession) tileSession = session.fromPartition(`persist:${TILE_PARTITION}`);
   return tileSession;
+}
+
+/** Установить актуальный кадр радара осадков (host+path из RainViewer JSON). */
+export function setRainFrame(host: string, path: string): void {
+  rainFrame.host = host;
+  rainFrame.path = path;
+}
+
+/**
+ * Сетевой запрос для тайлов/погоды — ВСЕГДА через тайл-сессию (тот же VPS-туннель,
+ * что и спутник). Напрямую наружу не ходим: трафик идёт шифрованно через VPS
+ * (в офисе — корп-прокси → VPS). Для weather-bridge: RainViewer JSON + Open-Meteo.
+ */
+export async function tileSessionFetch(url: string): Promise<Response> {
+  if (!getBridgeProxyEndpoint()) {
+    throw new Error('map_bridge_not_ready');
+  }
+  return getTileSession().fetch(url, { headers: { 'User-Agent': CHROME_UA } });
 }
 
 /** Регистрация схемы (привилегированная: secure + поддержка fetch/CORS). До ready. */
@@ -57,15 +76,25 @@ export function registerMapTileScheme(): void {
 export function refreshMapTileProxy(): void {
   const ep = getBridgeProxyEndpoint();
   const ses = getTileSession();
-  void ses.setProxy(ep ? { proxyRules: `${ep.host}:${ep.port}` } : { proxyRules: 'direct://' });
+  // До получения bridge-конфига блокируем прямой выход наружу. Слои карты в это
+  // время отдадут прозрачный тайл/503, но не пойдут напрямую к Google/RainViewer.
+  void ses.setProxy(ep ? { proxyRules: `${ep.host}:${ep.port}` } : { proxyRules: '127.0.0.1:9' });
   // eslint-disable-next-line no-console
-  console.log(`[pyn:tiles] proxy → ${ep ? `${ep.host}:${ep.port} (через мост)` : 'direct'}`);
+  console.log(`[pyn:tiles] proxy → ${ep ? `${ep.host}:${ep.port} (через мост)` : 'blocked until bridge'}`);
 }
 
-type Provider = 'google' | 'esri';
+type Provider = 'google' | 'esri' | 'terrarium' | 'rain';
+
+/** Радар осадков и DEM — PNG; спутник — JPG. Радар на диск не кэшируем (живой). */
+function tileExt(provider: Provider): string {
+  return provider === 'google' || provider === 'esri' ? 'jpg' : 'png';
+}
+function diskCacheable(provider: Provider): boolean {
+  return provider !== 'rain';
+}
 
 function cachePath(provider: Provider, z: string, x: string, y: string): string {
-  return join(app.getPath('userData'), 'map-tiles', provider, z, x, `${y}.jpg`);
+  return join(app.getPath('userData'), 'map-tiles', provider, z, x, `${y}.${tileExt(provider)}`);
 }
 
 function cacheKey(provider: Provider, z: string, x: string, y: string): string {
@@ -95,9 +124,22 @@ function bufferBody(body: Buffer): BodyInit {
   return body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
 }
 
-function upstreamUrl(provider: Provider, z: string, x: string, y: string): string {
+function upstreamUrl(provider: Provider, z: string, x: string, y: string, rainColor: string): string | null {
   if (provider === 'esri') {
     return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+  }
+  if (provider === 'terrarium') {
+    // Бесплатный keyless DEM (AWS/Nextzen Open Data) для рельефа (hillshade).
+    return `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+  }
+  if (provider === 'rain') {
+    // Радар осадков RainViewer (keyless). Нет кадра → прозрачный. Цветовую схему
+    // (`c`) задаёт renderer: дождь/снег/интенсивность чёткими цветами, не серой
+    // пеленой. Опции `1_1` = сглаживание + раскраска снега отдельно. Где осадков
+    // нет — тайл прозрачный (не «накрываем» карту).
+    if (!rainFrame.host || !rainFrame.path) return null;
+    const scheme = /^\d$/.test(rainColor) ? rainColor : '6';
+    return `${rainFrame.host}${rainFrame.path}/256/${z}/${x}/${y}/${scheme}/1_1.png`;
   }
   const srv = (Number(x) + Number(y)) % 4;
   return `https://mt${srv}.google.com/vt/lyrs=s&x=${x}&y=${y}&z=${z}`;
@@ -108,54 +150,69 @@ export function setupMapTiles(): void {
   refreshMapTileProxy();
 
   protocol.handle(SCHEME, async (request) => {
-    const m = /pyn-tile:\/\/(google|esri|sat)\/(\d+)\/(\d+)\/(\d+)/.exec(request.url);
+    const m = /pyn-tile:\/\/(google|esri|sat|terrarium|rain)\/(\d+)\/(\d+)\/(\d+)/.exec(request.url);
     if (!m) return new Response('bad tile request', { status: 400 });
     const [, providerRaw, z, x, y] = m as unknown as [string, Provider | 'sat', string, string, string];
     const provider: Provider = providerRaw === 'sat' ? 'google' : providerRaw;
+    // Прозрачным отвечаем для слоёв-наложений (рельеф/радар/спутник) при любой беде.
+    const overlay = provider === 'terrarium' || provider === 'rain' || provider === 'google';
+    const transparent = () => new Response(TRANSPARENT_TILE, { headers: { 'content-type': 'image/png' } });
 
     const key = cacheKey(provider, z, x, y);
-    const hot = memoryTiles.get(key);
-    if (hot) {
-      memoryTiles.delete(key);
-      memoryTiles.set(key, hot);
-      return tileResponse(hot.body, hot.contentType);
-    }
-
-    const file = cachePath(provider, z, x, y);
-    if (existsSync(file)) {
-      try {
-        const body = readFileSync(file);
-        rememberTile(key, body, 'image/jpeg');
-        return tileResponse(body, 'image/jpeg');
-      } catch { /* перечитаем с сети */ }
-    }
-
-    const tileUrl = upstreamUrl(provider, z, x, y);
-    try {
-      const resp = await getTileSession().fetch(tileUrl, {
-        headers: { 'User-Agent': CHROME_UA },
-      });
-      if (!resp.ok) {
-        if (provider === 'google') {
-          return new Response(TRANSPARENT_TILE, { headers: { 'content-type': 'image/png' } });
-        }
-        return new Response('upstream tile error', { status: resp.status });
+    // Радар осадков НЕ кэшируем в памяти: ключ z/x/y не учитывает кадр → иначе
+    // застрянет на первом снимке.
+    if (diskCacheable(provider)) {
+      const hot = memoryTiles.get(key);
+      if (hot) {
+        memoryTiles.delete(key);
+        memoryTiles.set(key, hot);
+        return tileResponse(hot.body, hot.contentType);
       }
+    }
+
+    if (diskCacheable(provider)) {
+      const file = cachePath(provider, z, x, y);
+      if (existsSync(file)) {
+        try {
+          const body = readFileSync(file);
+          const ct = tileExt(provider) === 'png' ? 'image/png' : 'image/jpeg';
+          rememberTile(key, body, ct);
+          return tileResponse(body, ct);
+        } catch { /* перечитаем с сети */ }
+      }
+    }
+
+    // Цветовая схема радара осадков задаётся renderer'ом (?c=…) — без рестарта.
+    let rainColor = '2';
+    try { rainColor = new URL(request.url).searchParams.get('c') || '2'; } catch { /* keep default */ }
+    const tileUrl = upstreamUrl(provider, z, x, y, rainColor);
+    if (!tileUrl) return transparent(); // напр. радар без активного кадра
+    if (!getBridgeProxyEndpoint()) {
+      return overlay ? transparent() : new Response('map bridge not ready', { status: 503 });
+    }
+    try {
+      // ВСЕГДА через мост (VPS-туннель). Напрямую наружу не ходим.
+      const resp = await getTileSession().fetch(tileUrl, { headers: { 'User-Agent': CHROME_UA } });
+      if (!resp.ok) {
+        return overlay ? transparent() : new Response('upstream tile error', { status: resp.status });
+      }
+      const contentType = resp.headers.get('content-type') || (tileExt(provider) === 'png' ? 'image/png' : 'image/jpeg');
+      // Радар иногда отвечает текстом («zoom level not supported») со статусом 200
+      // — это не картинка, гасим прозрачным, чтобы не ломать слой.
+      if (!contentType.startsWith('image') && overlay) return transparent();
       const buf = Buffer.from(await resp.arrayBuffer());
-      const contentType = resp.headers.get('content-type') || 'image/jpeg';
-      try {
-        mkdirSync(join(app.getPath('userData'), 'map-tiles', provider, z, x), { recursive: true });
-        writeFileSync(file, buf);
-      } catch { /* кэш не критичен */ }
-      rememberTile(key, buf, contentType);
+      if (diskCacheable(provider)) {
+        try {
+          mkdirSync(join(app.getPath('userData'), 'map-tiles', provider, z, x), { recursive: true });
+          writeFileSync(cachePath(provider, z, x, y), buf);
+        } catch { /* кэш не критичен */ }
+        rememberTile(key, buf, contentType);
+      }
       return tileResponse(buf, contentType);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[pyn:tiles] fetch fail', tileUrl, err);
-      if (provider === 'google') {
-        return new Response(TRANSPARENT_TILE, { headers: { 'content-type': 'image/png' } });
-      }
-      return new Response('tile fetch failed', { status: 502 });
+      return overlay ? transparent() : new Response('tile fetch failed', { status: 502 });
     }
   });
 

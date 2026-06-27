@@ -13,14 +13,16 @@ import {
   makeId,
   type LatLng,
   type MapArea,
+  type MapCrossing,
   type MapDoc,
   type MapPoint,
+  type MapRailway,
   type MapRoad,
   type MapRoadSuggestion,
   type RoadPaintMode,
   type RoadAccess,
 } from '@/components/map/map-types';
-import { confirmTraceToRoad, smoothPolyline, stitchRoadSegments } from '@/components/map/road-network';
+import { confirmTraceToRoad, eraseRoadByTrace, smoothPolyline, stitchRoadSegments, straightenPolyline } from '@/components/map/road-network';
 import { distancePointToPolylineMeters } from '@/components/map/geo';
 
 const ROAD_ACCESS_ERASE_TOLERANCE_METERS = 10;
@@ -41,6 +43,8 @@ interface MapState {
   addPoint(p: Omit<MapPoint, 'id'>): string;
   updatePoint(id: string, fields: Partial<MapPoint>): void;
   removePoint(id: string): void;
+  /** Копия точки со всеми данными (смещена, чтобы была видна). Возвращает id копии. */
+  duplicatePoint(id: string): string | null;
 
   // ── Области ──
   addArea(a: Omit<MapArea, 'id'>): string;
@@ -51,6 +55,10 @@ interface MapState {
   addRoad(r: Omit<MapRoad, 'id'>): string;
   updateRoad(id: string, fields: Partial<MapRoad>): void;
   removeRoad(id: string): void;
+  /** Стереть дороги, по которым прошлись «ластиком» (трасса). */
+  eraseRoadTrace(vertices: LatLng[]): void;
+  /** Выпрямить одну дорогу (убрать дрожание руки) и пересшить сеть. */
+  straightenRoad(id: string): void;
   stitchRoads(): void;
   addRoadSuggestions(items: MapRoadSuggestion[]): void;
   confirmRoadTrace(vertices: LatLng[]): string;
@@ -63,6 +71,16 @@ interface MapState {
   eraseRoadAccessTrace(vertices: LatLng[]): void;
   updateRoadAccess(id: string, fields: Partial<RoadAccess>): void;
   removeRoadAccess(id: string): void;
+
+  // ── Ж/д переезды ──
+  addCrossing(p: LatLng): string;
+  updateCrossing(id: string, fields: Partial<MapCrossing>): void;
+  removeCrossing(id: string): void;
+
+  // ── Ж/д пути (визуальный слой) ──
+  addRailway(vertices: LatLng[]): string;
+  updateRailway(id: string, fields: Partial<MapRailway>): void;
+  removeRailway(id: string): void;
 
   // ── Фокус из «Цеха» ──
   requestFocusWarehouse(id: string): void;
@@ -93,6 +111,22 @@ export const useMapStore = create<MapState>((set) => ({
     })),
   removePoint: (id) =>
     set((s) => ({ doc: { ...s.doc, points: s.doc.points.filter((p) => p.id !== id) } })),
+  duplicatePoint: (id) => {
+    const src = useMapStore.getState().doc.points.find((p) => p.id === id);
+    if (!src) return null;
+    const copyId = makeId();
+    // Сдвигаем копию на ~25 м к юго-востоку, чтобы она не легла поверх оригинала.
+    const copy: MapPoint = {
+      ...src,
+      id: copyId,
+      equipment: { ...src.equipment },
+      allowedVehicles: [...src.allowedVehicles],
+      lat: src.lat - 0.00022,
+      lng: src.lng + 0.00035,
+    };
+    set((s) => ({ doc: { ...s.doc, points: [...s.doc.points, copy] } }));
+    return copyId;
+  },
 
   addArea: (a) => {
     const id = makeId();
@@ -131,6 +165,28 @@ export const useMapStore = create<MapState>((set) => ({
     })),
   removeRoad: (id) =>
     set((s) => ({ doc: { ...s.doc, roads: s.doc.roads.filter((r) => r.id !== id) } })),
+  eraseRoadTrace: (trace) =>
+    set((s) => {
+      if (trace.length < 1) return s;
+      // Частичный ластик: режем КУСОК под трассой, а не всю дорогу. НЕ пересшиваем
+      // (иначе разрыв затянулся бы обратно) — остатки остаются как есть.
+      let changed = false;
+      const roads = s.doc.roads.flatMap((road) => {
+        const pieces = eraseRoadByTrace(road, trace, ROAD_ERASE_TOLERANCE_METERS);
+        if (pieces.length !== 1 || pieces[0] !== road) changed = true;
+        return pieces;
+      });
+      if (!changed) return s;
+      return { doc: { ...s.doc, roads } };
+    }),
+  straightenRoad: (id) =>
+    set((s) => {
+      const road = s.doc.roads.find((r) => r.id === id);
+      if (!road) return s;
+      const straight = { ...road, vertices: straightenPolyline(road.vertices) };
+      const roads = s.doc.roads.map((r) => (r.id === id ? straight : r));
+      return { doc: { ...s.doc, roads: stitchRoadSegments(roads) } };
+    }),
   stitchRoads: () =>
     set((s) => ({ doc: { ...s.doc, roads: stitchRoadSegments(s.doc.roads) } })),
   addRoadSuggestions: (items) =>
@@ -213,6 +269,38 @@ export const useMapStore = create<MapState>((set) => ({
   removeRoadAccess: (id) =>
     set((s) => ({ doc: { ...s.doc, roadAccess: s.doc.roadAccess.filter((a) => a.id !== id) } })),
 
+  addCrossing: (p) => {
+    const id = makeId();
+    const crossing: MapCrossing = { id, lat: p.lat, lng: p.lng, name: '', note: '' };
+    set((s) => ({ doc: { ...s.doc, crossings: [...(s.doc.crossings ?? []), crossing] } }));
+    return id;
+  },
+  updateCrossing: (id, fields) =>
+    set((s) => ({
+      doc: {
+        ...s.doc,
+        crossings: (s.doc.crossings ?? []).map((c) => (c.id === id ? { ...c, ...fields } : c)),
+      },
+    })),
+  removeCrossing: (id) =>
+    set((s) => ({ doc: { ...s.doc, crossings: (s.doc.crossings ?? []).filter((c) => c.id !== id) } })),
+
+  addRailway: (vertices) => {
+    const id = makeId();
+    const railway: MapRailway = { id, name: '', vertices: smoothPolyline(vertices) };
+    set((s) => ({ doc: { ...s.doc, railways: [...(s.doc.railways ?? []), railway] } }));
+    return id;
+  },
+  updateRailway: (id, fields) =>
+    set((s) => ({
+      doc: {
+        ...s.doc,
+        railways: (s.doc.railways ?? []).map((r) => (r.id === id ? { ...r, ...fields } : r)),
+      },
+    })),
+  removeRailway: (id) =>
+    set((s) => ({ doc: { ...s.doc, railways: (s.doc.railways ?? []).filter((r) => r.id !== id) } })),
+
   requestFocusWarehouse: (id) => set({ focusWarehouseId: id }),
   requestFocusPoint: (id) => set({ focusPointId: id }),
   clearFocusWarehouse: () => set({ focusWarehouseId: null, focusPointId: null }),
@@ -228,3 +316,5 @@ function roadAccessTouchesTrace(access: RoadAccess, trace: LatLng[]): boolean {
   }
   return false;
 }
+
+const ROAD_ERASE_TOLERANCE_METERS = 9;

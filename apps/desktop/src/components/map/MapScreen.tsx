@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
-import { Check, CheckCheck, Crosshair, Filter, MapPin, MousePointer2, Pentagon, Route, Settings2, Trash2, Truck } from 'lucide-react';
+import { Check, CheckCheck, CloudRain, Crosshair, Eraser, Filter, MapPin, MousePointer2, Pentagon, Route, Settings2, TrainTrack, Trash2, Truck } from 'lucide-react';
+import { getWarehouseState } from '@pyn/core';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { cn } from '@/lib/cn';
 import { useMapStore } from '@/lib/map-store';
@@ -9,13 +10,19 @@ import { initMap } from '@/lib/map-repo';
 import {
   AREA_COLORS,
   EMPTY_POINT_EQUIPMENT,
+  NTMK_CENTER,
   NTMK_ZOOM,
+  POINT_CATEGORY_META,
   ROAD_PAINT_OPTIONS,
+  VEHICLE_TYPES,
+  categoryFromWarehouseState,
   roadPaintOption,
+  vehicleColor,
   type LatLng,
-  type MapRoad,
   type MapTool,
+  type PointCategory,
   type RoadPaintMode,
+  type VehicleType,
 } from './map-types';
 import { MapCanvas, type MapSelection, type OptimizeOverlay } from './MapCanvas';
 import { MapDetailPanel } from './MapDetailPanel';
@@ -23,24 +30,65 @@ import { optimize, totalCost, type DemandPoint } from './optimize';
 import { computeFastestRoute, type RouteResult } from './route-network';
 import { loadNtmkOsmRoadSuggestions } from './road-suggestions';
 
+interface WeatherHour {
+  time: string;
+  tempC: number | null;
+  precipMm: number | null;
+  rainMm: number | null;
+  snowCm: number | null;
+  precipProb: number | null;
+  code: number | null;
+  windMs: number | null;
+  windDir: number | null;
+  gustMs: number | null;
+}
+
+interface WeatherSummary {
+  tempC: number | null;
+  windMs: number | null;
+  precipMm: number | null;
+  code?: number | null;
+  pressureHpa?: number | null;
+  isPrecip: boolean;
+  hourly: WeatherHour[];
+}
+
+interface WeatherFieldPoint {
+  lat: number;
+  lng: number;
+  windMs: number | null;
+  windDir: number | null;
+  gustMs: number | null;
+  precipMm: number | null;
+  code: number | null;
+  pressureHpa: number | null;
+}
+
+interface MapScreenProps {
+  /** developer — может рисовать/править карту; admin — только смотрит и пользуется. */
+  canEdit: boolean;
+}
+
 /**
  * Раздел «Карта» — живая спутниковая карта Google через VPS-релей + наши точки
  * складов, области цехов, нарисованные дороги и логистическая оптимизация.
  * Хранится локально (v1). Виден только admin/developer.
  */
-export function MapScreen(): JSX.Element {
+export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const { t } = useTranslation();
   const doc = useMapStore((s) => s.doc);
   const loaded = useMapStore((s) => s.loaded);
   const addPoint = useMapStore((s) => s.addPoint);
+  const duplicatePoint = useMapStore((s) => s.duplicatePoint);
   const movePoint = useMapStore((s) => s.updatePoint);
   const addArea = useMapStore((s) => s.addArea);
   const addRoad = useMapStore((s) => s.addRoad);
+  const eraseRoadTrace = useMapStore((s) => s.eraseRoadTrace);
   const confirmRoadTrace = useMapStore((s) => s.confirmRoadTrace);
   const addRoadAccess = useMapStore((s) => s.addRoadAccess);
   const eraseRoadAccessTrace = useMapStore((s) => s.eraseRoadAccessTrace);
-  const removeRoad = useMapStore((s) => s.removeRoad);
-  const stitchRoads = useMapStore((s) => s.stitchRoads);
+  const addCrossing = useMapStore((s) => s.addCrossing);
+  const addRailway = useMapStore((s) => s.addRailway);
   const addRoadSuggestions = useMapStore((s) => s.addRoadSuggestions);
   const clearRoadSuggestions = useMapStore((s) => s.clearRoadSuggestions);
   const focusWarehouseId = useMapStore((s) => s.focusWarehouseId);
@@ -50,7 +98,16 @@ export function MapScreen(): JSX.Element {
 
   const [tool, setTool] = useState<MapTool>('select');
   const [selection, setSelection] = useState<MapSelection | null>(null);
-  const [activeShops, setActiveShops] = useState<Set<string> | null>(null); // null = все
+  const [activeWarehouses, setActiveWarehouses] = useState<Set<string> | null>(null); // null = все
+  const [activeCategories, setActiveCategories] = useState<Set<PointCategory> | null>(null); // null = все
+  const [activeVehicle, setActiveVehicle] = useState<VehicleType | null>(null);
+  const [showWeather, setShowWeather] = useState(false);
+  const [centerElevation, setCenterElevation] = useState<number | null>(null);
+  const [weatherNonce, setWeatherNonce] = useState(0);
+  const [weather, setWeather] = useState<WeatherSummary | null>(null);
+  const [weatherField, setWeatherField] = useState<WeatherFieldPoint[]>([]);
+  const [pointScreen, setPointScreen] = useState<{ x: number; y: number } | null>(null);
+  const [detailExpanded, setDetailExpanded] = useState(false);
   const [ghost, setGhost] = useState<LatLng | null>(null);
   const [focus, setFocus] = useState<{ latlng: LatLng; nonce: number; zoom?: number } | null>(null);
   const [openedOnDefaultPoint, setOpenedOnDefaultPoint] = useState(false);
@@ -60,34 +117,94 @@ export function MapScreen(): JSX.Element {
   const [roadPaintMode, setRoadPaintMode] = useState<RoadPaintMode>('gazelle');
   const [moveByMapPointId, setMoveByMapPointId] = useState<string | null>(null);
   const [routeSourcePointId, setRouteSourcePointId] = useState<string | null>(null);
+  const [viewBounds, setViewBounds] = useState<{ south: number; west: number; north: number; east: number } | null>(null);
 
   useEffect(() => { void initMap(); }, []);
 
-  // Цеха, присутствующие на карте (по точкам) — для фильтра.
-  const shopsOnMap = useMemo(() => {
-    const set = new Set<string>();
-    for (const p of doc.points) {
-      const wh = p.warehouseId ? warehouses.get(p.warehouseId) : undefined;
-      if (wh?.shop_name) set.add(wh.shop_name);
-    }
-    return Array.from(set).sort();
-  }, [doc.points, warehouses]);
+  // Не-разработчик не может держать инструмент рисования: всегда «Выбор».
+  useEffect(() => {
+    if (!canEdit && tool !== 'select' && tool !== 'optimize') setTool('select');
+  }, [canEdit, tool]);
 
-  const shopOfPoint = useCallback((warehouseId: string | null): string | null => {
-    if (!warehouseId) return null;
-    return warehouses.get(warehouseId)?.shop_name ?? null;
+  // Погода: пока слой включён — тянем свежий кадр радара + сводку (раз в 5 мин).
+  useEffect(() => {
+    if (!showWeather) return;
+    let alive = true;
+    const pull = async () => {
+      try {
+        const res = await window.pyn?.mapWeather?.(NTMK_CENTER.lat, NTMK_CENTER.lng);
+        if (!alive || !res) return;
+        if (res.weather) setWeather(res.weather);
+        if (res.ok) setWeatherNonce((n) => n + 1); // свежий кадр → пересоздать слой
+      } catch { /* погода не критична */ }
+    };
+    void pull();
+    const timer = setInterval(() => { void pull(); }, 5 * 60 * 1000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [showWeather]);
+
+  // Ветер по экрану: редкая сетка Open-Meteo вместо тяжёлой погодной картинки.
+  useEffect(() => {
+    if (!showWeather || !viewBounds) {
+      setWeatherField([]);
+      return;
+    }
+    let alive = true;
+    const pull = async () => {
+      try {
+        const res = await window.pyn?.mapWeatherField?.(viewBounds);
+        if (alive && res?.ok) setWeatherField(res.points);
+      } catch { /* погодное поле не критично */ }
+    };
+    const timer = setTimeout(() => { void pull(); }, 450);
+    const interval = setInterval(() => { void pull(); }, 5 * 60 * 1000);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
+  }, [showWeather, viewBounds]);
+
+  // Высота центра карты — всегда в статус-баре (Open-Meteo через мост, дебаунс).
+  useEffect(() => {
+    if (!viewBounds) return;
+    const lat = (viewBounds.south + viewBounds.north) / 2;
+    const lng = (viewBounds.west + viewBounds.east) / 2;
+    let alive = true;
+    const timer = setTimeout(() => {
+      window.pyn?.mapElevation?.(lat, lng)
+        .then((res) => { if (alive && res?.ok) setCenterElevation(res.elevation); })
+        .catch(() => { /* высота не критична */ });
+    }, 500);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [viewBounds]);
+
+  // Категория точки (отгрузка/выгрузка/вне графика) из статуса склада.
+  const categoryOfPoint = useCallback((warehouseId: string | null): PointCategory => {
+    const wh = warehouseId ? warehouses.get(warehouseId) : undefined;
+    return categoryFromWarehouseState(wh ? getWarehouseState(wh) : undefined);
   }, [warehouses]);
 
-  // Видимые точки по фильтру цехов (null = все).
+  // Склады, присутствующие на карте (для фильтра по складу).
+  const warehousesOnMap = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of doc.points) if (p.warehouseId) set.add(p.warehouseId);
+    return Array.from(set).sort();
+  }, [doc.points]);
+
+  // Видимые точки: пересечение фильтров «категория» и «склад» (null = все).
   const visiblePointIds = useMemo(() => {
-    if (!activeShops) return null;
+    if (!activeCategories && !activeWarehouses) return null;
     const ids = new Set<string>();
     for (const p of doc.points) {
-      const shop = shopOfPoint(p.warehouseId);
-      if (shop && activeShops.has(shop)) ids.add(p.id);
+      if (activeWarehouses && !(p.warehouseId && activeWarehouses.has(p.warehouseId))) continue;
+      if (activeCategories && !activeCategories.has(categoryOfPoint(p.warehouseId))) continue;
+      ids.add(p.id);
     }
     return ids;
-  }, [activeShops, doc.points, shopOfPoint]);
+  }, [activeCategories, activeWarehouses, doc.points, categoryOfPoint]);
+
+  const filterActive = activeCategories !== null || activeWarehouses !== null;
 
   // ── Фокус из карточки склада в «Цеха» ──
   useEffect(() => {
@@ -150,6 +267,24 @@ export function MapScreen(): JSX.Element {
     setSelection(null);
   }, [addRoad]);
 
+  const handleEraseRoadTrace = useCallback((vertices: LatLng[]) => {
+    eraseRoadTrace(vertices);
+    setTool('select');
+    setSelection(null);
+  }, [eraseRoadTrace]);
+
+  const handleCreateCrossing = useCallback((latlng: LatLng) => {
+    const id = addCrossing(latlng);
+    setTool('select');
+    setSelection({ type: 'crossing', id });
+  }, [addCrossing]);
+
+  const handleCreateRailway = useCallback((vertices: LatLng[]) => {
+    const id = addRailway(vertices);
+    setTool('select');
+    setSelection({ type: 'railway', id });
+  }, [addRailway]);
+
   const handleConfirmRoadTrace = useCallback((vertices: LatLng[]) => {
     confirmRoadTrace(vertices);
     setTool('select');
@@ -178,7 +313,8 @@ export function MapScreen(): JSX.Element {
     if (suggestionsLoading) return;
     setSuggestionsLoading(true);
     try {
-      const suggestions = await loadNtmkOsmRoadSuggestions();
+      // Грузим дороги по ВИДИМОЙ области экрана (Кушва, Н.Тагил и т.д.), не только НТМК.
+      const suggestions = await loadNtmkOsmRoadSuggestions(viewBounds ?? undefined);
       addRoadSuggestions(suggestions);
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -186,7 +322,7 @@ export function MapScreen(): JSX.Element {
     } finally {
       setSuggestionsLoading(false);
     }
-  }, [addRoadSuggestions, suggestionsLoading]);
+  }, [addRoadSuggestions, suggestionsLoading, viewBounds]);
 
   // ── Оптимизация ──
   // Источник = выбранная точка (в режиме «Оптимум»). Спрос = все прочие точки с весом.
@@ -225,8 +361,11 @@ export function MapScreen(): JSX.Element {
     : null;
   const routeResult: RouteResult | null = useMemo(() => {
     if (!routeSourcePoint || !selectedPoint || routeSourcePoint.id === selectedPoint.id) return null;
-    return computeFastestRoute(doc.roads, routeSourcePoint, selectedPoint);
-  }, [doc.roads, routeSourcePoint, selectedPoint]);
+    return computeFastestRoute(doc.roads, routeSourcePoint, selectedPoint, {
+      roadAccess: doc.roadAccess,
+      vehicle: activeVehicle,
+    });
+  }, [doc.roads, doc.roadAccess, routeSourcePoint, selectedPoint, activeVehicle]);
 
   useEffect(() => {
     if (routeSourcePointId && !doc.points.some((p) => p.id === routeSourcePointId)) {
@@ -234,7 +373,15 @@ export function MapScreen(): JSX.Element {
     }
   }, [doc.points, routeSourcePointId]);
 
-  const showDetail = tool !== 'optimize' && selection !== null;
+  // Точку сначала показываем поповером у пина; не-точки — сразу полной карточкой.
+  useEffect(() => {
+    if (!selection) { setDetailExpanded(false); return; }
+    setDetailExpanded(selection.type !== 'point');
+  }, [selection?.type, selection?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectedWarehouse = selectedPoint?.warehouseId ? warehouses.get(selectedPoint.warehouseId) : undefined;
+  const showFullCard = tool !== 'optimize' && selection !== null && (selection.type !== 'point' || detailExpanded);
+  const showPinPopover = tool !== 'optimize' && selection?.type === 'point' && !detailExpanded && pointScreen !== null && selectedPoint !== null;
 
   return (
     <main className="flex flex-1 flex-col overflow-hidden">
@@ -244,112 +391,163 @@ export function MapScreen(): JSX.Element {
           {t('sidebar.nav_map', 'Карта')}
         </span>
         <div className="no-drag-region ml-auto flex items-center gap-1.5">
-          <ToolMenu
-            tool={tool}
-            roads={doc.roads}
-            roadSuggestionCount={doc.roadSuggestions.length}
-            suggestionsLoading={suggestionsLoading}
-            showRoadSuggestions={showRoadSuggestions}
-            showRoadAccess={showRoadAccess}
-            roadPaintMode={roadPaintMode}
-            onToggleRoadSuggestions={() => setShowRoadSuggestions((v) => !v)}
-            onToggleRoadAccess={() => setShowRoadAccess((v) => !v)}
-            onRoadPaintModeChange={setRoadPaintMode}
-            onStitchRoads={stitchRoads}
-            onLoadRoadSuggestions={handleLoadRoadSuggestions}
-            onClearRoadSuggestions={() => {
-              clearRoadSuggestions();
-              if (selection?.type === 'roadSuggestion') setSelection(null);
-            }}
-            onChange={(next) => {
-              // Повторный клик по активному инструменту → выходим в «Выбор».
-              setTool((cur) => (cur === next ? 'select' : next));
-              if (next !== 'select') setSelection(null);
-            }}
-            onDeleteRoad={(id) => {
-              removeRoad(id);
-              if (selection?.type === 'road' && selection.id === id) setSelection(null);
-            }}
+          <LayerToggle icon={CheckCheck} label="Особ." on={showRoadAccess} onClick={() => setShowRoadAccess((v) => !v)} title="Особенности дорог (закраска по машинам)" />
+          <LayerToggle icon={CloudRain} label="Погода" on={showWeather} onClick={() => setShowWeather((v) => !v)} title="Радар осадков — где идёт дождь/снег" />
+          <VehicleFilter active={activeVehicle} onChange={setActiveVehicle} />
+          <PointsFilter
+            warehouses={warehousesOnMap}
+            activeWarehouses={activeWarehouses}
+            activeCategories={activeCategories}
+            filterActive={filterActive}
+            onWarehousesChange={setActiveWarehouses}
+            onCategoriesChange={setActiveCategories}
           />
-          <ShopFilter shops={shopsOnMap} active={activeShops} onChange={setActiveShops} />
+          {canEdit && (
+            <ToolMenu
+              tool={tool}
+              roadSuggestionCount={doc.roadSuggestions.length}
+              suggestionsLoading={suggestionsLoading}
+              showRoadSuggestions={showRoadSuggestions}
+              showRoadAccess={showRoadAccess}
+              roadPaintMode={roadPaintMode}
+              onToggleRoadSuggestions={() => setShowRoadSuggestions((v) => !v)}
+              onToggleRoadAccess={() => setShowRoadAccess((v) => !v)}
+              onRoadPaintModeChange={setRoadPaintMode}
+              onLoadRoadSuggestions={handleLoadRoadSuggestions}
+              onClearRoadSuggestions={() => {
+                clearRoadSuggestions();
+                if (selection?.type === 'roadSuggestion') setSelection(null);
+              }}
+              onChange={(next) => {
+                // Повторный клик по активному инструменту → выходим в «Выбор».
+                setTool((cur) => (cur === next ? 'select' : next));
+                if (next !== 'select') setSelection(null);
+              }}
+            />
+          )}
         </div>
       </div>
 
-      {/* Карточка контента: карта + правая панель */}
+      {/* Карточка контента: карта во всю ширину, карточки — плитками поверх неё */}
       <div className="flex min-h-0 min-w-0 flex-1 px-2 pb-2 pt-1">
-        <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-xl border border-border-subtle bg-bg-surface shadow-[0_2px_16px_rgba(0,0,0,0.35)]">
-          <div className="relative min-h-0 min-w-0 flex-1">
-            {loaded && (
-              <MapCanvas
-                doc={doc}
-                tool={tool}
-                visiblePointIds={visiblePointIds}
-                selection={selection}
-                showRoadSuggestions={showRoadSuggestions}
-                showRoadAccess={showRoadAccess}
-                routePath={routeResult?.path ?? null}
-                roadPaintMode={roadPaintMode}
-                movingPointId={moveByMapPointId}
-                onSelect={setSelection}
-                onCreatePoint={handleCreatePoint}
-                onMovePoint={(id, latlng) => movePoint(id, latlng)}
-                onStartMovePointByMap={(id) => {
-                  const pt = doc.points.find((p) => p.id === id);
-                  if (pt) setFocus({ latlng: { lat: pt.lat, lng: pt.lng }, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) });
-                  setTool('select');
-                  setSelection({ type: 'point', id });
-                  setMoveByMapPointId(id);
-                }}
-                onFinishMovePointByMap={(id, latlng) => {
-                  movePoint(id, latlng);
-                  setMoveByMapPointId(null);
-                  setSelection({ type: 'point', id });
-                }}
-                onCancelMovePointByMap={() => setMoveByMapPointId(null)}
-                onCreateArea={handleCreateArea}
-                onCreateRoad={handleCreateRoad}
-                onConfirmRoadTrace={handleConfirmRoadTrace}
-                onCreateRoadAccess={handleCreateRoadAccess}
-                onCancelTool={handleCancelTool}
-                optimizeOverlay={overlay}
-                onGhostMove={setGhost}
-                focusLatLng={focus?.latlng ?? null}
-                focusZoom={focus?.zoom}
-                focusNonce={focus?.nonce ?? 0}
-              />
-            )}
-
-            {/* Панель оптимизации поверх карты */}
-            {tool === 'optimize' && (
-              <OptimizePanel
-                sourcePoint={sourcePoint}
-                demandCount={demand.length}
-                result={optResult}
-                ghost={ghost}
-                ghostCost={ghost ? totalCost(ghost, demand) : null}
-                hasRoads={doc.roads.length > 0}
-              />
-            )}
-          </div>
-
-          {/* Правая панель деталей */}
-          {showDetail && selection && (
-            <MapDetailPanel
+        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-xl border border-border-subtle bg-bg-surface shadow-[0_2px_16px_rgba(0,0,0,0.35)]">
+          {loaded && (
+            <MapCanvas
+              doc={doc}
+              tool={tool}
+              canEdit={canEdit}
+              visiblePointIds={visiblePointIds}
               selection={selection}
-              onClose={() => setSelection(null)}
+              showRoadSuggestions={showRoadSuggestions}
+              showRoadAccess={showRoadAccess}
+              routePath={routeResult?.path ?? null}
+              routeBlocked={routeResult?.passesBlocked ?? false}
+              showWeather={showWeather}
+              weatherNonce={weatherNonce}
+              weatherField={weatherField}
+              centerElevation={centerElevation}
+              roadPaintMode={roadPaintMode}
+              movingPointId={moveByMapPointId}
+              activeVehicle={activeVehicle}
               onSelect={setSelection}
-              onFocus={(latlng) => setFocus({ latlng, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) })}
-              routeSourcePointId={routeSourcePointId}
-              routeResult={selection.type === 'point' ? routeResult : null}
-              onSetRouteFromPoint={setRouteSourcePointId}
-              onClearRoute={() => setRouteSourcePointId(null)}
-              onMovePointByMap={(id) => {
+              onSelectedPointScreen={setPointScreen}
+              onDuplicatePoint={(id) => {
+                const copyId = duplicatePoint(id);
+                if (!copyId) return;
+                const pt = useMapStore.getState().doc.points.find((p) => p.id === copyId);
+                if (pt) setFocus({ latlng: { lat: pt.lat, lng: pt.lng }, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) });
+                setSelection({ type: 'point', id: copyId });
+                setMoveByMapPointId(copyId);
+              }}
+              onCreatePoint={handleCreatePoint}
+              onMovePoint={(id, latlng) => movePoint(id, latlng)}
+              onStartMovePointByMap={(id) => {
                 const pt = doc.points.find((p) => p.id === id);
                 if (pt) setFocus({ latlng: { lat: pt.lat, lng: pt.lng }, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) });
+                setTool('select');
                 setSelection({ type: 'point', id });
                 setMoveByMapPointId(id);
               }}
+              onFinishMovePointByMap={(id, latlng) => {
+                movePoint(id, latlng);
+                setMoveByMapPointId(null);
+                setSelection({ type: 'point', id });
+              }}
+              onCancelMovePointByMap={() => setMoveByMapPointId(null)}
+              onCreateArea={handleCreateArea}
+              onCreateRoad={handleCreateRoad}
+              onEraseRoadTrace={handleEraseRoadTrace}
+              onConfirmRoadTrace={handleConfirmRoadTrace}
+              onCreateRoadAccess={handleCreateRoadAccess}
+              onCreateCrossing={handleCreateCrossing}
+              onCreateRailway={handleCreateRailway}
+              onCancelTool={handleCancelTool}
+              optimizeOverlay={overlay}
+              onGhostMove={setGhost}
+              onBoundsChange={setViewBounds}
+              focusLatLng={focus?.latlng ?? null}
+              focusZoom={focus?.zoom}
+              focusNonce={focus?.nonce ?? 0}
             />
+          )}
+
+          {/* Панель оптимизации поверх карты */}
+          {tool === 'optimize' && (
+            <OptimizePanel
+              sourcePoint={sourcePoint}
+              demandCount={demand.length}
+              result={optResult}
+              ghost={ghost}
+              ghostCost={ghost ? totalCost(ghost, demand) : null}
+              hasRoads={doc.roads.length > 0}
+            />
+          )}
+
+          {/* Чип сводки погоды (когда слой включён) */}
+          {showWeather && <WeatherChip weather={weather} />}
+
+          {/* Поповер-карточка у пина (краткая) + кнопка «Подробно» */}
+          {showPinPopover && selectedPoint && pointScreen && (
+            <PinPopover
+              x={pointScreen.x}
+              y={pointScreen.y}
+              title={selectedPoint.warehouseId ? `Склад ${selectedPoint.warehouseId}` : (selectedPoint.label.trim() || 'Точка')}
+              subtitle={selectedWarehouse?.shop_name ?? selectedPoint.comment.trim() ?? ''}
+              category={categoryOfPoint(selectedPoint.warehouseId)}
+              onDetails={() => setDetailExpanded(true)}
+              onRouteFrom={() => setRouteSourcePointId(selectedPoint.id)}
+              onClose={() => setSelection(null)}
+            />
+          )}
+
+          {/* Полная карточка-плитка деталей — поверх карты в правом верхнем углу */}
+          {showFullCard && selection && (
+            <div className="absolute right-3 top-3 z-[460] flex max-h-[calc(100%-1.5rem)] w-[358px] max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-xl border border-border-default bg-bg-deep/92 shadow-[0_8px_40px_rgba(0,0,0,0.5)] backdrop-blur-md">
+              <MapDetailPanel
+                selection={selection}
+                canEdit={canEdit}
+                onClose={() => setSelection(null)}
+                onSelect={setSelection}
+                onFocus={(latlng) => setFocus({ latlng, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) })}
+                routeSourcePointId={routeSourcePointId}
+                routeResult={selection.type === 'point' ? routeResult : null}
+                routeVehicle={activeVehicle}
+                onSetRouteFromPoint={setRouteSourcePointId}
+                onClearRoute={() => setRouteSourcePointId(null)}
+                onMovePointByMap={(id) => {
+                  const pt = doc.points.find((p) => p.id === id);
+                  if (pt) setFocus({ latlng: { lat: pt.lat, lng: pt.lng }, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) });
+                  setSelection({ type: 'point', id });
+                  setMoveByMapPointId(id);
+                }}
+                onDuplicatedPoint={(id) => {
+                  const pt = useMapStore.getState().doc.points.find((p) => p.id === id);
+                  if (pt) setFocus({ latlng: { lat: pt.lat, lng: pt.lng }, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) });
+                  setSelection({ type: 'point', id });
+                  setMoveByMapPointId(id);
+                }}
+              />
+            </div>
           )}
         </div>
       </div>
@@ -366,17 +564,17 @@ function isPoint0616(value: string | null | undefined): boolean {
 
 const TOOL_OPTIONS: Array<{ id: MapTool; label: string; icon: typeof MapPin }> = [
   { id: 'select', label: 'Выбор', icon: MousePointer2 },
-  { id: 'point', label: 'Точка склада', icon: MapPin },
+  { id: 'point', label: 'Пин', icon: MapPin },
+  { id: 'crossing', label: 'Ж/Д', icon: TrainTrack },
   { id: 'area', label: 'Область', icon: Pentagon },
-  { id: 'road', label: 'Дорога (своя)', icon: Route },
-  { id: 'confirmRoad', label: 'Подтвердить (красную)', icon: CheckCheck },
-  { id: 'vehicles', label: 'Особенности (машины)', icon: Truck },
+  { id: 'road', label: 'Дорога', icon: Route },
+  { id: 'eraseRoad', label: 'Ластик', icon: Eraser },
+  { id: 'confirmRoad', label: 'Подтвердить дорогу', icon: CheckCheck },
   { id: 'optimize', label: 'Оптимум', icon: Crosshair },
 ];
 
 function ToolMenu({
   tool,
-  roads,
   roadSuggestionCount,
   suggestionsLoading,
   showRoadSuggestions,
@@ -386,13 +584,10 @@ function ToolMenu({
   onToggleRoadSuggestions,
   onToggleRoadAccess,
   onRoadPaintModeChange,
-  onDeleteRoad,
-  onStitchRoads,
   onLoadRoadSuggestions,
   onClearRoadSuggestions,
 }: {
   tool: MapTool;
-  roads: MapRoad[];
   roadSuggestionCount: number;
   suggestionsLoading: boolean;
   showRoadSuggestions: boolean;
@@ -402,8 +597,6 @@ function ToolMenu({
   onToggleRoadSuggestions: () => void;
   onToggleRoadAccess: () => void;
   onRoadPaintModeChange: (mode: RoadPaintMode) => void;
-  onDeleteRoad: (id: string) => void;
-  onStitchRoads: () => void;
   onLoadRoadSuggestions: () => void;
   onClearRoadSuggestions: () => void;
 }) {
@@ -458,7 +651,7 @@ function ToolMenu({
                 title={option.label}
               >
                 <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: option.color }} />
-                <span className="truncate">{option.short}</span>
+                <span className="truncate">{option.label}</span>
               </button>
             ))}
           </div>
@@ -474,49 +667,6 @@ function ToolMenu({
             <span className="flex-1 truncate">{showRoadAccess ? 'Скрыть закраску дорог' : 'Показать закраску дорог'}</span>
           </button>
           <div className="my-1.5 h-px bg-border-subtle" />
-          <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-            <span>Дорожная сеть</span>
-            {roads.length > 0 && <span className="font-mono tracking-normal">{roads.length}</span>}
-          </div>
-          {roads.length > 0 && (
-            <button
-              type="button"
-              onClick={onStitchRoads}
-              className="mb-1 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
-            >
-              <Route size={13} strokeWidth={1.75} />
-              <span className="flex-1 truncate">Выровнять и сшить сеть</span>
-            </button>
-          )}
-          {roads.length === 0 ? (
-            <p className="px-2 pb-1 pt-0.5 text-[11.5px] text-text-muted">Пока нет нарисованных дорог</p>
-          ) : (
-            <div className="space-y-1">
-              {roads.map((road, index) => (
-                <RoadMenuItem
-                  key={road.id}
-                  road={road}
-                  index={index}
-                  onDelete={() => onDeleteRoad(road.id)}
-                />
-              ))}
-            </div>
-          )}
-          <div className="my-1.5 h-px bg-border-subtle" />
-          <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-            <span>Красный черновик</span>
-            {roadSuggestionCount > 0 && <span className="font-mono tracking-normal">{roadSuggestionCount}</span>}
-          </div>
-          {roadSuggestionCount > 0 && (
-            <button
-              type="button"
-              onClick={onToggleRoadSuggestions}
-              className="mb-1 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
-            >
-              <span className={cn('h-2.5 w-2.5 rounded-full', showRoadSuggestions ? 'bg-red-400' : 'bg-text-muted')} />
-              <span className="flex-1 truncate">{showRoadSuggestions ? 'Скрыть красные линии' : 'Показать красные линии'}</span>
-            </button>
-          )}
           <button
             type="button"
             onClick={onLoadRoadSuggestions}
@@ -524,18 +674,8 @@ function ToolMenu({
             className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary disabled:cursor-wait disabled:opacity-60"
           >
             <Route size={13} strokeWidth={1.75} />
-            <span className="flex-1 truncate">{suggestionsLoading ? 'Загружаю дороги...' : 'Загрузить черновик дорог'}</span>
+            <span className="flex-1 truncate">{suggestionsLoading ? 'Загружаю дороги...' : 'Возможны дороги'}</span>
           </button>
-          {roadSuggestionCount > 0 && (
-            <button
-              type="button"
-              onClick={onClearRoadSuggestions}
-              className="mt-1 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-red-300"
-            >
-              <Trash2 size={13} strokeWidth={1.75} />
-              <span className="flex-1 truncate">Очистить красные линии</span>
-            </button>
-          )}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
@@ -563,36 +703,47 @@ function ToolMenuItem({ icon: Icon, label, active, onClick }: {
   );
 }
 
-function RoadMenuItem({ road, index, onDelete }: { road: MapRoad; index: number; onDelete: () => void }) {
-  const name = road.name.trim() || `Дорога ${index + 1}`;
+/** Маленький тумблер слоя в шапке (особенности/погода/рельеф). */
+function LayerToggle({ icon: Icon, label, on, onClick, title }: {
+  icon: typeof MapPin; label: string; on: boolean; onClick: () => void; title: string;
+}) {
   return (
-    <div className="flex min-h-8 items-center gap-2 rounded-md px-2 py-1.5 text-[12px] text-text-secondary hover:bg-bg-hover">
-      <Route size={13} strokeWidth={1.75} className="shrink-0 text-[#F4D58D]" />
-      <div className="min-w-0 flex-1">
-        <div className="truncate">{name}</div>
-        <div className="text-[10.5px] text-text-muted">точек: {road.vertices.length}</div>
-      </div>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onDelete();
-        }}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted outline-none transition-colors hover:bg-bg-active hover:text-red-300"
-        title="Удалить дорогу"
-        aria-label="Удалить дорогу"
-      >
-        <Trash2 size={13} strokeWidth={1.75} />
-      </button>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={cn(
+        'flex h-6 items-center gap-1 rounded-md border px-2 text-[12px] outline-none transition-colors',
+        on ? 'border-accent-clay/55 bg-accent-clay-bg text-accent-clay' : 'border-border-subtle text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+      )}
+    >
+      <Icon size={13} strokeWidth={1.75} /> {label}
+    </button>
   );
 }
 
-function ShopFilter({ shops, active, onChange }: {
-  shops: string[]; active: Set<string> | null; onChange: (s: Set<string> | null) => void;
+/** Фильтр точек: категория (отгрузка/выгрузка/вне графика) + конкретные склады. */
+function PointsFilter({ warehouses, activeWarehouses, activeCategories, filterActive, onWarehousesChange, onCategoriesChange }: {
+  warehouses: string[];
+  activeWarehouses: Set<string> | null;
+  activeCategories: Set<PointCategory> | null;
+  filterActive: boolean;
+  onWarehousesChange: (s: Set<string> | null) => void;
+  onCategoriesChange: (s: Set<PointCategory> | null) => void;
 }) {
-  const allOn = active === null;
-  const count = active ? active.size : shops.length;
+  const [q, setQ] = useState('');
+  // Длинный список складов не вываливаем — показываем совпадения ТОЛЬКО при вводе.
+  const matches = useMemo(() => {
+    const lc = q.trim().toLowerCase();
+    if (!lc) return [];
+    return warehouses.filter((w) => w.toLowerCase().includes(lc)).slice(0, 8);
+  }, [q, warehouses]);
+  const selected = activeWarehouses ? Array.from(activeWarehouses) : [];
+  const toggleWh = (w: string) => {
+    const base = activeWarehouses ? new Set(activeWarehouses) : new Set<string>();
+    if (base.has(w)) base.delete(w); else base.add(w);
+    onWarehousesChange(base.size === 0 ? null : base);
+  };
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
@@ -600,49 +751,277 @@ function ShopFilter({ shops, active, onChange }: {
           type="button"
           className={cn(
             'flex h-6 items-center gap-1 rounded-md border px-2 text-[12px] outline-none transition-colors',
-            allOn ? 'border-border-subtle text-text-muted hover:text-text-secondary'
-              : 'border-accent-clay/50 text-accent-clay',
+            filterActive ? 'border-accent-clay/50 text-accent-clay' : 'border-border-subtle text-text-muted hover:text-text-secondary',
           )}
-          title="Фильтр точек по цеху"
+          title="Фильтр точек: категория и склады"
         >
-          <Filter size={13} strokeWidth={1.75} /> {allOn ? 'Все цеха' : `Цеха: ${count}`}
+          <Filter size={13} strokeWidth={1.75} /> {filterActive ? 'Фильтр ✓' : 'Все точки'}
         </button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
           align="end" sideOffset={6}
-          className="z-50 max-h-[60vh] w-64 overflow-y-auto rounded-lg border border-border-default bg-bg-elevated p-1.5 shadow-2xl outline-none"
+          className="z-50 max-h-[64vh] w-64 overflow-y-auto rounded-lg border border-border-default bg-bg-elevated p-1.5 shadow-2xl outline-none"
         >
           <button
             type="button"
-            onClick={() => onChange(null)}
-            className={cn('flex w-full items-center rounded px-2 py-1 text-left text-[12px] outline-none hover:bg-bg-hover', allOn && 'text-accent-clay')}
+            onClick={() => { onCategoriesChange(null); onWarehousesChange(null); }}
+            className={cn('mb-1 flex w-full items-center rounded px-2 py-1 text-left text-[12px] outline-none hover:bg-bg-hover', !filterActive && 'text-accent-clay')}
           >Показать все</button>
-          <div className="my-1 h-px bg-border-subtle" />
-          {shops.length === 0 && <p className="px-2 py-1 text-[11.5px] text-text-muted">Нет точек с цехами</p>}
-          {shops.map((s) => {
-            const on = allOn || (active?.has(s) ?? false);
+          <div className="px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Категория</div>
+          {POINT_CATEGORY_META.map((c) => {
+            const on = !activeCategories || activeCategories.has(c.id);
             return (
               <button
-                key={s}
+                key={c.id}
                 type="button"
                 onClick={() => {
-                  const base = active ? new Set(active) : new Set(shops);
-                  if (base.has(s)) base.delete(s); else base.add(s);
-                  onChange(base.size === shops.length ? null : base);
+                  const base = activeCategories ? new Set(activeCategories) : new Set(POINT_CATEGORY_META.map((m) => m.id));
+                  if (base.has(c.id)) base.delete(c.id); else base.add(c.id);
+                  onCategoriesChange(base.size === POINT_CATEGORY_META.length ? null : base);
                 }}
                 className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px] outline-none hover:bg-bg-hover"
               >
-                <span className={cn('flex h-3.5 w-3.5 items-center justify-center rounded-[3px] border', on ? 'border-accent-clay bg-accent-clay text-white' : 'border-border-default')}>
-                  {on && '✓'}
-                </span>
-                <span className="truncate text-text-secondary">{s}</span>
+                <span className={cn('flex h-3.5 w-3.5 items-center justify-center rounded-[3px] border', on ? 'border-accent-clay bg-accent-clay text-white' : 'border-border-default')}>{on && '✓'}</span>
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: c.color }} />
+                <span className="truncate text-text-secondary">{c.label}</span>
               </button>
             );
           })}
+          <div className="my-1 h-px bg-border-subtle" />
+          <div className="px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Склад (по номеру)</div>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Найти склад по номеру…"
+            className="mb-1 w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12px] text-text-primary outline-none focus:border-accent-clay/40"
+          />
+          {q.trim() !== '' && matches.length === 0 && <p className="px-2 py-1 text-[11.5px] text-text-muted">Ничего не найдено</p>}
+          {matches.map((w) => {
+            const on = activeWarehouses?.has(w) ?? false;
+            return (
+              <button
+                key={w}
+                type="button"
+                onClick={() => toggleWh(w)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px] outline-none hover:bg-bg-hover"
+              >
+                <span className={cn('flex h-3.5 w-3.5 items-center justify-center rounded-[3px] border', on ? 'border-accent-clay bg-accent-clay text-white' : 'border-border-default')}>{on && '✓'}</span>
+                <span className="truncate font-mono tabular-nums text-text-secondary">{w}</span>
+              </button>
+            );
+          })}
+          {selected.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1 px-2 pb-0.5">
+              {selected.map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => toggleWh(w)}
+                  title="Убрать из фильтра"
+                  className="flex items-center gap-1 rounded border border-accent-clay/45 bg-accent-clay-bg px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-accent-clay outline-none hover:bg-accent-clay/15"
+                >{w} ×</button>
+              ))}
+            </div>
+          )}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
+
+function VehicleFilter({ active, onChange }: { active: VehicleType | null; onChange: (v: VehicleType | null) => void }) {
+  const current = active ? VEHICLE_TYPES.find((v) => v.id === active) : null;
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'flex h-6 items-center gap-1 rounded-md border px-2 text-[12px] outline-none transition-colors',
+            active ? 'border-[#22D3EE]/55 text-[#67E8F9]' : 'border-border-subtle text-text-muted hover:text-text-secondary',
+          )}
+          title="Показать, куда заедет выбранная машина (и строить по ней маршрут)"
+        >
+          {active
+            ? <span className="h-2 w-2 rounded-full" style={{ backgroundColor: vehicleColor(active) }} />
+            : <Truck size={13} strokeWidth={1.75} />}
+          {current ? current.short : 'Машина'}
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end" sideOffset={6}
+          className="z-50 w-56 rounded-lg border border-border-default bg-bg-elevated p-1.5 shadow-2xl outline-none"
+        >
+          <p className="px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Проходимость машины</p>
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className={cn('flex h-7 w-full items-center gap-2 rounded px-2 text-left text-[12px] outline-none hover:bg-bg-hover', !active && 'text-[#67E8F9]')}
+          >
+            <Truck size={13} strokeWidth={1.75} />
+            <span className="flex-1">Все машины</span>
+            {!active && <Check size={13} strokeWidth={1.75} />}
+          </button>
+          <div className="my-1 h-px bg-border-subtle" />
+          {VEHICLE_TYPES.map((v) => {
+            const on = active === v.id;
+            return (
+              <button
+                key={v.id}
+                type="button"
+                onClick={() => onChange(on ? null : v.id)}
+                className={cn('flex h-7 w-full items-center gap-2 rounded px-2 text-left text-[12px] outline-none hover:bg-bg-hover', on && 'text-text-strong')}
+              >
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: vehicleColor(v.id) }} />
+                <span className="flex-1 truncate">{v.label}</span>
+                {on && <Check size={13} strokeWidth={1.75} />}
+              </button>
+            );
+          })}
+          <p className="px-2 pb-0.5 pt-1.5 text-[10.5px] leading-relaxed text-text-muted">
+            Точки, куда машина не заедет, гаснут. Маршрут обходит запрещённые участки.
+          </p>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+/** Чип сводки погоды по площадке: клик открывает ближайшие часы. */
+function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
+  const rows = weather?.hourly.slice(0, 12) ?? [];
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className="absolute left-3 top-3 z-[450] flex h-8 items-center gap-2 rounded-lg border border-white/10 bg-[#080b11]/86 px-2.5 text-[11.5px] text-white/85 shadow-lg outline-none backdrop-blur transition-colors hover:border-accent-clay/35 hover:bg-[#101520]/92"
+          title="Погода по часам"
+        >
+          <CloudRain size={14} strokeWidth={1.75} className={weather?.isPrecip ? 'text-sky-300' : 'text-white/55'} />
+          {weather ? (
+            <span className="flex items-center gap-2 font-mono tabular-nums">
+              {weather.tempC != null && <span>{weather.tempC > 0 ? '+' : ''}{Math.round(weather.tempC)}°</span>}
+              {weather.windMs != null && <span className="text-white/65">{Math.round(weather.windMs)} м/с</span>}
+              <span className={weather.isPrecip ? 'text-sky-300' : 'text-white/55'}>
+                {weather.isPrecip ? `осадки ${(weather.precipMm ?? 0).toFixed(1)} мм` : 'без осадков'}
+              </span>
+            </span>
+          ) : (
+            <span className="text-white/55">погода…</span>
+          )}
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          sideOffset={8}
+          className="z-[700] w-[360px] overflow-hidden rounded-xl border border-border-default bg-bg-deep/95 shadow-[0_12px_42px_rgba(0,0,0,0.55)] outline-none backdrop-blur-md"
+        >
+          <div className="flex items-center justify-between border-b border-border-subtle/70 px-3 py-2">
+            <div>
+              <p className="text-[12.5px] font-semibold text-text-strong">Погода по часам</p>
+              <p className="text-[11px] text-text-muted">{weatherText(weather?.code ?? null, weather?.precipMm ?? null, null)}</p>
+            </div>
+            <div className="font-mono text-[12px] tabular-nums text-text-secondary">
+              {weather?.pressureHpa != null ? `${Math.round(weather.pressureHpa)} гПа` : weather?.tempC != null ? `${weather.tempC > 0 ? '+' : ''}${Math.round(weather.tempC)}°` : '—'}
+            </div>
+          </div>
+          <div className="max-h-[340px] overflow-y-auto p-1.5">
+            {rows.length === 0 ? (
+              <p className="px-2 py-2 text-[12px] text-text-muted">Почасовой прогноз загружается…</p>
+            ) : rows.map((row) => (
+              <div key={row.time} className="grid grid-cols-[44px_1fr_58px_58px] items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] hover:bg-bg-hover/70">
+                <span className="font-mono tabular-nums text-text-strong">{formatWeatherHour(row.time)}</span>
+                <div className="min-w-0">
+                  <p className="truncate text-text-secondary">{weatherText(row.code, row.precipMm, row.snowCm)}</p>
+                  <p className="font-mono text-[10.5px] tabular-nums text-text-muted">
+                    {formatPrecip(row)}
+                    {row.precipProb != null && <span className="ml-1">· {Math.round(row.precipProb)}%</span>}
+                  </p>
+                </div>
+                <span className="text-right font-mono tabular-nums text-text-secondary">
+                  {row.tempC != null ? `${row.tempC > 0 ? '+' : ''}${Math.round(row.tempC)}°` : '—'}
+                </span>
+                <span className="text-right font-mono tabular-nums text-text-muted" title={row.windDir != null ? `Направление ${Math.round(row.windDir)}°` : undefined}>
+                  {row.windMs != null ? `${Math.round(row.windMs)} м/с` : '—'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function formatWeatherHour(value: string): string {
+  const m = /T(\d{2}):/.exec(value);
+  return m ? `${m[1]}:00` : value.slice(-5);
+}
+
+function formatPrecip(row: WeatherHour): string {
+  const parts: string[] = [];
+  if ((row.rainMm ?? 0) > 0) parts.push(`дождь ${row.rainMm!.toFixed(1)} мм`);
+  else if ((row.precipMm ?? 0) > 0) parts.push(`осадки ${row.precipMm!.toFixed(1)} мм`);
+  if ((row.snowCm ?? 0) > 0) parts.push(`снег ${row.snowCm!.toFixed(1)} см`);
+  if (row.gustMs != null && row.windMs != null && row.gustMs > row.windMs + 2) parts.push(`порывы ${Math.round(row.gustMs)} м/с`);
+  return parts.length > 0 ? parts.join(' · ') : 'без осадков';
+}
+
+function weatherText(code: number | null | undefined, precipMm: number | null, snowCm: number | null): string {
+  if ((snowCm ?? 0) > 0) return 'снег';
+  if ((precipMm ?? 0) > 0) return 'осадки';
+  if (code == null) return 'прогноз';
+  if (code === 0) return 'ясно';
+  if (code === 1 || code === 2 || code === 3) return 'облачно';
+  if (code === 45 || code === 48) return 'туман';
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return 'дождь';
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return 'снег';
+  if (code >= 95) return 'гроза';
+  return 'прогноз';
+}
+
+/** Краткий поповер у пина точки: название, цех, категория + «Подробно». */
+function PinPopover({ x, y, title, subtitle, category, onDetails, onRouteFrom, onClose }: {
+  x: number; y: number; title: string; subtitle: string; category: PointCategory;
+  onDetails: () => void; onRouteFrom: () => void; onClose: () => void;
+}) {
+  const cat = POINT_CATEGORY_META.find((c) => c.id === category) ?? POINT_CATEGORY_META[2]!;
+  return (
+    <div
+      className="absolute z-[455] w-56 -translate-x-1/2 -translate-y-full rounded-xl border border-border-default bg-bg-deep/94 px-3 py-2.5 shadow-[0_8px_30px_rgba(0,0,0,0.5)] backdrop-blur-md"
+      style={{ left: x, top: y - 52 }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-[13px] font-bold text-text-strong">{title}</p>
+          {subtitle && <p className="truncate text-[11.5px] text-text-muted">{subtitle}</p>}
+        </div>
+        <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${cat.color}22`, color: cat.color }}>{cat.label}</span>
+      </div>
+      <div className="mt-2 flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={onDetails}
+          className="h-7 flex-1 rounded border border-accent-clay/45 bg-accent-clay-bg px-2 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/15"
+        >Подробно →</button>
+        <button
+          type="button"
+          onClick={onRouteFrom}
+          title="Маршрут отсюда"
+          className="flex h-7 items-center justify-center rounded border border-sky-400/35 px-2 text-[12px] text-sky-200 outline-none transition-colors hover:bg-sky-400/10"
+        ><Route size={13} strokeWidth={1.75} /></button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex h-7 w-7 items-center justify-center rounded border border-border-subtle text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+        >×</button>
+      </div>
+      <div className="absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 border-b border-r border-border-default bg-bg-deep/94" />
+    </div>
   );
 }
 

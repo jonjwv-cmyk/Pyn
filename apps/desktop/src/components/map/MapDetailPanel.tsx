@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { LocateFixed, MapPinned, Navigation, Phone, Trash2, X } from 'lucide-react';
+import { Copy, LocateFixed, MapPinned, Navigation, Phone, TrainTrack, Trash2, X } from 'lucide-react';
 import { groupByWarehouse, type MolRecord } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import { splitAndFormatWorkPhones } from '@/lib/mol-format';
@@ -24,41 +24,55 @@ import type { RouteResult } from './route-network';
 
 interface Props {
   selection: MapSelection;
+  /** developer — правка доступна; admin — только просмотр. */
+  canEdit: boolean;
   onClose: () => void;
   onSelect: (selection: MapSelection) => void;
   onFocus: (latlng: LatLng) => void;
   onMovePointByMap: (id: string) => void;
+  /** Создана копия точки — родитель наводится на неё и включает «перемещение». */
+  onDuplicatedPoint: (id: string) => void;
   routeSourcePointId: string | null;
   routeResult: RouteResult | null;
+  /** Машина, по которой считается маршрут (для подписи/предупреждения). */
+  routeVehicle: VehicleType | null;
   onSetRouteFromPoint: (id: string) => void;
   onClearRoute: () => void;
 }
 
-/** Правая панель деталей выбранного объекта карты (точка / область / дорога). */
+/** Плитка-карточка деталей выбранного объекта (точка / область / дорога / переезд). */
 export function MapDetailPanel({
   selection,
+  canEdit,
   onClose,
   onSelect,
   onFocus,
   onMovePointByMap,
+  onDuplicatedPoint,
   routeSourcePointId,
   routeResult,
+  routeVehicle,
   onSetRouteFromPoint,
   onClearRoute,
 }: Props) {
   return (
-    <aside className="flex w-[360px] shrink-0 flex-col border-l border-border-subtle/70 bg-bg-deep/20">
+    <div className="flex min-h-0 flex-col">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-border-subtle/70 px-3">
-        <span className="text-[12.5px] font-semibold text-text-strong">
+        <span className="flex items-center gap-1.5 text-[12.5px] font-semibold text-text-strong">
           {selection.type === 'point'
             ? 'Точка склада'
             : selection.type === 'area'
               ? 'Область'
-              : selection.type === 'roadSuggestion'
-                ? 'Черновик дороги'
-                : selection.type === 'roadAccess'
-                  ? 'Особенности дороги'
-                  : 'Дорога'}
+              : selection.type === 'crossing'
+                ? 'Ж/д переезд'
+                : selection.type === 'railway'
+                  ? 'Ж/д путь'
+                  : selection.type === 'roadSuggestion'
+                    ? 'Черновик дороги'
+                    : selection.type === 'roadAccess'
+                      ? 'Особенности дороги'
+                      : 'Дорога'}
+          {!canEdit && <span className="rounded bg-bg-hover px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-wide text-text-muted">просмотр</span>}
         </span>
         <button
           type="button"
@@ -68,26 +82,31 @@ export function MapDetailPanel({
           <X className="h-3.5 w-3.5" strokeWidth={1.75} />
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto p-2.5">
+      <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
         {selection.type === 'point' && (
           <PointEditor
             id={selection.id}
+            canEdit={canEdit}
             onDeleted={onClose}
             onSelect={onSelect}
             onFocus={onFocus}
             onMoveByMap={onMovePointByMap}
+            onDuplicated={onDuplicatedPoint}
             routeSourcePointId={routeSourcePointId}
             routeResult={routeResult}
+            routeVehicle={routeVehicle}
             onSetRouteFromPoint={onSetRouteFromPoint}
             onClearRoute={onClearRoute}
           />
         )}
-        {selection.type === 'area' && <AreaEditor id={selection.id} onDeleted={onClose} />}
-        {selection.type === 'road' && <RoadEditor id={selection.id} onDeleted={onClose} />}
-        {selection.type === 'roadSuggestion' && <RoadSuggestionEditor id={selection.id} onDone={onClose} />}
-        {selection.type === 'roadAccess' && <RoadAccessEditor id={selection.id} onDeleted={onClose} />}
+        {selection.type === 'area' && <AreaEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
+        {selection.type === 'road' && <RoadEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
+        {selection.type === 'crossing' && <CrossingEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
+        {selection.type === 'railway' && <RailwayEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
+        {selection.type === 'roadSuggestion' && <RoadSuggestionEditor id={selection.id} canEdit={canEdit} onDone={onClose} />}
+        {selection.type === 'roadAccess' && <RoadAccessEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -95,22 +114,28 @@ export function MapDetailPanel({
 
 function PointEditor({
   id,
+  canEdit,
   onDeleted,
   onSelect,
   onFocus,
   onMoveByMap,
+  onDuplicated,
   routeSourcePointId,
   routeResult,
+  routeVehicle,
   onSetRouteFromPoint,
   onClearRoute,
 }: {
   id: string;
+  canEdit: boolean;
   onDeleted: () => void;
   onSelect: (selection: MapSelection) => void;
   onFocus: (latlng: LatLng) => void;
   onMoveByMap: (id: string) => void;
+  onDuplicated: (id: string) => void;
   routeSourcePointId: string | null;
   routeResult: RouteResult | null;
+  routeVehicle: VehicleType | null;
   onSetRouteFromPoint: (id: string) => void;
   onClearRoute: () => void;
 }) {
@@ -119,10 +144,11 @@ function PointEditor({
   const allPoints = useMapStore((s) => s.doc.points);
   const updatePoint = useMapStore((s) => s.updatePoint);
   const removePoint = useMapStore((s) => s.removePoint);
+  const duplicatePoint = useMapStore((s) => s.duplicatePoint);
 
   useEffect(() => {
-    if (point && !point.warehouseId) setEditing(true);
-  }, [point]);
+    if (canEdit && point && !point.warehouseId) setEditing(true);
+  }, [canEdit, point]);
 
   if (!point) return null;
   const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
@@ -138,20 +164,23 @@ function PointEditor({
         point={point}
         routeSourcePointId={routeSourcePointId}
         routeResult={routeResult}
+        routeVehicle={routeVehicle}
         onSetRouteFromPoint={onSetRouteFromPoint}
         onClearRoute={onClearRoute}
       />
 
-      <button
-        type="button"
-        onClick={() => setEditing((v) => !v)}
-        className="flex h-7 w-full items-center justify-between rounded border border-border-default px-2 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
-      >
-        <span>{editing ? 'Скрыть правку точки' : 'Редактировать точку'}</span>
-        <span>{editing ? '−' : '+'}</span>
-      </button>
+      {canEdit && (
+        <button
+          type="button"
+          onClick={() => setEditing((v) => !v)}
+          className="flex h-7 w-full items-center justify-between rounded border border-border-default px-2 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
+        >
+          <span>{editing ? 'Скрыть правку точки' : 'Редактировать точку'}</span>
+          <span>{editing ? '−' : '+'}</span>
+        </button>
+      )}
 
-      {editing && (
+      {canEdit && editing && (
         <WarehousePicker
           value={point.warehouseId}
           onPick={(wid) => updatePoint(id, { warehouseId: wid })}
@@ -188,7 +217,7 @@ function PointEditor({
         </FoldBlock>
       )}
 
-      {editing && (
+      {canEdit && editing && (
         <>
           {/* Поля точки */}
           <Field label="Подпись на карте">
@@ -220,15 +249,17 @@ function PointEditor({
             />
           </Field>
 
-          <Field label="Оснастка на месте">
-            <div className="grid grid-cols-3 gap-1">
-              <ToggleChip label="Кран" active={equipment.crane} onClick={() => updatePoint(id, { equipment: { ...equipment, crane: !equipment.crane } })} />
-              <ToggleChip label="Погрузчик" active={equipment.forklift} onClick={() => updatePoint(id, { equipment: { ...equipment, forklift: !equipment.forklift } })} />
-              <ToggleChip label="Штабелер" active={equipment.stacker} onClick={() => updatePoint(id, { equipment: { ...equipment, stacker: !equipment.stacker } })} />
+          <Field label="Оснастка на месте (что грузит/разгружает)">
+            <div className="grid grid-cols-2 gap-1">
+              <ToggleChip label="КРАН" active={equipment.crane} onClick={() => updatePoint(id, { equipment: { ...equipment, crane: !equipment.crane } })} />
+              <ToggleChip label="КРАН-БАЛКА" active={equipment.craneBeam} onClick={() => updatePoint(id, { equipment: { ...equipment, craneBeam: !equipment.craneBeam } })} />
+              <ToggleChip label="АВТО-КРАН" active={equipment.autoCrane} onClick={() => updatePoint(id, { equipment: { ...equipment, autoCrane: !equipment.autoCrane } })} />
+              <ToggleChip label="ШТАБЕЛЕР" active={equipment.stacker} onClick={() => updatePoint(id, { equipment: { ...equipment, stacker: !equipment.stacker } })} />
+              <ToggleChip label="РУЧНОЕ" active={equipment.manual} onClick={() => updatePoint(id, { equipment: { ...equipment, manual: !equipment.manual } })} />
             </div>
-            {!equipment.crane && !equipment.forklift && !equipment.stacker && (
+            {!equipment.crane && !equipment.craneBeam && !equipment.autoCrane && !equipment.stacker && !equipment.manual && (
               <p className="mt-1 rounded border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
-                Оснастка не выбрана — считаем ручную погрузку.
+                Оснастка не выбрана — отметьте, чем грузят (или «РУЧНОЕ»).
               </p>
             )}
           </Field>
@@ -294,21 +325,38 @@ function PointEditor({
 
       <CoordsBlock point={point} />
 
-      <button
-        type="button"
-        onClick={() => onMoveByMap(id)}
-        className="flex h-7 w-full items-center justify-center gap-1.5 rounded border border-emerald-400/35 text-[12px] font-medium text-emerald-300 outline-none transition-colors hover:bg-emerald-400/10"
-      >
-        <LocateFixed className="h-3.5 w-3.5" strokeWidth={1.75} /> Переместить картой
-      </button>
+      {canEdit && (
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            onClick={() => onMoveByMap(id)}
+            className="flex h-7 items-center justify-center gap-1.5 rounded border border-emerald-400/35 text-[12px] font-medium text-emerald-300 outline-none transition-colors hover:bg-emerald-400/10"
+          >
+            <LocateFixed className="h-3.5 w-3.5" strokeWidth={1.75} /> Переместить
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const copyId = duplicatePoint(id);
+              if (copyId) onDuplicated(copyId);
+            }}
+            className="flex h-7 items-center justify-center gap-1.5 rounded border border-sky-400/35 text-[12px] font-medium text-sky-300 outline-none transition-colors hover:bg-sky-400/10"
+            title="Копия точки со всеми данными — потом поставьте её на нужное место"
+          >
+            <Copy className="h-3.5 w-3.5" strokeWidth={1.75} /> Дублировать
+          </button>
+        </div>
+      )}
 
-      <button
-        type="button"
-        onClick={() => { removePoint(id); onDeleted(); }}
-        className="flex h-7 w-full items-center justify-center gap-1.5 rounded border border-danger/30 text-[12px] font-medium text-danger outline-none transition-colors hover:bg-danger/10"
-      >
-        <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} /> Удалить точку
-      </button>
+      {canEdit && (
+        <button
+          type="button"
+          onClick={() => { removePoint(id); onDeleted(); }}
+          className="flex h-7 w-full items-center justify-center gap-1.5 rounded border border-danger/30 text-[12px] font-medium text-danger outline-none transition-colors hover:bg-danger/10"
+        >
+          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} /> Удалить точку
+        </button>
+      )}
     </div>
   );
 }
@@ -318,8 +366,10 @@ function PointSummary({ point }: { point: MapPoint }) {
   const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
   const equipmentList = [
     equipment.crane ? 'кран' : null,
-    equipment.forklift ? 'погрузчик' : null,
-    equipment.stacker ? 'штабелер' : null,
+    equipment.craneBeam ? 'кран-балка' : null,
+    equipment.autoCrane ? 'авто-кран' : null,
+    equipment.stacker ? 'штабелёр' : null,
+    equipment.manual ? 'ручное' : null,
   ].filter(Boolean) as string[];
   const allowedVehicles = point.allowedVehicles ?? [];
   const title = point.warehouseId
@@ -343,7 +393,7 @@ function PointSummary({ point }: { point: MapPoint }) {
 
       <div className="mt-2 grid grid-cols-2 gap-1.5 text-[11.5px]">
         <InfoPill label="Заезд" value={vehicles} />
-        <InfoPill label="Оснастка" value={equipmentList.length > 0 ? equipmentList.join(', ') : 'ручная погрузка'} />
+        <InfoPill label="Оснастка" value={equipmentList.length > 0 ? equipmentList.join(', ') : 'не указано'} />
         {point.rearUnload && <InfoPill label="Нюанс" value="ТМЦ сзади" />}
         {point.weight > 1 && <InfoPill label="Вес" value={String(point.weight)} />}
       </div>
@@ -355,12 +405,14 @@ function RoutePointBlock({
   point,
   routeSourcePointId,
   routeResult,
+  routeVehicle,
   onSetRouteFromPoint,
   onClearRoute,
 }: {
   point: MapPoint;
   routeSourcePointId: string | null;
   routeResult: RouteResult | null;
+  routeVehicle: VehicleType | null;
   onSetRouteFromPoint: (id: string) => void;
   onClearRoute: () => void;
 }) {
@@ -371,13 +423,21 @@ function RoutePointBlock({
       <div className="flex items-start gap-2">
         <Navigation className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" strokeWidth={1.75} />
         <div className="min-w-0 flex-1">
-          <p className="font-semibold text-text-strong">Маршрут по дорогам</p>
+          <p className="font-semibold text-text-strong">
+            Маршрут по дорогам
+            {routeVehicle && <span className="ml-1 font-normal text-text-muted">· {vehicleLabel(routeVehicle)}</span>}
+          </p>
           {!hasSource && <p className="mt-0.5 text-text-muted">Выберите эту точку стартом, затем кликните точку назначения.</p>}
           {isSource && <p className="mt-0.5 text-sky-200">Эта точка выбрана стартом маршрута.</p>}
           {hasSource && !isSource && routeResult && (
-            <p className="mt-0.5 font-mono tabular-nums text-sky-200">
-              {formatDistanceMeters(routeResult.distanceMeters)} · узлов {routeResult.nodes}
-            </p>
+            <>
+              <p className="mt-0.5 font-mono tabular-nums text-sky-200">
+                {formatDistanceMeters(routeResult.distanceMeters)} · узлов {routeResult.nodes}
+              </p>
+              {routeResult.passesBlocked && (
+                <p className="mt-0.5 text-amber-200">⚠ Кратчайший путь идёт через запрещённый для этой машины участок.</p>
+              )}
+            </>
           )}
           {hasSource && !isSource && !routeResult && (
             <p className="mt-0.5 text-amber-200">Маршрут не найден: рядом нет сшитой дорожной сети.</p>
@@ -588,7 +648,7 @@ function WarehousePicker({ value, onPick }: { value: string | null; onPick: (id:
 
 // ─── Область ────────────────────────────────────────────────────────────────
 
-function AreaEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
+function AreaEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boolean; onDeleted: () => void }) {
   const area = useMapStore((s) => s.doc.areas.find((a) => a.id === id));
   const updateArea = useMapStore((s) => s.updateArea);
   const removeArea = useMapStore((s) => s.removeArea);
@@ -598,6 +658,14 @@ function AreaEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
     [warehouses],
   );
   if (!area) return null;
+  if (!canEdit) {
+    return (
+      <div className="space-y-2">
+        <ReadonlyLine label="Название" value={area.name || '—'} />
+        {area.shopName && <ReadonlyLine label="Цех" value={area.shopName} />}
+      </div>
+    );
+  }
   return (
     <div className="space-y-3">
       <Field label="Название области">
@@ -638,11 +706,19 @@ function AreaEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
 
 // ─── Дорога ──────────────────────────────────────────────────────────────────
 
-function RoadEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
+function RoadEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boolean; onDeleted: () => void }) {
   const road = useMapStore((s) => s.doc.roads.find((r) => r.id === id));
   const updateRoad = useMapStore((s) => s.updateRoad);
   const removeRoad = useMapStore((s) => s.removeRoad);
   if (!road) return null;
+  if (!canEdit) {
+    return (
+      <div className="space-y-2">
+        <ReadonlyLine label="Дорога" value={road.name.trim() || '—'} />
+        <ReadonlyLine label="Точек" value={String(road.vertices.length)} />
+      </div>
+    );
+  }
   return (
     <div className="space-y-3">
       <Field label="Название дороги">
@@ -661,7 +737,38 @@ function RoadEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
   );
 }
 
-function RoadSuggestionEditor({ id, onDone }: { id: string; onDone: () => void }) {
+function RailwayEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boolean; onDeleted: () => void }) {
+  const railway = useMapStore((s) => (s.doc.railways ?? []).find((r) => r.id === id));
+  const updateRailway = useMapStore((s) => s.updateRailway);
+  const removeRailway = useMapStore((s) => s.removeRailway);
+  if (!railway) return null;
+  if (!canEdit) {
+    return (
+      <div className="space-y-2">
+        <ReadonlyLine label="Ж/д путь" value={railway.name.trim() || '—'} />
+        <ReadonlyLine label="Точек" value={String(railway.vertices.length)} />
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <Field label="Название пути">
+        <input
+          value={railway.name}
+          onChange={(e) => updateRailway(id, { name: e.target.value })}
+          placeholder="напр. Подъездной путь №3"
+          className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
+        />
+      </Field>
+      <p className="rounded-md border border-border-subtle bg-bg-elevated/50 px-2.5 py-2 text-[11.5px] text-text-muted">
+        Точек: {railway.vertices.length}. Ж/д путь — визуальный слой, в авто-маршрутах не участвует.
+      </p>
+      <DeleteBtn label="Удалить ж/д путь" onClick={() => { removeRailway(id); onDeleted(); }} />
+    </div>
+  );
+}
+
+function RoadSuggestionEditor({ id, canEdit, onDone }: { id: string; canEdit: boolean; onDone: () => void }) {
   const suggestion = useMapStore((s) => s.doc.roadSuggestions.find((r) => r.id === id));
   const acceptRoadSuggestion = useMapStore((s) => s.acceptRoadSuggestion);
   const rejectRoadSuggestion = useMapStore((s) => s.rejectRoadSuggestion);
@@ -675,14 +782,18 @@ function RoadSuggestionEditor({ id, onDone }: { id: string; onDone: () => void }
         </p>
         <p className="mt-1 text-text-muted">Точек: {suggestion.vertices.length}</p>
       </div>
-      <button
-        type="button"
-        onClick={() => { acceptRoadSuggestion(id); onDone(); }}
-        className="flex h-7 w-full items-center justify-center rounded border border-emerald-400/35 text-[12px] font-medium text-emerald-300 outline-none transition-colors hover:bg-emerald-400/10"
-      >
-        Да, добавить в дорожную сеть
-      </button>
-      <DeleteBtn label="Нет, убрать черновик" onClick={() => { rejectRoadSuggestion(id); onDone(); }} />
+      {canEdit && (
+        <>
+          <button
+            type="button"
+            onClick={() => { acceptRoadSuggestion(id); onDone(); }}
+            className="flex h-7 w-full items-center justify-center rounded border border-emerald-400/35 text-[12px] font-medium text-emerald-300 outline-none transition-colors hover:bg-emerald-400/10"
+          >
+            Да, добавить в дорожную сеть
+          </button>
+          <DeleteBtn label="Нет, убрать черновик" onClick={() => { rejectRoadSuggestion(id); onDone(); }} />
+        </>
+      )}
     </div>
   );
 }
@@ -691,13 +802,74 @@ function formatSuggestionSource(suggestion: MapRoadSuggestion): string {
   return suggestion.source === 'osm' ? 'OSM / открытая карта' : 'ИИ-черновик';
 }
 
+// ─── Ж/д переезд ──────────────────────────────────────────────────────────────
+
+function CrossingEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boolean; onDeleted: () => void }) {
+  const crossing = useMapStore((s) => (s.doc.crossings ?? []).find((c) => c.id === id));
+  const updateCrossing = useMapStore((s) => s.updateCrossing);
+  const removeCrossing = useMapStore((s) => s.removeCrossing);
+  if (!crossing) return null;
+
+  return (
+    <div className="space-y-3">
+      <section className="flex items-start gap-2 rounded-lg border border-amber-400/25 bg-amber-400/[0.08] px-3 py-2.5">
+        <TrainTrack className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" strokeWidth={1.75} />
+        <div className="min-w-0 flex-1 text-[12px]">
+          <p className="font-semibold text-text-strong">{crossing.name.trim() || 'Ж/д переезд'}</p>
+          <p className="mt-0.5 text-text-muted">Пересечение с ж/д — учитываем как риск задержки в маршруте.</p>
+          {crossing.note.trim() && <p className="mt-1 text-text-secondary">{crossing.note}</p>}
+        </div>
+      </section>
+
+      {!canEdit ? (
+        <ReadonlyLine label="Координаты" value={`${crossing.lat.toFixed(6)}, ${crossing.lng.toFixed(6)}`} />
+      ) : (
+        <>
+          <Field label="Название / привязка">
+            <input
+              value={crossing.name}
+              onChange={(e) => updateCrossing(id, { name: e.target.value })}
+              placeholder="напр. Переезд у домны №6"
+              className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
+            />
+          </Field>
+          <Field label="Заметка (необязательно)">
+            <textarea
+              value={crossing.note}
+              onChange={(e) => updateCrossing(id, { note: e.target.value })}
+              rows={2}
+              placeholder="напр. часто закрыт по утрам, объезд через КПП-2"
+              className="w-full resize-none rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
+            />
+          </Field>
+          <DeleteBtn label="Удалить переезд" onClick={() => { removeCrossing(id); onDeleted(); }} />
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Особенности дороги (какие машины проедут) ───────────────────────────────
 
-function RoadAccessEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
+function RoadAccessEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boolean; onDeleted: () => void }) {
   const access = useMapStore((s) => s.doc.roadAccess.find((a) => a.id === id));
   const updateRoadAccess = useMapStore((s) => s.updateRoadAccess);
   const removeRoadAccess = useMapStore((s) => s.removeRoadAccess);
   if (!access) return null;
+
+  if (!canEdit) {
+    const summary = access.kind === 'closed'
+      ? 'Нет проезда'
+      : access.vehicles.length === 0
+        ? 'Без ограничений'
+        : access.vehicles.map(vehicleLabel).join(', ');
+    return (
+      <div className="space-y-2">
+        <ReadonlyLine label="Участок" value={summary} />
+        {access.note.trim() && <ReadonlyLine label="Заметка" value={access.note} />}
+      </div>
+    );
+  }
 
   const toggle = (v: VehicleType) => {
     const has = access.vehicles.includes(v);
@@ -772,6 +944,15 @@ function RoadAccessEditor({ id, onDeleted }: { id: string; onDeleted: () => void
 }
 
 // ─── мелочи ──────────────────────────────────────────────────────────────────
+
+function ReadonlyLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border-subtle bg-bg-elevated/40 px-2.5 py-1.5 text-[12px]">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">{label}</span>
+      <p className="mt-0.5 text-text-secondary">{value}</p>
+    </div>
+  );
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

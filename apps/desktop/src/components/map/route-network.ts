@@ -1,10 +1,40 @@
-import { distanceMeters, nearestPointOnPolyline, polylineLengthMeters } from './geo';
-import type { LatLng, MapRoad } from './map-types';
+import { distanceMeters, distancePointToPolylineMeters, nearestPointOnPolyline, polylineLengthMeters } from './geo';
+import type { LatLng, MapRoad, RoadAccess, VehicleType } from './map-types';
 
 export interface RouteResult {
   path: LatLng[];
   distanceMeters: number;
   nodes: number;
+  /** Пришлось ли пройти через участок, запрещённый для выбранной машины. */
+  passesBlocked: boolean;
+}
+
+export interface RouteOptions {
+  /** Окрашенные участки (ограничения по машинам). */
+  roadAccess?: RoadAccess[];
+  /** Машина, для которой строим маршрут (учёт «нет проезда» / ограничений). */
+  vehicle?: VehicleType | null;
+}
+
+const BLOCK_PENALTY = 5000;
+const ACCESS_NEAR_METERS = 7;
+
+/** Запрещает ли окрашенный участок проезд данной машины. */
+export function isAccessBlocking(access: RoadAccess, vehicle: VehicleType): boolean {
+  if (access.kind === 'closed') return true;
+  // limited со списком машин — проезд ТОЛЬКО им; нашей машины нет → запрещено.
+  if (access.kind === 'limited' && access.vehicles.length > 0) return !access.vehicles.includes(vehicle);
+  return false;
+}
+
+/** Множитель веса ребра: где запрещённый участок — резко дороже (router его обходит). */
+function edgePenalty(a: LatLng, b: LatLng, blocking: RoadAccess[]): number {
+  if (blocking.length === 0) return 1;
+  const mid = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+  for (const access of blocking) {
+    if (distancePointToPolylineMeters(mid, access.vertices) <= ACCESS_NEAR_METERS) return BLOCK_PENALTY;
+  }
+  return 1;
 }
 
 interface SnapResult {
@@ -24,16 +54,23 @@ export function computeFastestRoute(
   roads: MapRoad[],
   from: LatLng,
   to: LatLng,
+  options: RouteOptions = {},
 ): RouteResult | null {
   const usableRoads = roads.filter((road) => road.vertices.length >= 2);
   if (usableRoads.length === 0) return null;
 
+  const blocking = options.vehicle
+    ? (options.roadAccess ?? []).filter((a) => isAccessBlocking(a, options.vehicle!))
+    : [];
+
   const graph = makeGraph();
   for (const road of usableRoads) {
     for (let i = 0; i < road.vertices.length - 1; i++) {
-      const a = graph.addNode(road.vertices[i]!);
-      const b = graph.addNode(road.vertices[i + 1]!);
-      graph.addEdge(a, b, distanceMeters(road.vertices[i]!, road.vertices[i + 1]!));
+      const va = road.vertices[i]!;
+      const vb = road.vertices[i + 1]!;
+      const a = graph.addNode(va);
+      const b = graph.addNode(vb);
+      graph.addEdge(a, b, distanceMeters(va, vb) * edgePenalty(va, vb, blocking));
     }
   }
 
@@ -57,10 +94,17 @@ export function computeFastestRoute(
   const path = cleanupPath(route.map((index) => graph.nodes[index]!));
   if (path.length < 2) return null;
 
+  // Маршрут задевает запрещённый участок, если какое-то ребро пути идёт по нему.
+  let passesBlocked = false;
+  for (let i = 0; i < path.length - 1 && !passesBlocked; i++) {
+    if (edgePenalty(path[i]!, path[i + 1]!, blocking) > 1) passesBlocked = true;
+  }
+
   return {
     path,
     distanceMeters: polylineLengthMeters(path),
     nodes: path.length,
+    passesBlocked,
   };
 }
 

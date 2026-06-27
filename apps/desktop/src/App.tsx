@@ -1257,7 +1257,7 @@ export function App() {
             )}
             {isAdminLike(session.role) && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'map' ? 'flex' : 'none' }}>
-                <MapScreen />
+                <MapScreen canEdit={isDeveloper(session.role)} />
               </div>
             )}
 
