@@ -445,6 +445,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               showWeather={showWeather}
               weatherNonce={weatherNonce}
               weatherField={weatherField}
+              weatherNow={weather}
               centerElevation={centerElevation}
               roadPaintMode={roadPaintMode}
               movingPointId={moveByMapPointId}

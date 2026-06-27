@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import maplibregl, { type Map as MapLibreMap, type Marker } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Copy, LocateFixed } from 'lucide-react';
@@ -50,6 +50,13 @@ export interface WeatherFieldPoint {
   pressureHpa: number | null;
 }
 
+export interface WeatherNow {
+  windMs: number | null;
+  precipMm: number | null;
+  code?: number | null;
+  isPrecip?: boolean;
+}
+
 export interface MapSelection {
   type: 'point' | 'area' | 'road' | 'roadSuggestion' | 'roadAccess' | 'crossing' | 'railway';
   id: string;
@@ -74,6 +81,8 @@ interface MapCanvasProps {
   weatherNonce: number;
   /** Лёгкая сетка ветра/давления по видимой области. */
   weatherField: WeatherFieldPoint[];
+  /** Текущая сводка по центру/площадке — для мягкой погодной вуали. */
+  weatherNow: WeatherNow | null;
   /** Высота центра карты (м н.у.м.) — показываем в статус-баре всегда. null — нет. */
   centerElevation: number | null;
   roadPaintMode: RoadPaintMode;
@@ -136,6 +145,23 @@ const CONFIRM_TRACE_MIN_GAP_METERS = 2.4;
 const FREEHAND_ROAD_MIN_GAP_METERS = 2.2;
 const VEHICLE_TRACE_SNAP_METERS = 16; // обводим «особенности» — липнем к нарисованным дорогам
 const VEHICLE_TRACE_MIN_GAP_METERS = 2.4;
+const WEATHER_PARTICLES = Array.from({ length: 46 }, (_, index) => ({
+  id: index,
+  left: (index * 19 + 7) % 101,
+  top: -18 - ((index * 11) % 44),
+  delay: -((index * 0.37) % 6.4),
+  duration: 4.2 + ((index * 0.23) % 3.8),
+  scale: 0.72 + ((index * 13) % 31) / 100,
+}));
+
+type WeatherFlowKind = 'clear' | 'rain' | 'snow' | 'hail' | 'wind';
+
+interface WeatherFlowState {
+  kind: WeatherFlowKind;
+  intensity: number;
+  windMs: number;
+  windToDeg: number;
+}
 
 export function MapCanvas({
   doc,
@@ -150,6 +176,7 @@ export function MapCanvas({
   showWeather,
   weatherNonce,
   weatherField,
+  weatherNow,
   centerElevation,
   roadPaintMode,
   movingPointId,
@@ -712,7 +739,7 @@ export function MapCanvas({
         id: 'weather-rain',
         type: 'raster',
         source: 'weather-rain',
-        paint: { 'raster-opacity': 0.48, 'raster-fade-duration': 200 },
+        paint: { 'raster-opacity': 0.34, 'raster-fade-duration': 200 },
       } as never, beforeId);
     }
   }, [showWeather, weatherNonce, styleReady]);
@@ -720,6 +747,7 @@ export function MapCanvas({
   return (
     <div className="relative h-full w-full overflow-hidden">
       <div ref={elRef} className="h-full w-full bg-[#101419] [&_.maplibregl-canvas]:outline-none" />
+      <WeatherFlowOverlay show={showWeather} now={weatherNow} field={weatherField} />
       <MapControls
         zoom={viewMetrics?.zoom ?? DEFAULT_ZOOM}
         bearing={viewMetrics?.bearing ?? 0}
@@ -816,6 +844,175 @@ function cardinalRu(bearing: number): string {
   const dirs = ['С', 'СВ', 'В', 'ЮВ', 'Ю', 'ЮЗ', 'З', 'СЗ'];
   const i = Math.round((((bearing % 360) + 360) % 360) / 45) % 8;
   return dirs[i]!;
+}
+
+function WeatherFlowOverlay({ show, now, field }: { show: boolean; now: WeatherNow | null; field: WeatherFieldPoint[] }) {
+  const state = useMemo(() => summarizeWeatherFlow(now, field), [now, field]);
+  if (!show || state.kind === 'clear') return null;
+
+  const count = state.kind === 'wind'
+    ? Math.round(12 + state.intensity * 12)
+    : Math.round(18 + state.intensity * 28);
+  const particles = WEATHER_PARTICLES.slice(0, count);
+  const drift = Math.round(Math.sin((state.windToDeg * Math.PI) / 180) * (24 + state.windMs * 6));
+  const slant = Math.max(-24, Math.min(24, drift * 0.35));
+  const palette = weatherFlowPalette(state.kind);
+  const overlayStyle = {
+    '--wx-drift': `${drift}px`,
+    '--wx-slant': `${slant}deg`,
+    '--wx-wind-deg': `${state.windToDeg - 90}deg`,
+  } as CSSProperties;
+
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 z-[3] overflow-hidden"
+      style={{ ...overlayStyle, opacity: 0.46 + state.intensity * 0.2, mixBlendMode: 'screen' }}
+      aria-hidden="true"
+    >
+      <style>{WEATHER_FLOW_CSS}</style>
+      <div
+        className="absolute inset-0"
+        style={{
+          opacity: 0.22 + state.intensity * 0.12,
+          background: palette.wash,
+        }}
+      />
+      {particles.map((p) => (
+        <span
+          key={p.id}
+          className={`pyn-weather-flow pyn-weather-${state.kind}`}
+          style={{
+            left: `${p.left}%`,
+            top: `${p.top}%`,
+            animationDelay: `${p.delay}s`,
+            animationDuration: `${(state.kind === 'snow' ? p.duration + 3 : state.kind === 'hail' ? p.duration * 0.55 : p.duration).toFixed(2)}s`,
+            transform: `scale(${p.scale})`,
+            background: palette.particle,
+            boxShadow: palette.shadow,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+const WEATHER_FLOW_CSS = `
+@keyframes pynWeatherFall {
+  from { transform: translate3d(0, -16vh, 0) rotate(var(--wx-slant)); }
+  to { transform: translate3d(var(--wx-drift), 124vh, 0) rotate(var(--wx-slant)); }
+}
+@keyframes pynWeatherWind {
+  from { transform: translate3d(-12vw, 0, 0) rotate(var(--wx-wind-deg)); opacity: 0; }
+  20% { opacity: .62; }
+  80% { opacity: .52; }
+  to { transform: translate3d(112vw, -6vh, 0) rotate(var(--wx-wind-deg)); opacity: 0; }
+}
+.pyn-weather-flow {
+  position: absolute;
+  display: block;
+  border-radius: 999px;
+  will-change: transform, opacity;
+}
+.pyn-weather-rain {
+  width: 1.2px;
+  height: 46px;
+  animation: pynWeatherFall linear infinite;
+}
+.pyn-weather-snow {
+  width: 4.5px;
+  height: 4.5px;
+  animation: pynWeatherFall linear infinite;
+}
+.pyn-weather-hail {
+  width: 3.8px;
+  height: 3.8px;
+  animation: pynWeatherFall linear infinite;
+}
+.pyn-weather-wind {
+  width: 84px;
+  height: 1.4px;
+  animation: pynWeatherWind linear infinite;
+}
+`;
+
+function summarizeWeatherFlow(now: WeatherNow | null, field: WeatherFieldPoint[]): WeatherFlowState {
+  const precip = Math.max(now?.precipMm ?? 0, ...field.map((p) => p.precipMm ?? 0), 0);
+  const windMs = Math.max(now?.windMs ?? 0, ...field.map((p) => p.windMs ?? 0), 0);
+  const windToDeg = averageWindToDeg(field) ?? 105;
+  const codes = [now?.code ?? null, ...field.map((p) => p.code)].filter((code): code is number => typeof code === 'number');
+  const codeKind = codes.some(isHailCode) ? 'hail'
+    : codes.some(isSnowCode) ? 'snow'
+      : codes.some(isRainCode) ? 'rain'
+        : null;
+
+  if (codeKind === 'hail') return { kind: 'hail', intensity: clamp01(0.46 + precip / 4), windMs, windToDeg };
+  if (codeKind === 'snow') return { kind: 'snow', intensity: clamp01(0.36 + precip / 5), windMs, windToDeg };
+  if (codeKind === 'rain' || (now?.isPrecip ?? false) || precip > 0.05) {
+    return { kind: 'rain', intensity: clamp01(0.34 + precip / 5), windMs, windToDeg };
+  }
+  if (windMs >= 3) return { kind: 'wind', intensity: clamp01((windMs - 2) / 9), windMs, windToDeg };
+  return { kind: 'clear', intensity: 0, windMs, windToDeg };
+}
+
+function weatherFlowPalette(kind: WeatherFlowKind): { particle: string; shadow: string; wash: string } {
+  if (kind === 'snow') {
+    return {
+      particle: 'rgba(232, 246, 255, 0.84)',
+      shadow: '0 0 8px rgba(180, 220, 255, 0.34)',
+      wash: 'radial-gradient(circle at 20% 18%, rgba(180,220,255,.16), transparent 34%), radial-gradient(circle at 80% 58%, rgba(255,255,255,.10), transparent 38%)',
+    };
+  }
+  if (kind === 'hail') {
+    return {
+      particle: 'rgba(235, 242, 255, 0.9)',
+      shadow: '0 0 9px rgba(147, 197, 253, 0.46)',
+      wash: 'radial-gradient(circle at 22% 22%, rgba(147,197,253,.17), transparent 30%), radial-gradient(circle at 74% 58%, rgba(165,180,252,.12), transparent 36%)',
+    };
+  }
+  if (kind === 'wind') {
+    return {
+      particle: 'linear-gradient(90deg, transparent, rgba(182,227,255,.68), transparent)',
+      shadow: '0 0 8px rgba(125, 211, 252, 0.24)',
+      wash: 'radial-gradient(circle at 18% 30%, rgba(125,211,252,.10), transparent 34%), radial-gradient(circle at 82% 46%, rgba(148,163,184,.07), transparent 42%)',
+    };
+  }
+  return {
+    particle: 'linear-gradient(180deg, transparent, rgba(125, 211, 252, 0.8), transparent)',
+    shadow: '0 0 9px rgba(56, 189, 248, 0.34)',
+    wash: 'radial-gradient(circle at 18% 24%, rgba(56,189,248,.17), transparent 34%), radial-gradient(circle at 78% 54%, rgba(34,211,238,.10), transparent 38%)',
+  };
+}
+
+function averageWindToDeg(field: WeatherFieldPoint[]): number | null {
+  let sx = 0;
+  let sy = 0;
+  let weight = 0;
+  for (const p of field) {
+    if (p.windDir == null) continue;
+    const speed = Math.max(0.8, p.windMs ?? 1);
+    const to = ((p.windDir + 180) % 360) * Math.PI / 180;
+    sx += Math.sin(to) * speed;
+    sy += Math.cos(to) * speed;
+    weight += speed;
+  }
+  if (weight <= 0) return null;
+  return (Math.atan2(sx / weight, sy / weight) * 180 / Math.PI + 360) % 360;
+}
+
+function isRainCode(code: number): boolean {
+  return (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code === 95;
+}
+
+function isSnowCode(code: number): boolean {
+  return (code >= 71 && code <= 77) || code === 85 || code === 86;
+}
+
+function isHailCode(code: number): boolean {
+  return code === 96 || code === 99;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 function MapControls({ zoom, bearing, onZoomIn, onZoomOut, onZoomTo, onResetNorth, onRotate }: {
