@@ -48,6 +48,7 @@ interface WeatherSummary {
   windMs: number | null;
   precipMm: number | null;
   code?: number | null;
+  currentTime?: string | null;
   pressureHpa?: number | null;
   isPrecip: boolean;
   hourly: WeatherHour[];
@@ -892,26 +893,30 @@ function VehicleFilter({ active, onChange }: { active: VehicleType | null; onCha
 
 /** Чип сводки погоды по площадке: клик открывает ближайшие часы. */
 function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
-  const rows = weather?.hourly.slice(0, 12) ?? [];
+  const rows = weather?.hourly.slice(0, 16) ?? [];
+  const currentKey = weather?.currentTime?.slice(0, 13) ?? rows.find((row) => isSameEkaterinburgHour(row.time))?.time.slice(0, 13) ?? '';
+  const currentRow = rows.find((row) => row.time.slice(0, 13) === currentKey) ?? rows[0] ?? null;
+  const condition = weatherText(currentRow?.code ?? weather?.code ?? null, currentRow?.precipMm ?? weather?.precipMm ?? null, currentRow?.snowCm ?? null);
+  const chance = currentRow?.precipProb ?? null;
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="absolute left-3 top-3 z-[450] flex h-8 items-center gap-2 rounded-lg border border-white/10 bg-[#080b11]/86 px-2.5 text-[11.5px] text-white/85 shadow-lg outline-none backdrop-blur transition-colors hover:border-accent-clay/35 hover:bg-[#101520]/92"
+          className="absolute left-3 top-3 z-[450] flex h-8 items-center gap-2 rounded-lg border border-border-subtle bg-bg-elevated/92 px-2.5 text-[11.5px] text-text-secondary shadow-lg outline-none backdrop-blur transition-all duration-150 hover:border-accent-clay/35 hover:bg-bg-hover hover:text-text-strong"
           title="Погода по часам"
         >
-          <CloudRain size={14} strokeWidth={1.75} className={weather?.isPrecip ? 'text-sky-300' : 'text-white/55'} />
+          <CloudRain size={14} strokeWidth={1.75} className={weather?.isPrecip ? 'text-sky-300' : 'text-text-muted'} />
           {weather ? (
-            <span className="flex items-center gap-2 font-mono tabular-nums">
-              {weather.tempC != null && <span>{weather.tempC > 0 ? '+' : ''}{Math.round(weather.tempC)}°</span>}
-              {weather.windMs != null && <span className="text-white/65">{Math.round(weather.windMs)} м/с</span>}
-              <span className={weather.isPrecip ? 'text-sky-300' : 'text-white/55'}>
-                {weather.isPrecip ? `осадки ${(weather.precipMm ?? 0).toFixed(1)} мм` : 'без осадков'}
+            <span className="flex items-center gap-2 tabular-nums">
+              <span className="font-semibold text-text-strong">{weather.tempC != null ? `${weather.tempC > 0 ? '+' : ''}${Math.round(weather.tempC)}°` : '—'}</span>
+              <span className="max-w-[88px] truncate">{condition}</span>
+              <span className={weather.isPrecip ? 'font-mono text-sky-300' : 'font-mono text-text-muted'}>
+                {chance != null ? `${Math.round(chance)}%` : weather.isPrecip ? `${(weather.precipMm ?? 0).toFixed(1)} мм` : '0%'}
               </span>
             </span>
           ) : (
-            <span className="text-white/55">погода…</span>
+            <span className="text-text-muted">погода…</span>
           )}
         </button>
       </Popover.Trigger>
@@ -919,38 +924,54 @@ function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
         <Popover.Content
           align="start"
           sideOffset={8}
-          className="z-[700] w-[360px] overflow-hidden rounded-xl border border-border-default bg-bg-deep/95 shadow-[0_12px_42px_rgba(0,0,0,0.55)] outline-none backdrop-blur-md"
+          className="z-[700] w-[430px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-border-default bg-bg-deep/95 shadow-[0_12px_42px_rgba(0,0,0,0.55)] outline-none backdrop-blur-md transition-all duration-150"
         >
           <div className="flex items-center justify-between border-b border-border-subtle/70 px-3 py-2">
             <div>
-              <p className="text-[12.5px] font-semibold text-text-strong">Погода по часам</p>
-              <p className="text-[11px] text-text-muted">{weatherText(weather?.code ?? null, weather?.precipMm ?? null, null)}</p>
+              <p className="text-[12.5px] font-semibold text-text-strong">Погода · Екатеринбург</p>
+              <p className="text-[11px] text-text-muted">3 часа назад, сейчас и ближайшие часы</p>
             </div>
-            <div className="font-mono text-[12px] tabular-nums text-text-secondary">
-              {weather?.pressureHpa != null ? `${Math.round(weather.pressureHpa)} гПа` : weather?.tempC != null ? `${weather.tempC > 0 ? '+' : ''}${Math.round(weather.tempC)}°` : '—'}
+            <div className="rounded-md border border-border-subtle bg-bg-surface px-2 py-1 text-right">
+              <p className="font-mono text-[12px] tabular-nums text-text-strong">{weather?.tempC != null ? `${weather.tempC > 0 ? '+' : ''}${Math.round(weather.tempC)}°` : '—'}</p>
+              <p className="text-[10px] text-text-muted">{weather?.pressureHpa != null ? `${Math.round(weather.pressureHpa)} гПа` : 'сейчас'}</p>
             </div>
+          </div>
+          <div className="grid grid-cols-[54px_72px_70px_58px_54px_58px] gap-2 border-b border-border-subtle/60 px-3 py-1.5 text-[10px] uppercase text-text-muted">
+            <span>Время</span>
+            <span>Тип</span>
+            <span>Осадок</span>
+            <span className="text-right">Ветер</span>
+            <span className="text-right">Темп.</span>
+            <span className="text-right">Шанс</span>
           </div>
           <div className="max-h-[340px] overflow-y-auto p-1.5">
             {rows.length === 0 ? (
               <p className="px-2 py-2 text-[12px] text-text-muted">Почасовой прогноз загружается…</p>
-            ) : rows.map((row) => (
-              <div key={row.time} className="grid grid-cols-[44px_1fr_58px_58px] items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] hover:bg-bg-hover/70">
-                <span className="font-mono tabular-nums text-text-strong">{formatWeatherHour(row.time)}</span>
-                <div className="min-w-0">
-                  <p className="truncate text-text-secondary">{weatherText(row.code, row.precipMm, row.snowCm)}</p>
-                  <p className="font-mono text-[10.5px] tabular-nums text-text-muted">
-                    {formatPrecip(row)}
-                    {row.precipProb != null && <span className="ml-1">· {Math.round(row.precipProb)}%</span>}
-                  </p>
-                </div>
+            ) : rows.map((row) => {
+              const current = row.time.slice(0, 13) === currentKey;
+              const past = currentKey ? row.time.slice(0, 13) < currentKey : false;
+              return (
+                <div
+                  key={row.time}
+                  className={cn(
+                    'grid grid-cols-[54px_72px_70px_58px_54px_58px] items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] transition-colors hover:bg-bg-hover/70',
+                    current && 'border border-sky-300/25 bg-sky-400/10',
+                    past && !current && 'text-text-muted',
+                  )}
+                >
+                  <span className="font-mono tabular-nums text-text-strong">{current ? 'Сейчас' : formatWeatherHour(row.time)}</span>
+                  <span className="truncate text-text-secondary">{weatherText(row.code, row.precipMm, row.snowCm)}</span>
+                  <span className="font-mono tabular-nums text-text-muted">{formatPrecipShort(row)}</span>
+                  <span className="text-right font-mono tabular-nums text-text-muted" title={row.windDir != null ? `Направление ${Math.round(row.windDir)}°` : undefined}>
+                    {row.windMs != null ? `${Math.round(row.windMs)} м/с` : '—'}
+                  </span>
                 <span className="text-right font-mono tabular-nums text-text-secondary">
                   {row.tempC != null ? `${row.tempC > 0 ? '+' : ''}${Math.round(row.tempC)}°` : '—'}
                 </span>
-                <span className="text-right font-mono tabular-nums text-text-muted" title={row.windDir != null ? `Направление ${Math.round(row.windDir)}°` : undefined}>
-                  {row.windMs != null ? `${Math.round(row.windMs)} м/с` : '—'}
-                </span>
-              </div>
-            ))}
+                  <span className="text-right font-mono tabular-nums text-text-muted">{row.precipProb != null ? `${Math.round(row.precipProb)}%` : '—'}</span>
+                </div>
+              );
+            })}
           </div>
         </Popover.Content>
       </Popover.Portal>
@@ -960,16 +981,33 @@ function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
 
 function formatWeatherHour(value: string): string {
   const m = /T(\d{2}):/.exec(value);
-  return m ? `${m[1]}:00` : value.slice(-5);
+  if (!m) return value.slice(-5);
+  const hour = Number(m[1]);
+  if (!Number.isFinite(hour)) return value.slice(-5);
+  const h12 = hour % 12 || 12;
+  return `${h12} ${hour < 12 ? 'AM' : 'PM'}`;
 }
 
-function formatPrecip(row: WeatherHour): string {
-  const parts: string[] = [];
-  if ((row.rainMm ?? 0) > 0) parts.push(`дождь ${row.rainMm!.toFixed(1)} мм`);
-  else if ((row.precipMm ?? 0) > 0) parts.push(`осадки ${row.precipMm!.toFixed(1)} мм`);
-  if ((row.snowCm ?? 0) > 0) parts.push(`снег ${row.snowCm!.toFixed(1)} см`);
-  if (row.gustMs != null && row.windMs != null && row.gustMs > row.windMs + 2) parts.push(`порывы ${Math.round(row.gustMs)} м/с`);
-  return parts.length > 0 ? parts.join(' · ') : 'без осадков';
+function formatPrecipShort(row: WeatherHour): string {
+  if ((row.snowCm ?? 0) > 0) return `${row.snowCm!.toFixed(1)} см`;
+  if ((row.rainMm ?? 0) > 0) return `${row.rainMm!.toFixed(1)} мм`;
+  if ((row.precipMm ?? 0) > 0) return `${row.precipMm!.toFixed(1)} мм`;
+  return '0';
+}
+
+function isSameEkaterinburgHour(value: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})/.exec(value);
+  if (!m) return false;
+  const ekb = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Yekaterinburg',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+  const part = (type: string) => ekb.find((p) => p.type === type)?.value ?? '';
+  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}` === `${part('year')}-${part('month')}-${part('day')}T${part('hour')}`;
 }
 
 function weatherText(code: number | null | undefined, precipMm: number | null, snowCm: number | null): string {

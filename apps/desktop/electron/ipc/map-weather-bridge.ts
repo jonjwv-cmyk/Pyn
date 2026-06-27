@@ -49,6 +49,7 @@ export function setupMapWeatherBridge(): void {
         windMs: number | null;
         precipMm: number | null;
         code: number | null;
+        currentTime: string | null;
         pressureHpa: number | null;
         isPrecip: boolean;
         hourly: HourlyWeather[];
@@ -83,7 +84,7 @@ export function setupMapWeatherBridge(): void {
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${la.toFixed(4)}&longitude=${ln.toFixed(4)}`
           + '&current=temperature_2m,precipitation,weather_code,wind_speed_10m,pressure_msl'
           + '&hourly=temperature_2m,precipitation,precipitation_probability,rain,showers,snowfall,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m'
-          + '&forecast_days=2&timezone=auto&wind_speed_unit=ms';
+          + '&past_days=1&forecast_days=2&timezone=Asia%2FYekaterinburg&wind_speed_unit=ms';
         const resp = await tileSessionFetch(url);
         if (resp.ok) {
           const data = (await resp.json()) as {
@@ -98,6 +99,7 @@ export function setupMapWeatherBridge(): void {
             windMs: typeof c.wind_speed_10m === 'number' ? c.wind_speed_10m : null,
             precipMm: precip,
             code: typeof c.weather_code === 'number' ? c.weather_code : null,
+            currentTime: typeof c.time === 'string' ? c.time : null,
             pressureHpa: typeof c.pressure_msl === 'number' ? c.pressure_msl : null,
             isPrecip: (precip ?? 0) > 0,
             hourly,
@@ -210,6 +212,7 @@ function normalizeHourly(hourly: Record<string, Array<number | string>> | undefi
   const currentHour = currentTime ? currentTime.slice(0, 13) : '';
   let start = currentHour ? times.findIndex((t) => t.slice(0, 13) >= currentHour) : -1;
   if (start < 0) start = 0;
+  start = Math.max(0, start - 3);
 
   const num = (key: string, index: number): number | null => {
     const value = hourly?.[key]?.[index];

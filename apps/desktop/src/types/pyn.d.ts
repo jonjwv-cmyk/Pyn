@@ -98,6 +98,7 @@ declare global {
           windMs: number | null;
           precipMm: number | null;
           code: number | null;
+          currentTime: string | null;
           pressureHpa: number | null;
           isPrecip: boolean;
           hourly: Array<{

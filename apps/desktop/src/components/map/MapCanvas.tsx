@@ -603,7 +603,6 @@ export function MapCanvas({
     setSourceData(map, 'map-route', buildRouteData(routePath, routeBlocked));
     setSourceData(map, 'map-opt-rays', buildOptimizeRaysData(optimizeOverlay));
     setSourceData(map, 'map-draft', buildDraftData(tool, draft, cursor, roadPaintMode));
-    setSourceData(map, 'weather-wind', showWeather ? buildWeatherWindData(weatherField) : EMPTY_FEATURES);
 
     clearMarkers(markerRefs.current);
     markerRefs.current = [];
@@ -1258,7 +1257,6 @@ function ensureOverlayLayers(map: MapLibreMap): void {
   addGeoJsonSource(map, 'map-route');
   addGeoJsonSource(map, 'map-opt-rays');
   addGeoJsonSource(map, 'map-draft');
-  addGeoJsonSource(map, 'weather-wind');
 
   // Ж/д путь — тёмная линия + белые «шпалы» (частый пунктир поверх). Под дорогами.
   addLayer(map, {
@@ -1291,52 +1289,6 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': '#ffffff', 'line-width': 16, 'line-opacity': 0.01 },
   });
-
-  // Ветер — лёгкие стрелки поверх радара осадков, но под дорогами/маршрутом.
-  // Не используем плотные погодные тайлы: логистическая карта должна оставаться
-  // читаемой, особенно на спутнике.
-  addLayer(map, {
-    id: 'weather-wind-arrows',
-    type: 'symbol',
-    source: 'weather-wind',
-    minzoom: 8,
-    layout: {
-      'symbol-placement': 'point',
-      'symbol-avoid-edges': true,
-      'text-field': '↑',
-      'text-size': ['interpolate', ['linear'], ['get', 'windMs'], 0, 11, 8, 15, 16, 19],
-      'text-rotate': ['get', 'angle'],
-      'text-rotation-alignment': 'map',
-      'text-allow-overlap': false,
-      'text-ignore-placement': false,
-    },
-    paint: {
-      'text-color': '#B6E3FF',
-      'text-halo-color': 'rgba(7, 13, 20, 0.78)',
-      'text-halo-width': 1.3,
-      'text-opacity': 0.74,
-    },
-  } as never);
-  addLayer(map, {
-    id: 'weather-wind-labels',
-    type: 'symbol',
-    source: 'weather-wind',
-    minzoom: 10,
-    layout: {
-      'symbol-placement': 'point',
-      'text-field': ['get', 'label'],
-      'text-size': 9.5,
-      'text-offset': [0, 1.2],
-      'text-allow-overlap': false,
-      'text-ignore-placement': false,
-    },
-    paint: {
-      'text-color': '#DCE7F3',
-      'text-halo-color': 'rgba(7, 13, 20, 0.86)',
-      'text-halo-width': 1.2,
-      'text-opacity': 0.68,
-    },
-  } as never);
 
   addLayer(map, {
     id: 'map-areas-fill',
@@ -1703,37 +1655,6 @@ function buildOptimizeRaysData(ov: OptimizeOverlay | null): FeatureCollection {
         coordinates: [toCoord(ov.result!.optimal), toCoord(d)],
       },
     })),
-  };
-}
-
-function buildWeatherWindData(points: WeatherFieldPoint[]): FeatureCollection {
-  if (points.length === 0) return EMPTY_FEATURES;
-  return {
-    type: 'FeatureCollection',
-    features: points
-      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
-      .map((p) => {
-        const wind = p.windMs ?? 0;
-        const dir = p.windDir ?? 0;
-        const gust = p.gustMs ?? null;
-        const pressure = p.pressureHpa ?? null;
-        return {
-          type: 'Feature',
-          properties: {
-            kind: 'weatherWind',
-            windMs: wind,
-            angle: (dir + 180) % 360, // Open-Meteo даёт направление, ОТКУДА дует; стрелка показывает КУДА.
-            label: [
-              `${Math.round(wind)} м/с`,
-              gust != null && gust > wind + 2 ? `пор. ${Math.round(gust)}` : null,
-              pressure != null ? `${Math.round(pressure)}` : null,
-            ].filter(Boolean).join(' · '),
-            precip: p.precipMm ?? 0,
-            pressure,
-          },
-          geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
-        };
-      }),
   };
 }
 
