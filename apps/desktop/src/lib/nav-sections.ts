@@ -1,4 +1,4 @@
-import { Archive, CalendarRange, Database, History, MapPinned, MessageSquare, Newspaper, Rss, Scale, Truck, Waves } from 'lucide-react';
+import { Archive, CalendarRange, Container, Database, History, MapPinned, MessageSquare, Newspaper, Rss, Scale, Truck, Waves } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -110,6 +110,21 @@ export const NAV_MAP: NavSection = {
   // База-blue / Рассылка-rose.
   icon: MapPinned,
   iconColor: 'text-emerald-400',
+};
+
+/**
+ * Раздел «Технология» — встроенный публичный логистический борт pynflow.ru
+ * (заявки цехов · кладовщики 9010/9030 · машины 7.1/7.2 · рейсы · ГЛОНАСС-статус)
+ * через Electron `<webview>`. Тот же изолированный admin/developer-контур, что
+ * «Поток»/«Карта» (флаг `showTech`); вне `NAV_SECTIONS`. См. `TechScreen`.
+ */
+export const NAV_TECH: NavSection = {
+  id: 'tech',
+  get label() { return i18next.t('sidebar.nav_tech', 'Технология'); },
+  // Контейнер (логистика/отгрузка) — orange, под clay-бренд сайта; в семье
+  // Поток-teal / Транспорт-amber / База-blue / Карта-emerald / Рассылка-rose.
+  icon: Container,
+  iconColor: 'text-orange-400',
 };
 
 // Группа «Лента».

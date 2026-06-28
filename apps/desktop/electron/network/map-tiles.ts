@@ -61,6 +61,20 @@ export async function tileSessionFetch(url: string): Promise<Response> {
   return getTileSession().fetch(url, { headers: { 'User-Agent': CHROME_UA } });
 }
 
+/**
+ * Универсальный запрос через тот же VPS-туннель (мост), что и тайлы/погода —
+ * но с произвольным методом/телом/заголовками (для POST-API вроде ГЛОНАСС).
+ * Наружу напрямую не ходим: всё идёт через VPS (политика «Транспорт — через VPS»).
+ */
+export async function bridgeFetch(url: string, init?: RequestInit): Promise<Response> {
+  if (!getBridgeProxyEndpoint()) {
+    throw new Error('map_bridge_not_ready');
+  }
+  const headers = new Headers(init?.headers);
+  if (!headers.has('User-Agent')) headers.set('User-Agent', CHROME_UA);
+  return getTileSession().fetch(url, { ...init, headers });
+}
+
 /** Регистрация схемы (привилегированная: secure + поддержка fetch/CORS). До ready. */
 export function registerMapTileScheme(): void {
   protocol.registerSchemesAsPrivileged([

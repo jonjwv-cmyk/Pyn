@@ -133,6 +133,47 @@ declare global {
       }>;
       /** Высота точки над уровнем моря (Open-Meteo) через мост. */
       mapElevation?: (lat: number, lng: number) => Promise<{ ok: boolean; elevation: number | null }>;
+      /** ГЛОНАСС-мониторинг транспорта (кнопка «Глонасс» на карте) через VPS-мост. */
+      glonass?: {
+        vehicles: () => Promise<{
+          ok: boolean;
+          vehicles: Array<{
+            id: number; guid: string; name: string;
+            garage: string; gos: string; imei: string; status: number;
+          }>;
+          error?: string;
+        }>;
+        positions: (ids: number[]) => Promise<{
+          ok: boolean;
+          positions: Array<{
+            id: number; lat: number; lng: number;
+            speed: number | null; course: number | null; ign: boolean | null; time: string | null;
+          }>;
+          offline?: boolean;
+          error?: string | null;
+        }>;
+        activity: (id: number, from: string, to: string) => Promise<{
+          ok: boolean;
+          moves: Array<Record<string, unknown>>;
+          stops: Array<Record<string, unknown>>;
+          error?: string | null;
+        }>;
+        historyPoints: (id: number, from: string, to: string) => Promise<{
+          ok: boolean;
+          points: Array<{
+            lat: number;
+            lng: number;
+            speed: number | null;
+            time: string;
+          }>;
+          error?: string | null;
+        }>;
+        stats: (ids: number[], from: string, to: string) => Promise<{
+          ok: boolean;
+          items: Array<Record<string, unknown>>;
+          error?: string;
+        }>;
+      };
       /** Google account flow для embedded Sheets. */
       google: {
         openLogin: () => Promise<boolean>;

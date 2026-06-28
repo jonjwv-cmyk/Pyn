@@ -26,6 +26,7 @@ import {
   type VehicleType,
 } from './map-types';
 import type { OptimizeResult } from './optimize';
+import { STATUS_COLOR, STATUS_LABEL, formatGlonassSpeed, type GlonassMarker, type GlonassReplayMarker } from './glonass-store';
 import { distanceMeters, nearestPointOnPolyline } from './geo';
 
 /** Текущее положение оптимума + «призрак» (что-если), что рисуем поверх карты. */
@@ -83,12 +84,18 @@ interface MapCanvasProps {
   weatherField: WeatherFieldPoint[];
   /** Текущая сводка по центру/площадке — для мягкой погодной вуали. */
   weatherNow: WeatherNow | null;
-  /** Высота центра карты (м н.у.м.) — показываем в статус-баре всегда. null — нет. */
-  centerElevation: number | null;
   roadPaintMode: RoadPaintMode;
   movingPointId: string | null;
   /** Выбранная машина «куда проедет» — подсвечиваем доступные точки, гасим прочие. */
   activeVehicle: VehicleType | null;
+  /** Машины ГЛОНАСС (выбранные для слежения) с позицией — рисуем поверх карты. */
+  glonassMarkers: GlonassMarker[];
+  /** Live-следы выбранных машин, накопленные из realtime-опроса. */
+  glonassTracks: Array<{ id: number; color: string; points: LatLng[] }>;
+  /** Исторические маршруты/годовые следы ГЛОНАСС. */
+  glonassHistoryTracks: Array<{ id: string; color: string; points: LatLng[]; opacity: number }>;
+  /** Текущая машина исторического проигрывателя. */
+  glonassReplayMarker: GlonassReplayMarker | null;
   onSelect: (sel: MapSelection | null) => void;
   onCreatePoint: (latlng: LatLng) => void;
   onMovePoint: (id: string, latlng: LatLng) => void;
@@ -177,10 +184,13 @@ export function MapCanvas({
   weatherNonce,
   weatherField,
   weatherNow,
-  centerElevation,
   roadPaintMode,
   movingPointId,
   activeVehicle,
+  glonassMarkers,
+  glonassTracks,
+  glonassHistoryTracks,
+  glonassReplayMarker,
   onSelect,
   onCreatePoint,
   onMovePoint,
@@ -208,6 +218,8 @@ export function MapCanvas({
   const elRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRefs = useRef<Marker[]>([]);
+  const glonassRefs = useRef<Marker[]>([]);
+  const glonassReplayRefs = useRef<Marker[]>([]);
   const draftRef = useRef<LatLng[]>([]);
   const prevToolRef = useRef<MapTool>(tool);
   const skipAutoCommitRef = useRef(false);
@@ -279,6 +291,10 @@ export function MapCanvas({
     map.on('zoomend', reportBounds);
 
     return () => {
+      clearMarkers(glonassReplayRefs.current);
+      glonassReplayRefs.current = [];
+      clearMarkers(glonassRefs.current);
+      glonassRefs.current = [];
       clearMarkers(markerRefs.current);
       markerRefs.current = [];
       setStyleReady(false);
@@ -686,6 +702,54 @@ export function MapCanvas({
     styleReady,
   ]);
 
+  // Машины ГЛОНАСС — отдельный слой маркеров (не мигает при правках карты,
+  // обновляется только при изменении позиций/выбора).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    clearMarkers(glonassRefs.current);
+    glonassRefs.current = [];
+    for (const m of glonassMarkers) {
+      const el = createGlonassMarkerElement(m);
+      el.style.zIndex = '900';
+      glonassRefs.current.push(
+        // subpixelPositioning — маркер трекает карту субпиксельно (без округления
+        // до целых px), иначе «прыгает» на ~1px относительно плавно зумящейся карты.
+        new maplibregl.Marker({ element: el, anchor: 'bottom', subpixelPositioning: true })
+          .setLngLat([m.lng, m.lat])
+          .addTo(map),
+      );
+    }
+  }, [glonassMarkers, styleReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    setSourceData(map, 'map-glonass-tracks', buildGlonassTracksData(glonassTracks));
+  }, [glonassTracks, styleReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    setSourceData(map, 'map-glonass-history', buildGlonassHistoryData(glonassHistoryTracks));
+  }, [glonassHistoryTracks, styleReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    clearMarkers(glonassReplayRefs.current);
+    glonassReplayRefs.current = [];
+    if (glonassReplayMarker) {
+      const el = createGlonassReplayMarkerElement(glonassReplayMarker);
+      el.style.zIndex = '910';
+      glonassReplayRefs.current.push(
+        new maplibregl.Marker({ element: el, anchor: 'bottom', subpixelPositioning: true })
+          .setLngLat([glonassReplayMarker.lng, glonassReplayMarker.lat])
+          .addTo(map),
+      );
+    }
+  }, [glonassReplayMarker, styleReady]);
+
   // Экранная позиция выбранной точки → поповер-карточка у пина (следит за картой).
   const selectedPoint = selection?.type === 'point' ? doc.points.find((p) => p.id === selection.id) ?? null : null;
   const reportScreenRef = useRef(onSelectedPointScreen);
@@ -756,7 +820,7 @@ export function MapCanvas({
         onResetNorth={resetNorth}
         onRotate={rotateBy}
       />
-      <MapStatusBar metrics={viewMetrics} cursor={cursor} elevation={centerElevation} />
+      <MapStatusBar metrics={viewMetrics} cursor={cursor} />
       {pointMenu && (
         <>
           <div className="absolute inset-0 z-[470]" onClick={() => setPointMenu(null)} onContextMenu={(e) => { e.preventDefault(); setPointMenu(null); }} />
@@ -1143,9 +1207,10 @@ function MovePointOverlay({
   );
 }
 
-function MapStatusBar({ metrics, cursor, elevation }: { metrics: ViewMetrics | null; cursor: LatLng | null; elevation: number | null }) {
-  // Координаты, зум, масштаб и высота — единым блоком СПРАВА внизу (слева внизу
-  // теперь блок управления). Низ-лево не занимаем.
+function MapStatusBar({ metrics, cursor }: { metrics: ViewMetrics | null; cursor: LatLng | null }) {
+  // Координаты, зум и масштаб — единым блоком СПРАВА внизу (слева внизу теперь
+  // блок управления). Низ-лево не занимаем. (Высоту н.у.м. убрали: площадка
+  // плоская, метрика почти не менялась, а тянулась запросом на каждый сдвиг.)
   const loc = cursor ?? metrics?.center ?? null;
   return (
     <div className="pointer-events-none absolute bottom-2 right-2 z-[3] flex items-center gap-1.5 rounded-md border border-white/10 bg-[#080b11]/80 px-2.5 py-1 text-[11px] text-white/80 shadow-lg backdrop-blur">
@@ -1156,10 +1221,6 @@ function MapStatusBar({ metrics, cursor, elevation }: { metrics: ViewMetrics | n
       <span className="font-mono tabular-nums">z {metrics ? metrics.zoom.toFixed(1) : '—'}</span>
       <span className="text-white/35">•</span>
       <span className="font-mono tabular-nums">{metrics ? `${metrics.metersPerPixel.toFixed(metrics.metersPerPixel < 10 ? 1 : 0)} м/px` : '— м/px'}</span>
-      <span className="text-white/35">•</span>
-      <span className="font-mono tabular-nums" title="Высота центра карты над уровнем моря">
-        {elevation != null ? `${Math.round(elevation)} м н.у.м.` : 'выс …'}
-      </span>
     </div>
   );
 }
@@ -1230,8 +1291,11 @@ function tuneScrollZoom(map: MapLibreMap): void {
     setWheelZoomRate?: (rate: number) => void;
     setZoomRate?: (rate: number) => void;
   };
-  scrollZoom.setWheelZoomRate?.(1 / 520);
-  scrollZoom.setZoomRate?.(1 / 120);
+  // Чем меньше «rate», тем мельче шаг на одно деление колеса/жест трекпада →
+  // тем плавнее и мягче наезд/отъезд (меньше рывков). Подобрано на ощупь;
+  // если покажется вялым — увеличить дробь (напр. 1/560 колесо).
+  scrollZoom.setWheelZoomRate?.(1 / 720);
+  scrollZoom.setZoomRate?.(1 / 180);
 }
 
 function readViewMetrics(map: MapLibreMap): ViewMetrics {
@@ -1255,6 +1319,8 @@ function ensureOverlayLayers(map: MapLibreMap): void {
   addGeoJsonSource(map, 'map-road-suggestions');
   addGeoJsonSource(map, 'map-road-access');
   addGeoJsonSource(map, 'map-route');
+  addGeoJsonSource(map, 'map-glonass-history');
+  addGeoJsonSource(map, 'map-glonass-tracks');
   addGeoJsonSource(map, 'map-opt-rays');
   addGeoJsonSource(map, 'map-draft');
 
@@ -1338,6 +1404,30 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': '#ffffff', 'line-width': 16, 'line-opacity': 0.01 },
   });
+  // Реальные следы ГЛОНАСС — под нашими жёлтыми дорогами. Так видно, где
+  // розовые фактические проезды плотно совпадают с дорогой, а где её надо править.
+  addLayer(map, {
+    id: 'map-glonass-history-casing',
+    type: 'line',
+    source: 'map-glonass-history',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': '#080B11',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 3.2, 16, 5.4, 20, 8.4],
+      'line-opacity': ['*', ['coalesce', ['get', 'opacity'], 0.7], 0.28],
+    },
+  });
+  addLayer(map, {
+    id: 'map-glonass-history-line',
+    type: 'line',
+    source: 'map-glonass-history',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': ['get', 'color'],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.4, 16, 2.8, 20, 4.8],
+      'line-opacity': ['coalesce', ['get', 'opacity'], 0.7],
+    },
+  });
   // Дороги (свои + подтверждённые) — тёмная обводка + яркая линия, чтобы
   // чётко читались на спутнике. ПОВЕРХ красного черновика.
   addLayer(map, {
@@ -1416,6 +1506,28 @@ function ensureOverlayLayers(map: MapLibreMap): void {
       'line-width': ['interpolate', ['linear'], ['zoom'], 12, 2.4, 16, 4.5, 20, 7],
       'line-opacity': 0.96,
       'line-dasharray': [1, 1.35],
+    },
+  });
+  addLayer(map, {
+    id: 'map-glonass-tracks-casing',
+    type: 'line',
+    source: 'map-glonass-tracks',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': '#05070B',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 4.2, 16, 6.4, 20, 9],
+      'line-opacity': 0.72,
+    },
+  });
+  addLayer(map, {
+    id: 'map-glonass-tracks-line',
+    type: 'line',
+    source: 'map-glonass-tracks',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': ['get', 'color'],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 2, 16, 3.5, 20, 5.8],
+      'line-opacity': 0.86,
     },
   });
   addLayer(map, {
@@ -1623,6 +1735,38 @@ function buildRouteData(routePath: LatLng[] | null, blocked = false): FeatureCol
   };
 }
 
+function buildGlonassTracksData(tracks: Array<{ id: number; color: string; points: LatLng[] }>): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: tracks
+      .filter((track) => track.points.length >= 2)
+      .map((track) => ({
+        type: 'Feature',
+        properties: { id: track.id, kind: 'glonassTrack', color: track.color },
+        geometry: {
+          type: 'LineString',
+          coordinates: track.points.map(toCoord),
+        },
+      })),
+  };
+}
+
+function buildGlonassHistoryData(tracks: Array<{ id: string; color: string; points: LatLng[]; opacity: number }>): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: tracks
+      .filter((track) => track.points.length >= 2)
+      .map((track) => ({
+        type: 'Feature',
+        properties: { id: track.id, kind: 'glonassHistory', color: track.color, opacity: track.opacity },
+        geometry: {
+          type: 'LineString',
+          coordinates: track.points.map(toCoord),
+        },
+      })),
+  };
+}
+
 function buildRoadSuggestionsData(suggestions: MapRoadSuggestion[], selection: MapSelection | null): FeatureCollection {
   return {
     type: 'FeatureCollection',
@@ -1795,7 +1939,7 @@ function createPointMarker({
       onContextMenu(point.id, event.clientX, event.clientY);
     });
   }
-  const marker = new maplibregl.Marker({ element: el, anchor: 'bottom', draggable })
+  const marker = new maplibregl.Marker({ element: el, anchor: 'bottom', draggable, subpixelPositioning: true })
     .setLngLat(toCoord(point))
     .addTo(map);
   if (draggable) marker.on('dragend', () => onMovePoint(point.id, toLatLng(marker.getLngLat())));
@@ -1841,6 +1985,175 @@ function addOptimizeMarkers(
 
 function clearMarkers(markers: Marker[]): void {
   for (const marker of markers) marker.remove();
+}
+
+/** Маркер машины ГЛОНАСС: компактный fleet-бейдж + гаражный № + курс. */
+function createGlonassMarkerElement(m: GlonassMarker): HTMLDivElement {
+  const color = STATUS_COLOR[m.status];
+  const wrap = document.createElement('div');
+  // Важно: MapLibre якорит НИЗ этого контейнера. Маленькая точка внизу — это
+  // точная GPS-координата; бейдж машины стоит над ней и не «плавает» при зуме.
+  wrap.style.cssText = 'position:relative;width:122px;height:54px;overflow:visible;pointer-events:none;';
+  wrap.title = `${m.garage ? m.garage + '  ' : ''}${m.gos} — ${STATUS_LABEL[m.status]} · ${formatGlonassSpeed(m.speed)}`.trim();
+
+  const marker = document.createElement('div');
+  marker.style.cssText =
+    'position:absolute;left:61px;bottom:10px;z-index:2;display:flex;align-items:center;gap:5px;min-width:54px;max-width:108px;height:30px;'
+    + 'transform:translateX(-50%);pointer-events:auto;'
+    + `padding:3px 8px 3px 3px;border-radius:9px;background:linear-gradient(90deg,${hexToRgba(color, 0.2)},rgba(8,11,17,0.94) 54%);`
+    + `border:1.5px solid ${color};color:#fff;`
+    + 'box-shadow:0 10px 24px rgba(0,0,0,0.38),0 2px 7px rgba(0,0,0,0.45),inset 0 1px 0 rgba(255,255,255,0.12);'
+    + 'backdrop-filter:blur(8px);';
+
+  const icon = document.createElement('span');
+  icon.style.cssText =
+    `position:relative;display:flex;align-items:center;justify-content:center;width:27px;height:24px;`
+    + `border-radius:7px;background:${color};color:#fff;flex:0 0 auto;`
+    + 'box-shadow:inset 0 0 0 1.5px rgba(255,255,255,0.32),0 0 0 1px rgba(8,11,17,0.72);';
+  icon.innerHTML =
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/>'
+    + '<path d="M15 18H9"/>'
+    + '<path d="M19 18h2a1 1 0 0 0 1-1v-3.6a1 1 0 0 0-.22-.62L18.3 8.4A1 1 0 0 0 17.5 8H14"/>'
+    + '<circle cx="17" cy="18" r="2"/>'
+    + '<circle cx="7" cy="18" r="2"/>'
+    + '</svg>';
+
+  // Курс приходит из живого фида сайта. Показываем его отдельным маленьким
+  // шевроном СНАРУЖИ перед машиной, не вращая сам бейдж и номер.
+  if (m.course != null && m.status === 'moving') {
+    wrap.appendChild(createCourseArrow(color, m.course, true));
+  }
+
+  const label = document.createElement('span');
+  label.style.cssText =
+    'display:flex;min-width:28px;max-width:66px;flex-direction:column;gap:1px;overflow:hidden;white-space:nowrap;';
+  const garage = document.createElement('span');
+  garage.style.cssText =
+    'display:block;overflow:hidden;text-overflow:ellipsis;'
+    + 'font:850 11.5px/1 Inter,Arial,sans-serif;letter-spacing:0;color:#fff;'
+    + 'text-shadow:0 1px 2px rgba(0,0,0,0.75);';
+  garage.textContent = m.garage || m.gos || '?';
+  const speed = document.createElement('span');
+  speed.style.cssText =
+    'display:block;overflow:hidden;text-overflow:ellipsis;'
+    + 'font:700 8.5px/1 Inter,Arial,sans-serif;letter-spacing:0;color:rgba(255,255,255,0.82);'
+    + 'text-shadow:0 1px 2px rgba(0,0,0,0.75);';
+  speed.textContent = formatGlonassSpeed(m.speed);
+  label.append(garage, speed);
+
+  marker.append(icon, label);
+  wrap.append(createGlonassAnchor(color), marker);
+  return wrap;
+}
+
+/** Маркер исторического проигрывателя: та же логика машины, но без live-статуса. */
+function createGlonassReplayMarkerElement(m: GlonassReplayMarker): HTMLDivElement {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:relative;width:122px;height:54px;overflow:visible;pointer-events:none;';
+  wrap.title = `${m.garage ? m.garage + '  ' : ''}${m.gos} — история · ${formatGlonassSpeed(m.speed)} · ${formatMarkerTime(m.time)}`.trim();
+
+  const marker = document.createElement('div');
+  marker.style.cssText =
+    'position:absolute;left:61px;bottom:10px;z-index:2;display:flex;align-items:center;gap:5px;min-width:58px;max-width:108px;height:30px;'
+    + 'transform:translateX(-50%);pointer-events:auto;'
+    + `padding:3px 8px 3px 3px;border-radius:9px;background:linear-gradient(90deg,${hexToRgba(m.color, 0.24)},rgba(8,11,17,0.94) 54%);`
+    + `border:1.5px solid ${m.color};color:#fff;`
+    + 'box-shadow:0 10px 24px rgba(0,0,0,0.38),0 2px 7px rgba(0,0,0,0.45),inset 0 1px 0 rgba(255,255,255,0.12);'
+    + 'backdrop-filter:blur(8px);';
+
+  const icon = document.createElement('span');
+  icon.style.cssText =
+    `display:flex;align-items:center;justify-content:center;width:27px;height:24px;border-radius:7px;background:${m.color};color:#fff;flex:0 0 auto;`
+    + 'box-shadow:inset 0 0 0 1.5px rgba(255,255,255,0.32),0 0 0 1px rgba(8,11,17,0.72);';
+  icon.innerHTML =
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/>'
+    + '<path d="M15 18H9"/>'
+    + '<path d="M19 18h2a1 1 0 0 0 1-1v-3.6a1 1 0 0 0-.22-.62L18.3 8.4A1 1 0 0 0 17.5 8H14"/>'
+    + '<circle cx="17" cy="18" r="2"/>'
+    + '<circle cx="7" cy="18" r="2"/>'
+    + '</svg>';
+
+  if (m.course != null && (m.speed ?? 0) > 3) {
+    wrap.appendChild(createCourseArrow(m.color, m.course, false));
+  }
+
+  const label = document.createElement('span');
+  label.style.cssText = 'display:flex;min-width:30px;max-width:70px;flex-direction:column;gap:1px;overflow:hidden;white-space:nowrap;';
+  const garage = document.createElement('span');
+  garage.style.cssText =
+    'display:block;overflow:hidden;text-overflow:ellipsis;font:850 11.5px/1 Inter,Arial,sans-serif;letter-spacing:0;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.75);';
+  garage.textContent = m.garage || m.gos || '?';
+  const speed = document.createElement('span');
+  speed.style.cssText =
+    'display:block;overflow:hidden;text-overflow:ellipsis;font:700 8.5px/1 Inter,Arial,sans-serif;letter-spacing:0;color:rgba(255,255,255,0.82);text-shadow:0 1px 2px rgba(0,0,0,0.75);';
+  speed.textContent = formatGlonassSpeed(m.speed);
+  label.append(garage, speed);
+
+  marker.append(icon, label);
+  wrap.append(createGlonassAnchor(m.color), marker);
+  return wrap;
+}
+
+function createGlonassAnchor(color: string): HTMLDivElement {
+  const anchor = document.createElement('div');
+  anchor.style.cssText =
+    'position:absolute;left:61px;bottom:-3px;z-index:3;width:7px;height:7px;margin-left:-3.5px;border-radius:999px;'
+    + `background:${color};border:1.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.75),0 0 0 2px rgba(8,11,17,0.72);`
+    + 'pointer-events:none;';
+
+  const stem = document.createElement('div');
+  stem.style.cssText =
+    'position:absolute;left:61px;bottom:4px;z-index:1;width:2px;height:8px;margin-left:-1px;border-radius:999px;'
+    + `background:linear-gradient(180deg,${hexToRgba(color, 0.85)},${hexToRgba(color, 0.22)});`
+    + 'box-shadow:0 1px 3px rgba(0,0,0,0.55);pointer-events:none;';
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:absolute;inset:0;pointer-events:none;';
+  wrap.append(stem, anchor);
+  return wrap;
+}
+
+function createCourseArrow(color: string, course: number, withInnerLine: boolean): HTMLDivElement {
+  const arrowPos = courseOffset(course, 34);
+  const arrow = document.createElement('div');
+  arrow.innerHTML =
+    '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" aria-hidden="true">'
+    + `<path d="M12 2.4 19.2 21.1 12 16.8 4.8 21.1 12 2.4Z" fill="${color}" stroke="white" stroke-width="1.9" stroke-linejoin="round"/>`
+    + (withInnerLine ? '<path d="M12 7.4v7.2" stroke="rgba(8,11,17,0.5)" stroke-width="1.5" stroke-linecap="round"/>' : '')
+    + '</svg>';
+  arrow.style.cssText =
+    `position:absolute;left:${61 + arrowPos.x}px;top:${29 + arrowPos.y}px;margin:-12px 0 0 -12px;width:24px;height:24px;z-index:1;`
+    + `transform:rotate(${normalizeCourse(course)}deg);transform-origin:50% 50%;`
+    + 'opacity:1;filter:drop-shadow(0 2px 5px rgba(0,0,0,0.82));pointer-events:none;';
+  return arrow;
+}
+
+function formatMarkerTime(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(date);
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const raw = hex.replace('#', '');
+  if (raw.length !== 6) return `rgba(255,255,255,${alpha})`;
+  const n = Number.parseInt(raw, 16);
+  if (!Number.isFinite(n)) return `rgba(255,255,255,${alpha})`;
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
+function normalizeCourse(course: number): number {
+  return ((course % 360) + 360) % 360;
+}
+
+function courseOffset(course: number, distancePx: number): { x: number; y: number } {
+  const rad = normalizeCourse(course) * Math.PI / 180;
+  return {
+    x: Math.sin(rad) * distancePx,
+    y: -Math.cos(rad) * distancePx,
+  };
 }
 
 function toLatLng(p: maplibregl.LngLat | LatLng): LatLng {

@@ -7,6 +7,7 @@ import { setupAppLockBridge } from './ipc/app-lock-bridge';
 import { setupBlobBridge } from './ipc/blob-bridge';
 import { setupCacheBridge } from './ipc/cache-bridge';
 import { setupMapWeatherBridge } from './ipc/map-weather-bridge';
+import { setupGlonassBridge } from './ipc/glonass-bridge';
 import { setupFsBridge } from './ipc/fs-bridge';
 import { setupPrintBridge } from './ipc/print-bridge';
 import { setupGoogleBridge } from './ipc/google-bridge';
@@ -400,6 +401,8 @@ app.whenReady().then(async () => {
   setupCacheBridge();
   // Погода для карты (радар RainViewer + сводка Open-Meteo) через тайл-сессию.
   setupMapWeatherBridge();
+  // ГЛОНАСС-мониторинг транспорта (кнопка «Глонасс» на карте) через тот же мост.
+  setupGlonassBridge();
   // МОЛ snapshot download: fetch encrypted R2 blob → AES decrypt → gunzip →
   // отдать renderer'у plain JSON. Save/load базы — через pyn:cache:* (имя
   // 'mol-base').

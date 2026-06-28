@@ -154,6 +154,27 @@ contextBridge.exposeInMainWorld('pyn', {
     return ipcRenderer.invoke('pyn:map-elevation', lat, lng);
   },
   /**
+   * ГЛОНАСС-мониторинг (кнопка «Глонасс» на карте). Главный процесс держит токен
+   * и ходит к hosting.glonasssoft.ru через VPS-мост; renderer кредов не видит.
+   */
+  glonass: {
+    vehicles: function pynGlonassVehicles() {
+      return ipcRenderer.invoke('pyn:glonass-vehicles');
+    },
+    positions: function pynGlonassPositions(ids) {
+      return ipcRenderer.invoke('pyn:glonass-positions', ids);
+    },
+    activity: function pynGlonassActivity(id, from, to) {
+      return ipcRenderer.invoke('pyn:glonass-activity', id, from, to);
+    },
+    historyPoints: function pynGlonassHistoryPoints(id, from, to) {
+      return ipcRenderer.invoke('pyn:glonass-history-points', id, from, to);
+    },
+    stats: function pynGlonassStats(ids, from, to) {
+      return ipcRenderer.invoke('pyn:glonass-stats', ids, from, to);
+    },
+  },
+  /**
    * Google account flow для embedded Google Sheets (раздел «Таблицы»).
    * Cookies хранятся в persist:google-sheets partition, общий с webview.
    */

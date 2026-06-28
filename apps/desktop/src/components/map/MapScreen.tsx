@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
-import { Check, CheckCheck, CloudRain, Crosshair, Eraser, Filter, MapPin, MousePointer2, Pentagon, Route, Settings2, TrainTrack, Trash2, Truck } from 'lucide-react';
+import { Check, CheckCheck, CloudRain, Crosshair, Eraser, Eye, EyeOff, Filter, MapPin, MousePointer2, Pause, Pentagon, Play, Route, Satellite, Settings2, TrainTrack, Trash2, Truck } from 'lucide-react';
 import { getWarehouseState } from '@pyn/core';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { cn } from '@/lib/cn';
@@ -26,6 +26,19 @@ import {
 } from './map-types';
 import { MapCanvas, type MapSelection, type OptimizeOverlay } from './MapCanvas';
 import { MapDetailPanel } from './MapDetailPanel';
+import { GlonassPanel } from './GlonassPanel';
+import {
+  PLAYBACK_SPEEDS,
+  STATUS_COLOR,
+  flattenHistoryLayer,
+  formatGlonassSpeed,
+  useGlonassStore,
+  vehicleStatus,
+  type GlonassHistoryPoint,
+  type GlonassMarker,
+  type GlonassPosition,
+  type GlonassReplayMarker,
+} from './glonass-store';
 import { optimize, totalCost, type DemandPoint } from './optimize';
 import { computeFastestRoute, type RouteResult } from './route-network';
 import { loadNtmkOsmRoadSuggestions } from './road-suggestions';
@@ -52,6 +65,18 @@ interface WeatherSummary {
   pressureHpa?: number | null;
   isPrecip: boolean;
   hourly: WeatherHour[];
+}
+
+interface WeatherDisplay {
+  currentKey: string;
+  row: WeatherHour | null;
+  condition: string;
+  tempC: number | null;
+  windMs: number | null;
+  precipText: string;
+  chance: number | null;
+  isPrecip: boolean;
+  pressureHpa: number | null;
 }
 
 interface WeatherFieldPoint {
@@ -103,7 +128,6 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const [activeCategories, setActiveCategories] = useState<Set<PointCategory> | null>(null); // null = все
   const [activeVehicle, setActiveVehicle] = useState<VehicleType | null>(null);
   const [showWeather, setShowWeather] = useState(false);
-  const [centerElevation, setCenterElevation] = useState<number | null>(null);
   const [weatherNonce, setWeatherNonce] = useState(0);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [weatherField, setWeatherField] = useState<WeatherFieldPoint[]>([]);
@@ -119,6 +143,9 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const [moveByMapPointId, setMoveByMapPointId] = useState<string | null>(null);
   const [routeSourcePointId, setRouteSourcePointId] = useState<string | null>(null);
   const [viewBounds, setViewBounds] = useState<{ south: number; west: number; north: number; east: number } | null>(null);
+  const weatherPoint = useMemo(() => viewBounds
+    ? { lat: (viewBounds.south + viewBounds.north) / 2, lng: (viewBounds.west + viewBounds.east) / 2 }
+    : NTMK_CENTER, [viewBounds]);
 
   useEffect(() => { void initMap(); }, []);
 
@@ -127,22 +154,23 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
     if (!canEdit && tool !== 'select' && tool !== 'optimize') setTool('select');
   }, [canEdit, tool]);
 
-  // Погода: пока слой включён — тянем свежий кадр радара + сводку (раз в 5 мин).
+  // Погода: пока слой включён — тянем радар + сводку по центру активного экрана
+  // карты. Время остаётся екатеринбургским, место — текущий участок карты.
   useEffect(() => {
     if (!showWeather) return;
     let alive = true;
     const pull = async () => {
       try {
-        const res = await window.pyn?.mapWeather?.(NTMK_CENTER.lat, NTMK_CENTER.lng);
+        const res = await window.pyn?.mapWeather?.(weatherPoint.lat, weatherPoint.lng);
         if (!alive || !res) return;
         if (res.weather) setWeather(res.weather);
         if (res.ok) setWeatherNonce((n) => n + 1); // свежий кадр → пересоздать слой
       } catch { /* погода не критична */ }
     };
-    void pull();
+    const first = setTimeout(() => { void pull(); }, 350);
     const timer = setInterval(() => { void pull(); }, 5 * 60 * 1000);
-    return () => { alive = false; clearInterval(timer); };
-  }, [showWeather]);
+    return () => { alive = false; clearTimeout(first); clearInterval(timer); };
+  }, [showWeather, weatherPoint.lat, weatherPoint.lng]);
 
   // Ветер по экрану: редкая сетка Open-Meteo вместо тяжёлой погодной картинки.
   useEffect(() => {
@@ -165,20 +193,6 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
       clearInterval(interval);
     };
   }, [showWeather, viewBounds]);
-
-  // Высота центра карты — всегда в статус-баре (Open-Meteo через мост, дебаунс).
-  useEffect(() => {
-    if (!viewBounds) return;
-    const lat = (viewBounds.south + viewBounds.north) / 2;
-    const lng = (viewBounds.west + viewBounds.east) / 2;
-    let alive = true;
-    const timer = setTimeout(() => {
-      window.pyn?.mapElevation?.(lat, lng)
-        .then((res) => { if (alive && res?.ok) setCenterElevation(res.elevation); })
-        .catch(() => { /* высота не критична */ });
-    }, 500);
-    return () => { alive = false; clearTimeout(timer); };
-  }, [viewBounds]);
 
   // Категория точки (отгрузка/выгрузка/вне графика) из статуса склада.
   const categoryOfPoint = useCallback((warehouseId: string | null): PointCategory => {
@@ -384,6 +398,124 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const showFullCard = tool !== 'optimize' && selection !== null && (selection.type !== 'point' || detailExpanded);
   const showPinPopover = tool !== 'optimize' && selection?.type === 'point' && !detailExpanded && pointScreen !== null && selectedPoint !== null;
 
+  // ── Глонасс (мониторинг транспорта) ────────────────────────────────────────
+  const glonassOpen = useGlonassStore((s) => s.open);
+  const setGlonassOpen = useGlonassStore((s) => s.setOpen);
+  const glonassFleet = useGlonassStore((s) => s.fleet);
+  const glonassSelected = useGlonassStore((s) => s.selected);
+  const glonassPositions = useGlonassStore((s) => s.positions);
+  const glonassTracks = useGlonassStore((s) => s.tracks);
+  const glonassHistoryLayers = useGlonassStore((s) => s.historyLayers);
+  const activeHistoryLayerId = useGlonassStore((s) => s.activeHistoryLayerId);
+  const playbackIndex = useGlonassStore((s) => s.playbackIndex);
+  const refreshGlonass = useGlonassStore((s) => s.refreshPositions);
+
+  // Точки выбранных машин (только тех, у кого есть позиция) — на карту.
+  const glonassMarkers = useMemo<GlonassMarker[]>(() => {
+    const byId = new Map(glonassFleet.map((v) => [v.id, v]));
+    const out: GlonassMarker[] = [];
+    for (const id of glonassSelected) {
+      const pos = glonassPositions.get(id);
+      if (!pos) continue;
+      const v = byId.get(id);
+      out.push({
+        id, garage: v?.garage ?? '', gos: v?.gos ?? '',
+        lat: pos.lat, lng: pos.lng, course: pos.course, speed: pos.speed,
+        status: vehicleStatus(pos),
+      });
+    }
+    return out;
+  }, [glonassFleet, glonassSelected, glonassPositions]);
+
+  const glonassTrackLines = useMemo(() => {
+    const out: Array<{ id: number; color: string; points: LatLng[] }> = [];
+    for (const id of glonassSelected) {
+      const track = glonassTracks.get(id);
+      if (!track || track.length < 2) continue;
+      const pos = glonassPositions.get(id) ?? track[track.length - 1];
+      out.push({
+        id,
+        color: STATUS_COLOR[vehicleStatus(pos)],
+        points: track.map((p) => ({ lat: p.lat, lng: p.lng })),
+      });
+    }
+    return out;
+  }, [glonassSelected, glonassTracks, glonassPositions]);
+
+  const activeHistoryLayer = useMemo(() => (
+    glonassHistoryLayers.find((layer) => layer.id === activeHistoryLayerId) ?? null
+  ), [glonassHistoryLayers, activeHistoryLayerId]);
+
+  const glonassHistoryLines = useMemo(() => {
+    const out: Array<{ id: string; color: string; points: LatLng[]; opacity: number }> = [];
+    for (const layer of glonassHistoryLayers) {
+      if (!layer.visible) continue;
+      const opacity = layer.kind === 'yearRoads' ? 0.62 : 0.86;
+      for (const segment of layer.segments) {
+        if (segment.points.length < 2) continue;
+        out.push({
+          id: segment.id,
+          color: layer.color,
+          opacity,
+          points: segment.points.map((p) => ({ lat: p.lat, lng: p.lng })),
+        });
+      }
+    }
+    return out;
+  }, [glonassHistoryLayers]);
+
+  const activeReplayPoints = useMemo(() => {
+    if (!activeHistoryLayer || activeHistoryLayer.kind !== 'replay') return [];
+    return flattenHistoryLayer(activeHistoryLayer);
+  }, [activeHistoryLayer]);
+
+  const glonassReplayMarker = useMemo<GlonassReplayMarker | null>(() => {
+    if (!activeHistoryLayer?.visible || activeHistoryLayer.kind !== 'replay' || activeReplayPoints.length === 0) return null;
+    const pointIndex = Math.min(Math.max(0, playbackIndex), activeReplayPoints.length - 1);
+    const point = activeReplayPoints[pointIndex];
+    if (!point) return null;
+    const vehicle = activeHistoryLayer.vehicleId != null ? glonassFleet.find((v) => v.id === activeHistoryLayer.vehicleId) : undefined;
+    return {
+      id: `${activeHistoryLayer.id}-replay`,
+      garage: vehicle?.garage ?? activeHistoryLayer.vehicleLabel.split(' · ')[0] ?? '',
+      gos: vehicle?.gos ?? activeHistoryLayer.vehicleLabel,
+      lat: point.lat,
+      lng: point.lng,
+      course: courseAt(activeReplayPoints, pointIndex),
+      speed: point.speed,
+      color: activeHistoryLayer.color,
+      time: point.time,
+    };
+  }, [activeHistoryLayer, activeReplayPoints, playbackIndex, glonassFleet]);
+
+  const handleFocusGlonassVehicle = useCallback((pos: GlonassPosition) => {
+    setFocus({
+      latlng: { lat: pos.lat, lng: pos.lng },
+      nonce: Date.now(),
+      zoom: Math.max(NTMK_ZOOM, 18),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!activeHistoryLayer) return;
+    const first = flattenHistoryLayer(activeHistoryLayer)[0];
+    if (!first) return;
+    setFocus({
+      latlng: { lat: first.lat, lng: first.lng },
+      nonce: Date.now(),
+      zoom: Math.max(NTMK_ZOOM, 17.2),
+    });
+  }, [activeHistoryLayer?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Пока панель открыта — опрашиваем позиции парка (каждые 5 с): на карту
+  // попадут только отмеченные галочками, но список видит цветные статусы всех.
+  useEffect(() => {
+    if (!glonassOpen) return;
+    void refreshGlonass();
+    const iv = setInterval(() => void refreshGlonass(), 5000);
+    return () => clearInterval(iv);
+  }, [glonassOpen, glonassFleet.length, refreshGlonass]);
+
   return (
     <main className="flex flex-1 flex-col overflow-hidden">
       {/* Тулбар на подложке (h-9), как в других разделах */}
@@ -394,6 +526,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
         <div className="no-drag-region ml-auto flex items-center gap-1.5">
           <LayerToggle icon={CheckCheck} label="Особ." on={showRoadAccess} onClick={() => setShowRoadAccess((v) => !v)} title="Особенности дорог (закраска по машинам)" />
           <LayerToggle icon={CloudRain} label="Погода" on={showWeather} onClick={() => setShowWeather((v) => !v)} title="Радар осадков — где идёт дождь/снег" />
+          <LayerToggle icon={Satellite} label="Глонасс" on={glonassOpen} onClick={() => setGlonassOpen(!glonassOpen)} title="Спутниковый мониторинг транспорта — поиск/слежение машин" />
           <VehicleFilter active={activeVehicle} onChange={setActiveVehicle} />
           <PointsFilter
             warehouses={warehousesOnMap}
@@ -447,10 +580,13 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               weatherNonce={weatherNonce}
               weatherField={weatherField}
               weatherNow={weather}
-              centerElevation={centerElevation}
               roadPaintMode={roadPaintMode}
               movingPointId={moveByMapPointId}
               activeVehicle={activeVehicle}
+              glonassMarkers={glonassMarkers}
+              glonassTracks={glonassTrackLines}
+              glonassHistoryTracks={glonassHistoryLines}
+              glonassReplayMarker={glonassReplayMarker}
               onSelect={setSelection}
               onSelectedPointScreen={setPointScreen}
               onDuplicatePoint={(id) => {
@@ -508,6 +644,18 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
           {/* Чип сводки погоды (когда слой включён) */}
           {showWeather && <WeatherChip weather={weather} />}
 
+          {/* Панель «Глонасс» (поиск/выбор машин) */}
+          <GlonassPanel onFocusVehicle={handleFocusGlonassVehicle} />
+
+          <GlonassHistoryChips />
+          <GlonassHistoryPlayer
+            onFocus={(point) => setFocus({
+              latlng: { lat: point.lat, lng: point.lng },
+              nonce: Date.now(),
+              zoom: Math.max(NTMK_ZOOM, 18),
+            })}
+          />
+
           {/* Поповер-карточка у пина (краткая) + кнопка «Подробно» */}
           {showPinPopover && selectedPoint && pointScreen && (
             <PinPopover
@@ -560,6 +708,277 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
 function isPoint0616(value: string | null | undefined): boolean {
   const normalized = String(value ?? '').trim().replace(/\s+/g, '').toLowerCase();
   return normalized === '0616' || normalized === '616' || normalized.includes('0616');
+}
+
+function GlonassHistoryChips() {
+  const layers = useGlonassStore((s) => s.historyLayers);
+  const activeId = useGlonassStore((s) => s.activeHistoryLayerId);
+  const setActive = useGlonassStore((s) => s.setActiveHistoryLayer);
+  const toggleVisible = useGlonassStore((s) => s.toggleHistoryVisibility);
+  const removeLayer = useGlonassStore((s) => s.removeHistoryLayer);
+
+  if (layers.length === 0) return null;
+
+  return (
+    <div className="pointer-events-none absolute left-[374px] right-3 top-3 z-[7] flex flex-wrap justify-end gap-1.5">
+      {layers.map((layer) => (
+        <div
+          key={layer.id}
+          className={cn(
+            'pointer-events-auto flex h-8 max-w-[260px] items-center gap-1 overflow-hidden rounded-lg border bg-[#080b11]/88 px-1.5 text-[11px] text-white/82 shadow-lg backdrop-blur-md',
+            activeId === layer.id ? 'border-white/45' : 'border-white/14',
+          )}
+        >
+          <button
+            type="button"
+            onClick={() => setActive(layer.id)}
+            className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left outline-none hover:bg-white/10"
+            title={layer.subtitle}
+          >
+            <span className="h-2.5 w-5 shrink-0 rounded-full" style={{ backgroundColor: layer.color }} />
+            <span className="min-w-0 truncate font-semibold">{layer.title}</span>
+            {layer.pointCount > 0 && <span className="shrink-0 font-mono text-[10px] text-white/48">{layer.pointCount}</span>}
+          </button>
+          <button
+            type="button"
+            title={layer.visible ? 'Скрыть слой' : 'Показать слой'}
+            onClick={() => toggleVisible(layer.id)}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-white/55 outline-none hover:bg-white/10 hover:text-white"
+          >
+            {layer.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+          </button>
+          <button
+            type="button"
+            title="Удалить слой"
+            onClick={() => removeLayer(layer.id)}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-white/45 outline-none hover:bg-rose-500/18 hover:text-rose-200"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GlonassHistoryPlayer({ onFocus }: { onFocus: (point: GlonassHistoryPoint) => void }) {
+  const layers = useGlonassStore((s) => s.historyLayers);
+  const activeId = useGlonassStore((s) => s.activeHistoryLayerId);
+  const playbackIndex = useGlonassStore((s) => s.playbackIndex);
+  const playbackPlaying = useGlonassStore((s) => s.playbackPlaying);
+  const playbackSpeed = useGlonassStore((s) => s.playbackSpeed);
+  const setPlaybackIndex = useGlonassStore((s) => s.setPlaybackIndex);
+  const setPlaybackPlaying = useGlonassStore((s) => s.setPlaybackPlaying);
+  const setPlaybackSpeed = useGlonassStore((s) => s.setPlaybackSpeed);
+
+  const layer = useMemo(() => (
+    layers.find((item) => item.id === activeId && item.kind === 'replay') ?? null
+  ), [layers, activeId]);
+  const points = useMemo(() => flattenHistoryLayer(layer), [layer]);
+  const maxIndex = Math.max(0, points.length - 1);
+  const index = Math.min(Math.max(0, playbackIndex), maxIndex);
+  const point = points[index] ?? null;
+  const virtualTimeRef = useRef<number>(point ? Date.parse(point.time) : NaN);
+
+  useEffect(() => {
+    if (!playbackPlaying) virtualTimeRef.current = point ? Date.parse(point.time) : NaN;
+  }, [point?.time, playbackPlaying, layer?.id]);
+
+  useEffect(() => {
+    if (!playbackPlaying || points.length < 2) return;
+    let lastTick = performance.now();
+    let frame = 0;
+    const tick = (now: number) => {
+      const elapsed = Math.max(0, now - lastTick);
+      lastTick = now;
+      const current = Number.isFinite(virtualTimeRef.current)
+        ? virtualTimeRef.current
+        : Date.parse(points[Math.min(index, points.length - 1)]?.time ?? '');
+      const nextTime = current + elapsed * playbackSpeed;
+      virtualTimeRef.current = nextTime;
+      const nextIndex = findHistoryIndexAt(points, nextTime);
+      setPlaybackIndex(nextIndex);
+      if (nextIndex >= points.length - 1) {
+        setPlaybackPlaying(false);
+        return;
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [playbackPlaying, playbackSpeed, points, index, setPlaybackIndex, setPlaybackPlaying]);
+
+  useEffect(() => {
+    if (playbackIndex !== index) setPlaybackIndex(index);
+  }, [index, playbackIndex, setPlaybackIndex]);
+
+  if (!layer || points.length < 2 || !point) return null;
+
+  return (
+    <div className="absolute bottom-3 left-[82px] right-[190px] z-[7] overflow-hidden rounded-xl border border-white/14 bg-[#080b11]/90 text-white shadow-[0_10px_34px_rgba(0,0,0,0.46)] backdrop-blur-md">
+      <div className="grid grid-cols-[minmax(170px,230px)_minmax(220px,1fr)_auto] items-center gap-3 px-3 py-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="h-2.5 w-5 shrink-0 rounded-full" style={{ backgroundColor: layer.color }} />
+            <span className="min-w-0 truncate text-[12px] font-semibold">{layer.title}</span>
+          </div>
+          <div className="mt-0.5 truncate text-[10.5px] text-white/55">
+            {formatHistoryPointTime(point.time)} · {formatGlonassSpeed(point.speed)}
+          </div>
+        </div>
+
+        <div className="min-w-0">
+          <HistorySpeedChart points={points} index={index} color={layer.color} />
+          <input
+            type="range"
+            min={0}
+            max={maxIndex}
+            value={index}
+            onChange={(e) => {
+              setPlaybackPlaying(false);
+              setPlaybackIndex(Number(e.target.value));
+            }}
+            className="mt-1 h-4 w-full accent-sky-300"
+            aria-label="Тайминг движения"
+          />
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            title={playbackPlaying ? 'Пауза' : 'Проиграть'}
+            onClick={() => setPlaybackPlaying(!playbackPlaying)}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-sky-300/45 bg-sky-400/12 text-sky-100 outline-none hover:bg-sky-400/20"
+          >
+            {playbackPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 translate-x-px" />}
+          </button>
+          <button
+            type="button"
+            title="Показать текущую точку"
+            onClick={() => onFocus(point)}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/14 bg-white/6 text-white/70 outline-none hover:bg-white/12 hover:text-white"
+          >
+            <Crosshair className="h-4 w-4" />
+          </button>
+          <div className="ml-1 flex items-center gap-0.5">
+            {PLAYBACK_SPEEDS.map((speed) => (
+              <button
+                key={speed}
+                type="button"
+                onClick={() => setPlaybackSpeed(speed)}
+                className={cn(
+                  'h-6 rounded px-1.5 text-[10px] font-semibold tabular-nums outline-none transition-colors',
+                  playbackSpeed === speed ? 'bg-white text-[#080b11]' : 'text-white/55 hover:bg-white/10 hover:text-white',
+                )}
+              >
+                {speed}x
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HistorySpeedChart({ points, index, color }: { points: GlonassHistoryPoint[]; index: number; color: string }) {
+  const chart = useMemo(() => buildSpeedChart(points, index), [points, index]);
+  if (!chart) return <div className="h-10 rounded-md bg-white/5" />;
+  return (
+    <svg viewBox="0 0 100 34" preserveAspectRatio="none" className="h-10 w-full rounded-md bg-white/[0.055]">
+      <path d="M0 8H100M0 17H100M0 26H100" stroke="rgba(255,255,255,.08)" strokeWidth="0.4" vectorEffect="non-scaling-stroke" />
+      <polyline points={chart.points} fill="none" stroke={color} strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      <line x1={chart.cursorX} x2={chart.cursorX} y1="2" y2="32" stroke="white" strokeWidth="0.75" vectorEffect="non-scaling-stroke" />
+      <circle cx={chart.cursorX} cy={chart.cursorY} r="1.1" fill="white" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+function findHistoryIndexAt(points: GlonassHistoryPoint[], timeMs: number): number {
+  if (points.length === 0) return 0;
+  let lo = 0;
+  let hi = points.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const t = Date.parse(points[mid]?.time ?? '');
+    if (Number.isFinite(t) && t <= timeMs) lo = mid;
+    else hi = mid - 1;
+  }
+  return Math.max(0, Math.min(points.length - 1, lo));
+}
+
+function buildSpeedChart(points: GlonassHistoryPoint[], index: number): { points: string; cursorX: number; cursorY: number } | null {
+  if (points.length < 2) return null;
+  const firstMs = Date.parse(points[0]?.time ?? '');
+  const lastMs = Date.parse(points[points.length - 1]?.time ?? '');
+  if (!Number.isFinite(firstMs) || !Number.isFinite(lastMs) || lastMs <= firstMs) return null;
+  const maxSpeed = Math.max(1, ...points.map((p) => p.speed ?? 0));
+  const sample = sampleHistoryPoints(points, 180);
+  const xy = (p: GlonassHistoryPoint) => {
+    const t = Date.parse(p.time);
+    const x = ((t - firstMs) / (lastMs - firstMs)) * 100;
+    const y = 30 - Math.min(1, Math.max(0, (p.speed ?? 0) / maxSpeed)) * 25;
+    return { x, y };
+  };
+  const current = xy(points[Math.min(Math.max(0, index), points.length - 1)]!);
+  return {
+    points: sample.map((p) => {
+      const { x, y } = xy(p);
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    }).join(' '),
+    cursorX: current.x,
+    cursorY: current.y,
+  };
+}
+
+function sampleHistoryPoints(points: GlonassHistoryPoint[], max: number): GlonassHistoryPoint[] {
+  if (points.length <= max) return points;
+  const out: GlonassHistoryPoint[] = [];
+  const step = (points.length - 1) / (max - 1);
+  for (let i = 0; i < max; i += 1) {
+    out.push(points[Math.round(i * step)]!);
+  }
+  return out;
+}
+
+function formatHistoryPointTime(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function courseAt(points: GlonassHistoryPoint[], index: number): number | null {
+  const current = points[index];
+  if (!current) return null;
+  const next = points[index + 1];
+  if (next && distanceBetweenHistoryPoints(current, next) > 1) return bearingBetween(current, next);
+  const prev = points[index - 1];
+  if (prev && distanceBetweenHistoryPoints(prev, current) > 1) return bearingBetween(prev, current);
+  return null;
+}
+
+function bearingBetween(a: GlonassHistoryPoint, b: GlonassHistoryPoint): number {
+  const lat1 = a.lat * Math.PI / 180;
+  const lat2 = b.lat * Math.PI / 180;
+  const dLng = (b.lng - a.lng) * Math.PI / 180;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function distanceBetweenHistoryPoints(a: GlonassHistoryPoint, b: GlonassHistoryPoint): number {
+  const r = 6371000;
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLng = (b.lng - a.lng) * Math.PI / 180;
+  const lat1 = a.lat * Math.PI / 180;
+  const lat2 = b.lat * Math.PI / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * r * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
 // ─── Меню карты ──────────────────────────────────────────────────────────────
@@ -894,25 +1313,28 @@ function VehicleFilter({ active, onChange }: { active: VehicleType | null; onCha
 /** Чип сводки погоды по площадке: клик открывает ближайшие часы. */
 function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
   const rows = weather?.hourly.slice(0, 16) ?? [];
-  const currentKey = weather?.currentTime?.slice(0, 13) ?? rows.find((row) => isSameEkaterinburgHour(row.time))?.time.slice(0, 13) ?? '';
-  const currentRow = rows.find((row) => row.time.slice(0, 13) === currentKey) ?? rows[0] ?? null;
-  const condition = weatherText(currentRow?.code ?? weather?.code ?? null, currentRow?.precipMm ?? weather?.precipMm ?? null, currentRow?.snowCm ?? null);
-  const chance = currentRow?.precipProb ?? null;
+  const display = buildWeatherDisplay(weather, rows);
+  const grid = 'grid grid-cols-[56px_minmax(74px,1fr)_64px_58px_54px_60px] items-center gap-1.5';
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="absolute left-3 top-3 z-[450] flex h-8 items-center gap-2 rounded-lg border border-border-subtle bg-bg-elevated/92 px-2.5 text-[11.5px] text-text-secondary shadow-lg outline-none backdrop-blur transition-all duration-150 hover:border-accent-clay/35 hover:bg-bg-hover hover:text-text-strong"
+          className="absolute left-3 top-3 z-[450] flex min-h-10 min-w-[238px] max-w-[320px] items-center gap-2 rounded-xl border border-accent-clay/30 bg-bg-deep/95 px-3 py-2 text-left text-[11.5px] text-text-secondary shadow-[0_10px_34px_rgba(0,0,0,0.58)] outline-none backdrop-blur-md transition-all duration-150 hover:border-accent-clay/50 hover:bg-bg-elevated hover:text-text-strong"
           title="Погода по часам"
         >
-          <CloudRain size={14} strokeWidth={1.75} className={weather?.isPrecip ? 'text-sky-300' : 'text-text-muted'} />
+          <CloudRain size={16} strokeWidth={1.8} className={display.isPrecip ? 'shrink-0 text-sky-300' : 'shrink-0 text-text-muted'} />
           {weather ? (
-            <span className="flex items-center gap-2 tabular-nums">
-              <span className="font-semibold text-text-strong">{weather.tempC != null ? `${weather.tempC > 0 ? '+' : ''}${Math.round(weather.tempC)}°` : '—'}</span>
-              <span className="max-w-[88px] truncate">{condition}</span>
-              <span className={weather.isPrecip ? 'font-mono text-sky-300' : 'font-mono text-text-muted'}>
-                {chance != null ? `${Math.round(chance)}%` : weather.isPrecip ? `${(weather.precipMm ?? 0).toFixed(1)} мм` : '0%'}
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 tabular-nums">
+                <span className="font-mono text-[13px] font-semibold text-text-strong">{display.tempC != null ? `${display.tempC > 0 ? '+' : ''}${Math.round(display.tempC)}°` : '—'}</span>
+                <span className="min-w-0 max-w-[96px] truncate font-medium text-text-secondary">{display.condition}</span>
+                <span className={cn('ml-auto rounded-md px-1.5 py-0.5 font-mono text-[11px]', display.isPrecip ? 'bg-sky-400/12 text-sky-300' : 'bg-bg-surface text-text-muted')}>
+                  {display.chance != null ? `${Math.round(display.chance)}%` : '0%'}
+                </span>
+              </span>
+              <span className="mt-0.5 block truncate text-[10.5px] text-text-muted">
+                активный участок · {display.precipText} · {display.windMs != null ? `${Math.round(display.windMs)} м/с` : 'ветер —'}
               </span>
             </span>
           ) : (
@@ -924,19 +1346,19 @@ function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
         <Popover.Content
           align="start"
           sideOffset={8}
-          className="z-[700] w-[430px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-border-default bg-bg-deep/95 shadow-[0_12px_42px_rgba(0,0,0,0.55)] outline-none backdrop-blur-md transition-all duration-150"
+          className="z-[700] w-[462px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-border-default bg-bg-deep/96 shadow-[0_12px_42px_rgba(0,0,0,0.58)] outline-none backdrop-blur-md transition-all duration-150"
         >
           <div className="flex items-center justify-between border-b border-border-subtle/70 px-3 py-2">
             <div>
-              <p className="text-[12.5px] font-semibold text-text-strong">Погода · Екатеринбург</p>
-              <p className="text-[11px] text-text-muted">3 часа назад, сейчас и ближайшие часы</p>
+              <p className="text-[12.5px] font-semibold text-text-strong">Погода · активный участок</p>
+              <p className="text-[11px] text-text-muted">Время: Екатеринбург · 3 часа назад, сейчас и дальше</p>
             </div>
-            <div className="rounded-md border border-border-subtle bg-bg-surface px-2 py-1 text-right">
-              <p className="font-mono text-[12px] tabular-nums text-text-strong">{weather?.tempC != null ? `${weather.tempC > 0 ? '+' : ''}${Math.round(weather.tempC)}°` : '—'}</p>
-              <p className="text-[10px] text-text-muted">{weather?.pressureHpa != null ? `${Math.round(weather.pressureHpa)} гПа` : 'сейчас'}</p>
+            <div className="rounded-md border border-border-subtle bg-bg-surface px-2.5 py-1 text-right">
+              <p className="font-mono text-[12px] tabular-nums text-text-strong">{display.tempC != null ? `${display.tempC > 0 ? '+' : ''}${Math.round(display.tempC)}°` : '—'}</p>
+              <p className="text-[10px] text-text-muted">{display.pressureHpa != null ? `${Math.round(display.pressureHpa)} гПа` : display.condition}</p>
             </div>
           </div>
-          <div className="grid grid-cols-[54px_72px_70px_58px_54px_58px] gap-2 border-b border-border-subtle/60 px-3 py-1.5 text-[10px] uppercase text-text-muted">
+          <div className={cn(grid, 'border-b border-border-subtle/60 px-3 py-1.5 text-[10px] uppercase text-text-muted')}>
             <span>Время</span>
             <span>Тип</span>
             <span>Осадок</span>
@@ -948,27 +1370,28 @@ function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
             {rows.length === 0 ? (
               <p className="px-2 py-2 text-[12px] text-text-muted">Почасовой прогноз загружается…</p>
             ) : rows.map((row) => {
-              const current = row.time.slice(0, 13) === currentKey;
-              const past = currentKey ? row.time.slice(0, 13) < currentKey : false;
+              const current = row.time.slice(0, 13) === display.currentKey;
+              const past = display.currentKey ? row.time.slice(0, 13) < display.currentKey : false;
               return (
                 <div
                   key={row.time}
                   className={cn(
-                    'grid grid-cols-[54px_72px_70px_58px_54px_58px] items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] transition-colors hover:bg-bg-hover/70',
-                    current && 'border border-sky-300/25 bg-sky-400/10',
+                    grid,
+                    'box-border w-full rounded-lg px-2 py-1.5 text-[12px] transition-colors hover:bg-bg-hover/70',
+                    current && 'bg-sky-400/12 shadow-[inset_0_0_0_1px_rgba(125,211,252,0.34)]',
                     past && !current && 'text-text-muted',
                   )}
                 >
-                  <span className="font-mono tabular-nums text-text-strong">{current ? 'Сейчас' : formatWeatherHour(row.time)}</span>
-                  <span className="truncate text-text-secondary">{weatherText(row.code, row.precipMm, row.snowCm)}</span>
-                  <span className="font-mono tabular-nums text-text-muted">{formatPrecipShort(row)}</span>
-                  <span className="text-right font-mono tabular-nums text-text-muted" title={row.windDir != null ? `Направление ${Math.round(row.windDir)}°` : undefined}>
+                  <WeatherTimeLabel time={row.time} current={current} />
+                  <span className="min-w-0 truncate text-text-secondary">{weatherText(row.code, row.precipMm, row.snowCm)}</span>
+                  <span className="whitespace-nowrap font-mono tabular-nums text-text-muted">{formatPrecipShort(row)}</span>
+                  <span className="whitespace-nowrap text-right font-mono tabular-nums text-text-muted" title={row.windDir != null ? `Направление ${Math.round(row.windDir)}°` : undefined}>
                     {row.windMs != null ? `${Math.round(row.windMs)} м/с` : '—'}
                   </span>
-                <span className="text-right font-mono tabular-nums text-text-secondary">
-                  {row.tempC != null ? `${row.tempC > 0 ? '+' : ''}${Math.round(row.tempC)}°` : '—'}
-                </span>
-                  <span className="text-right font-mono tabular-nums text-text-muted">{row.precipProb != null ? `${Math.round(row.precipProb)}%` : '—'}</span>
+                  <span className="whitespace-nowrap text-right font-mono tabular-nums text-text-secondary">
+                    {row.tempC != null ? `${row.tempC > 0 ? '+' : ''}${Math.round(row.tempC)}°` : '—'}
+                  </span>
+                  <span className="whitespace-nowrap text-right font-mono tabular-nums text-text-muted">{row.precipProb != null ? `${Math.round(row.precipProb)}%` : '—'}</span>
                 </div>
               );
             })}
@@ -979,19 +1402,53 @@ function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
   );
 }
 
-function formatWeatherHour(value: string): string {
-  const m = /T(\d{2}):/.exec(value);
-  if (!m) return value.slice(-5);
-  const hour = Number(m[1]);
-  if (!Number.isFinite(hour)) return value.slice(-5);
-  const h12 = hour % 12 || 12;
-  return `${h12} ${hour < 12 ? 'AM' : 'PM'}`;
+function buildWeatherDisplay(weather: WeatherSummary | null, rows: WeatherHour[]): WeatherDisplay {
+  const currentKey = weather?.currentTime?.slice(0, 13) ?? rows.find((row) => isSameEkaterinburgHour(row.time))?.time.slice(0, 13) ?? '';
+  const row = rows.find((item) => item.time.slice(0, 13) === currentKey) ?? rows[0] ?? null;
+  const precipMm = row?.precipMm ?? weather?.precipMm ?? null;
+  const condition = weatherText(row?.code ?? weather?.code ?? null, precipMm, row?.snowCm ?? null);
+  const precipText = formatPrecipShort(row, weather?.precipMm ?? null);
+  const chance = row?.precipProb ?? null;
+  return {
+    currentKey,
+    row,
+    condition,
+    tempC: row?.tempC ?? weather?.tempC ?? null,
+    windMs: row?.windMs ?? weather?.windMs ?? null,
+    precipText,
+    chance,
+    isPrecip: (precipMm ?? 0) > 0 || (row?.snowCm ?? 0) > 0 || Boolean(weather?.isPrecip),
+    pressureHpa: weather?.pressureHpa ?? null,
+  };
 }
 
-function formatPrecipShort(row: WeatherHour): string {
-  if ((row.snowCm ?? 0) > 0) return `${row.snowCm!.toFixed(1)} см`;
-  if ((row.rainMm ?? 0) > 0) return `${row.rainMm!.toFixed(1)} мм`;
-  if ((row.precipMm ?? 0) > 0) return `${row.precipMm!.toFixed(1)} мм`;
+function WeatherTimeLabel({ time, current }: { time: string; current: boolean }) {
+  if (current) return <span className="font-semibold text-sky-200">Сейчас</span>;
+  const { hour, period } = splitWeatherHour(time);
+  return (
+    <span className="whitespace-nowrap font-mono tabular-nums text-text-strong">
+      {hour}
+      <span className="ml-0.5 align-[1px] text-[9px] font-semibold text-text-muted">{period}</span>
+    </span>
+  );
+}
+
+function splitWeatherHour(value: string): { hour: string; period: string } {
+  const m = /T(\d{2}):/.exec(value);
+  if (!m) return { hour: value.slice(-5), period: '' };
+  const hour = Number(m[1]);
+  if (!Number.isFinite(hour)) return { hour: value.slice(-5), period: '' };
+  const h12 = hour % 12 || 12;
+  return { hour: String(h12), period: hour < 12 ? 'AM' : 'PM' };
+}
+
+function formatPrecipShort(row: WeatherHour | null, fallbackMm: number | null = null): string {
+  if (row) {
+    if ((row.snowCm ?? 0) > 0) return `${row.snowCm!.toFixed(1)} см`;
+    if ((row.rainMm ?? 0) > 0) return `${row.rainMm!.toFixed(1)} мм`;
+    if ((row.precipMm ?? 0) > 0) return `${row.precipMm!.toFixed(1)} мм`;
+  }
+  if ((fallbackMm ?? 0) > 0) return `${fallbackMm!.toFixed(1)} мм`;
   return '0';
 }
 

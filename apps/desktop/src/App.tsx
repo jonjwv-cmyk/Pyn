@@ -14,6 +14,7 @@ import { BroadcastScreen } from '@/components/broadcast/BroadcastScreen';
 import { VghScreen } from '@/components/vgh';
 import { TransportScreen } from '@/components/flow/TransportScreen';
 import { MapScreen } from '@/components/map/MapScreen';
+import { TechScreen } from '@/components/tech/TechScreen';
 import { MolScreen } from '@/components/mol';
 import { PersonEditDialog } from '@/components/mol/PersonEditDialog';
 import { distinctStatuses } from '@/lib/persons-view';
@@ -249,7 +250,7 @@ export function App() {
   // Иначе контентная область остаётся пустой и видно только bg-bg-deep (серое окно).
   useEffect(() => {
     if (!session) return;
-    const known = new Set(['proba', 'mol', 'vault', 'flow', 'vgh', 'transport', 'log', 'broadcast', 'map', 'news', 'chats']);
+    const known = new Set(['proba', 'mol', 'vault', 'flow', 'vgh', 'transport', 'log', 'broadcast', 'map', 'tech', 'news', 'chats']);
     const isSheet = activeSection.startsWith('sheet:');
     if (!known.has(activeSection) && !isSheet) {
       // mol — текущая работа (Контакты / диалог с Согласующими)
@@ -1162,6 +1163,7 @@ export function App() {
               showLog={isAdminLike(session.role)}
               showBroadcast={isAdminLike(session.role)}
               showMap={isAdminLike(session.role)}
+              showTech={isAdminLike(session.role)}
               onToggleCollapsed={() => setCollapsed((v) => !v)}
               onAiClick={() => useAiStore.getState().setOpen(true)}
               onSectionClick={setActiveSection}
@@ -1196,6 +1198,7 @@ export function App() {
                 activeSection === 'log' ||
                 activeSection === 'broadcast' ||
                 activeSection === 'map' ||
+                activeSection === 'tech' ||
                 activeSection === 'news' ||
                 activeSection === 'chats' ||
                 activeSection.startsWith('sheet:')
@@ -1253,6 +1256,11 @@ export function App() {
             {isAdminLike(session.role) && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'broadcast' ? 'flex' : 'none' }}>
                 <BroadcastScreen />
+              </div>
+            )}
+            {isAdminLike(session.role) && (
+              <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'tech' ? 'flex' : 'none' }}>
+                <TechScreen />
               </div>
             )}
             {isAdminLike(session.role) && (

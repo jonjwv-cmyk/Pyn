@@ -8,6 +8,7 @@ import {
   NAV_LOG,
   NAV_BROADCAST,
   NAV_MAP,
+  NAV_TECH,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
 } from '@/lib/nav-sections';
@@ -67,6 +68,8 @@ interface SidebarProps {
   showBroadcast: boolean;
   /** Показывать ли раздел «Карта» — тот же admin/developer-контур. */
   showMap: boolean;
+  /** Показывать ли раздел «Технология» (вебвью pynflow.ru) — тот же admin/developer-контур. */
+  showTech: boolean;
   onToggleCollapsed: () => void;
   onAiClick: () => void;
   onSectionClick: (id: NavSectionId) => void;
@@ -138,6 +141,7 @@ export function Sidebar({
   showLog,
   showBroadcast,
   showMap,
+  showTech,
   onToggleCollapsed,
   onAiClick,
   onSectionClick,
@@ -334,6 +338,9 @@ export function Sidebar({
 
         {/* 3b. «Карта» — точки складов / области / дороги / оптимум (логистическая семья с Транспортом). */}
         {showMap && renderNavItem(NAV_MAP)}
+
+        {/* 3c. «Технология» — вебвью публичного борта pynflow.ru (заявки/кладовщики/рейсы/ГЛОНАСС). */}
+        {showTech && renderNavItem(NAV_TECH)}
 
         {/* 4. «База» (Контакты/МОЛы / Склады) — hover-флайаут листов; выбор листа → переход. */}
         <BaseNavRow
