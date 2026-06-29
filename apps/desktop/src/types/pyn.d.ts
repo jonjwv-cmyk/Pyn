@@ -196,7 +196,12 @@ declare global {
         runVbs: (
           vbsSource: string,
           opts?: {
-            inputFiles?: Array<{ envName: string; filename?: string; content: string }>;
+            inputFiles?: Array<{
+              envName: string;
+              filename?: string;
+              content: string;
+              encoding?: 'utf8' | 'win1251';
+            }>;
           },
         ) => Promise<{ ok: boolean; tsv?: string; error?: string }>;
       };

@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import { customActionLabel, useTablesRegistry } from '@/lib/use-tables-registry';
 import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
 import { reportClientError } from '@/lib/error-report';
+import { runFlowStockExport } from '@/components/flow/flow-stock-run';
 
 /**
  * Кнопка «Выгрузка заказов» (этап Формирование раздела «Поток»). Запускает ТОТ ЖЕ
@@ -77,9 +78,13 @@ export function FlowOrderUploadButton({
         return;
       }
       const r = await flowImport(api, rows, startedAt);
-      setMsg(
-        `Готово: было ${r.total_before} → стало ${r.total_after} · +${r.inserted} нов · ${r.deleted} удал · ${r.off} OFF`,
-      );
+      const ordersMsg = `Готово: было ${r.total_before} → стало ${r.total_after} · +${r.inserted} нов · ${r.deleted} удал · ${r.off} OFF`;
+      setMsg(`${ordersMsg} · остатки…`);
+      // Цепочка (ТЗ «после заказов выгрузка остатков»): сразу запускаем выгрузку остатков
+      // в ТОМ ЖЕ SAP-сеансе. Тот же пароль — второй раз не спрашиваем. Сбой остатков НЕ
+      // валит уже сохранённые заказы — просто дописываем его итог в сообщение.
+      const stock = await runFlowStockExport(password);
+      setMsg(`${ordersMsg} · ${stock.msg}`);
     } catch (e) {
       setMsg(`Ошибка: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
       reportClientError('flow_import', e instanceof Error ? e.message : String(e), {

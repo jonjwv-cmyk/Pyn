@@ -49,6 +49,33 @@ export interface MacroInputFile {
   envName: string;
   filename?: string;
   content: string;
+  /**
+   * Кодировка файла на диске. По умолчанию 'utf8'. 'win1251' (ANSI) нужен для
+   * списков складов остатков: коды вида '824Т','824Ц' содержат кириллицу, и SAP
+   * (нативный импорт / PowerShell-чтение тем же codepage) ждёт именно 1251 —
+   * иначе кириллица в кодах бьётся. См. WF_STOCK_VBS_SOURCE::PutFileToClipboard1251.
+   */
+  encoding?: 'utf8' | 'win1251';
+}
+
+/**
+ * Кодирование строки в windows-1251 (ANSI). Buffer Node не умеет 1251 нативно.
+ * Покрываем ASCII + кириллицу (А-я смежный блок 0xC0–0xFF, Ё/ё, №) — этого хватает
+ * для кодов складов и любых русских текстов; редкий неизвестный символ → '?'.
+ */
+function encodeWin1251(text: string): Buffer {
+  const bytes: number[] = [];
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0x3f;
+    if (cp <= 0x7f) bytes.push(cp);                              // ASCII
+    else if (cp >= 0x410 && cp <= 0x44f) bytes.push(cp - 0x350); // А..я → 0xC0..0xFF
+    else if (cp === 0x401) bytes.push(0xa8);                     // Ё
+    else if (cp === 0x451) bytes.push(0xb8);                     // ё
+    else if (cp === 0x2116) bytes.push(0xb9);                    // №
+    else if (cp === 0x00a0) bytes.push(0x20);                    // nbsp → space
+    else bytes.push(0x3f);                                       // '?' fallback
+  }
+  return Buffer.from(bytes);
 }
 
 export function setupMacroBridge(): void {
@@ -98,7 +125,12 @@ export function setupMacroBridge(): void {
           if (!/^[A-Z0-9_]{3,64}$/.test(envName)) continue;
           const safeName = String(item.filename || `${envName.toLowerCase()}.txt`).replace(/[^\w.-]+/g, '_');
           const filePath = path.join(macrosDir, `${id}-${safeName}`);
-          writeFileSync(filePath, String(item.content ?? ''), { encoding: 'utf8' });
+          const content = String(item.content ?? '');
+          if (item.encoding === 'win1251') {
+            writeFileSync(filePath, encodeWin1251(content)); // ANSI(1251) — для списков складов остатков
+          } else {
+            writeFileSync(filePath, content, { encoding: 'utf8' });
+          }
           inputPaths.push(filePath);
           extraEnv[envName] = filePath;
         }

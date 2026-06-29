@@ -766,3 +766,119 @@ export async function flowScriptPressesGet(client: ApiClient): Promise<FlowScrip
     at: p.at ?? '',
   }));
 }
+
+// ── Остатки по складам (flow_stock_wh) ───────────────────────────────────────
+// Приложение гонит SAP-макрос остатков (Y_DVK_31000007) СРАЗУ ПОСЛЕ заказов, получает
+// TSV С ШАПКОЙ (тех. имена колонок). Делим TSV на строки/колонки БЕЗ смысловой разборки
+// и шлём чанками — СМЫСЛОВОЙ маппинг «колонка → склад/материал/кол-во/ЕИ» на сервере
+// (тюнится без пересборки EXE). Парсинг здесь — только split по табам/строкам.
+
+export interface FlowStockImportResult {
+  /** Тех. имена колонок (шапка) — видно, что реально пришло из SAP. */
+  header: string[];
+  /** Индексы распознанных полей сервером: { wh, no_num, mat, uom, qty } (−1 = не найдено). */
+  map: Record<string, number>;
+  /** Сколько строк данных отправлено всего. */
+  received: number;
+  /** Сколько строк сервер записал (0 если колонки не распознаны — тогда тюним маппинг). */
+  inserted: number;
+  /** Итоговое число строк в таблице остатков после прогона. */
+  total: number;
+  /** Записал ли сервер хоть что-то (false при columns_unmapped — см. header/map). */
+  stored: boolean;
+}
+
+export interface FlowStockRow {
+  wh: string;
+  no_num: string;
+  mat: string;
+  uom: string;
+  qty: number;
+}
+
+/** Размер чанка строк остатков на один запрос (бережём payload/лимиты CF). */
+const STOCK_CHUNK = 800;
+
+/**
+ * Отправка выгрузки остатков на сервер чанками. `tsv` — сырой вывод макроса (1-я строка =
+ * шапка тех. имён колонок). `warehouses` — список складов из файла (для снимка: сервер
+ * чистит остатки именно по ним на первом чанке).
+ */
+export async function flowStockImport(
+  client: ApiClient,
+  tsv: string,
+  warehouses: string[],
+): Promise<FlowStockImportResult> {
+  const lines = String(tsv ?? '').split(/\r?\n/);
+  while (lines.length && (lines[lines.length - 1] ?? '').trim() === '') lines.pop();
+  const header = (lines.shift() ?? '').split('\t');
+  const dataRows = lines.map((l) => l.split('\t'));
+
+  const chunks: string[][][] = [];
+  for (let i = 0; i < dataRows.length; i += STOCK_CHUNK) chunks.push(dataRows.slice(i, i + STOCK_CHUNK));
+  if (chunks.length === 0) chunks.push([]); // пустая выгрузка — всё равно шлём шапку (инспекция)
+
+  let received = 0;
+  let inserted = 0;
+  let total = 0;
+  let map: Record<string, number> = {};
+  let stored = false;
+  for (let i = 0; i < chunks.length; i += 1) {
+    const wire = await client.call<Partial<FlowStockImportResult>>('flow_stock_import', {
+      header,
+      rows: chunks[i] ?? [],
+      first: i === 0,
+      last: i === chunks.length - 1,
+      warehouses: i === 0 ? warehouses : undefined,
+    });
+    received += Number(wire.received) || 0;
+    inserted += Number(wire.inserted) || 0;
+    total = Number(wire.total) || total;
+    if (wire.map) map = wire.map;
+    if (wire.stored) stored = true;
+  }
+  return { header, map, received, inserted, total, stored };
+}
+
+/** Остатки для набора складов → клиент строит карту наличия для формирования. */
+export async function flowStockGet(client: ApiClient, warehouses?: string[]): Promise<FlowStockRow[]> {
+  const wire = await client.call<{ rows?: Array<Partial<FlowStockRow>> }>(
+    'flow_stock_get',
+    warehouses && warehouses.length ? { warehouses } : {},
+  );
+  return (wire.rows ?? []).map((r) => ({
+    wh: String(r.wh ?? ''),
+    no_num: String(r.no_num ?? ''),
+    mat: String(r.mat ?? ''),
+    uom: String(r.uom ?? ''),
+    qty: Number(r.qty) || 0,
+  }));
+}
+
+export interface FlowStockStatus {
+  lastAt: string;
+  rowsTotal: number;
+  warehouses: number;
+  header: string[];
+  map: Record<string, number>;
+  sample: string[][];
+  candidates: Record<string, string[]>;
+}
+
+/** Последняя живая шапка/маппинг/пример выгрузки остатков — для диагностики/тюнинга колонок. */
+export async function flowStockStatus(client: ApiClient): Promise<FlowStockStatus> {
+  const wire = await client.call<{
+    last_at?: string; rows_total?: number; warehouses?: number;
+    header?: string[]; map?: Record<string, number>; sample?: string[][];
+    candidates?: Record<string, string[]>;
+  }>('flow_stock_status', {});
+  return {
+    lastAt: wire.last_at ?? '',
+    rowsTotal: Number(wire.rows_total) || 0,
+    warehouses: Number(wire.warehouses) || 0,
+    header: wire.header ?? [],
+    map: wire.map ?? {},
+    sample: wire.sample ?? [],
+    candidates: wire.candidates ?? {},
+  };
+}

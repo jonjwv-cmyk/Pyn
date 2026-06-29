@@ -245,6 +245,9 @@ export {
   flowScriptPress,
   flowScriptPressesGet,
   flowScriptRunsGet,
+  flowStockImport,
+  flowStockGet,
+  flowStockStatus,
   parseOrdersTsv,
   parseZmvlTsv,
   parseSedTsv,
@@ -262,6 +265,9 @@ export {
   type FlowScriptId,
   type FlowScriptPress,
   type FlowScriptRun,
+  type FlowStockImportResult,
+  type FlowStockRow,
+  type FlowStockStatus,
 } from './flow';
 
 export {
