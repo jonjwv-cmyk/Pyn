@@ -501,9 +501,11 @@ function buildContractError(kind: 'expired' | 'not-covered', fio: string, until?
  *  Проведена = есть факт прихода (zm_vl) ИЛИ отмечена «увезли» — такая уже отражена в
  *  уменьшенном кол-ве выгрузки, в «занято планом» НЕ вычитается. */
 /** Причины возврата, требующие внимания → авто-«вопрос» в Формировании (если иного статуса нет). */
-const RETURN_Q_REASONS = new Set(['приемка', 'приёмка', 'входной контроль', 'брак', 'нет на складе', 'нет в наличии']);
+const RETURN_Q_REASONS = new Set(['приемка', 'приёмка', 'входной контроль', 'брак', 'нет на складе', 'нет в наличии',
+  // Сверка выяснила, что поставку удалили из SAP (В3): позиция снова доступна — внимание.
+  'поставка удалена в sap']);
 
-function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; factQty: number | null; claimed: boolean; proved: boolean; returnQuestion: boolean; posted: boolean; delivered: boolean; occupies: boolean; reserved: boolean; real: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean; transferNoDay: boolean } {
+function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; factQty: number | null; claimed: boolean; proved: boolean; returnQuestion: boolean; posted: boolean; delivered: boolean; occupies: boolean; reserved: boolean; real: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean; transferNoDay: boolean; transferDate: string } {
   // РЕЗЕРВ (удалена/снята) держим в карте — но ТОЛЬКО ради значка истории (anchorsWithHistory):
   // все «рабочие» флаги гасим, чтобы резерв не занимал позицию и не считался доставленным.
   const reserved = Number(d.reserved) === 1;
@@ -541,12 +543,18 @@ function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; f
   // ещё открыта в SAP (sap_open=1, нет факта). Сигнал «нужно назначить день» в Формировании.
   const transferNoDay = !reserved && d.fact_qty == null && Number(d.sap_open) === 1 &&
     String(d.fail_reason ?? '').trim() === 'перенос на другой день';
+  // Висящий ПЕРЕНОС с датой (В1, юзер 2026-07-02): «перенос на другой день: YYYY-MM-DD».
+  // Позиция показывается в Формировании на эту дату (даже если якорь ушёл в OFF).
+  const trm = !reserved && done === 'не увезли'
+    ? /^перенос на другой день: (\d{4}-\d{2}-\d{2})/.exec(String(d.fail_reason ?? '').trim())
+    : null;
   return {
     a: `${d.ord}|${d.it}`, qty: d.qty == null ? 0 : Number(d.qty), uom: String(d.uom ?? ''),
     factQty: d.fact_qty == null ? null : Number(d.fact_qty), claimed, proved, returnQuestion,
     posted, delivered, occupies, reserved, real,
     sedStatus: String(d.sed_status ?? ''), sedHolder: String(d.sed_holder ?? ''),
     sapOpen: Number(d.sap_open) === 1, transferNoDay,
+    transferDate: trm ? trm[1] ?? '' : '',
   };
 }
 
@@ -1347,6 +1355,8 @@ export function FlowSandboxGrid(): JSX.Element {
     a: string; qty: number; uom: string; factQty: number | null; claimed: boolean; proved: boolean;
     returnQuestion: boolean; posted: boolean; delivered: boolean; occupies: boolean; reserved: boolean;
     real: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean; transferNoDay: boolean;
+    /** Дата висящего переноса «перенос на другой день: YYYY-MM-DD» ('' — нет). */
+    transferDate: string;
   };
   const [dlvInfoById, setDlvInfoById] = useState<Map<number, DlvInfo>>(() => flowDlvInfoCache ?? new Map());
   // СЭД по якорю — статус движения документа + на ком (с активной поставки позиции). Для колонки СЭД
@@ -1400,6 +1410,18 @@ export function FlowSandboxGrid(): JSX.Element {
     for (const v of dlvInfoById.values()) if (v.transferNoDay) s.add(v.a);
     return s;
   }, [dlvInfoById]);
+  // Висящий ПЕРЕНОС с датой по якорю (В1, юзер 2026-07-02): позиция показывается в
+  // Формировании на дату переноса, даже если якорь ушёл в OFF (заказ не в выгрузке).
+  // Последний эпизод (максимальный id поставки) побеждает.
+  const transferPendingByAnchor = useMemo(() => {
+    const m = new Map<string, { id: number; date: string }>();
+    for (const [id, v] of dlvInfoById) {
+      if (!v.transferDate) continue;
+      const cur = m.get(v.a);
+      if (!cur || Number(id) > cur.id) m.set(v.a, { id: Number(id), date: v.transferDate });
+    }
+    return m;
+  }, [dlvInfoById]);
   // Якоря с возвратом «требует внимания» (приёмка/входной контроль/брак/нет в наличии, не разрешено) →
   // авто-«вопрос» в STAT, если иного ярлыка нет (юзер 2026-06-22).
   const returnQuestionByAnchor = useMemo(() => {
@@ -1447,8 +1469,12 @@ export function FlowSandboxGrid(): JSX.Element {
     const map = new Map<number, { auto: string; undershoot: boolean }>();
     if (vghByKey.size === 0) return map; // нет базы ВГХ → нормы неизвестны, вердикт не считаем
     const sumByGroup = new Map<string, number>();
+    // В1: OFF-якорь с висящим переносом считается АКТИВНЫМ (позиция видна в Формировании
+    // на дату переноса) — участвует в норме/ярлыках как обычная строка.
+    const isOffRow = (r: FlowSandboxRow): boolean =>
+      String(r.day_wk ?? '').toUpperCase() === 'OFF' && !transferPendingByAnchor.has(`${r.ord}|${r.it}`);
     for (const r of rows) {
-      if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
+      if (isOffRow(r)) continue;
       // Норма = доступный к транспорту ОСТАТОК (юзер 2026-06-16). Из кол-ва выгрузки вычитаем
       // Σ НЕЗАКРЫТЫХ поставок по якорю: полностью покрытая планом позиция (остаток ≤ 0) в формировании
       // не показана и в норму НЕ идёт; частичная (создали поставку 400 из 500) идёт ОСТАТКОМ (100) —
@@ -1463,7 +1489,7 @@ export function FlowSandboxGrid(): JSX.Element {
       sumByGroup.set(g, (sumByGroup.get(g) ?? 0) + eff);
     }
     for (const r of rows) {
-      if (String(r.day_wk ?? '').toUpperCase() === 'OFF') {
+      if (isOffRow(r)) {
         map.set(r.id, { auto: '', undershoot: false });
         continue;
       }
@@ -1501,7 +1527,7 @@ export function FlowSandboxGrid(): JSX.Element {
       map.set(r.id, { auto, undershoot });
     }
     return map;
-  }, [rows, vghByKey, whById, plannedOpenByAnchor, returnQuestionByAnchor]);
+  }, [rows, vghByKey, whById, plannedOpenByAnchor, returnQuestionByAnchor, transferPendingByAnchor]);
 
   // CLST — ЖИВОЙ из нашего графика. Колонка ПО ДНЯМ НЕДЕЛИ (ПН-ПТ) из графика
   // ВЫБРАННОГО месяца; внутри дня кластер выводим суффиксом: ВЫЕЗД/КХП («ПН КХП»,
@@ -1515,12 +1541,18 @@ export function FlowSandboxGrid(): JSX.Element {
     if (rows.length === 0) return rows;
     const haveWh = whById.size > 0 && !!planMeta; // ЖИВОЙ CLST (нужны склады + месяц)
     const haveVgh = vghByKey.size > 0; // ЖИВЫЕ KG/V/тех-имя из базы ВГХ
-    if (!haveWh && !haveVgh) return rows;
+    const haveTransfers = transferPendingByAnchor.size > 0; // В1: показ перенесённых позиций
+    if (!haveWh && !haveVgh && !haveTransfers) return rows;
     const shops = planMeta?.shops ?? [];
     const canUseLiveSchedule = canUseLiveWarehouseScheduleForMonth(planYear, planMonth);
     let changed = false;
     const next = rows.map((r) => {
       const patch: Partial<FlowSandboxRow> = {};
+      // В1 (юзер 2026-07-02): OFF-якорь с висящим переносом ВИДЕН в Формировании с датой
+      // переноса в DAY (слой показа; правка DAY пишет day_wk в БД и синхронизирует Отчёт).
+      const tr = transferPendingByAnchor.get(`${r.ord}|${r.it}`);
+      const effDay = tr && String(r.day_wk ?? '').toUpperCase() === 'OFF' ? tr.date : String(r.day_wk ?? '');
+      if (effDay !== String(r.day_wk ?? '')) patch.day_wk = effDay;
       if (haveWh) {
         const wh = whById.get(r.to_wh);
         const weekday = shops.length
@@ -1529,8 +1561,8 @@ export function FlowSandboxGrid(): JSX.Element {
         // ГРАФ с датой (В4): «ПТ.3» = день графика + число ближайшего вхождения.
         // Опора — выбранный DAY строки (если дата и не прошла), иначе сегодня.
         const todayIso = todayIsoLocal();
-        const dayRef = /^\d{4}-\d{2}-\d{2}$/.test(String(r.day_wk ?? '')) && String(r.day_wk) >= todayIso
-          ? String(r.day_wk)
+        const dayRef = /^\d{4}-\d{2}-\d{2}$/.test(effDay) && effDay >= todayIso
+          ? effDay
           : todayIso;
         const label = weekday ? graphDayLabel(weekday, nearestGraphDate(weekday, dayRef)) : '';
         const clst = !weekday
@@ -1564,7 +1596,7 @@ export function FlowSandboxGrid(): JSX.Element {
       // (manual=0) → ярлык вернётся (заявка/мало/мет_ок/масловоз/пусто). OFF не трогаем.
       {
         const meta = statMetaById.get(r.id);
-        if (meta && r.day_wk !== 'OFF') {
+        if (meta && effDay !== 'OFF') {
           const stored = String(r.stat ?? '').trim();
           const statManual = Number(r.stat_manual) === 1;
           const display = statManual && stored !== '' ? stored : meta.auto;
@@ -1576,7 +1608,7 @@ export function FlowSandboxGrid(): JSX.Element {
       return { ...r, ...patch };
     });
     return changed ? next : rows;
-  }, [rows, whById, planMeta, planYear, planMonth, vghByKey, statMetaById]);
+  }, [rows, whById, planMeta, planYear, planMonth, vghByKey, statMetaById, transferPendingByAnchor]);
 
   // «Формирование = только позиции БЕЗ активной поставки» (модель якорь+поставки):
   // позиция, попавшая в план («Сформировать план» / ручная вставка), из формирования
@@ -1604,7 +1636,7 @@ export function FlowSandboxGrid(): JSX.Element {
       // (флаги гасим) — позиция освобождается, но значок истории остаётся.
       for (const id of Array.isArray(e.deleted) ? e.deleted : []) {
         const cur = next.get(Number(id));
-        if (cur) next.set(Number(id), { ...cur, reserved: true, occupies: false, delivered: false, posted: false, claimed: false, proved: false, returnQuestion: false, transferNoDay: false });
+        if (cur) next.set(Number(id), { ...cur, reserved: true, occupies: false, delivered: false, posted: false, claimed: false, proved: false, returnQuestion: false, transferNoDay: false, transferDate: '' });
       }
       for (const r of Array.isArray(e.rows) ? e.rows : []) {
         next.set(Number(r.id), dlvInfoOf(r as unknown as FlowDeliveryRow));

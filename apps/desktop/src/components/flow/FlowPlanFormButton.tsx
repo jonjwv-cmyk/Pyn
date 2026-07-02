@@ -27,7 +27,9 @@ export function FlowPlanFormButton(): JSX.Element {
 
   /** Даты из колонки DAY формирования (сколько строк ждёт каждую дату).
    *  Частичная отгрузка (юзер 2026-06-16): позицию считаем, пока есть ОСТАТОК
-   *  (кол-во выгрузки − Σ открытых поставок > 0); полностью покрытую планом — нет. */
+   *  (кол-во выгрузки − Σ открытых поставок > 0); полностью покрытую планом — нет.
+   *  Перенос (В1, юзер 2026-07-02): OFF-якорь с висящим переносом считается на дату
+   *  переноса (из статуса «перенос на другой день: дата» эпизода отчёта). */
   const loadDates = (): void => {
     setDates(null);
     setMsg('');
@@ -35,15 +37,22 @@ export function FlowPlanFormButton(): JSX.Element {
       .then(([rows, dlv]) => {
         // Σ кол-ва ОТКРЫТЫХ поставок по якорю (occupies: без факта и не увезли/не увезли).
         const openByAnchor = new Map<string, number>();
+        const transferByAnchor = new Map<string, string>(); // якорь → дата висящего переноса
         for (const d of dlv) {
           const done = String(d.done_stat ?? '');
+          if (done === 'не увезли') {
+            const m = /^перенос на другой день: (\d{4}-\d{2}-\d{2})/.exec(String(d.fail_reason ?? '').trim());
+            if (m && m[1]) transferByAnchor.set(`${d.ord}|${d.it}`, m[1]);
+          }
           if (d.fact_qty != null || done === 'увезли' || done === 'не увезли') continue;
           const k = `${d.ord}|${d.it}`;
           openByAnchor.set(k, (openByAnchor.get(k) ?? 0) + (Number(d.qty) || 0));
         }
         const byDate = new Map<string, number>();
         for (const r of rows) {
-          const d = (r.day_wk || '').trim();
+          let d = (r.day_wk || '').trim();
+          // OFF-якорь с переносом → считаем на дату переноса (строка видна в Формировании).
+          if (d.toUpperCase() === 'OFF') d = transferByAnchor.get(`${r.ord}|${r.it}`) ?? '';
           if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
           const open = openByAnchor.get(`${r.ord}|${r.it}`) ?? 0;
           if (open > 0) {

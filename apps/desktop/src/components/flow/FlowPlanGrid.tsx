@@ -383,7 +383,6 @@ let planDlvCache: FlowDeliveryRow[] | null = null;
 let planAnchorsCache: FlowRow[] | null = null;
 let planVehiclesCache: FlowVehicle[] | null = null;
 
-type TransferTarget = 'plan' | 'report';
 type PendingTransfer = {
   /** Строка-инициатор. */
   rowId: number;
@@ -393,11 +392,11 @@ type PendingTransfer = {
   sameRowIds: number[];
   /** Что переносим (определяется после вопроса п.11). */
   ids: number[];
-  /** Сохранить номер поставки (вся поставка) или очистить (позиция удалена). */
+  /** Вся поставка жива (наследуем номер при формировании) или позиция удалена из неё. */
   keepDlv: boolean;
   label: string;
   /** ask — вопрос «позиция удалена из поставки?» (только если в поставке >1 строки);
-   *  date — выбор дня переноса (календарь сразу, без выбора план/отчёт — он по дате). */
+   *  date — выбор дня переноса (позиция вернётся в Формирование на эту дату, В1). */
   step: 'ask' | 'date';
 };
 
@@ -1999,29 +1998,25 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     void flowDeliveriesDelete(api, ids).catch(() => undefined);
   }, [selection, viewRows, canDeleteRow, mode]);
 
+  // Перенос — ЧЕРЕЗ ФОРМИРОВАНИЕ (В1, юзер 2026-07-02): копий в Плане/Отчёте не создаём.
+  // Источник сереет «перенос: дата», позиция возвращается в Формирование на дату переноса;
+  // в План уйдёт по «Сформировать план» (наследуя живую поставку) — сервер делает всё сам.
   const transferIds = useCallback(
-    (ids: readonly number[], toDate: string | null, target: TransferTarget = 'plan', keepDlv = true) => {
+    (ids: readonly number[], toDate: string | null, keepDlv = true) => {
       if (!toDate || ids.length === 0) return;
       if (toDate < transferMinDate) {
         setMsg('Перенос в прошлую дату запрещён');
         return;
       }
-      if (target === 'report' && !hasReportSnapshotOn(toDate)) {
-        setMsg('В этот день ещё нет слепка отчёта — выберите день с отчётом или перенос в План');
-        return;
-      }
       setMsg('');
-      void flowTransfer(api, [...ids], toDate, target, keepDlv)
+      void flowTransfer(api, [...ids], toDate, keepDlv)
         .then((res) => {
           applyServerDlv(res.rows);
           setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
           setPendingTransfer(null);
-          if (mode === 'plan' || target === 'report') setSelectedDay(toDate);
           setMsg(
-            target === 'report'
-              ? `Перенесено строк: ${res.transferred}. Строка создана в Отчёте на ${fmtPlanDate(toDate)}`
-              : mode === 'report'
-                ? `Перенесено строк: ${res.transferred}. Черновик создан в Плане на ${fmtPlanDate(toDate)}`
+            mode === 'report'
+              ? `Перенесено строк: ${res.transferred}. Позиция вернулась в Формирование на ${fmtPlanDate(toDate)}`
               : `Перенесено строк: ${res.transferred}`,
           );
         })
@@ -2030,17 +2025,15 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           setMsg(`Не удалось перенести: ${text.slice(0, 90)}`);
         });
     },
-    [applyServerDlv, hasReportSnapshotOn, mode, transferMinDate],
+    [applyServerDlv, mode, transferMinDate],
   );
 
   const commitPendingTransfer = useCallback(
     (toDate: string | null) => {
       if (!pendingTransfer || !toDate) return;
-      // Цель — по дате (п.2): день с уже готовым слепком отчёта → в Отчёт, иначе → в План.
-      const target: TransferTarget = hasReportSnapshotOn(toDate) ? 'report' : 'plan';
-      transferIds(pendingTransfer.ids, toDate, target, pendingTransfer.keepDlv);
+      transferIds(pendingTransfer.ids, toDate, pendingTransfer.keepDlv);
     },
-    [pendingTransfer, transferIds, hasReportSnapshotOn],
+    [pendingTransfer, transferIds],
   );
 
   // Размер контейнера для DataEditor.
@@ -2374,7 +2367,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
                   selected={null}
                   onSelect={commitPendingTransfer}
                   placeholder="Дата…"
-                  title="Выберите день переноса (день со слепком отчёта → в Отчёт, иначе → в План)"
+                  title="Выберите день переноса — позиция вернётся в Формирование на эту дату"
                   allowClear={false}
                   minDate={transferMinDate}
                   disabledTitle="перенос в прошлую дату запрещён"

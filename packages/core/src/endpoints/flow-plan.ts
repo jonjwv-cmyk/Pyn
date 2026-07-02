@@ -123,21 +123,22 @@ export async function flowDeliveriesDelete(client: ApiClient, ids: number[]): Pr
 }
 
 /**
- * Перенос поставок «на другой день» (ТЗ §5.4/§12). ДО фиксации — двигаем plan_date;
- * ПОСЛЕ фиксации — старую помечаем «перенос на другой день» (серый), копию-черновик
- * кладём в новый день. Дата — только сегодня/будущее (`date_in_past`).
+ * Перенос «на другой день» (В1, юзер 2026-07-02 — через Формирование). ДО фиксации —
+ * двигаем plan_date черновика; ПОСЛЕ фиксации — строка Отчёта сереет «перенос…», а
+ * позиция возвращается в Формирование с DAY = дата переноса. Копий не создаём: в План
+ * позиция уйдёт по «Сформировать план» (наследуя живую поставку эпизода).
+ * keepDlv=false — «позиция удалена из поставки»: наследования номера не будет.
+ * Дата — только сегодня/будущее (`date_in_past`).
  */
 export async function flowTransfer(
   client: ApiClient,
   ids: number[],
   toDate: string,
-  target: 'plan' | 'report' = 'plan',
   keepDlv = true,
 ): Promise<{ transferred: number; rows: FlowDeliveryRow[] }> {
   const wire = await client.call<{ transferred?: number; rows?: FlowDeliveryRow[] }>('flow_transfer', {
     ids,
     to_date: toDate,
-    target,
     keep_dlv: keepDlv,
   });
   return {
