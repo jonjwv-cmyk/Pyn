@@ -820,12 +820,20 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   // База показа (порядок: день плана → группа сборки → номер поставки → материал).
   // Отчёт — только ЗАФИКСИРОВАННЫЕ строки, свежий день СВЕРХУ. Фильтры колонок и
   // колоночная сортировка накладываются ниже (viewRows).
+  // Отчёт показывает ТЕКУЩИЙ месяц и будущее (переносы вперёд); прошлые месяцы
+  // скрыты — «простыни» не копим (юзер 2026-07-02). Прошлое остаётся в БД/истории.
+  const currentMonthPrefix = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }, []);
   const baseRows = useMemo(() => {
     // P3 (юзер 2026-06-14): ПЛАН = только НЕзафиксированные черновики (fixation_id===0 и не
     // в резерве). Зафиксированное и сеяный импорт отчёта (fixation_id>0) сюда не попадают.
     let out =
       mode === 'report'
-        ? rows.filter((r) => Number(r.fixation_id) > 0)
+        ? rows.filter(
+            (r) => Number(r.fixation_id) > 0 && (r.plan_date || '').slice(0, 7) >= currentMonthPrefix,
+          )
         : rows.filter((r) => Number(r.fixation_id) === 0 && Number(r.reserved) !== 1);
     // Календарь (P7): выбран день → показываем только его.
     if (selectedDay) out = out.filter((r) => (r.plan_date || '').slice(0, 10) === selectedDay);
@@ -839,7 +847,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         (a.mat || '').localeCompare(b.mat || '', 'ru'),
     );
     return out;
-  }, [rows, mode, selectedDay]);
+  }, [rows, mode, selectedDay, currentMonthPrefix]);
 
   // Проверка ошибок (эталон buildPlanDupGh_ / buildPlanAggByG_): по SAP-номерам. Считаем
   // ТОЛЬКО по строкам ПЛАНА (fixation_id=0, не в резерве) — иначе строка-перенос в Плане и её
@@ -2072,8 +2080,17 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             <Redo2 size={13} strokeWidth={1.75} />
           </button>
         </div>
-        {/* Календарь дня (P7): статусы дней — красный черновики / зелёный фиксация / смешанный. */}
-        <FlowDayPicker mode={mode} rows={rows} selected={selectedDay} onSelect={setSelectedDay} />
+        {/* Календарь дня (P7): статусы дней — красный черновики / зелёный фиксация / смешанный.
+            В Отчёте прошлые месяцы скрыты из вида → и в календаре недоступны (юзер 2026-07-02). */}
+        <FlowDayPicker
+          mode={mode}
+          rows={rows}
+          selected={selectedDay}
+          onSelect={setSelectedDay}
+          {...(mode === 'report'
+            ? { minDate: `${currentMonthPrefix}-01`, disabledTitle: 'прошлый месяц скрыт из отчёта' }
+            : {})}
+        />
         <div className="flex items-center gap-1">
           <Download size={13} strokeWidth={1.75} />
           <select
