@@ -7,12 +7,25 @@
 // (#,##0.000), переносы текста, разрывы страниц. XLSX = zip из XML — собираем сами:
 // ZIP без сжатия (stored, CRC32), строки inline (без sharedStrings).
 //
+// Дополнено 2026-07-03 (юзер): rich-текст в ячейке (поставка жирным, заказ обычным),
+// показ сразу в СТРАНИЧНОМ режиме с зумом 100%, печать масштабом 100% (НЕ fitToPage —
+// иначе Excel игнорирует ручные разрывы страниц), пустые ячейки СО стилем (сетка до
+// последней колонки/строки), выпадающие списки (data validation по именованным
+// диапазонам скрытого листа), примечания к ячейкам (comments + VML).
+//
 // Набор стилей ФИКСИРОВАННЫЙ (пресеты эталона, см. XLSX_STYLE):
 //   0 text (Segoe 10 left) · 1 header (Segoe 11 bold, заливка) · 2 text-r · 3 text12-r ·
 //   4 bold12-r · 5 bold12-r-wrap · 6 wrap12 · 7 mol (Segoe 8 bold wrap) · 8 num3
 //   (#,##0.000, 12) · 9 kgv (0.00, 8 bold) · 10 wrap10 · 11 bold10.
 
-export type XlsxValue = string | number | null | undefined;
+/** Прогон rich-текста: свой шрифт/жирность внутри одной ячейки. */
+export interface XlsxRichRun {
+  t: string;
+  bold?: boolean;
+  /** Размер шрифта прогона (Segoe UI), по умолчанию 12. */
+  sz?: number;
+}
+export type XlsxValue = string | number | null | undefined | { rich: XlsxRichRun[] };
 
 /** Пресет оформления → styleId (серверный layout шлёт имя пресета). */
 export const XLSX_STYLE: Record<string, number> = {
@@ -31,7 +44,7 @@ export const XLSX_STYLE: Record<string, number> = {
 
 export interface XlsxSheet {
   name: string;
-  /** Строки листа: строка/число/пусто. Строка 1 — шапка (стиль header). */
+  /** Строки листа: строка/число/rich/пусто. Строка 1 — шапка (стиль header). */
   rows: XlsxValue[][];
   /** Ширины колонок (символы Excel). */
   colWidths?: number[];
@@ -44,7 +57,19 @@ export interface XlsxSheet {
   /** Закрепить первую строку. */
   freezeTop?: boolean;
   landscape?: boolean;
+  /** Открывать лист сразу в СТРАНИЧНОМ режиме (Page Break Preview), зум 100%. */
+  pageBreakView?: boolean;
+  /** Скрытый лист (перечни для выпадашек). */
+  hidden?: boolean;
+  /** Выпадающие списки: ячейки sqref («K2:K9 K14») → имя именованного диапазона. */
+  dropdowns?: Array<{ sqref: string; listName: string }>;
+  /** Примечания к ячейкам (row/col — 0-based индексы в rows). */
+  notes?: Array<{ row: number; col: number; text: string }>;
 }
+
+/** Именованный диапазон книги (для выпадашек): ref вида «'Списки'!$A$2:$A$9». */
+export interface XlsxDefinedName { name: string; ref: string }
+export interface XlsxBookOpts { definedNames?: XlsxDefinedName[] }
 
 // ── CRC32 ────────────────────────────────────────────────────────────────────
 const CRC_TABLE = (() => {
@@ -103,58 +128,139 @@ function makeZip(entries: ZipEntry[]): Uint8Array {
 const xmlEsc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-function colLetter(i: number): string {
+export function colLetter(i: number): string {
   let n = i + 1;
   let s = '';
   while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
   return s;
 }
 
+const isRich = (v: XlsxValue): v is { rich: XlsxRichRun[] } =>
+  typeof v === 'object' && v !== null && Array.isArray((v as { rich?: unknown }).rich);
+const isEmpty = (v: XlsxValue): boolean =>
+  v == null || v === '' || (isRich(v) && v.rich.every((r) => !r.t));
+
+const RUN_FONT = (sz: number, bold: boolean): string =>
+  `${bold ? '<b/>' : ''}<sz val="${sz}"/><color rgb="FF111827"/><rFont val="Segoe UI"/><family val="2"/><charset val="204"/>`;
+
 function sheetXml(sheet: XlsxSheet): string {
   const styles = sheet.colStyles ?? [];
+  const colsCount = Math.max(
+    sheet.colWidths?.length ?? 0,
+    sheet.colStyles?.length ?? 0,
+    ...sheet.rows.map((r) => r.length),
+    1,
+  );
   const cols = (sheet.colWidths ?? [])
     .map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`)
     .join('');
-  const maxCols = Math.max(...sheet.rows.map((r) => r.length), 1);
   const rowsXml = sheet.rows
     .map((row, ri) => {
       const r = ri + 1;
       const isHeader = r === 1;
-      const cells = row
-        .map((v, ci) => {
-          if (v == null || v === '') return '';
-          const ref = `${colLetter(ci)}${r}`;
-          const s = isHeader ? 1 : styles[ci] ?? 0;
-          if (typeof v === 'number' && Number.isFinite(v)) return `<c r="${ref}" s="${s}"><v>${v}</v></c>`;
-          return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(String(v))}</t></is></c>`;
-        })
-        .join('');
-      return `<row r="${r}"${isHeader ? ' ht="19" customHeight="1"' : ''}>${cells}</row>`;
+      // Пустые ячейки — СО стилем (границы сетки до последней колонки/строки, юзер
+      // 2026-07-03); полностью пустая строка (разделитель) остаётся голой.
+      if (row.every(isEmpty)) return `<row r="${r}"/>`;
+      const cells: string[] = [];
+      for (let ci = 0; ci < colsCount; ci++) {
+        const v = row[ci];
+        const ref = `${colLetter(ci)}${r}`;
+        const s = isHeader ? 1 : styles[ci] ?? 0;
+        if (isEmpty(v)) {
+          cells.push(`<c r="${ref}" s="${s}"/>`);
+        } else if (typeof v === 'number' && Number.isFinite(v)) {
+          cells.push(`<c r="${ref}" s="${s}"><v>${v}</v></c>`);
+        } else if (isRich(v)) {
+          const runs = v.rich
+            .filter((run) => run.t)
+            .map((run) => `<r><rPr>${RUN_FONT(run.sz ?? 12, !!run.bold)}</rPr><t xml:space="preserve">${xmlEsc(run.t)}</t></r>`)
+            .join('');
+          cells.push(`<c r="${ref}" s="${s}" t="inlineStr"><is>${runs}</is></c>`);
+        } else {
+          cells.push(`<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(String(v))}</t></is></c>`);
+        }
+      }
+      return `<row r="${r}"${isHeader ? ' ht="19" customHeight="1"' : ''}>${cells.join('')}</row>`;
     })
     .join('');
-  const lastRef = `${colLetter(maxCols - 1)}${sheet.rows.length}`;
-  const freeze = sheet.freezeTop
-    ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
+  const lastRef = `${colLetter(colsCount - 1)}${sheet.rows.length}`;
+  // Страничный режим (Page Break Preview) + зум 100% сразу при открытии (юзер 2026-07-03).
+  const viewAttrs = sheet.pageBreakView
+    ? ' view="pageBreakPreview" zoomScale="100" zoomScaleNormal="100" zoomScaleSheetLayoutView="100"'
+    : '';
+  const pane = sheet.freezeTop
+    ? '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+    : '';
+  const views = viewAttrs || pane
+    ? `<sheetViews><sheetView workbookViewId="0"${viewAttrs}>${pane}</sheetView></sheetViews>`
     : '';
   const filter = sheet.autoFilter ? `<autoFilter ref="A1:${lastRef}"/>` : '';
+  const dds = sheet.dropdowns ?? [];
+  const validations = dds.length
+    ? `<dataValidations count="${dds.length}">${dds
+        .map((d) => `<dataValidation type="list" allowBlank="1" showInputMessage="0" showErrorMessage="0" sqref="${d.sqref}"><formula1>${xmlEsc(d.listName)}</formula1></dataValidation>`)
+        .join('')}</dataValidations>`
+    : '';
   const breaks = (sheet.rowBreaks ?? []).length
     ? `<rowBreaks count="${sheet.rowBreaks?.length}" manualBreakCount="${sheet.rowBreaks?.length}">${sheet.rowBreaks
         ?.map((b) => `<brk id="${b}" max="16383" man="1"/>`)
         .join('')}</rowBreaks>`
     : '';
+  // Печать масштабом 100% БЕЗ fitToPage: с «вписать в страницу» Excel игнорирует
+  // ручные разрывы страниц (юзер 2026-07-03: «где разрывы?» — вот где они были).
   return (
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-    `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-    `<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>` +
-    freeze +
+    `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+    views +
     `<sheetFormatPr defaultRowHeight="17.25"/>` +
     (cols ? `<cols>${cols}</cols>` : '') +
     `<sheetData>${rowsXml}</sheetData>` +
     filter +
+    validations +
     `<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.4" header="0.2" footer="0.2"/>` +
-    `<pageSetup paperSize="9" orientation="${sheet.landscape === false ? 'portrait' : 'landscape'}" fitToWidth="1" fitToHeight="0"/>` +
+    `<pageSetup paperSize="9" scale="100" orientation="${sheet.landscape === false ? 'portrait' : 'landscape'}"/>` +
     breaks +
+    ((sheet.notes ?? []).length ? `<legacyDrawing r:id="rId2"/>` : '') +
     `</worksheet>`
+  );
+}
+
+// ── Примечания (comments + VML: классические «заметки» Excel) ────────────────
+function commentsXml(sheet: XlsxSheet): string {
+  const items = (sheet.notes ?? [])
+    .map((n) => {
+      const ref = `${colLetter(n.col)}${n.row + 1}`;
+      return `<comment ref="${ref}" authorId="0"><text><r><rPr><sz val="9"/><color rgb="FF111827"/><rFont val="Segoe UI"/><family val="2"/><charset val="204"/></rPr><t xml:space="preserve">${xmlEsc(n.text)}</t></r></text></comment>`;
+    })
+    .join('');
+  return (
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+    `<authors><author></author></authors><commentList>${items}</commentList></comments>`
+  );
+}
+
+function vmlXml(sheet: XlsxSheet): string {
+  const shapes = (sheet.notes ?? [])
+    .map((n, k) => {
+      const anchor = `${n.col + 1},15,${Math.max(0, n.row - 1)},10,${n.col + 4},15,${n.row + 4},4`;
+      return (
+        `<v:shape id="_x0000_s${1025 + k}" type="#_x0000_t202" style="position:absolute;margin-left:80pt;margin-top:2pt;width:260pt;height:52pt;z-index:${k + 1};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto">` +
+        `<v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/>` +
+        `<v:textbox style="mso-direction-alt:auto"/>` +
+        `<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>${anchor}</x:Anchor>` +
+        `<x:AutoFill>False</x:AutoFill><x:Row>${n.row}</x:Row><x:Column>${n.col}</x:Column></x:ClientData>` +
+        `</v:shape>`
+      );
+    })
+    .join('');
+  return (
+    `<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">` +
+    `<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>` +
+    `<v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe">` +
+    `<v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>` +
+    shapes +
+    `</xml>`
   );
 }
 
@@ -199,16 +305,19 @@ function stylesXml(): string {
   );
 }
 
-/** Собрать .xlsx (без макросов) из листов. */
-export function makeXlsx(sheets: XlsxSheet[]): Uint8Array {
+/** Собрать .xlsx (без макросов) из листов. opts.definedNames — диапазоны выпадашек. */
+export function makeXlsx(sheets: XlsxSheet[], opts?: XlsxBookOpts): Uint8Array {
   const enc = new TextEncoder();
+  const withNotes = sheets.map((s, i) => ({ s, i })).filter(({ s }) => (s.notes ?? []).length > 0);
   const contentTypes =
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
     `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
     `<Default Extension="xml" ContentType="application/xml"/>` +
+    (withNotes.length ? `<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>` : '') +
     `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
     sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') +
+    withNotes.map(({ i }) => `<Override PartName="/xl/comments${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"/>`).join('') +
     `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
     `</Types>`;
   const rels =
@@ -216,10 +325,16 @@ export function makeXlsx(sheets: XlsxSheet[]): Uint8Array {
     `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
     `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
     `</Relationships>`;
+  const definedNames = (opts?.definedNames ?? []).length
+    ? `<definedNames>${opts?.definedNames
+        ?.map((d) => `<definedName name="${xmlEsc(d.name)}">${xmlEsc(d.ref)}</definedName>`)
+        .join('')}</definedNames>`
+    : '';
   const workbook =
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-    `<sheets>${sheets.map((s, i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets>` +
+    `<sheets>${sheets.map((s, i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i + 1}"${s.hidden ? ' state="hidden"' : ''} r:id="rId${i + 1}"/>`).join('')}</sheets>` +
+    definedNames +
     `</workbook>`;
   const wbRels =
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
@@ -235,12 +350,25 @@ export function makeXlsx(sheets: XlsxSheet[]): Uint8Array {
     { name: 'xl/styles.xml', data: enc.encode(stylesXml()) },
     ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(s)) })),
   ];
+  for (const { s, i } of withNotes) {
+    const sheetRels =
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments${i + 1}.xml"/>` +
+      `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing${i + 1}.vml"/>` +
+      `</Relationships>`;
+    entries.push(
+      { name: `xl/worksheets/_rels/sheet${i + 1}.xml.rels`, data: enc.encode(sheetRels) },
+      { name: `xl/comments${i + 1}.xml`, data: enc.encode(commentsXml(s)) },
+      { name: `xl/drawings/vmlDrawing${i + 1}.vml`, data: enc.encode(vmlXml(s)) },
+    );
+  }
   return makeZip(entries);
 }
 
 /** Скачать xlsx в браузере/Electron. */
-export function downloadXlsx(filename: string, sheets: XlsxSheet[]): void {
-  const bytes = makeXlsx(sheets);
+export function downloadXlsx(filename: string, sheets: XlsxSheet[], opts?: XlsxBookOpts): void {
+  const bytes = makeXlsx(sheets, opts);
   const ab = new ArrayBuffer(bytes.length);
   new Uint8Array(ab).set(bytes);
   const blob = new Blob([ab], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

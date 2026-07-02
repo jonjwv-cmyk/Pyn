@@ -17,7 +17,7 @@ import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { planEtalonCompare } from './flow-plan-sort';
-import { buildPlanXlsxSheets, planXlsxFilename, type PlanXlsxRow } from './flow-export-xlsx';
+import { buildPlanXlsxSheets, planXlsxFilename, type PlanXlsxRow, type PlanXlsxLists } from './flow-export-xlsx';
 import { downloadXlsx } from '@/lib/xlsx-lite';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
@@ -2134,10 +2134,14 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         const q = effQty(x);
         const b = Number(x.batch_seq) || 0;
         const molFio = parseMol(x.snap_mol || '')?.fio ?? (x.snap_mol || '');
+        // CLST — только ВЫЕЗД/КХП, кластер НТМК и прочие не указываем (юзер 2026-07-03,
+        // как в гриде).
+        const clstRaw = (whMapGet(whByKey, x.to_wh)?.cluster ?? '').trim();
         return {
           fr: x.fr, to_wh: x.to_wh, dlv: x.dlv, dlv_pos: x.dlv_pos, mat: x.mat, no_num: x.no_num, qty: q,
           ord: x.ord || '',
-          clst: (whMapGet(whByKey, x.to_wh)?.cluster ?? '').trim(),
+          ord_pos: x.it || '',
+          clst: clstRaw === 'ВЫЕЗД' || clstRaw === 'КХП' ? clstRaw : '',
           request: anchor?.request ?? '',
           pr: x.snap_pr || '',
           graph: graphInfo(x)?.label ?? '',
@@ -2153,17 +2157,28 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           vehicleType: splitMultiCell(x.vehicle || '').join(', '),
           garage: splitMultiCell(x.ride_id || '').join(', '),
           stockNote: x.stock_note || '',
+          matNote: (vgh?.tech_name || '').trim(),
         };
       });
+      // Выпадашки Excel (юзер 2026-07-03): МОЛы склада-получателя и экспедиторы
+      // (только роль в потоке) — с сотовым, формат телефона как раздел МОЛ.
+      const withPhone = (fio: string, phone: string): string => (phone ? `${fio}, ${phone}` : fio);
+      const molsByWh = new Map<string, string[]>();
+      for (const x of dayRows) {
+        if (molsByWh.has(x.to_wh)) continue;
+        molsByWh.set(x.to_wh, molsForWh(x.to_wh).map((o) => withPhone(compactFio(o.fio), o.phoneDisplay)));
+      }
+      const lists: PlanXlsxLists = {
+        expeditors: expeditorOptions.map((o) => withPhone(o.fio, o.phoneDisplay)),
+        molsByWh,
+      };
       // Имена (юзер 2026-07-03): «План экспедиции на июль 3 2026.xlsx» /
       // «Доп. 1 к плану экспедиции на …»; листы «План»/«Доп. N» и «Места хранения».
-      downloadXlsx(
-        planXlsxFilename(selectedDay, batch),
-        buildPlanXlsxSheets(selectedDay, batch, inputs, xlsxLayoutRef.current),
-      );
+      const book = buildPlanXlsxSheets(selectedDay, batch, inputs, xlsxLayoutRef.current, lists);
+      downloadXlsx(planXlsxFilename(selectedDay, batch), book.sheets, { definedNames: book.definedNames });
       setMsg(`Выгружено в Excel: ${dayRows.length} строк`);
     },
-    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName],
+    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, molsForWh, expeditorOptions],
   );
 
   // «Строка» БЕЗ формы (юзер 2026-07-03): добавляем ПУСТУЮ ручную строку на выбранный
