@@ -354,6 +354,9 @@ export interface FlowPlanPasteRow {
   sap_created_by: string;
   sap_created_at: string;
   stock_note: string;
+  /** «Запас ММ» (кол.28 буфера) СТРОКОЙ: 0/пусто → авто-коммент «нет на <дата создания>»
+   *  (юзер 2026-07-02) — механизм наличия, как в отчёте. */
+  stock_mm: string;
 }
 
 /** M/D/YY|M/D/YYYY (ALV-копия, американский порядок) или DD.MM.YYYY → ISO ('' если нет). */
@@ -384,11 +387,14 @@ function planPasteTime(raw: string): string {
   return `${String(h).padStart(2, '0')}:${m[2]}:${m[3] ?? '00'}`;
 }
 
-/** Колонки формата «до AL» (0-based, по живому образцу юзера 2026-07-02). */
+/** Колонки формата «до AL» (0-based, по живому образцу юзера 2026-07-02 + шапке SAP:
+ *  Дата·…·Отп_Склад·Пол_Склад·…·Поставка·Позиция·ТЗ·…·Материал·Наименование·ЕИ·Объём
+ *  поставки·…·СвОстЦС·НомЗаказа·ПозЗаказа·Создал·Дата создания·Время·Запас ММ·…места). */
 const PP = {
   date: 0, fr: 2, to: 3, dlv: 6, dlvPos: 7, trz: 8,
   noNum: 11, mat: 12, uom: 13, qty: 14,
   ord: 22, it: 23, createdBy: 24, createdDate: 25, createdTime: 26,
+  stockMm: 27,
   place1: 30, place1Qty: 31, place2: 32,
 } as const;
 
@@ -427,6 +433,8 @@ export function parsePlanPasteTsv(text: string): FlowPlanPasteRow[] {
       sap_created_by: c[PP.createdBy] ?? '',
       sap_created_at: createdDate ? `${createdDate} ${createdTime || '00:00:00'}` : '',
       stock_note: stockNote,
+      // '' = колонки нет в буфере (наличие неизвестно); пустая ячейка = запаса нет → '0'.
+      stock_mm: c.length > PP.stockMm ? (c[PP.stockMm] ?? '').trim() || '0' : '',
     });
   }
   return out;
@@ -471,4 +479,35 @@ export async function flowPlanRowsApply(
     inserted: Number(wire.inserted) || 0,
     insertedIds: Array.isArray(wire.inserted_ids) ? wire.inserted_ids.map(Number).filter(Number.isFinite) : [],
   };
+}
+
+// ── Формат «Плана .xlsx» — СЕРВЕРНЫЙ (юзер 2026-07-02) ───────────────────────
+// Раскладка выгрузки (колонки/заголовки/титулы/порядок складов сортировки) живёт на
+// сервере: правки формата — без обновления приложения. Клиент тянет её перед выгрузкой
+// и падает обратно на встроенный дефолт, если сервер недоступен.
+
+export interface FlowXlsxColumn {
+  /** id данных строки: request/fr/to/pr/clst/graph/fix/dlv/dlv_pos/trz/mol/no_num/
+   *  mat/uom/qty/kg/v/note/exp/vehicle_type/garage/stock_note. */
+  id: string;
+  head: string;
+  width: number;
+}
+export interface FlowXlsxLayout {
+  plan: { title: string; columns: FlowXlsxColumn[] };
+  rest: { title: string; columns: FlowXlsxColumn[] };
+  /** Порядок специальных складов-отправителей сортировки APLAN. */
+  special_fr?: string[];
+}
+
+/** Раскладка выгрузки с сервера; null — не получили (клиент возьмёт встроенный дефолт). */
+export async function flowXlsxLayoutGet(client: ApiClient): Promise<FlowXlsxLayout | null> {
+  try {
+    const wire = await client.call<{ ok?: boolean; layout?: FlowXlsxLayout }>('flow_xlsx_layout_get', {});
+    const l = wire.layout;
+    if (!l || !Array.isArray(l.plan?.columns) || !Array.isArray(l.rest?.columns)) return null;
+    return l;
+  } catch {
+    return null;
+  }
 }

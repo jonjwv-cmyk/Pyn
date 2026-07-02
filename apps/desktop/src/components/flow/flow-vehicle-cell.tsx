@@ -73,6 +73,19 @@ function FlowVehicleEditor({
       return [...prev, v.garageNo];
     });
 
+  // Гаражный РУКАМИ (юзер 2026-07-02): введённый номер добавляется как есть, без базы.
+  const addManual = (): void => {
+    const v = query.trim();
+    if (!v) return;
+    setPicked((prev) => {
+      if (prev.some((x) => x.toUpperCase() === v.toUpperCase())) return prev;
+      if (prev.length >= maxSelected) return prev;
+      return [...prev, v];
+    });
+    setQuery('');
+  };
+  const hasExactMatch = matches.some((v) => v.garageNo.toUpperCase() === query.trim().toUpperCase());
+
   return (
     <div className="flex max-h-80 w-80 flex-col">
       <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-text-muted">
@@ -99,12 +112,24 @@ function FlowVehicleEditor({
         onChange={(e) => setQuery(e.target.value)}
         autoFocus
         spellCheck={false}
-        placeholder="найти"
+        placeholder="найти или вписать гаражный"
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && matches[0]) toggle(matches[0]);
+          if (e.key !== 'Enter') return;
+          // Есть совпадение из базы → выбираем его; нет → введённый номер РУКАМИ.
+          if (matches[0]) toggle(matches[0]);
+          else addManual();
         }}
         className="mb-1 h-8 w-full rounded-md border border-white/[0.12] bg-white/[0.04] px-2 text-[12px] text-text-primary outline-none placeholder:text-text-muted/60 focus:border-accent-clay/60"
       />
+      {query.trim() !== '' && !hasExactMatch && picked.length < maxSelected && (
+        <button
+          type="button"
+          onClick={addManual}
+          className="mb-1 rounded-md border border-white/[0.10] px-2 py-1 text-left text-[11.5px] text-text-secondary transition-colors hover:border-accent-clay/50 hover:text-text-strong"
+        >
+          Вписать «{query.trim()}» руками
+        </button>
+      )}
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-0.5 py-0.5 text-text-secondary">
         {matches.length === 0 ? (
           <div className="px-2 py-1.5 text-[12px] text-text-muted/70">Машины не найдены</div>
