@@ -40,6 +40,8 @@ import {
   flowWorkflowGet,
   flowWorkflowEdit,
   flowVehiclesGet,
+  flowPlanRowsApply,
+  parsePlanPasteTsv,
   type FlowDeliveryRow,
   type FlowRow,
   type FlowChangedEvent,
@@ -1949,8 +1951,23 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   // Вставка из буфера в колонку СТАТУС: одно скопированное значение → на ВСЕ выделенные строки
   // (юзер 2026-06-15: «копирую, выделяю другие строки, вставляю — а идёт только на одну»). Перенос
   // вставкой не копируем (у него своя дата-логика через ячейку). Прочие колонки — стандартная Glide.
+  // ШИРОКАЯ вставка «до AL» (В7, юзер 2026-07-02): скопированные из SAP/Excel строки формата
+  // ZM_VL (~38 колонок, ≥24) в ПЛАНЕ разносятся по нашим полям сервером (номера на черновики /
+  // новые строки НИЖЕ текущих) — не по видимым колонкам грида. Числа нормализует сервер
+  // («2.000,000» = 2000, «22.400» = 22.4).
   const onPaste = useCallback(
     (target: readonly [number, number], values: readonly (readonly string[])[]): boolean => {
+      if (mode === 'plan' && Array.isArray(values) && values.some((row) => row.length >= 24)) {
+        const tsv = values.map((row) => row.join('\t')).join('\n');
+        const parsed = parsePlanPasteTsv(tsv);
+        if (parsed.length > 0) {
+          setMsg(`Вставка: разбираю ${parsed.length} строк…`);
+          void flowPlanRowsApply(api, parsed, { planDate: selectedDay ?? undefined, source: 'paste' })
+            .then((r) => setMsg(`Вставка: ${r.received} строк · ${r.assigned} номеров на черновики · ${r.inserted} нов · ${r.updated} обновл`))
+            .catch((e) => setMsg(`Вставка не прошла: ${(e instanceof Error ? e.message : String(e)).slice(0, 90)}`));
+          return false; // обработали сами — Glide не вставляет
+        }
+      }
       const spec = COLS[target[0]];
       const pasted = String(values?.[0]?.[0] ?? '').trim();
       if (spec?.id === 'status' && selection.rows.length > 1 && pasted) {
@@ -1963,7 +1980,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       }
       return true; // остальное — обычная вставка диапазона Glide
     },
-    [COLS, selection, applyStatusToSelected],
+    [COLS, selection, applyStatusToSelected, mode, selectedDay],
   );
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];

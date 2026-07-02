@@ -10,6 +10,7 @@ import { useUsersStore } from '@/lib/stores';
 import { FlowSandboxGrid } from './FlowSandboxGrid';
 import { FlowPlanGrid } from './FlowPlanGrid';
 import { FlowPlanFormButton } from './FlowPlanFormButton';
+import { FlowPlanCreateButton } from './FlowPlanCreateButton';
 import { FlowPlanFixButton } from './FlowPlanFixButton';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
 import { FlowImportIndicator, type FlowImportRunner } from './FlowImportIndicator';
@@ -106,6 +107,8 @@ export function FlowScreen(): JSX.Element {
           {stage === 'plan' && (
             <>
               <FlowPlanFormButton />
+              {/* В2 (юзер 2026-07-02): формирование черновиков → создание поставок в SAP → фиксация. */}
+              <FlowPlanCreateButton />
               <FlowPlanFixButton />
             </>
           )}

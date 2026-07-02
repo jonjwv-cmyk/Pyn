@@ -319,3 +319,140 @@ export async function flowSedReconcile(
     events: Number(wire.events) || 0,
   };
 }
+
+// ============================================================
+// Вставка/приём строк плана «до AL» (В2/В7, юзер 2026-07-02).
+// ============================================================
+// Один формат на два источника: результат макроса «Создание поставок» (ZM_VL grid)
+// и ручная вставка из буфера (юзер копирует те же строки из SAP/Excel). ~38 колонок
+// (A..AL), без заголовка, много пустых служебных. Числа оставляем СТРОКАМИ — сервер
+// парсит своим zmNum («2.000,000» = 2000, «22.400» = 22.4 — точки НЕ тысячи, если
+// нет запятой). Даты первой колонки — американские M/D/YY (так копирует ALV).
+
+/** Строка вставки плана (сырьё «до AL», числа строками). */
+export interface FlowPlanPasteRow {
+  /** Дата строки ISO (из M/D/YY); пусто — возьмётся выбранный день плана. */
+  plan_date: string;
+  fr: string;
+  to_wh: string;
+  dlv: string;
+  dlv_pos: string;
+  trz: string;
+  no_num: string;
+  mat: string;
+  uom: string;
+  qty: string;
+  ord: string;
+  it: string;
+  sap_created_by: string;
+  sap_created_at: string;
+  stock_note: string;
+}
+
+/** M/D/YY|M/D/YYYY (ALV-копия, американский порядок) или DD.MM.YYYY → ISO ('' если нет). */
+function planPasteDate(raw: string): string {
+  const s = String(raw ?? '').trim();
+  let m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(s);
+  if (m) {
+    const y = (m[3] ?? '').length === 2 ? `20${m[3]}` : m[3] ?? '';
+    return `${y}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+  }
+  m = /^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/.exec(s);
+  if (m) {
+    const y = (m[3] ?? '').length === 2 ? `20${m[3]}` : m[3] ?? '';
+    return `${y}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+  }
+  return '';
+}
+
+/** «10:53:58 AM»/«4:30:29 PM»/«14:30:29» → «HH:MM:SS» ('' если нечитаемо). */
+function planPasteTime(raw: string): string {
+  const s = String(raw ?? '').trim();
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i.exec(s);
+  if (!m) return '';
+  let h = Number(m[1]);
+  const ap = (m[4] ?? '').toUpperCase();
+  if (ap === 'PM' && h < 12) h += 12;
+  if (ap === 'AM' && h === 12) h = 0;
+  return `${String(h).padStart(2, '0')}:${m[2]}:${m[3] ?? '00'}`;
+}
+
+/** Колонки формата «до AL» (0-based, по живому образцу юзера 2026-07-02). */
+const PP = {
+  date: 0, fr: 2, to: 3, dlv: 6, dlvPos: 7, trz: 8,
+  noNum: 11, mat: 12, uom: 13, qty: 14,
+  ord: 22, it: 23, createdBy: 24, createdDate: 25, createdTime: 26,
+  place1: 30, place1Qty: 31, place2: 32,
+} as const;
+
+/**
+ * Разобрать TSV «до AL» (вставка из буфера ИЛИ вывод макроса создания поставок).
+ * Строка валидна, если есть номер поставки или заказа (цифры). Заголовки/мусор
+ * пропускаются. Места хранения → stock_note (место с запасом приоритетно).
+ */
+export function parsePlanPasteTsv(text: string): FlowPlanPasteRow[] {
+  const out: FlowPlanPasteRow[] = [];
+  const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const c = line.split('\t').map((v) => String(v ?? '').trim());
+    if (c.length < PP.it + 1) continue; // слишком узкая строка — не наш формат
+    const dlv = /^\d+$/.test(c[PP.dlv] ?? '') ? (c[PP.dlv] as string) : '';
+    const ord = /^\d+$/.test(c[PP.ord] ?? '') ? (c[PP.ord] as string) : '';
+    if (!dlv && !ord) continue; // заголовок/мусор
+    const createdDate = planPasteDate(c[PP.createdDate] ?? '');
+    const createdTime = planPasteTime(c[PP.createdTime] ?? '');
+    const stockNote = (c[PP.place1Qty] || c[PP.place1] || c[PP.place2] || '').trim();
+    out.push({
+      plan_date: planPasteDate(c[PP.date] ?? ''),
+      fr: c[PP.fr] ?? '',
+      to_wh: c[PP.to] ?? '',
+      dlv,
+      dlv_pos: c[PP.dlvPos] ?? '',
+      trz: c[PP.trz] ?? '',
+      no_num: c[PP.noNum] ?? '',
+      mat: c[PP.mat] ?? '',
+      uom: c[PP.uom] ?? '',
+      qty: c[PP.qty] ?? '',
+      ord,
+      it: c[PP.it] ?? '',
+      sap_created_by: c[PP.createdBy] ?? '',
+      sap_created_at: createdDate ? `${createdDate} ${createdTime || '00:00:00'}` : '',
+      stock_note: stockNote,
+    });
+  }
+  return out;
+}
+
+/** Итог приёма строк плана. */
+export interface FlowPlanRowsApplyResult {
+  received: number;
+  /** Черновиков получило номер SAP («поставка создана»). */
+  assigned: number;
+  /** Существующих номерных строк обновлено (служебные поля). */
+  updated: number;
+  /** Вставлено новых строк плана. */
+  inserted: number;
+}
+
+/**
+ * Отправить разобранные строки «до AL» серверу: матч черновиков по заказ+позиция
+ * (присвоение номера), обновление существующих по поставка+П/П (без клоббера ручного),
+ * остальное — вставка новыми строками плана (ниже текущих).
+ */
+export async function flowPlanRowsApply(
+  client: ApiClient,
+  rows: FlowPlanPasteRow[],
+  opts?: { planDate?: string; source?: 'macro' | 'paste' },
+): Promise<FlowPlanRowsApplyResult> {
+  const wire = await client.call<{ received?: number; assigned?: number; updated?: number; inserted?: number }>(
+    'flow_plan_rows_apply',
+    { rows, plan_date: opts?.planDate, source: opts?.source ?? 'paste' },
+  );
+  return {
+    received: Number(wire.received) || 0,
+    assigned: Number(wire.assigned) || 0,
+    updated: Number(wire.updated) || 0,
+    inserted: Number(wire.inserted) || 0,
+  };
+}

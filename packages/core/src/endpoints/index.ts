@@ -289,11 +289,15 @@ export {
   flowDeliveryEventsGet,
   flowDeliveryAdd,
   flowSedReconcile,
+  parsePlanPasteTsv,
+  flowPlanRowsApply,
   type FlowDeliveryRow,
   type FlowDeliveryEdit,
   type FlowPlanFormResult,
   type FlowDeliveryEvent,
   type FlowDeliveryAddInput,
+  type FlowPlanPasteRow,
+  type FlowPlanRowsApplyResult,
 } from './flow-plan';
 
 export {
