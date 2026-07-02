@@ -2757,6 +2757,27 @@ export function FlowSandboxGrid(): JSX.Element {
       // сами через applyEdits (v='' → stat_manual=0 → возврат к авто-ярлыку по правилам).
       // Срабатывает, когда выделение целиком в колонке STAT (одна ячейка / верт. диапазон).
       const cur = sel.current;
+      // DAY — та же беда (юзер 2026-07-03: «дату выбрали, а удалить клавишей не выходит»):
+      // выделение целиком в колонке DAY → чистим дату явно через applyEdits.
+      const dayCol = FLOW_COLUMNS.findIndex((c) => c.kind === 'day');
+      if (cur && dayCol >= 0 && cur.range.x === dayCol && cur.range.width === 1) {
+        const edits: { location: Item; value: EditableGridCell }[] = [];
+        for (let y = cur.range.y; y < cur.range.y + cur.range.height; y++) {
+          edits.push({
+            location: [dayCol, y] as Item,
+            value: {
+              kind: GridCellKind.Custom,
+              allowOverlay: true,
+              copyData: '',
+              data: { kind: 'flow-day', value: '', label: '' },
+            } satisfies FlowDayCell,
+          });
+        }
+        if (edits.length > 0) {
+          applyEdits(edits);
+          return false;
+        }
+      }
       const statCol = FLOW_COLUMNS.findIndex((c) => c.id === 'stat');
       if (cur && statCol >= 0 && cur.range.x === statCol && cur.range.width === 1) {
         const edits: { location: Item; value: EditableGridCell }[] = [];

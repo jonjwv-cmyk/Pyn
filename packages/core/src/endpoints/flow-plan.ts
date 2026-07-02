@@ -79,6 +79,8 @@ export interface FlowDeliveryRow {
   sed_launch_at?: string;
   sed_signed_at?: string;
   sap_open?: number;
+  /** Q — аварийный/особый запас (юзер 2026-07-03; «Особый запас» из SAP-вставки). */
+  q_spec?: string;
 }
 
 /** Одна правка поставки: id + версия (конфликт) + изменённые поля. */
@@ -354,9 +356,14 @@ export interface FlowPlanPasteRow {
   sap_created_by: string;
   sap_created_at: string;
   stock_note: string;
-  /** «Запас ММ» (кол.28 буфера) СТРОКОЙ: 0/пусто → авто-коммент «нет на <дата создания>»
-   *  (юзер 2026-07-02) — механизм наличия, как в отчёте. */
+  /** «Запас ММ» (legacy, поглощён stock_vals). */
   stock_mm: string;
+  /** НАЛИЧИЕ (юзер 2026-07-03): 5 колонок запасов буфера — Запас ММ (AB) / Запас СУС (AD) /
+   *  Запас СМ1 (AH) / СМ2 (AJ) / СМ3 (AL), строками. ВСЕ нули/пусто → сервер пишет
+   *  «нет на <дата создания>»; хоть одна > 0 → наличие есть. Пустой массив = неизвестно. */
+  stock_vals: string[];
+  /** Q — аварийный/особый запас (кол. «Особый запас», K буфера). */
+  q_spec: string;
 }
 
 /** M/D/YY|M/D/YYYY (ALV-копия, американский порядок) или DD.MM.YYYY → ISO ('' если нет). */
@@ -391,12 +398,15 @@ function planPasteTime(raw: string): string {
  *  Дата·…·Отп_Склад·Пол_Склад·…·Поставка·Позиция·ТЗ·…·Материал·Наименование·ЕИ·Объём
  *  поставки·…·СвОстЦС·НомЗаказа·ПозЗаказа·Создал·Дата создания·Время·Запас ММ·…места). */
 const PP = {
-  date: 0, fr: 2, to: 3, dlv: 6, dlvPos: 7, trz: 8,
+  date: 0, fr: 2, to: 3, dlv: 6, dlvPos: 7, trz: 8, qSpec: 10,
   noNum: 11, mat: 12, uom: 13, qty: 14,
   ord: 22, it: 23, createdBy: 24, createdDate: 25, createdTime: 26,
   stockMm: 27,
   place1: 30, place1Qty: 31, place2: 32,
 } as const;
+/** Колонки НАЛИЧИЯ (юзер 2026-07-03): Запас ММ (AB=27), Запас СУС (AD=29),
+ *  Запас СМ1 (AH=33), Запас СМ2 (AJ=35), Запас СМ3 (AL=37). */
+const PP_STOCKS = [27, 29, 33, 35, 37] as const;
 
 /**
  * Разобрать TSV «до AL» (вставка из буфера ИЛИ вывод макроса создания поставок).
@@ -435,6 +445,9 @@ export function parsePlanPasteTsv(text: string): FlowPlanPasteRow[] {
       stock_note: stockNote,
       // '' = колонки нет в буфере (наличие неизвестно); пустая ячейка = запаса нет → '0'.
       stock_mm: c.length > PP.stockMm ? (c[PP.stockMm] ?? '').trim() || '0' : '',
+      // Все 5 колонок запасов (наличие); недоступные в короткой строке пропускаются.
+      stock_vals: PP_STOCKS.filter((i) => c.length > i).map((i) => (c[i] ?? '').trim() || '0'),
+      q_spec: c[PP.qSpec] ?? '',
     });
   }
   return out;
@@ -487,15 +500,23 @@ export async function flowPlanRowsApply(
 // и падает обратно на встроенный дефолт, если сервер недоступен.
 
 export interface FlowXlsxColumn {
-  /** id данных строки: request/fr/to/pr/clst/graph/fix/dlv/dlv_pos/trz/mol/no_num/
-   *  mat/uom/qty/kg/v/note/exp/vehicle_type/garage/stock_note. */
+  /** id данных строки: request/fr/to/pr/clst/graph/fix/dlvord/dlv/dlv_pos/trz/mol/q/
+   *  no_num/mat/uom/qty/kg/v/note/exp/vehicle_type/garage/stock_note. */
   id: string;
   head: string;
   width: number;
+  /** Пресет оформления (эталон): text/text-r/text12-r/bold12-r/bold12-r-wrap/wrap12/
+   *  wrap10/mol/num3/kgv/bold10. Пусто — по id. */
+  style?: string;
 }
 export interface FlowXlsxLayout {
-  plan: { title: string; columns: FlowXlsxColumn[] };
-  rest: { title: string; columns: FlowXlsxColumn[] };
+  plan: {
+    columns: FlowXlsxColumn[];
+    /** Шаблон заголовка «Наименования» с датой плана (эталон M1): '{DD} {MONTH} Наименование {YYYY}'. */
+    matHead?: string;
+    title?: string; // legacy (титул-строка не используется)
+  };
+  rest: { columns: FlowXlsxColumn[]; title?: string };
   /** Порядок специальных складов-отправителей сортировки APLAN. */
   special_fr?: string[];
 }
