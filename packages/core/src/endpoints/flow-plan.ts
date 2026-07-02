@@ -244,6 +244,10 @@ export interface FlowDeliveryAddInput {
   qty?: number | null;
   dlv?: string;
   dlv_pos?: string;
+  /** МОЛ/комментарий ручной строки (юзер 2026-07-02): выбрать из списка склада или
+   *  вписать свой; пусто + есть заказ+позиция → подтянется с формирования. */
+  mol?: string;
+  note?: string;
 }
 
 /**
@@ -270,6 +274,8 @@ export async function flowDeliveryAdd(
       qty: input.qty ?? null,
       dlv: input.dlv ?? '',
       dlv_pos: input.dlv_pos ?? '',
+      mol: input.mol ?? '',
+      note: input.note ?? '',
     },
   );
   return {
