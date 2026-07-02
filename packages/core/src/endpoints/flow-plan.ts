@@ -331,7 +331,8 @@ export async function flowSedReconcile(
 
 /** Строка вставки плана (сырьё «до AL», числа строками). */
 export interface FlowPlanPasteRow {
-  /** Дата строки ISO (из M/D/YY); пусто — возьмётся выбранный день плана. */
+  /** Всегда пусто (юзер 2026-07-02: дата первой колонки буфера — МУСОР для плана;
+   *  строки встают на выбранный день / сегодня). Поле оставлено для совместимости. */
   plan_date: string;
   fr: string;
   to_wh: string;
@@ -404,7 +405,8 @@ export function parsePlanPasteTsv(text: string): FlowPlanPasteRow[] {
     const createdTime = planPasteTime(c[PP.createdTime] ?? '');
     const stockNote = (c[PP.place1Qty] || c[PP.place1] || c[PP.place2] || '').trim();
     out.push({
-      plan_date: planPasteDate(c[PP.date] ?? ''),
+      // Дату первой колонки НЕ читаем (мусор): строки встают на выбранный день плана.
+      plan_date: '',
       fr: c[PP.fr] ?? '',
       to_wh: c[PP.to] ?? '',
       dlv,
@@ -433,6 +435,8 @@ export interface FlowPlanRowsApplyResult {
   updated: number;
   /** Вставлено новых строк плана. */
   inserted: number;
+  /** id вставленных строк — для отмены вставки (undo). */
+  insertedIds: number[];
 }
 
 /**
@@ -448,7 +452,9 @@ export async function flowPlanRowsApply(
   rows: FlowPlanPasteRow[],
   opts?: { planDate?: string; source?: 'macro' | 'paste'; target?: 'plan' | 'report' },
 ): Promise<FlowPlanRowsApplyResult> {
-  const wire = await client.call<{ received?: number; assigned?: number; updated?: number; inserted?: number }>(
+  const wire = await client.call<{
+    received?: number; assigned?: number; updated?: number; inserted?: number; inserted_ids?: number[];
+  }>(
     'flow_plan_rows_apply',
     { rows, plan_date: opts?.planDate, source: opts?.source ?? 'paste', target: opts?.target ?? 'plan' },
   );
@@ -457,5 +463,6 @@ export async function flowPlanRowsApply(
     assigned: Number(wire.assigned) || 0,
     updated: Number(wire.updated) || 0,
     inserted: Number(wire.inserted) || 0,
+    insertedIds: Array.isArray(wire.inserted_ids) ? wire.inserted_ids.map(Number).filter(Number.isFinite) : [],
   };
 }

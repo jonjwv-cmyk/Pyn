@@ -42,6 +42,7 @@ import {
   flowVehiclesGet,
   flowPlanRowsApply,
   parsePlanPasteTsv,
+  type FlowPlanPasteRow,
   type FlowDeliveryRow,
   type FlowRow,
   type FlowChangedEvent,
@@ -896,17 +897,6 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     return m;
   }, [planRowsForFlags]);
 
-  const draftCount = useMemo(() => rows.filter((r) => !(r.dlv || '').trim()).length, [rows]);
-  const groupCount = useMemo(() => {
-    const g = new Set<string>();
-    for (const r of rows) g.add((r.dlv || '').trim() || `${r.plan_date}·${r.grp}`);
-    return g.size;
-  }, [rows]);
-  const hasReportSnapshotOn = useCallback(
-    (date: string): boolean =>
-      rows.some((r) => Number(r.fixation_id) > 0 && Number(r.reserved) !== 1 && (r.plan_date || '').slice(0, 10) === date),
-    [rows],
-  );
 
   // Эффективное кол-во ДЛЯ ПОКАЗА: в Отчёте — фактическое из zm_vl (что реально провели), если есть;
   // иначе план. КГ/V и зависимые ячейки считаются от него. План-снимок остаётся в истории карточки.
@@ -1385,8 +1375,12 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     rowsRef.current = rows;
   }, [rows]);
   type PlanEdit = { id: number; before: Record<string, string | number | null>; after: Record<string, string | number | null> };
-  const undoRef = useRef<PlanEdit[]>([]);
-  const redoRef = useRef<PlanEdit[]>([]);
+  // Вставка из буфера — тоже отменяемое действие (юзер 2026-07-02): undo убирает
+  // вставленные строки (в резерв), redo вставляет их заново (новые id).
+  type PasteAction = { kind: 'paste'; ids: number[]; rows: FlowPlanPasteRow[]; planDate?: string; target: 'plan' | 'report' };
+  type HistoryEntry = PlanEdit | PasteAction;
+  const undoRef = useRef<HistoryEntry[]>([]);
+  const redoRef = useRef<HistoryEntry[]>([]);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
   const syncHistory = useCallback(() => {
     setHistory({ canUndo: undoRef.current.length > 0, canRedo: redoRef.current.length > 0 });
@@ -1430,7 +1424,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     [],
   );
   const pushHistory = useCallback(
-    (e: PlanEdit) => {
+    (e: HistoryEntry) => {
       undoRef.current.push(e);
       if (undoRef.current.length > 100) undoRef.current.shift();
       redoRef.current = []; // новый шаг обнуляет «повтор»
@@ -1441,6 +1435,23 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   const undo = useCallback(() => {
     const e = undoRef.current.pop();
     if (!e) return;
+    if ('kind' in e) {
+      // Отмена вставки: вставленные строки в резерв (повтор вставит заново).
+      if (e.ids.length > 0) {
+        setRows((prev) => {
+          const drop = new Set(e.ids);
+          const next = prev.filter((r) => !drop.has(r.id));
+          planDlvCache = next;
+          rowsRef.current = next;
+          return next;
+        });
+        void flowDeliveriesDelete(api, e.ids).catch(() => undefined);
+      }
+      setMsg(`Вставка отменена: ${e.ids.length} строк убрано`);
+      redoRef.current.push(e);
+      syncHistory();
+      return;
+    }
     applyDlvFields(e.id, e.before);
     redoRef.current.push(e);
     syncHistory();
@@ -1448,6 +1459,18 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   const redo = useCallback(() => {
     const e = redoRef.current.pop();
     if (!e) return;
+    if ('kind' in e) {
+      // Повтор вставки: те же строки заново (сервер выдаст новые id — обновляем в записи).
+      void flowPlanRowsApply(api, e.rows, { planDate: e.planDate, source: 'paste', target: e.target })
+        .then((r) => {
+          e.ids = r.insertedIds;
+          setMsg(`Вставка повторена: ${r.inserted} строк`);
+        })
+        .catch((err) => setMsg(`Повтор вставки не прошёл: ${(err instanceof Error ? err.message : String(err)).slice(0, 80)}`));
+      undoRef.current.push(e);
+      syncHistory();
+      return;
+    }
     applyDlvFields(e.id, e.after);
     undoRef.current.push(e);
     syncHistory();
@@ -1960,15 +1983,25 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   // (МОЛ/коммент/согласовал подтягиваются с якоря формирования на сервере).
   const applyPastedRows = useCallback(
     (text: string): boolean => {
+      const totalLines = text.replace(/\r\n?/g, '\n').split('\n').filter((l) => l.trim()).length;
       const parsed = parsePlanPasteTsv(text);
       if (parsed.length === 0) return false;
+      const skipped = Math.max(0, totalLines - parsed.length);
       setMsg(`Вставка: разбираю ${parsed.length} строк…`);
-      void flowPlanRowsApply(api, parsed, { planDate: selectedDay ?? undefined, source: 'paste', target: mode })
-        .then((r) => setMsg(`Вставка: ${r.received} строк · ${r.assigned} номеров на черновики · ${r.inserted} нов · ${r.updated} обновл`))
+      const planDate = selectedDay ?? undefined;
+      void flowPlanRowsApply(api, parsed, { planDate, source: 'paste', target: mode })
+        .then((r) => {
+          // В историю — как одно действие: ⌘Z убирает вставленные строки, ⌘⇧Z вернёт.
+          pushHistory({ kind: 'paste', ids: r.insertedIds, rows: parsed, planDate, target: mode });
+          setMsg(
+            `Вставлено: ${r.inserted} нов · ${r.assigned} на черновики · ${r.updated} обновлено` +
+              (skipped > 0 ? ` · ${skipped} строк без ключа пропущено` : ''),
+          );
+        })
         .catch((e) => setMsg(`Вставка не прошла: ${(e instanceof Error ? e.message : String(e)).slice(0, 90)}`));
       return true;
     },
-    [mode, selectedDay],
+    [mode, selectedDay, pushHistory],
   );
   // Кнопка «Вставить из буфера» (юзер 2026-07-02): явная вставка без фокуса в гриде.
   const pasteFromBuffer = useCallback(async () => {
@@ -2171,28 +2204,21 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             <option value="warehouse">Кладовщикам</option>
           </select>
         </div>
-        {/* Вставка строк «до AL» из буфера (юзер 2026-07-02): План — номера на черновики /
-            новые черновики; Отчёт — строки сразу в отчёт своей даты (+МОЛ/коммент с якоря). */}
+        {/* «Буфер» (юзер 2026-07-02): вставка строк SAP из буфера. План — номера на черновики /
+            новые черновики; Отчёт — строки сразу в отчёт (+МОЛ/коммент с формирования). */}
         <button
           type="button"
           onClick={() => void pasteFromBuffer()}
           title={mode === 'report'
-            ? 'Вставить строки из буфера в Отчёт (формат SAP до колонки AL); МОЛ/комментарий подтянутся с формирования'
-            : 'Вставить строки из буфера в План (формат SAP до колонки AL)'}
-          className="flex h-6 items-center gap-1 rounded-md border border-black/10 px-1.5 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25 hover:text-[#0A0A0A]"
+            ? 'Вставить строки из буфера в Отчёт; МОЛ/комментарий подтянутся с формирования'
+            : 'Вставить строки из буфера в План'}
+          className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25 hover:text-[#0A0A0A]"
         >
           <ClipboardPaste size={13} strokeWidth={1.75} />
-          Вставить из буфера
+          Буфер
         </button>
-        <span className="tabular-nums">
-          {rows.length} строк · {groupCount} поставок
-          {draftCount > 0 ? ` · черновиков ${draftCount}` : ''}
-        </span>
-        <span className="text-[#6B6862]/60">
-          {mode === 'report'
-            ? 'Отчёт — зафиксированные поставки: отметьте «увезли / не увезли» (+причина)'
-            : 'МОЛ · согласовал · комментарий — с позиции формирования (общие для всех видов)'}
-        </span>
+        {/* Счётчики/подсказки убраны (юзер 2026-07-02: «лишний текстовый мусор — барахло»).
+            Остаются только сообщения об операциях (msg). */}
         {msg && (
           <span className="max-w-[300px] truncate text-[11px] text-danger" title={msg}>
             {msg}
@@ -2245,16 +2271,16 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
                 </option>
               ))}
             </select>
-            {/* П.4: «Удалить из отчёта» — убрать строку в резерв; позиция вернётся в
-                формирование с данными, выгрузка заказов её актуализирует (OFF/новое кол-во/правка). */}
+            {/* П.4 «Корзина» (юзер 2026-07-02): строка в резерв; позиция вернётся в
+                формирование с данными, выгрузка заказов её актуализирует. */}
             <button
               type="button"
               onClick={deleteSelected}
-              title="Удалить из отчёта (в резерв) — позиция вернётся в формирование, выгрузка актуализирует"
-              className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
+              title="Удалить выделенные из отчёта (в резерв) — позиция вернётся в формирование, выгрузка актуализирует"
+              className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
             >
               <Trash2 size={13} strokeWidth={1.75} />
-              Удалить из отчёта
+              Корзина
             </button>
           </div>
         )}
@@ -2262,15 +2288,15 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           <div className="ml-auto flex items-center gap-2">
             <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
             {/* Перенос — НЕ по выделению (п.2): через ячейку статуса «перенос на другой день»
-                в Отчёте. Здесь только удаление в резерв. */}
+                в Отчёте. Здесь только «Корзина» (резерв). */}
             <button
               type="button"
               onClick={deleteSelected}
-              title="Убрать в резерв (восстановимо до закрытия месяца) — позиции вернутся в формирование"
-              className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
+              title="Убрать выделенные из плана в резерв — позиции вернутся в формирование"
+              className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
             >
               <Trash2 size={13} strokeWidth={1.75} />
-              Убрать из плана
+              Корзина
             </button>
           </div>
         )}
