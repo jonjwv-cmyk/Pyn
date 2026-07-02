@@ -11,7 +11,7 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { Download, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { ClipboardPaste, Download, Redo2, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
@@ -235,11 +235,11 @@ function deliveryExpeditors(r: FlowDeliveryRow): string[] {
   return splitMultiCell([r.exp1 || '', r.exp2 || ''].filter(Boolean).join('\n'));
 }
 
-/** Строка, созданная НАМИ руками в отчёте (перенос или ручная вставка) — её можно удалить.
- *  Строки, пришедшие автоматом при фиксации плана / сеяного импорта = «железная» база. */
+/** Строка, созданная НАМИ руками в отчёте (перенос / ручная вставка / вставка из буфера) —
+ *  её можно удалить и править МОЛ. Пришедшие автоматом при фиксации плана = «железная» база. */
 function isManualRow(r: FlowDeliveryRow): boolean {
   const cb = String(r.created_by || '');
-  return cb.startsWith('transfer:') || cb.startsWith('manual:');
+  return cb.startsWith('transfer:') || cb.startsWith('manual:') || cb.startsWith('paste:');
 }
 
 function resolvePersonName(raw: string, byKey: ReadonlyMap<string, { fio: string }>): string {
@@ -1955,18 +1955,41 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   // ZM_VL (~38 колонок, ≥24) в ПЛАНЕ разносятся по нашим полям сервером (номера на черновики /
   // новые строки НИЖЕ текущих) — не по видимым колонкам грида. Числа нормализует сервер
   // («2.000,000» = 2000, «22.400» = 22.4).
+  // Общий приём строк «до AL» (кнопка «Вставить из буфера» и Cmd/Ctrl+V по гриду).
+  // План: номера на черновики + новые черновики; Отчёт: строки сразу в отчёт своей даты
+  // (МОЛ/коммент/согласовал подтягиваются с якоря формирования на сервере).
+  const applyPastedRows = useCallback(
+    (text: string): boolean => {
+      const parsed = parsePlanPasteTsv(text);
+      if (parsed.length === 0) return false;
+      setMsg(`Вставка: разбираю ${parsed.length} строк…`);
+      void flowPlanRowsApply(api, parsed, { planDate: selectedDay ?? undefined, source: 'paste', target: mode })
+        .then((r) => setMsg(`Вставка: ${r.received} строк · ${r.assigned} номеров на черновики · ${r.inserted} нов · ${r.updated} обновл`))
+        .catch((e) => setMsg(`Вставка не прошла: ${(e instanceof Error ? e.message : String(e)).slice(0, 90)}`));
+      return true;
+    },
+    [mode, selectedDay],
+  );
+  // Кнопка «Вставить из буфера» (юзер 2026-07-02): явная вставка без фокуса в гриде.
+  const pasteFromBuffer = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text.trim()) {
+        setMsg('Буфер пуст');
+        return;
+      }
+      if (!applyPastedRows(text)) {
+        setMsg('В буфере нет строк формата SAP (скопируйте строки целиком, до колонки AL)');
+      }
+    } catch (e) {
+      setMsg(`Не удалось прочитать буфер: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
+    }
+  }, [applyPastedRows]);
   const onPaste = useCallback(
     (target: readonly [number, number], values: readonly (readonly string[])[]): boolean => {
-      if (mode === 'plan' && Array.isArray(values) && values.some((row) => row.length >= 24)) {
+      if (Array.isArray(values) && values.some((row) => row.length >= 24)) {
         const tsv = values.map((row) => row.join('\t')).join('\n');
-        const parsed = parsePlanPasteTsv(tsv);
-        if (parsed.length > 0) {
-          setMsg(`Вставка: разбираю ${parsed.length} строк…`);
-          void flowPlanRowsApply(api, parsed, { planDate: selectedDay ?? undefined, source: 'paste' })
-            .then((r) => setMsg(`Вставка: ${r.received} строк · ${r.assigned} номеров на черновики · ${r.inserted} нов · ${r.updated} обновл`))
-            .catch((e) => setMsg(`Вставка не прошла: ${(e instanceof Error ? e.message : String(e)).slice(0, 90)}`));
-          return false; // обработали сами — Glide не вставляет
-        }
+        if (applyPastedRows(tsv)) return false; // обработали сами — Glide не вставляет
       }
       const spec = COLS[target[0]];
       const pasted = String(values?.[0]?.[0] ?? '').trim();
@@ -1980,7 +2003,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       }
       return true; // остальное — обычная вставка диапазона Glide
     },
-    [COLS, selection, applyStatusToSelected, mode, selectedDay],
+    [COLS, selection, applyStatusToSelected, applyPastedRows],
   );
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];
@@ -2148,6 +2171,19 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             <option value="warehouse">Кладовщикам</option>
           </select>
         </div>
+        {/* Вставка строк «до AL» из буфера (юзер 2026-07-02): План — номера на черновики /
+            новые черновики; Отчёт — строки сразу в отчёт своей даты (+МОЛ/коммент с якоря). */}
+        <button
+          type="button"
+          onClick={() => void pasteFromBuffer()}
+          title={mode === 'report'
+            ? 'Вставить строки из буфера в Отчёт (формат SAP до колонки AL); МОЛ/комментарий подтянутся с формирования'
+            : 'Вставить строки из буфера в План (формат SAP до колонки AL)'}
+          className="flex h-6 items-center gap-1 rounded-md border border-black/10 px-1.5 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25 hover:text-[#0A0A0A]"
+        >
+          <ClipboardPaste size={13} strokeWidth={1.75} />
+          Вставить из буфера
+        </button>
         <span className="tabular-nums">
           {rows.length} строк · {groupCount} поставок
           {draftCount > 0 ? ` · черновиков ${draftCount}` : ''}

@@ -438,16 +438,19 @@ export interface FlowPlanRowsApplyResult {
 /**
  * Отправить разобранные строки «до AL» серверу: матч черновиков по заказ+позиция
  * (присвоение номера), обновление существующих по поставка+П/П (без клоббера ручного),
- * остальное — вставка новыми строками плана (ниже текущих).
+ * остальное — вставка новыми строками (ниже текущих).
+ * target='report' (юзер 2026-07-02): строки встают сразу в ОТЧЁТ своей даты (цепляются
+ * к фиксации дня, при отсутствии создаётся), МОЛ/коммент/согласовал подтягиваются
+ * с якоря формирования в snap_*.
  */
 export async function flowPlanRowsApply(
   client: ApiClient,
   rows: FlowPlanPasteRow[],
-  opts?: { planDate?: string; source?: 'macro' | 'paste' },
+  opts?: { planDate?: string; source?: 'macro' | 'paste'; target?: 'plan' | 'report' },
 ): Promise<FlowPlanRowsApplyResult> {
   const wire = await client.call<{ received?: number; assigned?: number; updated?: number; inserted?: number }>(
     'flow_plan_rows_apply',
-    { rows, plan_date: opts?.planDate, source: opts?.source ?? 'paste' },
+    { rows, plan_date: opts?.planDate, source: opts?.source ?? 'paste', target: opts?.target ?? 'plan' },
   );
   return {
     received: Number(wire.received) || 0,

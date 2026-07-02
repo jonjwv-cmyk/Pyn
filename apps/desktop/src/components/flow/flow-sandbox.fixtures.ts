@@ -289,9 +289,17 @@ export function nearestGraphDate(weekdayRu: string, fromIso: string): string | n
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-/** Подпись ГРАФ: «ПТ.3» (день недели + число ближайшей даты); без даты — просто день. */
+/** ISO-дата + N дней → ISO. */
+export function isoAddDays(iso: string, days: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Подпись ГРАФ: «ПТ 3» (день недели + число ближайшей даты); без даты — просто день. */
 export function graphDayLabel(weekdayRu: string, iso: string | null): string {
-  return iso ? `${weekdayRu}.${parseInt(iso.slice(8, 10), 10)}` : weekdayRu;
+  return iso ? `${weekdayRu} ${parseInt(iso.slice(8, 10), 10)}` : weekdayRu;
 }
 
 /** Зелёная подпись ГРАФ: дата в пределах сегодня+7 дней (без перескока недель). */

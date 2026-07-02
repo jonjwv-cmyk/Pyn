@@ -116,9 +116,9 @@ import {
   FLOW_MAT_SUBFIELDS,
   FLOW_FONT_PX_DEFAULT,
   nearestGraphDate,
-  graphDayLabel,
   graphDateSoon,
   todayIsoLocal,
+  isoAddDays,
   type FlowCardLine,
   type FlowColumnSpec,
   type FlowSandboxRow,
@@ -186,12 +186,12 @@ function computeAutoWidths(
   const measure = (s: string) => (ctx ? ctx.measureText(s).width : s.length * 7);
   for (const spec of FLOW_COLUMNS) {
     if (spec.id === 'clst') {
-      // CLST — ЖИВОЙ формат («ПН», «ПН ВЫЕЗД», «СР КХП», «Нет»). Меряем эти кандидаты,
-      // а не снимочные значения — иначе колонка режет живой текст с суффиксом кластера.
-      if (ctx) ctx.font = `${colFontPx('clst')}px ${GRID_FONT_FAMILY}`;
+      // CLST — ЖИВОЙ формат («ПН КХП 6», «СР ВЫЕЗД 30», «ПН 6», «Нет»). День рисуется
+      // ЖИРНЫМ (700) — меряем жирным целиком (чуть с запасом), плюс число до 2 цифр.
+      if (ctx) ctx.font = `700 ${colFontPx('clst')}px ${GRID_FONT_FAMILY}`;
       let valuePx = measure('Нет');
       for (const wd of ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ']) {
-        for (const suf of ['', ' ВЫЕЗД', ' КХП']) valuePx = Math.max(valuePx, measure(wd + suf));
+        for (const suf of ['', ' ВЫЕЗД', ' КХП']) valuePx = Math.max(valuePx, measure(`${wd}${suf} 30`));
       }
       if (ctx) ctx.font = `800 ${colFontPx('clst')}px ${GRID_FONT_FAMILY}`;
       const headerW = measure(spec.title) + BASE_HPAD * 2 + 6;
@@ -708,10 +708,11 @@ const WD_RANK: Record<string, number> = { ПН: 1, ВТ: 2, СР: 3, ЧТ: 4, П
  */
 function clstSortKey(clst: string): number {
   if (clst === CLST_NONE) return -1; // «Нет» — перед всеми днями
-  const sp = clst.indexOf(' ');
-  // День может нести число ближайшей даты («ПТ.3») — для ранга берём сам день недели.
-  const wd = (sp >= 0 ? clst.slice(0, sp) : clst).split('.')[0] ?? '';
-  const cl = sp >= 0 ? clst.slice(sp + 1) : '';
+  // Формат «ПН [ВЫЕЗД|КХП] [число]» (юзер 2026-07-02): день · кластер · ближайшая дата.
+  const parts = clst.split(' ');
+  const wd = parts[0] ?? '';
+  const second = parts[1] ?? '';
+  const cl = second && !/^\d+$/.test(second) ? second : '';
   const w = WD_RANK[wd] ?? 8;
   const c = cl === 'ВЫЕЗД' ? 0 : cl === 'КХП' ? 1 : 2; // НТМК (без суффикса) — последним в дне
   return w * 10 + c;
@@ -1558,18 +1559,21 @@ export function FlowSandboxGrid(): JSX.Element {
         const weekday = shops.length
           ? frozenWeekdayOf(shops, r.to_wh)
           : (canUseLiveSchedule && wh?.inSchedule ? wh.deliveryDay : null);
-        // ГРАФ с датой (В4): «ПТ.3» = день графика + число ближайшего вхождения.
-        // Опора — выбранный DAY строки (если дата и не прошла), иначе сегодня.
+        // ГРАФ с датой (В4 + правка юзера 2026-07-02): число = СЛЕДУЮЩИЙ день поставки по
+        // графику — сегодняшний день НЕ берём (сегодня уже не спланировать: стоит ЧТ 2 —
+        // показываем ЧТ 9). Связь дня — график ВЫБРАННОГО месяца формирования: будущий
+        // месяц → счёт от его 1-го числа. Формат «ПН КХП 6» (день · кластер · число).
         const todayIso = todayIsoLocal();
-        const dayRef = /^\d{4}-\d{2}-\d{2}$/.test(effDay) && effDay >= todayIso
-          ? effDay
-          : todayIso;
-        const label = weekday ? graphDayLabel(weekday, nearestGraphDate(weekday, dayRef)) : '';
+        const tomorrow = isoAddDays(todayIso, 1);
+        const monthStart = `${planYear}-${String(planMonth).padStart(2, '0')}-01`;
+        const graphRef = monthStart > tomorrow ? monthStart : tomorrow;
+        const near = weekday ? nearestGraphDate(weekday, graphRef) : null;
+        const num = near ? String(parseInt(near.slice(8, 10), 10)) : '';
         const clst = !weekday
           ? CLST_NONE
-          : wh && (wh.cluster === 'ВЫЕЗД' || wh.cluster === 'КХП')
-            ? `${label} ${wh.cluster}`
-            : label;
+          : [weekday, wh && (wh.cluster === 'ВЫЕЗД' || wh.cluster === 'КХП') ? wh.cluster : '', num]
+              .filter(Boolean)
+              .join(' ');
         if (clst !== r.clst) patch.clst = clst;
       }
       if (haveVgh) {
@@ -2313,17 +2317,18 @@ export function FlowSandboxGrid(): JSX.Element {
       const spec = FLOW_COLUMNS[cellPos[0]];
       if (!spec) return cell;
       // ГРАФ (В4): дата «без перескока недель» (≤ сегодня+7) — зелёная подпись.
+      // Опора — как в liveRows: СЛЕДУЮЩИЙ день (строго после сегодня) в месяце формирования.
       let graphGreen = false;
       if (spec.id === 'clst') {
         const r = viewRows[cellPos[1]];
         const clst = String(r?.clst ?? '');
         if (r && clst && clst !== CLST_NONE) {
           const todayIso = todayIsoLocal();
-          const wd = (clst.split(' ')[0] ?? '').split('.')[0] ?? '';
-          const dayRef = /^\d{4}-\d{2}-\d{2}$/.test(String(r.day_wk ?? '')) && String(r.day_wk) >= todayIso
-            ? String(r.day_wk)
-            : todayIso;
-          graphGreen = graphDateSoon(nearestGraphDate(wd, dayRef), todayIso);
+          const tomorrow = isoAddDays(todayIso, 1);
+          const monthStart = `${planYear}-${String(planMonth).padStart(2, '0')}-01`;
+          const graphRef = monthStart > tomorrow ? monthStart : tomorrow;
+          const wd = clst.split(' ')[0] ?? '';
+          graphGreen = graphDateSoon(nearestGraphDate(wd, graphRef), todayIso);
         }
       }
       const fontPx = colFontPx(spec.id);
@@ -2341,7 +2346,7 @@ export function FlowSandboxGrid(): JSX.Element {
         },
       } as GridCell;
     },
-    [getCellContentRaw, zoom, viewRows],
+    [getCellContentRaw, zoom, viewRows, planYear, planMonth],
   );
 
   // Обновить активность кнопок отмены/повтора по длине стеков.
@@ -3354,7 +3359,31 @@ export function FlowSandboxGrid(): JSX.Element {
         // рантайм-args, но не в публичном типе DrawCellCallback — отсюда узкий каст.)
         (args as unknown as { requestAnimationFrame?: () => void }).requestAnimationFrame?.();
       }
-      drawContent();
+      // CLST «ПН КХП 6» (юзер 2026-07-02): ДЕНЬ недели ЖИРНЫМ, кластер и число — обычным.
+      // Рисуем текст сами (частичная жирность в одной ячейке); фоновые слои выше не задеты.
+      const clstSpec = FLOW_COLUMNS[col];
+      if (clstSpec?.id === 'clst' && r && r.clst && r.clst !== CLST_NONE) {
+        const parts = String(r.clst).split(' ');
+        const wd = parts[0] ?? '';
+        const rest = parts.slice(1).join(' ');
+        const px = Math.round(colFontPx('clst') * zoom);
+        const pad = args.theme.cellHorizontalPadding ?? Math.max(4, Math.round(BASE_HPAD * zoom));
+        ctx.save();
+        ctx.fillStyle = args.theme.textDark;
+        ctx.textBaseline = 'middle';
+        const tx = rect.x + pad;
+        const ty = rect.y + rect.height / 2 + 0.5;
+        ctx.font = `700 ${px}px ${GRID_FONT_FAMILY}`;
+        ctx.fillText(wd, tx, ty);
+        if (rest) {
+          const wdW = ctx.measureText(`${wd} `).width;
+          ctx.font = `${px}px ${GRID_FONT_FAMILY}`;
+          ctx.fillText(rest, tx + wdW, ty);
+        }
+        ctx.restore();
+      } else {
+        drawContent();
+      }
       // Разделители по ВЕРХУ строки — ОПАКОВЫЕ (иначе на hover накапливают альфу) и рисуются
       // в drawCell → идут ТОЛЬКО по данным, ДО колонки номера (не заходят на неё, в отличие
       // от строкового horizontalBorderColor). Кластер — толстая 2.5px; склад (TO) — тонкая 1px.
@@ -3374,7 +3403,7 @@ export function FlowSandboxGrid(): JSX.Element {
         ctx.restore();
       }
     },
-    [viewRows, isCheatRow, sedByAnchor, transferNoDayByAnchor],
+    [viewRows, isCheatRow, sedByAnchor, transferNoDayByAnchor, zoom],
   );
 
   // Индикаторы в шапке поверх дефолта Glide, в одной точке справа: стрелка МЕНЮ (▾)
