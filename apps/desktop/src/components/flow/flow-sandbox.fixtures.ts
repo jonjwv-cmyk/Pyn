@@ -264,6 +264,44 @@ export function flowDate(s: string, opts?: { year?: boolean; time?: boolean }): 
   return out;
 }
 
+// ── ГРАФ: ближайшая дата по графику (юзер 2026-07-02, В4) ────────────────────
+// День недели графика («ПН»/«ПТ КХП») дополняем ЧИСЛОМ ближайшего вхождения:
+// «ПТ.3» = пятница 3-е. Ближайшее = первое вхождение дня недели НЕ РАНЬШЕ опорной
+// даты (план-дата строки / выбранный DAY / сегодня). Зелёная подпись — дата «без
+// перескока недель»: в пределах сегодня+7 (текущая неделя или начало следующей).
+
+/** День недели РУ (кратко) → JS getDay(). */
+const WEEKDAY_RU_JS: Record<string, number> = { ПН: 1, ВТ: 2, СР: 3, ЧТ: 4, ПТ: 5, СБ: 6, ВС: 0 };
+
+/** Сегодня локально в YYYY-MM-DD. */
+export function todayIsoLocal(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Ближайшее вхождение дня недели графика ≥ fromIso. null — день/дата не распознаны. */
+export function nearestGraphDate(weekdayRu: string, fromIso: string): string | null {
+  const wd = WEEKDAY_RU_JS[weekdayRu.trim().toUpperCase().slice(0, 2)];
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(fromIso);
+  if (wd === undefined || !m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  d.setDate(d.getDate() + ((wd - d.getDay() + 7) % 7));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Подпись ГРАФ: «ПТ.3» (день недели + число ближайшей даты); без даты — просто день. */
+export function graphDayLabel(weekdayRu: string, iso: string | null): string {
+  return iso ? `${weekdayRu}.${parseInt(iso.slice(8, 10), 10)}` : weekdayRu;
+}
+
+/** Зелёная подпись ГРАФ: дата в пределах сегодня+7 дней (без перескока недель). */
+export function graphDateSoon(iso: string | null, todayIso: string): boolean {
+  if (!iso) return false;
+  const parse = (s: string): number => new Date(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10))).getTime();
+  const diff = (parse(iso) - parse(todayIso)) / 86400000;
+  return diff >= 0 && diff <= 7;
+}
+
 /** Срок ответственности МОЛ «DD.MM.YYYY» (из базы) → единый формат «месяц число, год».
  *  `{ comma:false }` — без запятой («май 12 2026», для окна «срок истёк»).
  *  Не распознали формат — отдаём как есть. */

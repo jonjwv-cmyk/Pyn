@@ -20,6 +20,10 @@ export interface FlowToData {
   readonly value: string;
   readonly shopName: string;
   readonly options: readonly FlowToOption[];
+  /** Заголовок выпадашки (по умолчанию — имя цеха). Для FR — «Склад-отправитель». */
+  readonly title?: string;
+  /** Статус склада из базы (юзер 2026-07-02): «склада нет в SAP» / «склад удалён». */
+  readonly statusNote?: string;
 }
 export type FlowToCell = CustomCell<FlowToData>;
 
@@ -30,14 +34,20 @@ function FlowToEditor({
   value: FlowToCell;
   onFinishedEditing: (next?: FlowToCell) => void;
 }) {
-  const { options, value, shopName } = cell.data;
+  const { options, value, shopName, title, statusNote } = cell.data;
   return (
     <div className="max-h-72 w-56 overflow-y-auto text-text-secondary">
       {/* Шапка-цех закреплена (sticky) — прокручивается ТОЛЬКО список складов: один
           скроллер, без бессмысленной двойной прокрутки. Фон = фон контейнера оверлея. */}
       <div className="sticky top-0 z-10 border-b border-white/10 bg-[#302F2D] px-2 py-1.5 text-[11px] font-medium uppercase tracking-wide text-text-muted/80">
-        {shopName || 'Цех не задан'}
+        {title || shopName || 'Цех не задан'}
       </div>
+      {/* Склад строки не найден в базе / помечен удалённым — говорим прямо (юзер 2026-07-02). */}
+      {statusNote && (
+        <div className="border-b border-white/10 px-2 py-1.5 text-[11px] font-medium text-[#E5484D]">
+          {statusNote}
+        </div>
+      )}
       <div className="p-1">
         {options.length === 0 && (
           <div className="px-2 py-1.5 text-[12px] text-text-muted/70">Нет складов цеха</div>

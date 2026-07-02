@@ -115,6 +115,10 @@ import {
   flowMatSubText,
   FLOW_MAT_SUBFIELDS,
   FLOW_FONT_PX_DEFAULT,
+  nearestGraphDate,
+  graphDayLabel,
+  graphDateSoon,
+  todayIsoLocal,
   type FlowCardLine,
   type FlowColumnSpec,
   type FlowSandboxRow,
@@ -697,7 +701,8 @@ const WD_RANK: Record<string, number> = { ПН: 1, ВТ: 2, СР: 3, ЧТ: 4, П
 function clstSortKey(clst: string): number {
   if (clst === CLST_NONE) return -1; // «Нет» — перед всеми днями
   const sp = clst.indexOf(' ');
-  const wd = sp >= 0 ? clst.slice(0, sp) : clst;
+  // День может нести число ближайшей даты («ПТ.3») — для ранга берём сам день недели.
+  const wd = (sp >= 0 ? clst.slice(0, sp) : clst).split('.')[0] ?? '';
   const cl = sp >= 0 ? clst.slice(sp + 1) : '';
   const w = WD_RANK[wd] ?? 8;
   const c = cl === 'ВЫЕЗД' ? 0 : cl === 'КХП' ? 1 : 2; // НТМК (без суффикса) — последним в дне
@@ -855,7 +860,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // Склады по цеху — для выпадашки TO «склады того же цеха» (из useWarehousesStore).
   // По id храним также cluster + delivery_day — для ЖИВОГО CLST (см. liveRows).
   const warehouses = useWarehousesStore((s) => s.warehouses);
-  const { whById, whByShop } = useMemo(() => {
+  const { whById, whByShop, shippingOptions } = useMemo(() => {
     const byId = new Map<
       string,
       {
@@ -864,9 +869,11 @@ export function FlowSandboxGrid(): JSX.Element {
         cluster: WarehouseCluster | null;
         deliveryDay: WarehouseWeekday | null;
         inSchedule: boolean;
+        removed: boolean;
       }
     >();
     const byShop = new Map<string, FlowToOption[]>();
+    const shipping: FlowToOption[] = [];
     for (const w of warehouses) {
       byId.set(w.id, {
         shopCode: w.shop_code,
@@ -874,6 +881,7 @@ export function FlowSandboxGrid(): JSX.Element {
         cluster: w.cluster,
         deliveryDay: w.delivery_day,
         inSchedule: w.in_schedule === 1,
+        removed: w.is_removed === 1,
       });
       if (w.shop_code) {
         const opt: FlowToOption = { id: w.id, desc: w.description ?? w.designation ?? '' };
@@ -881,9 +889,24 @@ export function FlowSandboxGrid(): JSX.Element {
         if (arr) arr.push(opt);
         else byShop.set(w.shop_code, [opt]);
       }
+      if (w.is_shipping === 1 && w.is_removed !== 1) {
+        shipping.push({ id: w.id, desc: w.description ?? w.designation ?? '' });
+      }
     }
-    return { whById: byId, whByShop: byShop };
+    return { whById: byId, whByShop: byShop, shippingOptions: shipping };
   }, [warehouses]);
+  // Статус склада строки против базы (юзер 2026-07-02): кода нет в базе → «склада нет в SAP»,
+  // помечен удалённым → «склад удалён». Показывается в выпадашке ячейки FR/TO.
+  const whStatusNote = useCallback(
+    (code: string): string => {
+      const c = String(code ?? '').trim();
+      if (!c) return '';
+      const wh = whById.get(c) ?? whMapGet(whById, c);
+      if (!wh) return 'склада нет в SAP';
+      return wh.removed ? 'склад удалён' : '';
+    },
+    [whById],
+  );
   // База ВГХ — источник KG/V и тех-имени для формирования (РЕАЛТАЙМ): KG = кол-во ×
   // вес на 1 ЕИ, V = кол-во × объём на 1 ЕИ, тех-имя (MAT-карточка) — из базы по
   // номенклатуре. Грузим лениво при входе, обновляем по WS `vgh_changed` (правка
@@ -1503,11 +1526,18 @@ export function FlowSandboxGrid(): JSX.Element {
         const weekday = shops.length
           ? frozenWeekdayOf(shops, r.to_wh)
           : (canUseLiveSchedule && wh?.inSchedule ? wh.deliveryDay : null);
+        // ГРАФ с датой (В4): «ПТ.3» = день графика + число ближайшего вхождения.
+        // Опора — выбранный DAY строки (если дата и не прошла), иначе сегодня.
+        const todayIso = todayIsoLocal();
+        const dayRef = /^\d{4}-\d{2}-\d{2}$/.test(String(r.day_wk ?? '')) && String(r.day_wk) >= todayIso
+          ? String(r.day_wk)
+          : todayIso;
+        const label = weekday ? graphDayLabel(weekday, nearestGraphDate(weekday, dayRef)) : '';
         const clst = !weekday
           ? CLST_NONE
           : wh && (wh.cluster === 'ВЫЕЗД' || wh.cluster === 'КХП')
-            ? `${weekday} ${wh.cluster}`
-            : weekday;
+            ? `${label} ${wh.cluster}`
+            : label;
         if (clst !== r.clst) patch.clst = clst;
       }
       if (haveVgh) {
@@ -2154,7 +2184,24 @@ export function FlowSandboxGrid(): JSX.Element {
           kind: GridCellKind.Custom,
           allowOverlay: true,
           copyData: code,
-          data: { kind: 'flow-to', value: code, shopName: wh?.shopName ?? '', options: opts },
+          data: {
+            kind: 'flow-to', value: code, shopName: wh?.shopName ?? '', options: opts,
+            statusNote: whStatusNote(code),
+          },
+        } satisfies FlowToCell;
+      }
+      if (spec.id === 'fr') {
+        // FR (склад-отправитель): та же выпадашка со статусом склада против базы
+        // («склада нет в SAP» / «склад удалён», юзер 2026-07-02) + выбор из отгрузочных.
+        const code = rowData.fr ?? '';
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: true,
+          copyData: code,
+          data: {
+            kind: 'flow-to', value: code, shopName: '', title: 'Склад-отправитель',
+            options: shippingOptions, statusNote: whStatusNote(code),
+          },
         } satisfies FlowToCell;
       }
       if (spec.id === 'sed') {
@@ -2223,7 +2270,7 @@ export function FlowSandboxGrid(): JSX.Element {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse, molByKey, whById, whByShop, statOptionsForRow, anchorsWithHistory, sedByAnchor],
+    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor],
   );
 
   // Шрифт ЗНАЧЕНИЯ per-колонке (clst 7 / day·stat·kg·v·mol·request 8 / прочее 10) +
@@ -2233,9 +2280,23 @@ export function FlowSandboxGrid(): JSX.Element {
       const cell = getCellContentRaw(cellPos);
       const spec = FLOW_COLUMNS[cellPos[0]];
       if (!spec) return cell;
+      // ГРАФ (В4): дата «без перескока недель» (≤ сегодня+7) — зелёная подпись.
+      let graphGreen = false;
+      if (spec.id === 'clst') {
+        const r = viewRows[cellPos[1]];
+        const clst = String(r?.clst ?? '');
+        if (r && clst && clst !== CLST_NONE) {
+          const todayIso = todayIsoLocal();
+          const wd = (clst.split(' ')[0] ?? '').split('.')[0] ?? '';
+          const dayRef = /^\d{4}-\d{2}-\d{2}$/.test(String(r.day_wk ?? '')) && String(r.day_wk) >= todayIso
+            ? String(r.day_wk)
+            : todayIso;
+          graphGreen = graphDateSoon(nearestGraphDate(wd, dayRef), todayIso);
+        }
+      }
       const fontPx = colFontPx(spec.id);
       const bold = isBoldCol(spec.id);
-      if (fontPx === BASE_FONT && !bold) return cell;
+      if (fontPx === BASE_FONT && !bold && !graphGreen) return cell;
       const px = Math.round(fontPx * zoom);
       const prev = (cell as { themeOverride?: Partial<Theme> }).themeOverride;
       return {
@@ -2244,10 +2305,11 @@ export function FlowSandboxGrid(): JSX.Element {
           ...prev,
           baseFontStyle: `${bold ? '600 ' : ''}${px}px`,
           editorFontSize: `${px}px`,
+          ...(graphGreen ? { textDark: '#1F7A3D' } : {}),
         },
       } as GridCell;
     },
-    [getCellContentRaw, zoom],
+    [getCellContentRaw, zoom, viewRows],
   );
 
   // Обновить активность кнопок отмены/повтора по длине стеков.

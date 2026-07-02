@@ -64,7 +64,10 @@ import {
 } from '@/lib/schedule/use-schedule-sync';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
-import { fmtNum3, MONTH_ABBR_RU, parseMol, compactFio, matCardLines, needsWarn } from './flow-sandbox.fixtures';
+import {
+  fmtNum3, MONTH_ABBR_RU, parseMol, compactFio, matCardLines, needsWarn,
+  nearestGraphDate, graphDayLabel, graphDateSoon, todayIsoLocal,
+} from './flow-sandbox.fixtures';
 import {
   exportPlanForExpeditors,
   exportPlanFull,
@@ -837,13 +840,18 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         : rows.filter((r) => Number(r.fixation_id) === 0 && Number(r.reserved) !== 1);
     // Календарь (P7): выбран день → показываем только его.
     if (selectedDay) out = out.filter((r) => (r.plan_date || '').slice(0, 10) === selectedDay);
+    // Сортировка (юзер 2026-07-02): день → ОТКУДА → КУДА → поставка → П/П → материал.
+    // Уникальный порядок складов-отправителей (824Т, 8024, 823Т…) юзер сообщит позже —
+    // тогда заменить сравнение fr на карту рангов.
     out.sort(
       (a, b) =>
         (mode === 'report'
           ? (b.plan_date || '').localeCompare(a.plan_date || '')
           : (a.plan_date || '').localeCompare(b.plan_date || '')) ||
-        (a.grp || '').localeCompare(b.grp || '', 'ru') ||
-        (a.dlv || '').localeCompare(b.dlv || '') ||
+        (a.fr || '').localeCompare(b.fr || '', 'ru', { numeric: true }) ||
+        (a.to_wh || '').localeCompare(b.to_wh || '', 'ru', { numeric: true }) ||
+        (a.dlv || '').localeCompare(b.dlv || '', 'ru', { numeric: true }) ||
+        (a.dlv_pos || '').localeCompare(b.dlv_pos || '', 'ru', { numeric: true }) ||
         (a.mat || '').localeCompare(b.mat || '', 'ru'),
     );
     return out;
@@ -905,6 +913,27 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     (r: FlowDeliveryRow): number | null => (mode === 'report' && r.fact_qty != null ? r.fact_qty : r.qty),
     [mode],
   );
+  // ГРАФ строки (В4, юзер 2026-07-02): день недели склада из графика месяца строки +
+  // ближайшее вхождение ≥ даты плана («ПТ.3»). soon = «без перескока недель» (зелёный).
+  const graphInfo = useCallback(
+    (r: FlowDeliveryRow): { label: string; soon: boolean } | null => {
+      const wh = whMapGet(whByKey, r.to_wh);
+      const m = monthOfDate(r.plan_date);
+      const meta = m ? scheduleMetaMap.get(monthKey(m.year, m.month)) : undefined;
+      let day: string | null = null;
+      if (meta?.shops.length) {
+        day = frozenWeekdayOf(meta.shops, r.to_wh);
+      } else if (m && canUseLiveWarehouseScheduleForMonth(m.year, m.month) && (!meta || meta.exists !== false)) {
+        day = wh && Number(wh.in_schedule) === 1 ? wh.delivery_day : null;
+      }
+      if (!day) return null;
+      const todayIso = todayIsoLocal();
+      const ref = /^\d{4}-\d{2}-\d{2}/.test(r.plan_date || '') ? (r.plan_date || '').slice(0, 10) : todayIso;
+      const near = nearestGraphDate(day, ref);
+      return { label: graphDayLabel(day, near), soon: graphDateSoon(near, todayIso) };
+    },
+    [whByKey, scheduleMetaMap],
+  );
   const cellText = useCallback(
     (spec: PlanColSpec, r: FlowDeliveryRow): string => {
       const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
@@ -915,21 +944,15 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return chain.length > 1 ? chain.map(fmtPlanDate).join(' → ') : fmtPlanDate(r.plan_date);
         }
         case 'fix': {
+          // Первый блок дня = «план», дальше «доп.1», «доп.2»… (юзер 2026-07-02, В4).
           const b = Number(r.batch_seq) || 0;
-          return b === 0 ? '' : b === 1 ? 'план' : `доп ${b}`;
+          return b === 0 ? '' : b === 1 ? 'план' : `доп.${b - 1}`;
         }
         case 'graph': {
-          // День доставки склада из графика ТЕКУЩЕГО месяца (ТЗ §6). Нет в графике — так и пишем.
-          const wh = whMapGet(whByKey, r.to_wh);
-          const m = monthOfDate(r.plan_date);
-          const meta = m ? scheduleMetaMap.get(monthKey(m.year, m.month)) : undefined;
-          let day: string | null = null;
-          if (meta?.shops.length) {
-            day = frozenWeekdayOf(meta.shops, r.to_wh);
-          } else if (m && canUseLiveWarehouseScheduleForMonth(m.year, m.month) && (!meta || meta.exists !== false)) {
-            day = wh && Number(wh.in_schedule) === 1 ? wh.delivery_day : null;
-          }
-          return day || '—';
+          // День доставки склада из графика месяца + ЧИСЛО ближайшего вхождения ≥ даты
+          // плана строки: «ПТ.3» (юзер 2026-07-02, В4). Нет в графике — «—».
+          const g = graphInfo(r);
+          return g ? g.label : '—';
         }
         case 'clst': {
           // Только ВЫЕЗД/КХП (НТМК и прочие кластеры — пусто). День — в GRAPH (ТЗ §6).
@@ -1025,7 +1048,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return '';
       }
     },
-    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName, transferChainDates, effQty],
+    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName, transferChainDates, effQty, graphInfo],
   );
 
   // ── Поиск как в Формировании (подсветка/перелёт, не фильтр) ───────────────────
@@ -1319,6 +1342,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       // Перенос по словам (П6) — МАТЕРИАЛ/КОММЕНТАРИЙ; ПОСТАВКА·ЗАКАЗ — 2 строки через \n.
       // ТИП ТС переносим сами по словам в 2 строки, чтобы Glide не резал буквы.
       const wrap = (WRAP_COLS.has(spec.id) && spec.id !== 'vehicleType') || spec.id === 'dlvord';
+      // ГРАФ: дата «без перескока недель» — зелёная подпись (В4, юзер 2026-07-02).
+      const graphGreen = spec.id === 'graph' ? graphInfo(r)?.soon === true : false;
       return {
         kind: GridCellKind.Text,
         data: spec.id === 'qty' ? (r.qty == null ? '' : String(r.qty).replace('.', ',')) : displayText,
@@ -1326,11 +1351,13 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         allowOverlay: editable,
         readonly: !editable,
         allowWrapping: wrap,
-        themeOverride: planCellTheme(spec.id),
+        themeOverride: graphGreen
+          ? { ...planCellTheme(spec.id), textDark: '#1F7A3D' }
+          : planCellTheme(spec.id),
         contentAlign: spec.id === 'qty' || spec.id === 'kg' || spec.id === 'v' ? 'right' : 'left',
       };
     },
-    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol],
+    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo],
   );
 
   /** Применить серверные строки поставок (ответ правки/конфликта). */

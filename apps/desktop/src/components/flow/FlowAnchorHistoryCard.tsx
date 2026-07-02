@@ -418,7 +418,15 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
                               String(e.fail_reason || '').trim() === 'перенос на другой день';
                             const qchg = e.dlv ? qtyChangeByDlv.get(String(e.dlv).trim()) : undefined;
                             const mol = (e.snap_mol || '').trim();
-                            const exps = [e.exp1, e.exp2].filter(Boolean).join(', ');
+                            // Экспедиторы (юзер 2026-07-02, В5): ячейка хранит до 3 имён через \n —
+                            // разворачиваем в «Имя, Имя, Имя», чтобы в истории было видно кто возил.
+                            const exps = [e.exp1, e.exp2]
+                              .filter(Boolean)
+                              .join('\n')
+                              .split('\n')
+                              .map((s) => s.trim())
+                              .filter(Boolean)
+                              .join(', ');
                             const veh = [e.ride_id, e.vehicle].filter(Boolean).join(' · ');
                             return (
                               <div
