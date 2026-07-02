@@ -2150,6 +2150,9 @@ export function FlowSandboxGrid(): JSX.Element {
       if (spec.kind === 'mol') {
         const rawMol = String(rowData.mol ?? '');
         const opts = whMapGet(molByWarehouse, rowData.to_wh) ?? [];
+        // Статус склада против базы (юзер 2026-07-02): «склада нет в SAP» / «склад удалён»
+        // — РЯДОМ, ПОСЛЕ плашки «Нет МОЛа»/ФИО. Работает и для строк выгрузки заказов.
+        const suffix = whStatusNote(rowData.to_wh) || undefined;
         // «Нет МОЛа» (красная пилюля + красная строка) если в данных явно «нет мола» ЛИБО
         // выбранный МОЛ ПРОСРОЧЕН (договор истёк по живой базе) — автоматически. В выпадашке
         // он всё равно виден (но с красной пилюлей «по дату» = неактивен, выбрать нельзя).
@@ -2158,7 +2161,7 @@ export function FlowSandboxGrid(): JSX.Element {
             kind: GridCellKind.Custom,
             allowOverlay: true,
             copyData: 'Нет МОЛа',
-            data: { kind: 'flow-mol', value: rawMol, fio: 'Нет МОЛа', color: '#E5484D', noMol: true, options: opts },
+            data: { kind: 'flow-mol', value: rawMol, fio: 'Нет МОЛа', color: '#E5484D', noMol: true, options: opts, suffix },
           } satisfies FlowMolCell;
         }
         const parsed = parseMol(rawMol);
@@ -2175,7 +2178,7 @@ export function FlowSandboxGrid(): JSX.Element {
           // Копирование в обычную ячейку — компактно «Фамилия И.О.». В ЯЧЕЙКЕ показываем
           // «Фамилия Имя О.», полное ФИО — в выпадашке-списке.
           copyData: molInitials(fullFio),
-          data: { kind: 'flow-mol', value: rawMol, fio: compactFio(fullFio), color, options: opts },
+          data: { kind: 'flow-mol', value: rawMol, fio: compactFio(fullFio), color, options: opts, suffix },
         } satisfies FlowMolCell;
       }
       if (spec.kind === 'day') {

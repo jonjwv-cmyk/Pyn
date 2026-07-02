@@ -460,6 +460,18 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     () => new Map(Array.from(whById.values(), (w) => [whKey(w.id), w] as const)),
     [whById],
   );
+  // Статус склада строки против базы (юзер 2026-07-02): кода нет → «склада нет в SAP»,
+  // помечен удалённым → «склад удалён». Показывается ПОСЛЕ плашки в ячейке МОЛ.
+  const whStatusNote = useCallback(
+    (code: string): string => {
+      const c = String(code ?? '').trim();
+      if (!c) return '';
+      const wh = whMapGet(whByKey, c);
+      if (!wh) return 'склада нет в SAP';
+      return Number(wh.is_removed) === 1 ? 'склад удалён' : '';
+    },
+    [whByKey],
+  );
   const scheduleMonths = useMemo(() => {
     const seen = new Set<string>();
     const out: { year: number; month: number }[] = [];
@@ -1245,6 +1257,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             options: opts,
             // R3.1: телефон в ЯЧЕЙКЕ не показываем (только ФИО); телефон есть в выпадашке-карточке.
             phoneDisplay: '',
+            // Статус склада против базы — рядом, после плашки (юзер 2026-07-02).
+            suffix: whStatusNote(r.to_wh) || undefined,
           },
         };
         return cell;
@@ -1379,7 +1393,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         contentAlign: spec.id === 'qty' || spec.id === 'kg' || spec.id === 'v' ? 'right' : 'left',
       };
     },
-    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo],
+    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo, whStatusNote],
   );
 
   /** Применить серверные строки поставок (ответ правки/конфликта). */

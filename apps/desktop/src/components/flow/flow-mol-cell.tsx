@@ -25,6 +25,9 @@ export interface FlowMolData {
   readonly options: readonly FlowMolOption[]; // молы склада TO
   readonly noMol?: boolean; // «Нет мола» — акцентная красная пилюля
   readonly phoneDisplay?: string; // телефон выбранного МОЛ — строкой ПОД ФИО (п.3)
+  /** Статус склада из базы (юзер 2026-07-02): «склада нет в SAP» / «склад удалён» —
+   *  РЯДОМ, ПОСЛЕ плашки/ФИО (не внутри) — сразу понятно, почему нет МОЛа. */
+  readonly suffix?: string;
 }
 export type FlowMolCell = CustomCell<FlowMolData>;
 
@@ -123,7 +126,7 @@ export const flowMolRenderer: CustomRenderer<FlowMolCell> = {
     (c.data as { kind?: unknown }).kind === 'flow-mol',
   draw: (args, cell) => {
     const { ctx, rect, theme } = args;
-    const { fio, color, noMol, phoneDisplay } = cell.data;
+    const { fio, color, noMol, phoneDisplay, suffix } = cell.data;
     const padX = theme.cellHorizontalPadding;
     ctx.save();
     ctx.beginPath();
@@ -137,6 +140,7 @@ export const flowMolRenderer: CustomRenderer<FlowMolCell> = {
     // ФИО по центру (как было). С телефоном — ФИО выше, телефон ниже (как у экспедитора).
     const hasPhone = !noMol && !!phoneDisplay;
     const fioCy = hasPhone ? rect.y + rect.height * 0.34 : rect.y + rect.height / 2;
+    let suffixX = x; // статус склада — РЯДОМ, ПОСЛЕ плашки/ФИО (юзер 2026-07-02)
     if (fio) {
       // Статус — ЦВЕТОМ пилюли (без отдельной точки): зелёная/красная/серая.
       const tw = ctx.measureText(fio).width;
@@ -149,11 +153,19 @@ export const flowMolRenderer: CustomRenderer<FlowMolCell> = {
       ctx.fill();
       ctx.fillStyle = noMol ? '#6E120D' : theme.textDark;
       ctx.fillText(fio, x + padP, fioCy);
+      suffixX = x + pw + 6;
       if (hasPhone) {
         ctx.font = `600 9px ${theme.fontFamily}`;
         ctx.fillStyle = theme.textMedium;
         ctx.fillText(phoneDisplay as string, x + padP, rect.y + rect.height * 0.74, rect.width - padX * 2);
       }
+    }
+    if (suffix) {
+      // «склада нет в SAP» / «склад удалён» — мелко, тёмно-красным, после плашки.
+      ctx.font = `600 9px ${theme.fontFamily}`;
+      ctx.fillStyle = '#B3261E';
+      const maxW = rect.x + rect.width - padX - suffixX;
+      if (maxW > 12) ctx.fillText(suffix, suffixX, fioCy, maxW);
     }
     ctx.restore();
     return true;
