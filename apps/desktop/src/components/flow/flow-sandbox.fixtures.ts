@@ -59,6 +59,7 @@ export interface FlowSandboxRow {
   load_dt: string; // X LOADDT — дата создания заказа
   chg: number | null; // Y CHG — исходное количество
   approved_by?: string; // «кто согласовал» — поле якоря (правится из любого вида: план/отчёт)
+  approved_dates?: string; // §15 — даты отправки на согласование (CSV ISO); кнопка «Согласование»
   off_schedule?: number; // доставка вне графика (0/1)
   split_level?: number; // уровень дробления поставки (0=основная; 1..3 — отдельные внутри fr+to)
   row_version?: number; // версия строки (оптимистичная блокировка, реалтайм)
@@ -155,6 +156,9 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'kg', title: 'KG', width: 80, kind: 'number' },
   { id: 'v', title: 'V', width: 70, kind: 'number' },
   { id: 'note', title: 'NOTE', width: 150, kind: 'text', editable: true },
+  // §15 (юзер 2026-07-03): «Согл.» — галочка + даты отправки на согласование (кнопка
+  // «Согласование» дописывает текущую дату выделенным строкам). Read-only показ.
+  { id: 'approved_dates', title: 'СОГЛ.', width: 132, kind: 'text' },
 ];
 
 /**
@@ -496,7 +500,32 @@ export function flowDisplayText(spec: FlowColumnSpec, row: FlowSandboxRow): stri
  * МОЛ — ФИО, материал — название), чтобы чек-лист не дробился по каждой позиции.
  * Фильтр сверяет РОВНО это значение — что видишь в списке, то и фильтруешь.
  */
+const MONTHS_NOM_RU = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+
+/** §15: CSV ISO-дат согласования → «✓ июль 6, 9, 15» (месяцы разными строками).
+ *  Пусто → ''. Показ и фильтр читают одно и то же (что видишь — то и фильтруешь). */
+export function formatApprovedDates(csv: string | undefined): string {
+  const dates = String(csv ?? '')
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s))
+    .sort();
+  if (dates.length === 0) return '';
+  const byMonth = new Map<string, number[]>();
+  for (const d of dates) {
+    const key = d.slice(0, 7); // YYYY-MM
+    (byMonth.get(key) ?? byMonth.set(key, []).get(key)!).push(Number(d.slice(8, 10)));
+  }
+  const lines = [...byMonth.entries()].map(([key, days]) => {
+    const mon = MONTHS_NOM_RU[Number(key.slice(5, 7)) - 1] ?? '';
+    return `${mon} ${[...new Set(days)].sort((a, b) => a - b).join(', ')}`;
+  });
+  return `✓ ${lines.join('\n')}`;
+}
+
 export function flowFilterText(spec: FlowColumnSpec, row: FlowSandboxRow): string {
+  if (spec.id === 'approved_dates') return formatApprovedDates(row.approved_dates);
   switch (spec.kind) {
     case 'day':
       return dayState(row).label;

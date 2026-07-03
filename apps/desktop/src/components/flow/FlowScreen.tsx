@@ -38,6 +38,7 @@ export function FlowScreen(): JSX.Element {
   const [selfRunning, setSelfRunning] = useState(false);
   const [runner, setRunner] = useState<FlowImportRunner | null>(null);
   const [myLogin, setMyLogin] = useState('');
+  const [myFullName, setMyFullName] = useState('');
   const myLoginRef = useRef('');
   useEffect(() => {
     sessionStore
@@ -46,6 +47,9 @@ export function FlowScreen(): JSX.Element {
         if (s?.user?.login) {
           setMyLogin(s.user.login);
           myLoginRef.current = s.user.login;
+          // ФИО из сессии — надёжный источник (§6, юзер 2026-07-03): у суперадмина
+          // в users-store могло не быть fullName → индикатор показывал логин.
+          if (s.user.fullName) setMyFullName(s.user.fullName);
         }
       })
       .catch(() => {});
@@ -78,7 +82,7 @@ export function FlowScreen(): JSX.Element {
   const selfRunner: FlowImportRunner | null = selfRunning
     ? {
         login: myLogin,
-        name: me?.fullName || myLogin,
+        name: me?.fullName || myFullName || myLogin,
         avatarUrl: me?.avatarUrl,
         avatarBlobKey: me?.avatarBlobKey ?? undefined,
         avatarBlobNonce: me?.avatarBlobNonce ?? undefined,

@@ -3,6 +3,7 @@ import { Phone } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { MOL_UNTIL_PILL_CLASS, molUntilStatus } from '@/lib/mol-format';
 import { formatUntilDate } from './flow-sandbox.fixtures';
+import { useFlipUpIfClipped } from './flow-cell-flip';
 
 /**
  * Ячейка МОЛ: пилюля ФИО по статусу + выпадающий список молов склада-получателя
@@ -46,9 +47,10 @@ function FlowMolEditor({
   const { options, value } = cell.data;
   // R3.2: выбранный МОЛ — ВВЕРХ списка при открытии.
   const ordered = [...options].sort((a, b) => (b.fio === value ? 1 : 0) - (a.fio === value ? 1 : 0));
+  const flipRef = useFlipUpIfClipped<HTMLDivElement>(); // §9: не вылезать за низ экрана
 
   return (
-    <div className="flex max-h-80 w-64 flex-col">
+    <div ref={flipRef} className="flex max-h-80 w-64 flex-col">
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 py-0.5 text-text-secondary">
         {ordered.length === 0 ? (
           <div className="px-2 py-1.5 text-[12px] text-text-muted/70">Нет молов для склада</div>

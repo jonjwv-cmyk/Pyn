@@ -6,6 +6,7 @@ import {
   type CustomRenderer,
 } from '@glideapps/glide-data-grid';
 import { cn } from '@/lib/cn';
+import { useFlipUpIfClipped } from './flow-cell-flip';
 
 /**
  * Своя ячейка-выпадашка для раздела «Поток». Редактор оформлен КАК МЕНЮ КОЛОНКИ
@@ -50,8 +51,9 @@ function FlowMultiEditor({
     setPicked((prev) =>
       prev.includes(o) ? prev.filter((x) => x !== o) : prev.length >= maxSelected ? prev : [...prev, o],
     );
+  const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   return (
-    <div className="flex w-56 flex-col text-text-secondary">
+    <div ref={flipRef} className="flex w-56 flex-col text-text-secondary">
       <div className="mb-1 flex items-center justify-between px-1 text-[11px] text-text-muted">
         <span className="tabular-nums">{picked.length}/{maxSelected}</span>
         <div className="flex items-center gap-1">
@@ -110,11 +112,12 @@ function FlowDropdownEditor({
   // Свой ввод фильтрует список (как поиск); Enter коммитит набранный текст.
   const q = query.trim().toLowerCase();
   const shown = allowCustom && q !== '' ? options.filter((o) => o.toLowerCase().includes(q)) : options;
+  const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   // Прозрачный список: хром (тёмный фон, 12px скругление, тень, рамка, padding)
   // даёт КОНТЕЙНЕР оверлея через styleOverride ниже — иначе скруглённый поповер
   // сидел бы на квадратной светлой подложке контейнера Glide.
   return (
-    <div className="flex max-h-[320px] w-full flex-col text-text-secondary">
+    <div ref={flipRef} className="flex max-h-[320px] w-full flex-col text-text-secondary">
       {allowCustom && (
         <input
           autoFocus

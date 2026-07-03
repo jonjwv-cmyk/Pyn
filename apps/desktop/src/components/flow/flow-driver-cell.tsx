@@ -4,6 +4,7 @@ import { Phone } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { MOL_UNTIL_PILL_CLASS, molUntilStatus } from '@/lib/mol-format';
 import { formatUntilDate } from './flow-sandbox.fixtures';
+import { useFlipUpIfClipped } from './flow-cell-flip';
 
 /**
  * Ячейка ВОДИТЕЛЬ транспорта (юзер 2026-06-12): ФИО плашкой ЦВЕТОМ СТАТУСА + под ним
@@ -147,8 +148,9 @@ function FlowDriverEditor({
     });
   };
 
+  const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   return (
-    <div className="flex max-h-80 w-72 flex-col">
+    <div ref={flipRef} className="flex max-h-80 w-72 flex-col">
       {multi && (
         <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-text-muted">
           <span className="tabular-nums">{picked.length}/{maxSelected}</span>

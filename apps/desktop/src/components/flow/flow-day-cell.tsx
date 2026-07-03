@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { GridCellKind, type CustomCell, type CustomRenderer } from '@glideapps/glide-data-grid';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { flowOptionStyleCss, dayOptionTheme, DAY_NEW_COLOR, DAY_OFF_COLOR } from './flow-sandbox.fixtures';
+import { useFlipUpIfClipped } from './flow-cell-flip';
 
 /**
  * Ячейка DAY: метка `new` / `OFF` / дата доставки. Двойной клик → поповер с двумя
@@ -83,8 +84,9 @@ function FlowDayEditor({
   const pickDay = (d: number) =>
     set(`${view.y}-${String(view.m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
 
+  const flipRef = useFlipUpIfClipped<HTMLDivElement>(); // §9: календарь не вылезает за низ
   return (
-    <div className="flex w-[244px] flex-col gap-1 p-1 text-text-secondary">
+    <div ref={flipRef} className="flex w-[244px] flex-col gap-1 p-1 text-text-secondary">
       {/* «new» ставить НЕЛЬЗЯ (авто-состояние по правилам). Можно только пометить заказ
           удалённым (off) или ОТМЕНИТЬ удаление (снять off). Дата доставки — из календаря. */}
       {v === 'OFF' ? (

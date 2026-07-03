@@ -142,7 +142,7 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'pr', title: 'PR', width: 64 },
   { id: 'graph', title: 'ГРАФ', width: 56 },
   { id: 'clst', title: 'CLST', width: 64 },
-  { id: 'mol', title: 'МОЛ', width: 150 },
+  { id: 'mol', title: 'МОЛ', width: 150, editable: true }, // §13: МОЛ правится в Отчёте
   { id: 'q', title: 'Q', width: 46, editable: true },
   { id: 'no', title: 'NO. №', width: 96 },
   { id: 'mat', title: 'MAT', width: 280 },
@@ -160,9 +160,9 @@ const REPORT_COLS: readonly PlanColSpec[] = [
 ];
 
 /** Причины невывоза: в БД — канонический текст (сервер матчит по ключевым словам),
- *  юзеру — ПРОСТЫЕ названия (юзер 2026-07-03): перенос, отказ, мало, приемка,
- *  вх. контроль, нет, самовывоз. Отказ/самовывоз возвращают позицию в Формирование
- *  с этим статусом; «мало» и прочие — журналом в комментарий якоря. */
+ *  юзеру — ПРОСТЫЕ названия (юзер 2026-07-03). Отказ (цеха)/самовывоз возвращают позицию
+ *  в Формирование со STAT; остальные (в т.ч. «отказ водителя», «нет машины» …) — журналом
+ *  в комментарий якоря. Легаси-каноны разворачиваем в короткие для показа старых данных. */
 const REASON_SHORT: Record<string, string> = {
   'перенос на другой день': 'перенос',
   'отказ цеха': 'отказ',
@@ -175,8 +175,14 @@ const REASON_SHORT: Record<string, string> = {
 const REASON_CANON: Record<string, string> = Object.fromEntries(
   Object.entries(REASON_SHORT).map(([canon, short]) => [short, canon]),
 );
-/** Порядок пунктов причины в выпадашке (короткие имена). */
-const FAIL_REASONS = ['перенос', 'отказ', 'мало', 'приемка', 'вх. контроль', 'нет', 'самовывоз'] as const;
+/** Порядок пунктов причины в выпадашке (короткие имена). Новые (юзер 2026-07-03):
+ *  нет машины/водителя/погрузчика/крана/людей/МОЛа, отказ водителя, запрет снабжения —
+ *  хранятся как есть (canonical=short, сервер их в STAT «отказ» НЕ превращает). */
+const FAIL_REASONS = [
+  'перенос', 'отказ', 'отказ водителя', 'мало', 'приемка', 'вх. контроль',
+  'нет', 'нет машины', 'нет водителя', 'нет погрузчика', 'нет крана', 'нет людей',
+  'нет МОЛа', 'самовывоз', 'запрет снабжения',
+] as const;
 
 /** ТИП ТС (юзер 2026-06-15) — НАШ маркер кузова, НЕ тянется из машины. До 3 на строку
  *  (соответствует до 3 гаражным). Хранится в поле `vehicle` (через `\n`). */
@@ -965,6 +971,37 @@ export function FlowPlanGrid({
     return m;
   }, [planRowsForFlags]);
 
+  // §2 (юзер 2026-07-03): «первая ФИКСАЦИЯ дня = план, дальше доп. 1, 2…». Считаем ЖИВЫЕ
+  // фиксации (у которых остались НЕ в резерве строки): если ранние батчи целиком удалены,
+  // текущий живой батч становится «планом», а не «доп. N». Ключ plan_date → (batch_seq →
+  // порядковый номер среди живых). Предварительные/пустые фиксации в счёт не идут.
+  const batchRankByDate = useMemo(() => {
+    const byDate = new Map<string, Set<number>>();
+    for (const r of rows) {
+      if (Number(r.fixation_id) <= 0 || Number(r.reserved) === 1) continue;
+      const b = Number(r.batch_seq) || 0;
+      if (b <= 0) continue;
+      const d = (r.plan_date || '').slice(0, 10);
+      const set = byDate.get(d) ?? new Set<number>();
+      set.add(b);
+      byDate.set(d, set);
+    }
+    const out = new Map<string, Map<number, number>>();
+    for (const [d, set] of byDate) {
+      const ranked = [...set].sort((a, b) => a - b);
+      out.set(d, new Map(ranked.map((b, i) => [b, i + 1])));
+    }
+    return out;
+  }, [rows]);
+  /** Ярлык FIX по ЖИВОМУ порядку фиксаций дня (1=план, 2=доп.1…). */
+  const fixLabelOf = useCallback(
+    (r: FlowDeliveryRow): string => {
+      if (Number(r.fixation_id) <= 0) return '';
+      const rank = batchRankByDate.get((r.plan_date || '').slice(0, 10))?.get(Number(r.batch_seq) || 0) ?? 0;
+      return rank <= 0 ? '' : rank === 1 ? 'план' : `доп. ${rank - 1}`;
+    },
+    [batchRankByDate],
+  );
 
   // Эффективное кол-во ДЛЯ ПОКАЗА: в Отчёте — фактическое из zm_vl (что реально провели), если есть;
   // иначе план. КГ/V и зависимые ячейки считаются от него. План-снимок остаётся в истории карточки.
@@ -1002,11 +1039,9 @@ export function FlowPlanGrid({
           const chain = transferChainDates(r);
           return chain.length > 1 ? chain.map(fmtPlanDate).join(' → ') : fmtPlanDate(r.plan_date);
         }
-        case 'fix': {
-          // Первый блок дня = «план», дальше «доп. 1», «доп. 2»… (юзер 2026-07-03).
-          const b = Number(r.batch_seq) || 0;
-          return b === 0 ? '' : b === 1 ? 'план' : `доп. ${b - 1}`;
-        }
+        case 'fix':
+          // Первый ЖИВОЙ блок дня = «план», дальше «доп. 1»… (по порядку живых фиксаций).
+          return fixLabelOf(r);
         case 'q':
           // Q — аварийный/особый запас («Особый запас» из SAP-вставки, юзер 2026-07-03).
           return r.q_spec ?? '';
@@ -1113,7 +1148,7 @@ export function FlowPlanGrid({
           return '';
       }
     },
-    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName, transferChainDates, effQty, graphInfo],
+    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName, transferChainDates, effQty, graphInfo, fixLabelOf],
   );
 
   // ── Поиск как в Формировании (подсветка/перелёт, не фильтр) ───────────────────
@@ -1582,6 +1617,26 @@ export function FlowPlanGrid({
     [],
   );
 
+  /** Смена МОЛа строки: пишем snap_mol на строку; в ОТЧЁТЕ (§13) — обратная связь
+   *  с Формированием (mol на якорь), чтобы отчёт и исходная таблица не расходились.
+   *  В Плане якорь не трогаем (частичный план не должен подменять МОЛ остатка). */
+  const applyMolChange = useCallback(
+    (r: FlowDeliveryRow, value: string) => {
+      const fields: Record<string, string | number | null> = { snap_mol: value };
+      const before = captureBefore(r, fields);
+      if (String(before.snap_mol ?? '') === value) return;
+      setMsg('');
+      applyDlvFields(r.id, fields);
+      pushHistory({ id: r.id, before, after: fields });
+      // Обратная связь с формированием только в Отчёте (юзер 2026-07-03, §13).
+      if (mode === 'report') {
+        const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
+        if (anchor && String(anchor.mol ?? '') !== value) applyAnchorFields(anchor, { mol: value });
+      }
+    },
+    [mode, anchorByKey, applyDlvFields, applyAnchorFields, captureBefore, pushHistory],
+  );
+
   const resolveMolForRow = useCallback(
     (r: FlowDeliveryRow, raw: string, opts2?: { allowFree?: boolean }): { value: string; error?: string } => {
       const fioStr = String(raw ?? '').trim();
@@ -1746,24 +1801,14 @@ export function FlowPlanGrid({
           return;
         }
         if (spec.id === 'mol' && data.kind === 'flow-mol') {
-          if (Number(r.fixation_id) > 0 && !isManualRow(r)) {
-            setMsg('МОЛ отчёта меняется только через СЭД или у строк, добавленных/перенесённых руками');
-            return;
-          }
+          // §13 (юзер 2026-07-03): МОЛ в ОТЧЁТЕ меняется как в Плане (СЭД-замок снят —
+          // настроим позже). allowFree на ручных; на обычных — валидируем по складу.
           const resolved = resolveMolForRow(r, String(data.value ?? ''), { allowFree: isManualRow(r) });
           if (resolved.error) {
             setMsg(resolved.error);
             return;
           }
-          // МОЛ строки Плана живёт НА САМОЙ строке (snap_mol), якорь НЕ трогаем (юзер
-          // 2026-07-03): частичный план (2 из 4) не должен подменять МОЛ остатка в
-          // Формировании. Удалили строку целиком → сервер вернёт выбранный МОЛ на якорь.
-          const fields: Record<string, string | number | null> = { snap_mol: resolved.value };
-          const before = captureBefore(r, fields);
-          if (String(before.snap_mol ?? '') === String(fields.snap_mol ?? '')) return;
-          setMsg('');
-          applyDlvFields(r.id, fields);
-          pushHistory({ id: r.id, before, after: fields });
+          applyMolChange(r, resolved.value);
           return;
         }
         if (spec.id === 'exp' && data.kind === 'flow-driver') {
@@ -1803,22 +1848,13 @@ export function FlowPlanGrid({
       const raw = String(newValue.data ?? '').trim();
 
       if (spec.id === 'mol') {
-        if (Number(r.fixation_id) > 0 && !isManualRow(r)) {
-          setMsg('МОЛ отчёта меняется только через СЭД или у строк, добавленных/перенесённых руками');
-          return;
-        }
-        // МОЛ строки Плана — на самой строке (snap_mol), якорь не трогаем (юзер 2026-07-03).
+        // §13: МОЛ правится в Плане и Отчёте (СЭД-замок снят). Отчёт пишет и на якорь.
         const resolved = resolveMolForRow(r, raw, { allowFree: isManualRow(r) });
         if (resolved.error) {
           setMsg(resolved.error);
           return;
         }
-        const fields: Record<string, string | number | null> = { snap_mol: resolved.value };
-        const before = captureBefore(r, fields);
-        if (String(before.snap_mol ?? '') === String(fields.snap_mol ?? '')) return;
-        setMsg('');
-        applyDlvFields(r.id, fields);
-        pushHistory({ id: r.id, before, after: fields });
+        applyMolChange(r, resolved.value);
         return;
       }
 
@@ -1957,6 +1993,7 @@ export function FlowPlanGrid({
       pushHistory,
       rowLocked,
       resolveMolForRow,
+      applyMolChange,
       resolveExpeditorsForRow,
       vehicleOptions,
       vehicleByGarage,
@@ -2100,15 +2137,19 @@ export function FlowPlanGrid({
   // доп.N / весь день. Формат эталона экспедиции: сорт APLAN, разрывы по отправителю,
   // МОЛ без телефона, титул с датой; лист 2 «Остаток» (места хранения).
   const reportBatches = useMemo(() => {
-    if (mode !== 'report' || !selectedDay) return [] as number[];
+    if (mode !== 'report' || !selectedDay) return [] as { batch: number; rank: number }[];
+    const ranks = batchRankByDate.get(selectedDay);
     const s = new Set<number>();
     for (const r of rows) {
       if (Number(r.fixation_id) > 0 && Number(r.reserved) !== 1 && (r.plan_date || '').slice(0, 10) === selectedDay) {
         s.add(Number(r.batch_seq) || 0);
       }
     }
-    return [...s].filter((b) => b > 0).sort((a, b) => a - b);
-  }, [mode, selectedDay, rows]);
+    return [...s]
+      .filter((b) => b > 0)
+      .map((batch) => ({ batch, rank: ranks?.get(batch) ?? batch }))
+      .sort((a, b) => a.rank - b.rank);
+  }, [mode, selectedDay, rows, batchRankByDate]);
   // Раскладка выгрузки — СЕРВЕРНАЯ (кэш на сессию): формат правится без обновления
   // приложения; сервер недоступен → встроенный дефолт.
   const xlsxLayoutRef = useRef<FlowXlsxLayout | null | undefined>(undefined);
@@ -2172,7 +2213,6 @@ export function FlowPlanGrid({
         const anchor = anchorByKey.get(`${x.ord}|${x.it}`);
         const vgh = vghByKey.get(normVghKey(x.no_num));
         const q = effQty(x);
-        const b = Number(x.batch_seq) || 0;
         const molFio = parseMol(x.snap_mol || '')?.fio ?? (x.snap_mol || '');
         // CLST — только ВЫЕЗД/КХП, кластер НТМК и прочие не указываем (юзер 2026-07-03,
         // как в гриде).
@@ -2185,7 +2225,7 @@ export function FlowPlanGrid({
           request: anchor?.request ?? '',
           pr: x.snap_pr || '',
           graph: graphInfo(x)?.label ?? '',
-          fix: b === 0 ? '' : b === 1 ? 'план' : `доп. ${b - 1}`,
+          fix: fixLabelOf(x),
           trz: x.trz || '',
           mol: compactFio(molFio),
           q: x.q_spec || '',
@@ -2218,12 +2258,15 @@ export function FlowPlanGrid({
         molsByWh,
       };
       // Имена (юзер 2026-07-03): «План экспедиции на июль 3 2026.xlsx» /
-      // «Доп. 1 к плану экспедиции на …»; листы «План»/«Доп. N» и «Места хранения».
-      const book = buildPlanXlsxSheets(selectedDay, batch, inputs, xlsxLayoutRef.current, lists);
-      downloadXlsx(planXlsxFilename(selectedDay, batch), book.sheets, { definedNames: book.definedNames });
+      // «Доп. 1 к плану экспедиции на …» — по ЖИВОМУ рангу фиксации, не по сырому batch_seq.
+      const nameBatch = typeof batch === 'number'
+        ? batchRankByDate.get(selectedDay)?.get(batch) ?? batch
+        : batch;
+      const book = buildPlanXlsxSheets(selectedDay, nameBatch, inputs, xlsxLayoutRef.current, lists);
+      downloadXlsx(planXlsxFilename(selectedDay, nameBatch), book.sheets, { definedNames: book.definedNames });
       setMsg(`Выгружено в Excel: ${dayRows.length} строк`);
     },
-    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, molsForWh, expeditorOptions],
+    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, molsForWh, expeditorOptions, fixLabelOf, batchRankByDate],
   );
 
   // Пустая ручная строка «как в обычной таблице» (юзер 2026-07-03): клик по хвостовой
@@ -2429,9 +2472,9 @@ export function FlowPlanGrid({
             <option value="" disabled hidden>
               Скачать…
             </option>
-            {reportBatches.map((b) => (
-              <option key={b} value={b}>
-                {b === 1 ? 'Кладовщикам план' : `Кладовщикам доп. ${b - 1}`}
+            {reportBatches.map(({ batch, rank }) => (
+              <option key={batch} value={batch}>
+                {rank === 1 ? 'Кладовщикам план' : `Кладовщикам доп. ${rank - 1}`}
               </option>
             ))}
             <option value="all">Кладовщиков общий</option>

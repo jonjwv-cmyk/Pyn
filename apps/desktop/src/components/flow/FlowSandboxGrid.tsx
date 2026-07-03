@@ -16,7 +16,7 @@ import {
   type Rectangle,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { AlertTriangle, ArrowDownUp, ChevronDown, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { AlertTriangle, ArrowDownUp, CheckCircle2, ChevronDown, Redo2, Trash2, Undo2 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
 import '@glideapps/glide-data-grid/dist/index.css';
@@ -112,6 +112,7 @@ import {
   molInitials,
   formatUntilDate,
   flowFilterText,
+  formatApprovedDates,
   flowMatSubText,
   FLOW_MAT_SUBFIELDS,
   FLOW_FONT_PX_DEFAULT,
@@ -2127,6 +2128,18 @@ export function FlowSandboxGrid(): JSX.Element {
       if (!spec || !rowData) return { kind: GridCellKind.Loading, allowOverlay: false };
 
       const raw = rowData[spec.id];
+      if (spec.id === 'approved_dates') {
+        // §15: галочка + даты согласования по месяцам (read-only, ставит кнопка).
+        const txt = formatApprovedDates(rowData.approved_dates);
+        return {
+          kind: GridCellKind.Text,
+          data: txt,
+          displayData: txt,
+          allowOverlay: false,
+          allowWrapping: true,
+          themeOverride: txt ? { textDark: '#1F7A3D' } : undefined,
+        };
+      }
       if (spec.kind === 'number') {
         // Пусто (нет данных) → «—» (для КГ/V); РЕАЛЬНЫЙ 0 → «0,000» (Number(null)=0 не путаем).
         const empty = raw == null || raw === '';
@@ -2494,6 +2507,36 @@ export function FlowSandboxGrid(): JSX.Element {
     },
     [syncHistory],
   );
+
+  // §15 «Согласование» (юзер 2026-07-03): выделенным строкам ставим галочку + дописываем
+  // СЕГОДНЯШНЮЮ дату в approved_dates (дедуп; копятся «июль 6, 9, 15», разные месяцы —
+  // отдельными строками в показе). Кнопка «подтвердить»/файл — на будущее (не делаем).
+  const markApproved = useCallback(() => {
+    const sel = selectionRef.current;
+    const ids = new Set<number>();
+    for (const r of sel.rows) {
+      const vr = viewRowsRef.current[r];
+      if (vr && String(vr.day_wk ?? '').toUpperCase() !== 'OFF') ids.add(vr.id);
+    }
+    if (ids.size === 0) return;
+    const today = todayIsoLocal();
+    const after = new Map<number, FlowRowPatch>();
+    const before = new Map<number, FlowRowPatch>();
+    for (const row of rowsRef.current) {
+      if (!ids.has(row.id)) continue;
+      const cur = String(row.approved_dates ?? '');
+      const set = new Set(cur.split(/[,\n]/).map((s) => s.trim()).filter(Boolean));
+      if (set.has(today)) continue; // уже согласовано сегодня — не дублируем
+      set.add(today);
+      const next = [...set].sort().join(',');
+      before.set(row.id, { approved_dates: cur });
+      after.set(row.id, { approved_dates: next });
+    }
+    if (after.size === 0) return;
+    writeCells(after);
+    pushHistory({ kind: 'cells', before, after });
+    syncEdits(after);
+  }, [writeCells, pushHistory, syncEdits]);
 
   // Правки (правка ячейки / протяжка / вставка диапазона / очистка) — одним
   // проходом: id → объединённые изменения полей. Параллельно копим «до»/«после»
@@ -3778,6 +3821,16 @@ export function FlowSandboxGrid(): JSX.Element {
         {selectedRowCount > 0 && (
           <div className="ml-auto flex items-center gap-2 text-[12px] text-[#6B6862]">
             <span className="tabular-nums text-[#2A2925]">Выбрано строк: {selectedRowCount}</span>
+            {/* §15: отметить выделенные «отправлено на согласование» (галочка + дата сегодня). */}
+            <button
+              type="button"
+              onClick={markApproved}
+              title="Отметить выделенные отправленными на согласование (ставит галочку и сегодняшнюю дату в СОГЛ.)"
+              className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#1F7A33] transition-colors hover:border-[#1F7A33]/50"
+            >
+              <CheckCircle2 size={13} strokeWidth={1.75} />
+              Согласование
+            </button>
             <button
               type="button"
               onClick={deleteSelectedRows}

@@ -5,6 +5,7 @@ import {
   type CustomRenderer,
 } from '@glideapps/glide-data-grid';
 import { cn } from '@/lib/cn';
+import { useFlipUpIfClipped } from './flow-cell-flip';
 
 /**
  * Ячейка TO (склад-получатель): двойной клик → выпадашка складов ТОГО ЖЕ ЦЕХА на
@@ -35,8 +36,9 @@ function FlowToEditor({
   onFinishedEditing: (next?: FlowToCell) => void;
 }) {
   const { options, value, shopName, title, statusNote } = cell.data;
+  const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   return (
-    <div className="max-h-72 w-56 overflow-y-auto text-text-secondary">
+    <div ref={flipRef} className="max-h-72 w-56 overflow-y-auto text-text-secondary">
       {/* Шапка-цех закреплена (sticky) — прокручивается ТОЛЬКО список складов: один
           скроллер, без бессмысленной двойной прокрутки. Фон = фон контейнера оверлея. */}
       <div className="sticky top-0 z-10 border-b border-white/10 bg-[#302F2D] px-2 py-1.5 text-[11px] font-medium uppercase tracking-wide text-text-muted/80">
