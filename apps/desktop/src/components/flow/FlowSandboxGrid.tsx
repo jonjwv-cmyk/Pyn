@@ -113,6 +113,10 @@ import {
   formatUntilDate,
   flowFilterText,
   formatApprovedDates,
+  formatUploadDay,
+  buildActiveColumns,
+  FLOW_INFO_COLUMNS,
+  FLOW_INFO_IDS,
   flowMatSubText,
   FLOW_MAT_SUBFIELDS,
   FLOW_FONT_PX_DEFAULT,
@@ -181,11 +185,12 @@ function resolveMolFull(
 function computeAutoWidths(
   rows: readonly FlowSandboxRow[],
   molByKey?: ReadonlyMap<string, { fio: string; color: string }>,
+  columns: readonly FlowColumnSpec[] = FLOW_COLUMNS,
 ): Record<string, number> {
   const out: Record<string, number> = {};
   const ctx = MEASURE_CTX;
   const measure = (s: string) => (ctx ? ctx.measureText(s).width : s.length * 7);
-  for (const spec of FLOW_COLUMNS) {
+  for (const spec of columns) {
     if (spec.id === 'clst') {
       // CLST — ЖИВОЙ формат («ПН КХП 6», «СР ВЫЕЗД 30», «ПН 6», «Нет»). День рисуется
       // ЖИРНЫМ (700) — меряем жирным целиком (чуть с запасом), плюс число до 2 цифр.
@@ -342,7 +347,7 @@ interface CopiedRegion {
 }
 
 /** Собрать пунктирные регионы из текущего выделения (для рамки «скопировано»). */
-function buildCopiedRegions(sel: GridSelection, rowCount: number): CopiedRegion[] {
+function buildCopiedRegions(sel: GridSelection, rowCount: number, colCount: number): CopiedRegion[] {
   const out: CopiedRegion[] = [];
   const cur = sel.current;
   if (cur) {
@@ -355,7 +360,7 @@ function buildCopiedRegions(sel: GridSelection, rowCount: number): CopiedRegion[
     }
   } else if (sel.rows.length > 0) {
     for (const r of sel.rows) {
-      out.push({ color: MARQUEE_COLOR, range: { x: 0, y: r, width: FLOW_COLUMNS.length, height: 1 }, style: 'no-outline' });
+      out.push({ color: MARQUEE_COLOR, range: { x: 0, y: r, width: colCount, height: 1 }, style: 'no-outline' });
     }
   }
   return out;
@@ -860,7 +865,9 @@ export function FlowSandboxGrid(): JSX.Element {
   // загрузки шрифта И при смене базы МОЛ (мол-колонку мерим по РЕЗОЛВНУТОМУ полному
   // ФИО из базы — оно длиннее снимка, иначе режется). Всегда плотно по содержимому.
   const colWidths = useMemo(
-    () => computeAutoWidths(rows, molByKey),
+    // Меряем ВСЕ колонки (базовые + инфо-колонки §4), чтобы ширины были готовы к моменту
+    // показа любой инфо-колонки; показ/скрытие меняет только состав, не ширины.
+    () => computeAutoWidths(rows, molByKey, buildActiveColumns(FLOW_INFO_IDS)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, fontsReady, molByKey],
   );
@@ -928,6 +935,21 @@ export function FlowSandboxGrid(): JSX.Element {
   });
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
   const [sortLevels, setSortLevels] = useState<SortLevel[]>([]);
+  // §4 (юзер 2026-07-03): служебные инфо-колонки (DAY выг./Дата ORD/ORD созд./TECH NAME)
+  // по умолчанию скрыты, показываются кнопками-тогглами. activeColumns = базовые +
+  // видимые инфо-колонки на их якорях; ВСЯ индексация грида идёт по activeColumns.
+  const [visibleInfo, setVisibleInfo] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleInfoCol = useCallback((id: string) => {
+    setVisibleInfo((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const activeColumns = useMemo(() => buildActiveColumns(visibleInfo), [visibleInfo]);
+  const activeColsRef = useRef(activeColumns);
+  activeColsRef.current = activeColumns;
   // «Замороженный» порядок показа: правка строки (смена склада/даты/статуса) НЕ
   // пересортировывает таблицу сразу — строка остаётся на месте, с ней можно работать
   // дальше. Пересортировка — явная: кнопка «Сортировка» (или смена уровней сортировки
@@ -1192,7 +1214,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // и остальных колонок; мал → текст переносится (строка растёт), широко → показ как есть.
   const noteWidth = useMemo(() => {
     const marker = Math.round(markerWidth * zoom);
-    const others = FLOW_COLUMNS.reduce(
+    const others = activeColsRef.current.reduce(
       (sum, c) => (c.id === 'note' ? sum : sum + Math.round((colWidths[c.id] ?? c.width) * zoom)),
       0,
     );
@@ -1335,11 +1357,55 @@ export function FlowSandboxGrid(): JSX.Element {
   // фиксируем текущее выделение dashed-регионом; снимается сменой выделения.
   useEffect(() => {
     const onCopy = () => {
-      setCopiedRegions(buildCopiedRegions(selectionRef.current, viewRowsRef.current.length));
+      setCopiedRegions(buildCopiedRegions(selectionRef.current, viewRowsRef.current.length, activeColsRef.current.length));
     };
     window.addEventListener('copy', onCopy);
     return () => window.removeEventListener('copy', onCopy);
   }, []);
+
+  // §5 (юзер 2026-07-03): копирование по колонке ЗАКАЗ (ord) → окно выбора «с позициями /
+  // без позиций» (как контакты с должностью/без). Перехватываем copy В ЗАХВАТЕ, если
+  // выделение ЦЕЛИКОМ в колонке ORD, и показываем диалог; сам буфер пишем по кнопке.
+  const [ordCopyDialog, setOrdCopyDialog] = useState<FlowSandboxRow[] | null>(null);
+  useEffect(() => {
+    const onCopyCapture = (e: ClipboardEvent) => {
+      const cols = activeColsRef.current;
+      const ordCol = cols.findIndex((c) => c.id === 'ord');
+      if (ordCol < 0) return;
+      const sel = selectionRef.current;
+      // Выделение целиком в ORD: либо колонка ORD, либо диапазон шириной 1 в ней.
+      const colOnly = sel.columns.length === 1 && sel.columns.hasIndex(ordCol) && !sel.current;
+      const cur = sel.current;
+      const rangeOnly = !!cur && cur.range.x === ordCol && cur.range.width === 1 &&
+        cur.rangeStack.every((r) => r.x === ordCol && r.width === 1) && sel.columns.length === 0;
+      if (!colOnly && !rangeOnly) return; // прочее — обычное копирование Glide
+      const vr = viewRowsRef.current;
+      const rowIdx = new Set<number>();
+      if (colOnly) for (let i = 0; i < vr.length; i++) rowIdx.add(i);
+      else if (cur) {
+        for (const rg of [cur.range, ...cur.rangeStack]) {
+          for (let y = rg.y; y < rg.y + rg.height; y++) rowIdx.add(y);
+        }
+      }
+      const picked = [...rowIdx].sort((a, b) => a - b).map((i) => vr[i]).filter((r): r is FlowSandboxRow => !!r);
+      if (picked.length === 0) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setOrdCopyDialog(picked);
+    };
+    window.addEventListener('copy', onCopyCapture, true);
+    return () => window.removeEventListener('copy', onCopyCapture, true);
+  }, []);
+  const doOrdCopy = useCallback((withPos: boolean) => {
+    const rows = ordCopyDialog;
+    setOrdCopyDialog(null);
+    if (!rows) return;
+    // С позициями: заказ и позиция — РАЗНЫМИ колонками (tab); без — только заказ.
+    const tsv = rows
+      .map((r) => (withPos ? `${r.ord ?? ''}\t${r.it ?? ''}` : String(r.ord ?? '')))
+      .join('\n');
+    void navigator.clipboard?.writeText?.(tsv).catch(() => undefined);
+  }, [ordCopyDialog]);
 
   // Месяц формирования → мета графика выбранного месяца (для ЖИВОГО CLST). Сам
   // holidays-контроль делает пикер; здесь нужны frozen-дни недели НТМК-складов.
@@ -1731,7 +1797,7 @@ export function FlowSandboxGrid(): JSX.Element {
     (opts?: { exceptCol?: string; exceptMat?: boolean; exceptOrd?: boolean }): FlowSandboxRow[] => {
       const active = Object.entries(filters)
         .filter(([colId, f]) => colId !== opts?.exceptCol && (f.search.trim() !== '' || f.excluded.size > 0))
-        .map(([colId, f]) => ({ spec: FLOW_COLUMNS.find((c) => c.id === colId), f }))
+        .map(([colId, f]) => ({ spec: activeColsRef.current.find((c) => c.id === colId), f }))
         .filter((x): x is { spec: FlowColumnSpec; f: ColumnFilter } => x.spec !== undefined);
       const matActive = opts?.exceptMat
         ? []
@@ -1781,7 +1847,7 @@ export function FlowSandboxGrid(): JSX.Element {
     // Умная сортировка: уровни в порядке выбора (первый — главный ключ, далее вторичные).
     if (sortLevels.length > 0) {
       const levels = sortLevels
-        .map((lv) => ({ spec: FLOW_COLUMNS.find((c) => c.id === lv.colId), dir: lv.dir }))
+        .map((lv) => ({ spec: activeColsRef.current.find((c) => c.id === lv.colId), dir: lv.dir }))
         .filter((x): x is { spec: FlowColumnSpec; dir: 'asc' | 'desc' } => x.spec !== undefined);
       if (levels.length > 0) {
         const base = out === visibleRows ? out.slice() : out;
@@ -1894,7 +1960,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // Агрегаты выделения для строки-счётчика: кол-во / сумма / среднее / мин / макс.
   // Тяжёлые агрегаты считаем только до STAT_CAP ячеек (защита от лагов).
   const selStats = useMemo(() => {
-    const colCount = FLOW_COLUMNS.length;
+    const colCount = activeColsRef.current.length;
     const rowCount = viewRows.length;
     const cur = selection.current;
     let count = 0;
@@ -1913,7 +1979,7 @@ export function FlowSandboxGrid(): JSX.Element {
     const byUnit = new Map<string, { count: number; sum: number; min: number; max: number }>();
     if (count <= STAT_CAP) {
       const add = (c: number, r: number) => {
-        const spec = FLOW_COLUMNS[c];
+        const spec = activeColsRef.current[c];
         const row = viewRows[r];
         if (!spec || !row || spec.kind !== 'number') return;
         const v = row[spec.id];
@@ -1961,7 +2027,7 @@ export function FlowSandboxGrid(): JSX.Element {
   const selNorm = useMemo(() => {
     const cur = selection.current;
     if (!cur) return null;
-    const qtyCol = FLOW_COLUMNS.findIndex((c) => c.id === 'qty');
+    const qtyCol = activeColsRef.current.findIndex((c) => c.id === 'qty');
     if (qtyCol < 0) return null;
     const rowsSet = new Set<number>();
     for (const rect of [cur.range, ...cur.rangeStack]) {
@@ -1999,7 +2065,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // алфавит/числа. Считаем РАНГ по первому ряду с этим значением (label→rank), сортируем им.
   const menuValues = useMemo<string[]>(() => {
     if (!menu) return [];
-    const spec = FLOW_COLUMNS[menu.colIndex];
+    const spec = activeColsRef.current[menu.colIndex];
     if (!spec) return [];
     const rankOf = (r: FlowSandboxRow): number | null => {
       if (spec.id === 'clst') return clstSortKey(String(r.clst ?? ''));
@@ -2030,7 +2096,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // ХРОНОЛОГИЧЕСКИ (по исходному ISO), остальное — по алфавиту/числам.
   const matSubValues = useMemo<Record<FlowMatSubId, string[]>>(() => {
     const empty = { mat: [], created_by: [], load_dt: [], time_at: [], mat_full: [] } as Record<FlowMatSubId, string[]>;
-    if (!menu || FLOW_COLUMNS[menu.colIndex]?.kind !== 'mat') return empty;
+    if (!menu || activeColsRef.current[menu.colIndex]?.kind !== 'mat') return empty;
     const maps: Record<FlowMatSubId, Map<string, string>> = {
       mat: new Map(), created_by: new Map(), load_dt: new Map(), time_at: new Map(), mat_full: new Map(),
     };
@@ -2058,7 +2124,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // Заказы и их позиции для «умного» фильтра ORD (когда открыто меню ORD): заказы по
   // номеру (числом), позиции каждого — тоже по номеру.
   const ordData = useMemo<FlowOrdEntry[]>(() => {
-    if (!menu || FLOW_COLUMNS[menu.colIndex]?.kind !== 'order') return [];
+    if (!menu || activeColsRef.current[menu.colIndex]?.kind !== 'order') return [];
     const map = new Map<string, Set<string>>();
     for (const r of rows) {
       const o = String(r.ord ?? '');
@@ -2078,7 +2144,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // Колонки: ширина (resizable) + меню (▾) + индикаторы сортировки/фильтра в заголовке.
   const columns: GridColumn[] = useMemo(
     () =>
-      FLOW_COLUMNS.map((c) => {
+      activeColumns.map((c) => {
         const f = filters[c.id];
         const filtered =
           c.kind === 'mat'
@@ -2117,13 +2183,13 @@ export function FlowSandboxGrid(): JSX.Element {
           },
         };
       }),
-    [colWidths, filters, matFilterActive, ordFilterActive, zoom, noteWidth],
+    [activeColumns, colWidths, filters, matFilterActive, ordFilterActive, zoom, noteWidth],
   );
 
   const getCellContentRaw = useCallback(
     (cellPos: Item): GridCell => {
       const [col, row] = cellPos;
-      const spec = FLOW_COLUMNS[col];
+      const spec = activeColsRef.current[col];
       const rowData = viewRows[row];
       if (!spec || !rowData) return { kind: GridCellKind.Loading, allowOverlay: false };
 
@@ -2138,6 +2204,19 @@ export function FlowSandboxGrid(): JSX.Element {
           allowOverlay: false,
           allowWrapping: true,
           themeOverride: txt ? { textDark: '#1F7A3D' } : undefined,
+        };
+      }
+      if (FLOW_INFO_IDS.has(spec.id)) {
+        // §4 инфо-колонки (read-only): DAY выг. — форматированное время выгрузки;
+        // Дата ORD/ORD созд./TECH NAME — сырое поле строки. В печать/xlsx не идут.
+        const txt = spec.id === 'time_at' ? formatUploadDay(rowData.time_at) : String(raw ?? '');
+        return {
+          kind: GridCellKind.Text,
+          data: txt,
+          displayData: txt,
+          allowOverlay: false,
+          allowWrapping: spec.id === 'mat_full',
+          themeOverride: { textDark: '#8C8983' }, // приглушённый — служебная инфа
         };
       }
       if (spec.kind === 'number') {
@@ -2330,7 +2409,7 @@ export function FlowSandboxGrid(): JSX.Element {
   const getCellContent = useCallback(
     (cellPos: Item): GridCell => {
       const cell = getCellContentRaw(cellPos);
-      const spec = FLOW_COLUMNS[cellPos[0]];
+      const spec = activeColsRef.current[cellPos[0]];
       if (!spec) return cell;
       // ГРАФ (В4): дата «без перескока недель» (≤ сегодня+7) — зелёная подпись.
       // Опора — как в liveRows: СЛЕДУЮЩИЙ день (строго после сегодня) в месяце формирования.
@@ -2383,18 +2462,25 @@ export function FlowSandboxGrid(): JSX.Element {
   }, []);
 
   // Применить серверные строки (ответ на правку / реалтайм flow_changed): заменяем
-  // строку по id, если серверная версия не старее (идемпотентно к собственному эху).
+  // строку по id, если серверная версия не старее; НОВЫЕ id (вставки выгрузки заказов
+  // у других пользователей) ДОБАВЛЯЕМ — иначе новые заказы не появлялись без рестарта
+  // (§1, юзер 2026-07-03). Замороженный порядок сам поставит их в свой блок.
   const applyServerRows = useCallback((serverRows: readonly FlowSandboxRow[]) => {
     if (serverRows.length === 0) return;
     const byId = new Map(serverRows.map((s) => [s.id, s]));
-    setRows((prev) =>
-      prev.map((r) => {
+    setRows((prev) => {
+      const known = new Set(prev.map((r) => r.id));
+      const updated = prev.map((r) => {
         const s = byId.get(r.id);
         if (!s) return r;
         // CLST/% в БД нет — сохраняем текущие виртуальные поля строки (liveRows/livePct пересчитают).
         return (s.row_version ?? 0) >= (r.row_version ?? 0) ? { ...s, clst: r.clst, pct: r.pct } : r;
-      }),
-    );
+      });
+      const added = serverRows
+        .filter((s) => !known.has(s.id))
+        .map((s) => ({ ...s, clst: '', pct: null }) as FlowSandboxRow);
+      return added.length > 0 ? [...updated, ...added] : updated;
+    });
   }, []);
 
   // Отправить правки на сервер (реалтайм всем). Конфликт по row_version: если версия
@@ -2566,7 +2652,7 @@ export function FlowSandboxGrid(): JSX.Element {
       };
       for (const { location, value } of edits) {
         const [col, displayRow] = location;
-        const spec = FLOW_COLUMNS[col];
+        const spec = activeColsRef.current[col];
         const viewRow = viewRows[displayRow];
         if (!spec || !viewRow) continue;
         const oldVal = viewRow[spec.id] ?? null; // spec.id — колонка данных, не row_version
@@ -2696,7 +2782,7 @@ export function FlowSandboxGrid(): JSX.Element {
   const onCellActivated = useCallback(
     (cell: Item) => {
       const [col, row] = cell;
-      const spec = FLOW_COLUMNS[col];
+      const spec = activeColsRef.current[col];
       const r = viewRows[row];
       if (!spec || !r) return;
       if (spec.id === 'no_num') openVghCard(r);
@@ -2802,7 +2888,7 @@ export function FlowSandboxGrid(): JSX.Element {
       const cur = sel.current;
       // DAY — та же беда (юзер 2026-07-03: «дату выбрали, а удалить клавишей не выходит»):
       // выделение целиком в колонке DAY → чистим дату явно через applyEdits.
-      const dayCol = FLOW_COLUMNS.findIndex((c) => c.kind === 'day');
+      const dayCol = activeColsRef.current.findIndex((c) => c.kind === 'day');
       if (cur && dayCol >= 0 && cur.range.x === dayCol && cur.range.width === 1) {
         const edits: { location: Item; value: EditableGridCell }[] = [];
         for (let y = cur.range.y; y < cur.range.y + cur.range.height; y++) {
@@ -2821,7 +2907,7 @@ export function FlowSandboxGrid(): JSX.Element {
           return false;
         }
       }
-      const statCol = FLOW_COLUMNS.findIndex((c) => c.id === 'stat');
+      const statCol = activeColsRef.current.findIndex((c) => c.id === 'stat');
       if (cur && statCol >= 0 && cur.range.x === statCol && cur.range.width === 1) {
         const edits: { location: Item; value: EditableGridCell }[] = [];
         for (let y = cur.range.y; y < cur.range.y + cur.range.height; y++) {
@@ -2950,7 +3036,7 @@ export function FlowSandboxGrid(): JSX.Element {
           gridRef.current?.updateCells(dmg);
           hoverCellRef.current = [hc, hr];
         }
-        const hspec = FLOW_COLUMNS[hc];
+        const hspec = activeColsRef.current[hc];
         const hrow = viewRows[hr];
         // MAT — карточка по клику; МОЛ — выпадашка по двойному клику. На hover карточек НЕТ.
         const lines =
@@ -3035,7 +3121,7 @@ export function FlowSandboxGrid(): JSX.Element {
       (e.key === 'ArrowRight' || e.key === 'ArrowLeft')
     ) {
       e.cancel();
-      const lastCol = FLOW_COLUMNS.length - 1;
+      const lastCol = activeColsRef.current.length - 1;
       const focus = Math.max(0, Math.min(lastCol, colFocusRef.current + (e.key === 'ArrowRight' ? 1 : -1)));
       colFocusRef.current = focus;
       const a = colAnchorRef.current;
@@ -3072,7 +3158,7 @@ export function FlowSandboxGrid(): JSX.Element {
     ) {
       e.cancel();
       const lastRow = viewRowsRef.current.length - 1;
-      const lastCol = FLOW_COLUMNS.length - 1;
+      const lastCol = activeColsRef.current.length - 1;
       const [ac, ar] = cellAnchorRef.current;
       let [fc, fr] = cellFocusRef.current;
       if (e.key === 'ArrowDown') fr = Math.min(lastRow, fr + 1);
@@ -3096,14 +3182,14 @@ export function FlowSandboxGrid(): JSX.Element {
   // — меню колонки (сортировка + фильтр) —
   const handleHeaderMenuClick = useCallback(
     (colIndex: number, bounds: { x: number; y: number; width: number; height: number }) => {
-      const spec = FLOW_COLUMNS[colIndex];
+      const spec = activeColsRef.current[colIndex];
       if (!spec) return;
       setMenu({ colIndex, title: spec.title, x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
     },
     [],
   );
 
-  const menuColId = menu ? FLOW_COLUMNS[menu.colIndex]?.id : undefined;
+  const menuColId = menu ? activeColumns[menu.colIndex]?.id : undefined;
   const menuFilter = menuColId ? filters[menuColId] : undefined;
 
   // — умная (многоуровневая) сортировка: уровни копятся в порядке выбора —
@@ -3152,7 +3238,7 @@ export function FlowSandboxGrid(): JSX.Element {
   const sortSummary = useMemo(
     () =>
       sortLevels
-        .map((l) => `${FLOW_COLUMNS.find((c) => c.id === l.colId)?.title ?? l.colId} ${l.dir === 'asc' ? '↑' : '↓'}`)
+        .map((l) => `${activeColsRef.current.find((c) => c.id === l.colId)?.title ?? l.colId} ${l.dir === 'asc' ? '↑' : '↓'}`)
         .join(' → '),
     [sortLevels],
   );
@@ -3309,7 +3395,7 @@ export function FlowSandboxGrid(): JSX.Element {
       const noteFontPx = Math.round(colFontPx('note') * zoom);
       const noteInnerW = noteWidth - 2 * Math.max(4, Math.round(BASE_HPAD * zoom));
       let maxLines = 1;
-      for (const spec of FLOW_COLUMNS) {
+      for (const spec of activeColsRef.current) {
         if (spec.kind !== 'text') continue;
         const v = r[spec.id];
         if (typeof v !== 'string' || !v) continue;
@@ -3387,7 +3473,7 @@ export function FlowSandboxGrid(): JSX.Element {
                   ? SWEEP_VOPROS
                   : null
           : null;
-      const lastColUnderlay = col === FLOW_COLUMNS.length - 1;
+      const lastColUnderlay = col === activeColsRef.current.length - 1;
       const lastRowUnderlay = row === viewRows.length - 1;
       if (rainbow) {
         const W = gridPxWidthRef.current || rect.x + rect.width * 4;
@@ -3428,7 +3514,7 @@ export function FlowSandboxGrid(): JSX.Element {
       }
       // CLST «ПН КХП 6» (юзер 2026-07-02): ДЕНЬ недели ЖИРНЫМ, кластер и число — обычным.
       // Рисуем текст сами (частичная жирность в одной ячейке); фоновые слои выше не задеты.
-      const clstSpec = FLOW_COLUMNS[col];
+      const clstSpec = activeColsRef.current[col];
       if (clstSpec?.id === 'clst' && r && r.clst && r.clst !== CLST_NONE) {
         const parts = String(r.clst).split(' ');
         const wd = parts[0] ?? '';
@@ -3534,7 +3620,7 @@ export function FlowSandboxGrid(): JSX.Element {
   // полоса прокрутки помещается. Шире окна → width = окно + горизонтальная полоса.
   const contentWidth = useMemo(() => {
     const marker = Math.round(markerWidth * zoom);
-    const cols = FLOW_COLUMNS.reduce(
+    const cols = activeColsRef.current.reduce(
       (sum, c) => sum + (c.id === 'note' ? noteWidth : Math.round((colWidths[c.id] ?? c.width) * zoom)),
       0,
     );
@@ -3549,7 +3635,7 @@ export function FlowSandboxGrid(): JSX.Element {
   const searchGroups = useMemo<FlowSearchGroup[]>(() => {
     if (!searchMatcher) return [];
     const groups: FlowSearchGroup[] = [];
-    FLOW_COLUMNS.forEach((spec, colIndex) => {
+    activeColsRef.current.forEach((spec, colIndex) => {
       const matches: { id: number; value: string }[] = [];
       let total = 0;
       for (const row of rows) {
@@ -3589,8 +3675,8 @@ export function FlowSandboxGrid(): JSX.Element {
     for (let r = from; r < to && out.length < SEARCH_HL_CAP; r++) {
       const vr = viewRows[r];
       if (!vr) continue;
-      for (let c = 0; c < FLOW_COLUMNS.length; c++) {
-        const spec = FLOW_COLUMNS[c];
+      for (let c = 0; c < activeColsRef.current.length; c++) {
+        const spec = activeColsRef.current[c];
         if (spec && searchMatcher(String(vr[spec.id] ?? ''))) {
           out.push({ color: SEARCH_HL_COLOR, range: { x: c, y: r, width: 1, height: 1 }, style: 'no-outline' });
           if (out.length >= SEARCH_HL_CAP) break;
@@ -3658,7 +3744,7 @@ export function FlowSandboxGrid(): JSX.Element {
       const after = new Map<number, FlowRowPatch>();
       let changed = 0;
       for (const row of rows) {
-        for (const spec of FLOW_COLUMNS) {
+        for (const spec of activeColsRef.current) {
           const cur = row[spec.id];
           if (!searchMatcher(String(cur ?? ''))) continue;
           let next: string | number = replacement;
@@ -3818,6 +3904,29 @@ export function FlowSandboxGrid(): JSX.Element {
             {offCount > 0 && <span className="tabular-nums opacity-70">{offCount}</span>}
           </button>
         )}
+        {/* §4 (юзер 2026-07-03): тумблеры служебных инфо-колонок — кнопка = название
+            колонки; нажал — показал, ещё раз — скрыл. Несколько сразу. В печать не идут. */}
+        <div className="h-5 w-px bg-black/[0.08]" />
+        <div className="flex items-center gap-1">
+          {FLOW_INFO_COLUMNS.map((c) => {
+            const on = visibleInfo.has(c.id);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => toggleInfoCol(c.id)}
+                title={on ? `Скрыть колонку «${c.title}»` : `Показать колонку «${c.title}»`}
+                className={`flex h-6 items-center rounded-md border px-1.5 text-[11px] transition-colors ${
+                  on
+                    ? 'border-accent-clay/70 text-[#0A0A0A]'
+                    : 'border-black/10 text-[#6B6862] hover:text-[#0A0A0A]'
+                }`}
+              >
+                {c.title}
+              </button>
+            );
+          })}
+        </div>
         {selectedRowCount > 0 && (
           <div className="ml-auto flex items-center gap-2 text-[12px] text-[#6B6862]">
             <span className="tabular-nums text-[#2A2925]">Выбрано строк: {selectedRowCount}</span>
@@ -3984,7 +4093,7 @@ export function FlowSandboxGrid(): JSX.Element {
 
       <FlowHeaderMenu
         state={
-          menu && FLOW_COLUMNS[menu.colIndex]?.kind !== 'mat' && FLOW_COLUMNS[menu.colIndex]?.kind !== 'order'
+          menu && activeColumns[menu.colIndex]?.kind !== 'mat' && activeColumns[menu.colIndex]?.kind !== 'order'
             ? menu
             : null
         }
@@ -4002,7 +4111,7 @@ export function FlowSandboxGrid(): JSX.Element {
       />
       {/* «Умный» фильтр MAT — несколько под-фильтров по скрытым полям материала. */}
       <FlowMatFilterMenu
-        state={menu && FLOW_COLUMNS[menu.colIndex]?.kind === 'mat' ? menu : null}
+        state={menu && activeColumns[menu.colIndex]?.kind === 'mat' ? menu : null}
         filters={matFilter}
         values={matSubValues}
         onSearch={handleMatSearch}
@@ -4014,7 +4123,7 @@ export function FlowSandboxGrid(): JSX.Element {
       />
       {/* «Умный» фильтр ORD — заказы в две колонки, у каждого его позиции пилюлями. */}
       <FlowOrdFilterMenu
-        state={menu && FLOW_COLUMNS[menu.colIndex]?.kind === 'order' ? menu : null}
+        state={menu && activeColumns[menu.colIndex]?.kind === 'order' ? menu : null}
         orders={ordData}
         search={ordSearch}
         sortDir={sortLevels.find((l) => l.colId === 'ord')?.dir ?? null}
@@ -4070,6 +4179,37 @@ export function FlowSandboxGrid(): JSX.Element {
                 className="rounded-md bg-accent-clay px-3 py-1.5 text-[13px] font-medium text-white outline-none transition-colors hover:bg-accent-clay-dim"
               >
                 Понятно
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* §5: выбор формата копирования заказов (с позициями / без). */}
+      <Dialog.Root open={ordCopyDialog !== null} onOpenChange={(o) => { if (!o) setOrdCopyDialog(null); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-40 bg-bg-deep/70 backdrop-blur-[2px]" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[340px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-default bg-bg-elevated p-5 shadow-2xl">
+            <Dialog.Title className="text-[13.5px] font-medium text-text-strong">
+              Копировать заказы
+            </Dialog.Title>
+            <div className="mt-1 text-[12px] text-text-muted">
+              Выделено: {ordCopyDialog?.length ?? 0}. С позициями — заказ и позиция в разных колонках.
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => doOrdCopy(false)}
+                className="rounded-md border border-border-default px-3 py-1.5 text-[13px] text-text-secondary outline-none transition-colors hover:border-border-strong hover:text-text-strong"
+              >
+                Без позиций
+              </button>
+              <button
+                type="button"
+                onClick={() => doOrdCopy(true)}
+                className="rounded-md bg-accent-clay px-3 py-1.5 text-[13px] font-medium text-white outline-none transition-colors hover:bg-accent-clay-dim"
+              >
+                С позициями
               </button>
             </div>
           </Dialog.Content>

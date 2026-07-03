@@ -80,7 +80,7 @@ import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-form
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import {
   fmtNum3, MONTH_ABBR_RU, parseMol, compactFio, matCardLines, needsWarn,
-  nearestGraphDate, graphDayLabel, graphDateSoon, todayIsoLocal,
+  nearestGraphDate, graphDayLabel, graphDateSoon, todayIsoLocal, formatUploadDay,
 } from './flow-sandbox.fixtures';
 // CSV-экспорт (flow-export) убран (юзер 2026-07-03) — только «План .xlsx» из Отчёта.
 
@@ -158,6 +158,18 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'request', title: 'ЗАПРОС', width: 130 },
   { id: 'history', title: 'ИСТ', width: 56 },
 ];
+
+/** §4 — служебные инфо-колонки Плана/Отчёта (скрыты, тумблеры). Значения — с ЯКОРЯ
+ *  формирования (когда заказ выгружен/создан, кем) + тех-имя из базы ВГХ. В печать/xlsx
+ *  НЕ идут (экспорт собирает свой набор). id совпадают с формированием — тот же тумблер. */
+const PLAN_INFO_COLS: readonly PlanColSpec[] = [
+  { id: 'time_at', title: 'DAY выг.', width: 132 },
+  { id: 'load_dt', title: 'Дата ORD', width: 92 },
+  { id: 'created_by', title: 'ORD созд.', width: 132 },
+  { id: 'mat_full', title: 'TECH NAME', width: 220 },
+];
+/** id инфо-колонок Плана — для быстрых проверок. */
+const PLAN_INFO_IDS: ReadonlySet<string> = new Set(PLAN_INFO_COLS.map((c) => c.id));
 
 /** Причины невывоза: в БД — канонический текст (сервер матчит по ключевым словам),
  *  юзеру — ПРОСТЫЕ названия (юзер 2026-07-03). Отказ (цеха)/самовывоз возвращают позицию
@@ -450,7 +462,30 @@ export function FlowPlanGrid({
   /** Выбранный день календаря — наружу (кнопка «Создание поставок» этапа План). */
   onSelectedDayChange?: (day: string | null) => void;
 }): JSX.Element {
-  const COLS = mode === 'report' ? REPORT_COLS : PLAN_COLS;
+  // §4 (юзер 2026-07-03): служебные инфо-колонки (DAY выг./Дата ORD/ORD созд./TECH NAME)
+  // — скрыты по умолчанию, тумблеры в панели; в xlsx/печать НЕ идут. COLS = базовые +
+  // видимые инфо (после MAT); вся индексация грида уже идёт по COLS.
+  const [visibleInfo, setVisibleInfo] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleInfoCol = useCallback((id: string) => {
+    setVisibleInfo((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const COLS = useMemo(() => {
+    const base = mode === 'report' ? REPORT_COLS : PLAN_COLS;
+    if (visibleInfo.size === 0) return base as readonly PlanColSpec[];
+    const out: PlanColSpec[] = [];
+    for (const c of base) {
+      out.push(c);
+      if (c.id === 'mat') {
+        for (const info of PLAN_INFO_COLS) if (visibleInfo.has(info.id)) out.push(info);
+      }
+    }
+    return out;
+  }, [mode, visibleInfo]);
   const [rows, setRows] = useState<FlowDeliveryRow[]>(() => planDlvCache ?? []);
   const [anchors, setAnchors] = useState<FlowRow[]>(() => planAnchorsCache ?? []);
   const [vehicles, setVehicles] = useState<FlowVehicle[]>(() => planVehiclesCache ?? []);
@@ -1142,6 +1177,15 @@ export function FlowPlanGrid({
         case 'request':
           // ЗАПРОС (заявка) — с якоря формирования (R3.6). У сеяного импорта без якоря пусто.
           return anchor?.request ?? '';
+        // §4 инфо-колонки (read-only) — с ЯКОРЯ формирования + тех-имя из базы ВГХ.
+        case 'time_at':
+          return formatUploadDay(anchor?.time_at ?? '');
+        case 'load_dt':
+          return anchor?.load_dt ?? '';
+        case 'created_by':
+          return anchor?.created_by ?? '';
+        case 'mat_full':
+          return (vghByKey.get(normVghKey(r.no_num))?.tech_name || '').trim() || anchor?.mat_full || '';
         case 'flag':
           return flagById.get(r.id) ?? '';
         default:
@@ -1193,6 +1237,63 @@ export function FlowPlanGrid({
   const viewRows = useMemo(
     () => colFilters.applySort(colFilters.applyFilters(baseRows)),
     [baseRows, colFilters.applyFilters, colFilters.applySort],
+  );
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  const viewRowsRef = useRef(viewRows);
+  viewRowsRef.current = viewRows;
+  const colsRef = useRef(COLS);
+  colsRef.current = COLS;
+
+  // §5 (юзер 2026-07-03): копирование по колонке «Поставка·Заказ» (dlvord) → окно выбора
+  // ЧТО класть в буфер (заказ/поставка, с позициями или без) — каждое РАЗНОЙ колонкой.
+  const [dlvCopyDialog, setDlvCopyDialog] = useState<FlowDeliveryRow[] | null>(null);
+  const [copyOpts, setCopyOpts] = useState({ ord: true, ordPos: true, dlv: false, dlvPos: false });
+  useEffect(() => {
+    const onCopyCapture = (e: ClipboardEvent) => {
+      const cols = colsRef.current;
+      const dlvCol = cols.findIndex((c) => c.id === 'dlvord');
+      if (dlvCol < 0) return;
+      const sel = selectionRef.current;
+      const colOnly = sel.columns.length === 1 && sel.columns.hasIndex(dlvCol) && !sel.current;
+      const cur = sel.current;
+      const rangeOnly = !!cur && cur.range.x === dlvCol && cur.range.width === 1 &&
+        cur.rangeStack.every((r) => r.x === dlvCol && r.width === 1) && sel.columns.length === 0;
+      if (!colOnly && !rangeOnly) return;
+      const vr = viewRowsRef.current;
+      const rowIdx = new Set<number>();
+      if (colOnly) for (let i = 0; i < vr.length; i++) rowIdx.add(i);
+      else if (cur) for (const rg of [cur.range, ...cur.rangeStack]) {
+        for (let y = rg.y; y < rg.y + rg.height; y++) rowIdx.add(y);
+      }
+      const picked = [...rowIdx].sort((a, b) => a - b).map((i) => vr[i]).filter((r): r is FlowDeliveryRow => !!r);
+      if (picked.length === 0) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setDlvCopyDialog(picked);
+    };
+    window.addEventListener('copy', onCopyCapture, true);
+    return () => window.removeEventListener('copy', onCopyCapture, true);
+  }, []);
+  const doDlvCopy = useCallback(
+    (opts: { ord: boolean; ordPos: boolean; dlv: boolean; dlvPos: boolean }) => {
+      const rows = dlvCopyDialog;
+      setDlvCopyDialog(null);
+      if (!rows) return;
+      // Каждое выбранное поле — ОТДЕЛЬНАЯ колонка буфера (tab), в порядке заказ|поз, поставка|поз.
+      const tsv = rows
+        .map((r) => {
+          const cells: string[] = [];
+          if (opts.ord) cells.push(r.ord ?? '');
+          if (opts.ordPos) cells.push(r.it ?? '');
+          if (opts.dlv) cells.push(r.dlv ?? '');
+          if (opts.dlvPos) cells.push(r.dlv_pos ?? '');
+          return cells.join('\t');
+        })
+        .join('\n');
+      void navigator.clipboard?.writeText?.(tsv).catch(() => undefined);
+    },
+    [dlvCopyDialog],
   );
 
   // hasMenu → ▾ меню колонки (фильтр/сорт). Активный фильтр — лёгкая clay-подложка.
@@ -2455,6 +2556,24 @@ export function FlowPlanGrid({
           <ClipboardPaste size={13} strokeWidth={1.75} />
           Буфер
         </button>
+        {/* §4 инфо-колонки (юзер 2026-07-03): тумблеры служебных колонок (с якоря
+            формирования); в xlsx/печать не идут. */}
+        {PLAN_INFO_COLS.map((c) => {
+          const on = visibleInfo.has(c.id);
+          return (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => toggleInfoCol(c.id)}
+              title={on ? `Скрыть колонку «${c.title}»` : `Показать колонку «${c.title}»`}
+              className={`flex h-6 shrink-0 items-center rounded-md border px-1.5 text-[11px] transition-colors ${
+                on ? 'border-accent-clay/70 text-[#0A0A0A]' : 'border-black/10 text-[#6B6862] hover:text-[#0A0A0A]'
+              }`}
+            >
+              {c.title}
+            </button>
+          );
+        })}
         {/* «Скачать» (юзер 2026-07-03): без заголовка в списке — только пункты
             «Кладовщикам план / Кладовщикам доп. N / Кладовщиков общий / Экспедиторам».
             Кладовщичьи — с цветом машин; выполненные (зелёные) строки не печатаются. */}
@@ -2751,6 +2870,49 @@ export function FlowPlanGrid({
       )}
       {/* Форма «+ Строка» УБРАНА (юзер 2026-07-03): пустая строка добавляется сразу,
           данные пишутся прямо в таблице по видимым колонкам. */}
+      {/* §5: выбор что копировать из колонки «Поставка·Заказ» (каждое — своей колонкой). */}
+      {dlvCopyDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4"
+             onClick={() => setDlvCopyDialog(null)}>
+          <div className="w-[320px] rounded-xl border border-black/10 bg-[#FDFDFB] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.28)]"
+               onClick={(e) => e.stopPropagation()}>
+            <div className="text-[13px] font-semibold text-[#2A2925]">Копировать</div>
+            <div className="mt-1 text-[12px] text-[#6B6862]">Выделено: {dlvCopyDialog.length}. Каждое поле — отдельной колонкой.</div>
+            <div className="mt-3 space-y-1.5 text-[12px] text-[#2A2925]">
+              {([
+                ['ord', 'Заказ'], ['ordPos', 'Позиция заказа'],
+                ['dlv', 'Поставка'], ['dlvPos', 'Позиция поставки'],
+              ] as const).map(([key, label]) => (
+                <label key={key} className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={copyOpts[key]}
+                    onChange={(e) => setCopyOpts((p) => ({ ...p, [key]: e.target.checked }))}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDlvCopyDialog(null)}
+                className="rounded-md border border-black/10 px-3 py-1 text-[12px] text-[#6B6862] transition-colors hover:border-black/25"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                disabled={!copyOpts.ord && !copyOpts.ordPos && !copyOpts.dlv && !copyOpts.dlvPos}
+                onClick={() => doDlvCopy(copyOpts)}
+                className="rounded-md bg-accent-clay px-3 py-1 text-[12px] font-medium text-white outline-none transition-colors hover:bg-accent-clay-dim disabled:opacity-40"
+              >
+                Копировать
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

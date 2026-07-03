@@ -162,6 +162,47 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
 ];
 
 /**
+ * §4 (юзер 2026-07-03): СЛУЖЕБНЫЕ инфо-колонки — по умолчанию СКРЫТЫ, показываются
+ * кнопками-тогглами. Только для просмотра; в печать/xlsx НЕ идут. Вставляются в
+ * набор колонок ПОСЛЕ якорной колонки (anchorAfter): DAY выг. — после STAT; TECH
+ * NAME — после MAT. Фильтр колонки — как у всех (flowFilterText читает поле/формат).
+ */
+export interface FlowInfoColumnSpec extends FlowColumnSpec {
+  /** id колонки, ПОСЛЕ которой вставлять при показе. */
+  anchorAfter: keyof FlowSandboxRow;
+}
+export const FLOW_INFO_COLUMNS: readonly FlowInfoColumnSpec[] = [
+  { id: 'time_at', title: 'DAY выг.', width: 128, kind: 'text', anchorAfter: 'stat' },
+  { id: 'load_dt', title: 'Дата ORD', width: 92, kind: 'text', anchorAfter: 'stat' },
+  { id: 'created_by', title: 'ORD созд.', width: 132, kind: 'text', anchorAfter: 'stat' },
+  { id: 'mat_full', title: 'TECH NAME', width: 220, kind: 'text', anchorAfter: 'mat' },
+];
+/** id всех инфо-колонок — для быстрых проверок «это инфо-колонка». */
+export const FLOW_INFO_IDS: ReadonlySet<string> = new Set(FLOW_INFO_COLUMNS.map((c) => c.id));
+
+/** Собрать активный набор колонок: базовые + видимые инфо-колонки на их якорях. */
+export function buildActiveColumns(visibleInfo: ReadonlySet<string>): FlowColumnSpec[] {
+  if (visibleInfo.size === 0) return [...FLOW_COLUMNS];
+  const out: FlowColumnSpec[] = [];
+  for (const col of FLOW_COLUMNS) {
+    out.push(col);
+    for (const info of FLOW_INFO_COLUMNS) {
+      if (info.anchorAfter === col.id && visibleInfo.has(info.id)) {
+        const { anchorAfter: _drop, ...spec } = info;
+        out.push(spec);
+      }
+    }
+  }
+  return out;
+}
+
+/** Формат «DAY выг.» (time_at → «3 июля 2026, 1:16 pm»): месяц, день, время am/pm. */
+export function formatUploadDay(timeAt: string | undefined): string {
+  const t = parseTime(timeAt ?? '');
+  return t ? t.full : '';
+}
+
+/**
  * Размер шрифта ЗНАЧЕНИЙ по колонкам (px при 100%; зум домножает). Юзер: кластер —
  * самый мелкий; день/статус/КГ/объём/МОЛ/запрос — компактные; остальное стандарт.
  * Заголовки колонок НЕ трогаем. Применяется как per-cell `themeOverride`.
@@ -469,6 +510,8 @@ export function flowComposed(
 
 /** Полная строка показа колонки (для авто-ширины и копирования). */
 export function flowDisplayText(spec: FlowColumnSpec, row: FlowSandboxRow): string {
+  if (spec.id === 'approved_dates') return formatApprovedDates(row.approved_dates);
+  if (spec.id === 'time_at') return formatUploadDay(row.time_at); // §4 «DAY выг.»
   switch (spec.kind) {
     case 'order':
     case 'kgv':
@@ -526,6 +569,7 @@ export function formatApprovedDates(csv: string | undefined): string {
 
 export function flowFilterText(spec: FlowColumnSpec, row: FlowSandboxRow): string {
   if (spec.id === 'approved_dates') return formatApprovedDates(row.approved_dates);
+  if (spec.id === 'time_at') return formatUploadDay(row.time_at); // §4 инфо: как в показе
   switch (spec.kind) {
     case 'day':
       return dayState(row).label;
