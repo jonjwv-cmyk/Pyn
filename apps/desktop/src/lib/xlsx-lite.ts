@@ -2,7 +2,7 @@
 // xlsx-lite.ts — минимальный генератор .xlsx БЕЗ зависимостей (юзер 2026-07-02/03).
 // ============================================================
 // Причина: exceljs ломал electron-typecheck через @types/node (проверено 2026-06-13),
-// а юзеру нужен «эксель без макросов» как ЭТАЛОН экспедиции: Segoe UI, тонкие сетки,
+// а юзеру нужен «эксель без макросов» как ЭТАЛОН экспедиции: Inter (шрифт юзера 2026-07-03, раньше Segoe UI), тонкие сетки,
 // жирная шапка с заливкой и автофильтром, закреплённая первая строка, форматы чисел
 // (#,##0.000), переносы текста, разрывы страниц. XLSX = zip из XML — собираем сами:
 // ZIP без сжатия (stored, CRC32), строки inline (без sharedStrings).
@@ -13,16 +13,21 @@
 // последней колонки/строки), выпадающие списки (data validation по именованным
 // диапазонам скрытого листа), примечания к ячейкам (comments + VML).
 //
+// Дополнено для файла «Экспедиторам»/кладовщикам (юзер 2026-07-03): заливка строк
+// цветом машины (динамические клоны стилей с fill), объединённые ячейки (шапка машины),
+// высота строки, стиль всей строки (mhead).
+//
 // Набор стилей ФИКСИРОВАННЫЙ (пресеты эталона, см. XLSX_STYLE):
-//   0 text (Segoe 10 left) · 1 header (Segoe 11 bold, заливка) · 2 text-r · 3 text12-r ·
-//   4 bold12-r · 5 bold12-r-wrap · 6 wrap12 · 7 mol (Segoe 8 bold wrap) · 8 num3
-//   (#,##0.000, 12) · 9 kgv (0.00, 8 bold) · 10 wrap10 · 11 bold10.
+//   0 text (Inter 10 left) · 1 header (Inter 11 bold, заливка) · 2 text-r · 3 text12-r ·
+//   4 bold12-r · 5 bold12-r-wrap · 6 wrap12 · 7 mol (Inter 8 bold wrap) · 8 num3
+//   (#,##0.000, 12) · 9 kgv (0.00, 8 bold) · 10 wrap10 · 11 bold10 · 12 mhead
+//   (10 bold wrap, шапка машины). + клоны с заливкой (генерятся по rowFills).
 
 /** Прогон rich-текста: свой шрифт/жирность внутри одной ячейки. */
 export interface XlsxRichRun {
   t: string;
   bold?: boolean;
-  /** Размер шрифта прогона (Segoe UI), по умолчанию 12. */
+  /** Размер шрифта прогона (Inter), по умолчанию 12. */
   sz?: number;
 }
 export type XlsxValue = string | number | null | undefined | { rich: XlsxRichRun[] };
@@ -40,6 +45,7 @@ export const XLSX_STYLE: Record<string, number> = {
   kgv: 9,
   wrap10: 10,
   bold10: 11,
+  mhead: 12,
 };
 
 export interface XlsxSheet {
@@ -65,6 +71,14 @@ export interface XlsxSheet {
   dropdowns?: Array<{ sqref: string; listName: string }>;
   /** Примечания к ячейкам (row/col — 0-based индексы в rows). */
   notes?: Array<{ row: number; col: number; text: string }>;
+  /** Заливка строк (1-based строка → ARGB «FFRRGGBB») — цвет машины кладовщикам. */
+  rowFills?: Record<number, string>;
+  /** Своя высота строк (1-based строка → пункты) — шапки машин. */
+  rowHeights?: Record<number, number>;
+  /** Стиль ВСЕХ ячеек строки (1-based строка → styleId) — напр. mhead шапки машины. */
+  rowStyles?: Record<number, number>;
+  /** Объединённые диапазоны («A5:L5») — шапки машин. */
+  merges?: string[];
 }
 
 /** Именованный диапазон книги (для выпадашек): ref вида «'Списки'!$A$2:$A$9». */
@@ -141,9 +155,12 @@ const isEmpty = (v: XlsxValue): boolean =>
   v == null || v === '' || (isRich(v) && v.rich.every((r) => !r.t));
 
 const RUN_FONT = (sz: number, bold: boolean): string =>
-  `${bold ? '<b/>' : ''}<sz val="${sz}"/><color rgb="FF111827"/><rFont val="Segoe UI"/><family val="2"/><charset val="204"/>`;
+  `${bold ? '<b/>' : ''}<sz val="${sz}"/><color rgb="FF111827"/><rFont val="Inter"/><family val="2"/><charset val="204"/>`;
 
-function sheetXml(sheet: XlsxSheet): string {
+/** styleId ячейки с учётом стиля строки и заливки машины (клоны считает makeXlsx). */
+type StyleResolver = (base: number, fill: string) => number;
+
+function sheetXml(sheet: XlsxSheet, styleOf: StyleResolver): string {
   const styles = sheet.colStyles ?? [];
   const colsCount = Math.max(
     sheet.colWidths?.length ?? 0,
@@ -161,11 +178,14 @@ function sheetXml(sheet: XlsxSheet): string {
       // Пустые ячейки — СО стилем (границы сетки до последней колонки/строки, юзер
       // 2026-07-03); полностью пустая строка (разделитель) остаётся голой.
       if (row.every(isEmpty)) return `<row r="${r}"/>`;
+      const fill = isHeader ? '' : sheet.rowFills?.[r] ?? '';
+      const rowStyle = isHeader ? undefined : sheet.rowStyles?.[r];
+      const ht = sheet.rowHeights?.[r];
       const cells: string[] = [];
       for (let ci = 0; ci < colsCount; ci++) {
         const v = row[ci];
         const ref = `${colLetter(ci)}${r}`;
-        const s = isHeader ? 1 : styles[ci] ?? 0;
+        const s = isHeader ? 1 : styleOf(rowStyle ?? styles[ci] ?? 0, fill);
         if (isEmpty(v)) {
           cells.push(`<c r="${ref}" s="${s}"/>`);
         } else if (typeof v === 'number' && Number.isFinite(v)) {
@@ -180,7 +200,8 @@ function sheetXml(sheet: XlsxSheet): string {
           cells.push(`<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(String(v))}</t></is></c>`);
         }
       }
-      return `<row r="${r}"${isHeader ? ' ht="19" customHeight="1"' : ''}>${cells.join('')}</row>`;
+      const htAttr = isHeader ? ' ht="19" customHeight="1"' : ht ? ` ht="${ht}" customHeight="1"` : '';
+      return `<row r="${r}"${htAttr}>${cells.join('')}</row>`;
     })
     .join('');
   const lastRef = `${colLetter(colsCount - 1)}${sheet.rows.length}`;
@@ -195,6 +216,9 @@ function sheetXml(sheet: XlsxSheet): string {
     ? `<sheetViews><sheetView workbookViewId="0"${viewAttrs}>${pane}</sheetView></sheetViews>`
     : '';
   const filter = sheet.autoFilter ? `<autoFilter ref="A1:${lastRef}"/>` : '';
+  const merges = (sheet.merges ?? []).length
+    ? `<mergeCells count="${sheet.merges?.length}">${sheet.merges?.map((m) => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>`
+    : '';
   const dds = sheet.dropdowns ?? [];
   const validations = dds.length
     ? `<dataValidations count="${dds.length}">${dds
@@ -216,6 +240,7 @@ function sheetXml(sheet: XlsxSheet): string {
     (cols ? `<cols>${cols}</cols>` : '') +
     `<sheetData>${rowsXml}</sheetData>` +
     filter +
+    merges +
     validations +
     `<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.4" header="0.2" footer="0.2"/>` +
     `<pageSetup paperSize="9" scale="100" orientation="${sheet.landscape === false ? 'portrait' : 'landscape'}"/>` +
@@ -230,7 +255,7 @@ function commentsXml(sheet: XlsxSheet): string {
   const items = (sheet.notes ?? [])
     .map((n) => {
       const ref = `${colLetter(n.col)}${n.row + 1}`;
-      return `<comment ref="${ref}" authorId="0"><text><r><rPr><sz val="9"/><color rgb="FF111827"/><rFont val="Segoe UI"/><family val="2"/><charset val="204"/></rPr><t xml:space="preserve">${xmlEsc(n.text)}</t></r></text></comment>`;
+      return `<comment ref="${ref}" authorId="0"><text><r><rPr><sz val="9"/><color rgb="FF111827"/><rFont val="Inter"/><family val="2"/><charset val="204"/></rPr><t xml:space="preserve">${xmlEsc(n.text)}</t></r></text></comment>`;
     })
     .join('');
   return (
@@ -264,42 +289,54 @@ function vmlXml(sheet: XlsxSheet): string {
   );
 }
 
-// Шрифты эталона (Segoe UI): 0=10, 1=11 bold (шапка), 2=12, 3=12 bold, 4=8 bold, 5=10 bold.
+// Шрифты эталона (Inter): 0=10, 1=11 bold (шапка), 2=12, 3=12 bold, 4=8 bold, 5=10 bold.
 const FONT = (sz: number, bold: boolean): string =>
-  `<font>${bold ? '<b/>' : ''}<sz val="${sz}"/><color rgb="FF111827"/><name val="Segoe UI"/><family val="2"/><charset val="204"/></font>`;
+  `<font>${bold ? '<b/>' : ''}<sz val="${sz}"/><color rgb="FF111827"/><name val="Inter"/><family val="2"/><charset val="204"/></font>`;
 
-function stylesXml(): string {
+// Базовые пресеты xf: numFmt / шрифт / выравнивание / перенос / заливка (id → XLSX_STYLE).
+const BASE_XFS: Array<{ nf: number; f: number; h: 'left' | 'right'; wrap: boolean; fill?: number }> = [
+  { nf: 0, f: 0, h: 'left', wrap: false },          // 0 text
+  { nf: 0, f: 1, h: 'left', wrap: false, fill: 2 }, // 1 header (заливка)
+  { nf: 0, f: 0, h: 'right', wrap: false },         // 2 text-r
+  { nf: 0, f: 2, h: 'right', wrap: false },         // 3 text12-r
+  { nf: 49, f: 3, h: 'right', wrap: false },        // 4 bold12-r (текст-формат: «0103» не теряет ноль)
+  { nf: 49, f: 3, h: 'right', wrap: true },         // 5 bold12-r-wrap (поставка+заказ 2 строки)
+  { nf: 0, f: 2, h: 'left', wrap: true },           // 6 wrap12 (наименование)
+  { nf: 0, f: 4, h: 'left', wrap: true },           // 7 mol (8 bold wrap)
+  { nf: 164, f: 2, h: 'right', wrap: false },       // 8 num3 (#,##0.000)
+  { nf: 4, f: 4, h: 'right', wrap: false },         // 9 kgv (#,##0.00, 8 bold)
+  { nf: 0, f: 0, h: 'left', wrap: true },           // 10 wrap10
+  { nf: 0, f: 5, h: 'left', wrap: false },          // 11 bold10
+  { nf: 0, f: 5, h: 'left', wrap: true },           // 12 mhead (шапка машины: 10 bold wrap)
+];
+
+/** Клоны базовых стилей с заливкой строки (цвет машины): '<base>|<argb>' → новый styleId. */
+function stylesXml(clones: Array<{ base: number; argb: string }>): string {
   const fonts = [FONT(10, false), FONT(11, true), FONT(12, false), FONT(12, true), FONT(8, true), FONT(10, true)];
-  // xf(numFmt, font, align, wrap)
-  const xf = (nf: number, f: number, h: 'left' | 'right', wrap: boolean, fill = 0): string =>
-    `<xf numFmtId="${nf}" fontId="${f}" fillId="${fill}" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"${fill ? ' applyFill="1"' : ''} applyAlignment="1">` +
-    `<alignment horizontal="${h}" vertical="center"${wrap ? ' wrapText="1"' : ''}/></xf>`;
+  const xf = (p: { nf: number; f: number; h: 'left' | 'right'; wrap: boolean; fill?: number }): string =>
+    `<xf numFmtId="${p.nf}" fontId="${p.f}" fillId="${p.fill ?? 0}" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"${p.fill ? ' applyFill="1"' : ''} applyAlignment="1">` +
+    `<alignment horizontal="${p.h}" vertical="center"${p.wrap ? ' wrapText="1"' : ''}/></xf>`;
+  const argbs = [...new Set(clones.map((c) => c.argb))];
+  const fillIdOf = new Map(argbs.map((a, i) => [a, 3 + i] as const));
+  const extraFills = argbs
+    .map((a) => `<fill><patternFill patternType="solid"><fgColor rgb="${a}"/><bgColor indexed="64"/></patternFill></fill>`)
+    .join('');
   const cellXfs = [
-    xf(0, 0, 'left', false),        // 0 text
-    xf(0, 1, 'left', false, 2),     // 1 header (заливка)
-    xf(0, 0, 'right', false),       // 2 text-r
-    xf(0, 2, 'right', false),       // 3 text12-r
-    xf(49, 3, 'right', false),      // 4 bold12-r (текст-формат: «0103» не теряет ноль)
-    xf(49, 3, 'right', true),       // 5 bold12-r-wrap (поставка+заказ 2 строки)
-    xf(0, 2, 'left', true),         // 6 wrap12 (наименование)
-    xf(0, 4, 'left', true),         // 7 mol (8 bold wrap)
-    xf(164, 2, 'right', false),     // 8 num3 (#,##0.000)
-    xf(4, 4, 'right', false),       // 9 kgv (#,##0.00, 8 bold)
-    xf(0, 0, 'left', true),         // 10 wrap10
-    xf(0, 5, 'left', false),        // 11 bold10
+    ...BASE_XFS.map(xf),
+    ...clones.map((c) => xf({ ...(BASE_XFS[c.base] ?? BASE_XFS[0]!), fill: fillIdOf.get(c.argb) ?? 0 })),
   ].join('');
   return (
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
     `<numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.000"/></numFmts>` +
     `<fonts count="${fonts.length}">${fonts.join('')}</fonts>` +
-    `<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>` +
-    `<fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/><bgColor indexed="64"/></patternFill></fill></fills>` +
+    `<fills count="${3 + argbs.length}"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>` +
+    `<fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/><bgColor indexed="64"/></patternFill></fill>${extraFills}</fills>` +
     `<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>` +
     `<border><left style="thin"><color rgb="FFD1D5DB"/></left><right style="thin"><color rgb="FFD1D5DB"/></right>` +
     `<top style="thin"><color rgb="FFD1D5DB"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border></borders>` +
     `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-    `<cellXfs count="12">${cellXfs}</cellXfs>` +
+    `<cellXfs count="${BASE_XFS.length + clones.length}">${cellXfs}</cellXfs>` +
     `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
     `</styleSheet>`
   );
@@ -309,6 +346,28 @@ function stylesXml(): string {
 export function makeXlsx(sheets: XlsxSheet[], opts?: XlsxBookOpts): Uint8Array {
   const enc = new TextEncoder();
   const withNotes = sheets.map((s, i) => ({ s, i })).filter(({ s }) => (s.notes ?? []).length > 0);
+  // Клоны стилей под заливку строк (цвет машины): собираем реально используемые пары
+  // (базовый стиль × цвет) по всем листам → styleId выдаёт styleOf.
+  const cloneId = new Map<string, number>();
+  const clones: Array<{ base: number; argb: string }> = [];
+  for (const s of sheets) {
+    if (!s.rowFills) continue;
+    const styles = s.colStyles ?? [];
+    const colsCount = Math.max(s.colWidths?.length ?? 0, styles.length, ...s.rows.map((r) => r.length), 1);
+    for (const [rowStr, argb] of Object.entries(s.rowFills)) {
+      if (!argb) continue;
+      const rowStyle = s.rowStyles?.[Number(rowStr)];
+      for (let ci = 0; ci < colsCount; ci++) {
+        const base = rowStyle ?? styles[ci] ?? 0;
+        const key = `${base}|${argb}`;
+        if (!cloneId.has(key)) {
+          cloneId.set(key, BASE_XFS.length + clones.length);
+          clones.push({ base, argb });
+        }
+      }
+    }
+  }
+  const styleOf: StyleResolver = (base, fill) => (fill ? cloneId.get(`${base}|${fill}`) ?? base : base);
   const contentTypes =
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
@@ -347,8 +406,8 @@ export function makeXlsx(sheets: XlsxSheet[], opts?: XlsxBookOpts): Uint8Array {
     { name: '_rels/.rels', data: enc.encode(rels) },
     { name: 'xl/workbook.xml', data: enc.encode(workbook) },
     { name: 'xl/_rels/workbook.xml.rels', data: enc.encode(wbRels) },
-    { name: 'xl/styles.xml', data: enc.encode(stylesXml()) },
-    ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(s)) })),
+    { name: 'xl/styles.xml', data: enc.encode(stylesXml(clones)) },
+    ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(s, styleOf)) })),
   ];
   for (const { s, i } of withNotes) {
     const sheetRels =

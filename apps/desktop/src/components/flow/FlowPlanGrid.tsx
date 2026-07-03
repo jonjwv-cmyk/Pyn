@@ -11,13 +11,17 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { ClipboardPaste, Download, Plus, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { ClipboardPaste, Redo2, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { planEtalonCompare } from './flow-plan-sort';
-import { buildPlanXlsxSheets, planXlsxFilename, type PlanXlsxRow, type PlanXlsxLists } from './flow-export-xlsx';
+import { garageRowColor, garageFillArgb } from './flow-garage-color';
+import {
+  buildPlanXlsxSheets, planXlsxFilename, buildExpedXlsxBook, expedXlsxFilename,
+  type PlanXlsxRow, type PlanXlsxLists, type ExpedXlsxRow,
+} from './flow-export-xlsx';
 import { downloadXlsx } from '@/lib/xlsx-lite';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
@@ -155,10 +159,24 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'history', title: 'ИСТ', width: 56 },
 ];
 
-/** Причины невывоза (юзер 2026-06-14) — зеркало серверного списка (валидация). */
-const FAIL_REASONS = ['нет на центральном складе', 'менее транспортной нормы', 'брак',
-  'на приёмке', 'на входном контроле', 'отказ цеха', 'самовывоз', 'перенос на другой день',
-  'нет МОЛа', 'иные причины'] as const;
+/** Причины невывоза: в БД — канонический текст (сервер матчит по ключевым словам),
+ *  юзеру — ПРОСТЫЕ названия (юзер 2026-07-03): перенос, отказ, мало, приемка,
+ *  вх. контроль, нет, самовывоз. Отказ/самовывоз возвращают позицию в Формирование
+ *  с этим статусом; «мало» и прочие — журналом в комментарий якоря. */
+const REASON_SHORT: Record<string, string> = {
+  'перенос на другой день': 'перенос',
+  'отказ цеха': 'отказ',
+  'менее транспортной нормы': 'мало',
+  'на приёмке': 'приемка',
+  'на входном контроле': 'вх. контроль',
+  'нет на центральном складе': 'нет',
+  'самовывоз': 'самовывоз',
+};
+const REASON_CANON: Record<string, string> = Object.fromEntries(
+  Object.entries(REASON_SHORT).map(([canon, short]) => [short, canon]),
+);
+/** Порядок пунктов причины в выпадашке (короткие имена). */
+const FAIL_REASONS = ['перенос', 'отказ', 'мало', 'приемка', 'вх. контроль', 'нет', 'самовывоз'] as const;
 
 /** ТИП ТС (юзер 2026-06-15) — НАШ маркер кузова, НЕ тянется из машины. До 3 на строку
  *  (соответствует до 3 гаражным). Хранится в поле `vehicle` (через `\n`). */
@@ -183,11 +201,12 @@ function statusValue(r: FlowDeliveryRow): string {
   return STATUS_WAIT; // по умолчанию — ожидание
 }
 
-/** Разбор выбранной опции статуса → поля поставки. «ожидание»/пусто → сброс в ноль. */
+/** Разбор выбранной опции статуса → поля поставки. «ожидание»/пусто → сброс в ноль.
+ *  Короткое имя причины разворачиваем в канонический текст для БД. */
 function decodeStatus(opt: string): { done_stat: string; fail_reason: string } {
   if (opt === STATUS_DONE) return { done_stat: STATUS_DONE, fail_reason: '' };
   if (opt === STATUS_WAIT || opt === '') return { done_stat: '', fail_reason: '' };
-  return { done_stat: 'не увезли', fail_reason: opt }; // выбрана причина
+  return { done_stat: 'не увезли', fail_reason: REASON_CANON[opt] ?? opt }; // выбрана причина
 }
 
 const PLAN_RENDERERS = [flowDropdownRenderer, flowMolRenderer, flowMatRenderer, flowHistoryRenderer, flowDriverRenderer, flowVehicleRenderer, flowDayRenderer];
@@ -201,9 +220,11 @@ function fmtPlanDate(s: string): string {
 
 function displayFailReason(reason: string): string {
   const raw = reason.trim();
-  if (!raw.startsWith(TRANSFER_REASON)) return raw;
-  const m = /(\d{4}-\d{2}-\d{2})/.exec(raw);
-  return m ? `${TRANSFER_REASON}: ${fmtPlanDate(m[1] ?? '')}` : raw;
+  if (raw.startsWith(TRANSFER_REASON)) {
+    const m = /(\d{4}-\d{2}-\d{2})/.exec(raw);
+    return m ? `перенос: ${fmtPlanDate(m[1] ?? '')}` : 'перенос';
+  }
+  return REASON_SHORT[raw] ?? raw; // канон → короткое имя; свободный текст как есть
 }
 
 // Нормализация кода склада — единый helper для всего Потока: ./flow-warehouse
@@ -415,7 +436,14 @@ function isoTodayLocal(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): JSX.Element {
+export function FlowPlanGrid({
+  mode = 'plan',
+  onSelectedDayChange,
+}: {
+  mode?: 'plan' | 'report';
+  /** Выбранный день календаря — наружу (кнопка «Создание поставок» этапа План). */
+  onSelectedDayChange?: (day: string | null) => void;
+}): JSX.Element {
   const COLS = mode === 'report' ? REPORT_COLS : PLAN_COLS;
   const [rows, setRows] = useState<FlowDeliveryRow[]>(() => planDlvCache ?? []);
   const [anchors, setAnchors] = useState<FlowRow[]>(() => planAnchorsCache ?? []);
@@ -459,6 +487,9 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       .sort();
     setSelectedDay(days[0] ?? today);
   }, [mode, selectedDay, rows]);
+  useEffect(() => {
+    onSelectedDayChange?.(selectedDay);
+  }, [selectedDay, onSelectedDayChange]);
   const [pendingTransfer, setPendingTransfer] = useState<PendingTransfer | null>(null);
   const transferMinDate = useMemo(() => isoTodayLocal(), []);
 
@@ -1018,13 +1049,15 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return raw ? whDisplay(raw) : '';
         }
         case 'mol': {
-          // Зафиксированное (ТЗ §3.8 / B) читает ЗАМОРОЖЕННЫЙ snapshot, черновик — живьём
-          // с якоря (он мог уехать под новый заказ той же связки).
+          // Зафиксированное (ТЗ §3.8 / B) читает ЗАМОРОЖЕННЫЙ snapshot. Черновик — сначала
+          // выбранный НА СТРОКЕ МОЛ (snap_mol, юзер 2026-07-03: план не подменяет МОЛ
+          // остатка в Формировании), иначе живьём с якоря.
           if (Number(r.fixation_id) > 0) return resolvePersonName(r.snap_mol || '', molByKey);
-          return resolvePersonName(anchor?.mol || '', molByKey);
+          return resolvePersonName(r.snap_mol || anchor?.mol || '', molByKey);
         }
         case 'approved':
-          return Number(r.fixation_id) > 0 ? r.snap_approved || '' : (anchor?.approved_by ?? '');
+          // Ручная строка без якоря — «согласовал» со строки (snap_approved).
+          return Number(r.fixation_id) > 0 ? r.snap_approved || '' : (anchor?.approved_by ?? r.snap_approved ?? '');
         case 'no':
           return r.no_num || '';
         case 'mat':
@@ -1221,10 +1254,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         return { kind: GridCellKind.Text, data: '', displayData: '', allowOverlay: false };
       }
       const locked = rowLocked(r);
-      if (spec.id === 'date' && mode === 'report' && isManualRow(r)) {
-        // Ручные строки Отчёта (юзер 2026-07-02, раунд 4): день выбирается ПРОВАЛОМ в ячейку
-        // даты (календарь, как DAY формирования); дату можно копировать/протягивать. Сервер
-        // перецепит строку к фиксации нового дня.
+      if (spec.id === 'date' && isManualRow(r)) {
+        // Ручные строки (юзер 2026-07-02/03): день выбирается ПРОВАЛОМ в ячейку даты
+        // (календарь, как DAY формирования) — и в Отчёте, и в Плане; дату можно
+        // копировать/протягивать. В Отчёте сервер перецепит строку к фиксации нового дня.
         const iso = (r.plan_date || '').slice(0, 10);
         const cell: FlowDayCell = {
           kind: GridCellKind.Custom,
@@ -1237,12 +1270,11 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       }
       if (spec.id === 'mol') {
         const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
-        // Черновик с якорем — МОЛ живьём с якоря; ручная строка БЕЗ якоря — со строки (snap_mol).
+        // Черновик — сначала выбранный НА СТРОКЕ МОЛ (snap_mol), иначе живьём с якоря
+        // (юзер 2026-07-03: МОЛ плана не подменяет остаток в Формировании).
         const rawMol = Number(r.fixation_id) > 0
           ? r.snap_mol || ''
-          : anchor
-            ? anchor.mol || ''
-            : r.snap_mol || '';
+          : r.snap_mol || anchor?.mol || '';
         const parsed = parseMol(rawMol);
         const rawFio = parsed?.fio ?? rawMol;
         const opts = molsForWh(r.to_wh);
@@ -1645,7 +1677,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         }
         if (spec.id === 'status' && data.kind === 'flow-dropdown') {
           const value = String(data.value ?? '');
-          if (value === TRANSFER_REASON) {
+          if (value === 'перенос' || value === TRANSFER_REASON) {
             const dlv = (r.dlv || '').trim();
             const sameDeliveryRows = dlv
               ? rows.filter((x) =>
@@ -1714,40 +1746,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           return;
         }
         if (spec.id === 'mol' && data.kind === 'flow-mol') {
-          if (Number(r.fixation_id) > 0) {
-            if (!isManualRow(r)) {
-              setMsg('МОЛ отчёта меняется только через СЭД или у строк, добавленных/перенесённых руками');
-              return;
-            }
-            const resolved = resolveMolForRow(r, String(data.value ?? ''));
-            if (resolved.error) {
-              setMsg(resolved.error);
-              return;
-            }
-            const fields: Record<string, string | number | null> = { snap_mol: resolved.value };
-            const before = captureBefore(r, fields);
-            const changed = Object.keys(fields).some((k) => String(before[k] ?? '') !== String(fields[k] ?? ''));
-            if (!changed) return;
-            setMsg('');
-            applyDlvFields(r.id, fields);
-            pushHistory({ id: r.id, before, after: fields });
-            return;
-          }
-          const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
-          if (!anchor) {
-            // Ручная строка без позиции формирования (юзер 2026-07-02, раунд 4): МОЛ живёт
-            // на самой строке (snap_mol); выбираем из списка склада или пишем своего — без ошибки.
-            if (isManualRow(r)) {
-              const resolved = resolveMolForRow(r, String(data.value ?? ''), { allowFree: true });
-              const fields: Record<string, string | number | null> = { snap_mol: resolved.value };
-              const before = captureBefore(r, fields);
-              if (String(before.snap_mol ?? '') === resolved.value) return;
-              setMsg('');
-              applyDlvFields(r.id, fields);
-              pushHistory({ id: r.id, before, after: fields });
-              return;
-            }
-            setMsg('Не нашёл позицию формирования для этой поставки');
+          if (Number(r.fixation_id) > 0 && !isManualRow(r)) {
+            setMsg('МОЛ отчёта меняется только через СЭД или у строк, добавленных/перенесённых руками');
             return;
           }
           const resolved = resolveMolForRow(r, String(data.value ?? ''), { allowFree: isManualRow(r) });
@@ -1755,9 +1755,15 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             setMsg(resolved.error);
             return;
           }
-          if (String(anchor.mol ?? '') === resolved.value) return;
+          // МОЛ строки Плана живёт НА САМОЙ строке (snap_mol), якорь НЕ трогаем (юзер
+          // 2026-07-03): частичный план (2 из 4) не должен подменять МОЛ остатка в
+          // Формировании. Удалили строку целиком → сервер вернёт выбранный МОЛ на якорь.
+          const fields: Record<string, string | number | null> = { snap_mol: resolved.value };
+          const before = captureBefore(r, fields);
+          if (String(before.snap_mol ?? '') === String(fields.snap_mol ?? '')) return;
           setMsg('');
-          applyAnchorFields(anchor, { mol: resolved.value });
+          applyDlvFields(r.id, fields);
+          pushHistory({ id: r.id, before, after: fields });
           return;
         }
         if (spec.id === 'exp' && data.kind === 'flow-driver') {
@@ -1797,38 +1803,22 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const raw = String(newValue.data ?? '').trim();
 
       if (spec.id === 'mol') {
-        if (Number(r.fixation_id) > 0) {
-          if (!isManualRow(r)) {
-            setMsg('МОЛ отчёта меняется только через СЭД или у строк, добавленных/перенесённых руками');
-            return;
-          }
-          const resolved = resolveMolForRow(r, raw);
-          if (resolved.error) {
-            setMsg(resolved.error);
-            return;
-          }
-          const fields: Record<string, string | number | null> = { snap_mol: resolved.value };
-          const before = captureBefore(r, fields);
-          const changed = Object.keys(fields).some((k) => String(before[k] ?? '') !== String(fields[k] ?? ''));
-          if (!changed) return;
-          setMsg('');
-          applyDlvFields(r.id, fields);
-          pushHistory({ id: r.id, before, after: fields });
+        if (Number(r.fixation_id) > 0 && !isManualRow(r)) {
+          setMsg('МОЛ отчёта меняется только через СЭД или у строк, добавленных/перенесённых руками');
           return;
         }
-        const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
-        if (!anchor) {
-          setMsg('Не нашёл позицию формирования для этой поставки');
-          return;
-        }
-        const resolved = resolveMolForRow(r, raw);
+        // МОЛ строки Плана — на самой строке (snap_mol), якорь не трогаем (юзер 2026-07-03).
+        const resolved = resolveMolForRow(r, raw, { allowFree: isManualRow(r) });
         if (resolved.error) {
           setMsg(resolved.error);
           return;
         }
-        if (String(anchor.mol ?? '') === resolved.value) return;
+        const fields: Record<string, string | number | null> = { snap_mol: resolved.value };
+        const before = captureBefore(r, fields);
+        if (String(before.snap_mol ?? '') === String(fields.snap_mol ?? '')) return;
         setMsg('');
-        applyAnchorFields(anchor, { mol: resolved.value });
+        applyDlvFields(r.id, fields);
+        pushHistory({ id: r.id, before, after: fields });
         return;
       }
 
@@ -1836,6 +1826,16 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         // «Кто согласовал» — поле ЯКОРЯ: пишем строку формирования (отразится во всех видах).
         const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
         if (!anchor) {
+          // Ручная строка без якоря — «согласовал» живёт на самой строке (snap_approved).
+          if (isManualRow(r)) {
+            const fields: Record<string, string | number | null> = { snap_approved: raw };
+            const before = captureBefore(r, fields);
+            if (String(before.snap_approved ?? '') === raw) return;
+            setMsg('');
+            applyDlvFields(r.id, fields);
+            pushHistory({ id: r.id, before, after: fields });
+            return;
+          }
           setMsg('Не нашёл позицию формирования для этой поставки');
           return;
         }
@@ -2007,6 +2007,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
         if (r.done_stat === STATUS_DONE || r.done_stat === 'увезли') return { bgCell: '#EAF5EA' };
         if (r.fail_reason || r.done_stat === 'не увезли') return { bgCell: '#F0F0EE', textDark: '#6B6862' };
         if (rowLocked(r)) return { textDark: '#8C8983' }; // закрытый отчёт (>7 дней) — приглушён
+        // Ожидание + выбран гаражный → свой пастельный тон машины (юзер 2026-07-03:
+        // «каждый гаражный получит свой уникальный цвет — визуально группировать машины»).
+        const garage = splitMultiCell(r.ride_id || '')[0];
+        if (garage) return { bgCell: garageRowColor(garage) };
       }
       if (!(r.dlv || '').trim()) return { textDark: '#5A5752' };
       return undefined;
@@ -2109,24 +2113,60 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
   // приложения; сервер недоступен → встроенный дефолт.
   const xlsxLayoutRef = useRef<FlowXlsxLayout | null | undefined>(undefined);
   const runXlsxExport = useCallback(
-    async (batch: number | 'all') => {
+    async (batch: number | 'all' | 'exped') => {
       if (!selectedDay) {
         setMsg('Выберите день отчёта в календаре');
         return;
       }
+      // «Выполнено» (зелёные) в печать не попадает — ни кладовщикам, ни экспедиторам
+      // (юзер 2026-07-03): такие уже увезены, файлы — про оставшуюся работу дня.
+      const isDone = (x: FlowDeliveryRow): boolean =>
+        x.done_stat === STATUS_DONE || x.done_stat === 'увезли';
       const dayRows = rows.filter(
         (x) =>
           Number(x.fixation_id) > 0 &&
           Number(x.reserved) !== 1 &&
           (x.plan_date || '').slice(0, 10) === selectedDay &&
-          (batch === 'all' || Number(x.batch_seq) === batch),
+          (batch === 'all' || batch === 'exped' || Number(x.batch_seq) === batch) &&
+          !isDone(x),
       );
       if (dayRows.length === 0) {
-        setMsg('Нет строк для выгрузки на этот день');
+        setMsg('Нет строк для выгрузки на этот день (выполненные в файл не идут)');
         return;
       }
       if (xlsxLayoutRef.current === undefined) {
         xlsxLayoutRef.current = await flowXlsxLayoutGet(api);
+      }
+      // Файл «Экспедиторам» (юзер 2026-07-03): раскидка по машинам (гаражный), схлопывание
+      // одинаковых получатель+отправитель+материал (МОЛ тот же, комменты не отличаются),
+      // разрыв страницы по машине, внутри сортировка по материалу.
+      if (batch === 'exped') {
+        const expInputs: ExpedXlsxRow[] = dayRows.map((x) => {
+          const vgh = vghByKey.get(normVghKey(x.no_num));
+          const q = effQty(x);
+          const molFio = parseMol(x.snap_mol || '')?.fio ?? (x.snap_mol || '');
+          const clstRaw = (whMapGet(whByKey, x.to_wh)?.cluster ?? '').trim();
+          const garage = splitMultiCell(x.ride_id || '')[0] ?? '';
+          return {
+            fr: x.fr, to_wh: x.to_wh, dlv: x.dlv, dlv_pos: x.dlv_pos, mat: x.mat,
+            no_num: x.no_num, qty: q,
+            clst: clstRaw === 'ВЫЕЗД' || clstRaw === 'КХП' ? clstRaw : '',
+            garage,
+            vehicleType: splitMultiCell(x.vehicle || '').join(', '),
+            expeditors: deliveryExpeditors(x).map(expeditorDisplayName).join(', '),
+            mol: compactFio(molFio),
+            uom: x.uom || '',
+            kg: vgh?.weight_kg != null && q != null ? q * vgh.weight_kg : null,
+            v: vgh?.volume_m3 != null && q != null ? q * vgh.volume_m3 : null,
+            note: x.snap_note || '',
+            matNote: (vgh?.tech_name || '').trim(),
+            fillArgb: garage ? garageFillArgb(garage) : '',
+          };
+        });
+        const book = buildExpedXlsxBook(selectedDay, expInputs, xlsxLayoutRef.current);
+        downloadXlsx(expedXlsxFilename(selectedDay), book.sheets, { definedNames: book.definedNames });
+        setMsg(`Экспедиторам: ${dayRows.length} строк выгружено`);
+        return;
       }
       const inputs: PlanXlsxRow[] = dayRows.map((x) => {
         const anchor = anchorByKey.get(`${x.ord}|${x.it}`);
@@ -2158,6 +2198,11 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           garage: splitMultiCell(x.ride_id || '').join(', '),
           stockNote: x.stock_note || '',
           matNote: (vgh?.tech_name || '').trim(),
+          // Кладовщикам — «вместе с цветом» (юзер 2026-07-03): тон машины по гаражному.
+          fillArgb: (() => {
+            const g = splitMultiCell(x.ride_id || '')[0] ?? '';
+            return g ? garageFillArgb(g) : '';
+          })(),
         };
       });
       // Выпадашки Excel (юзер 2026-07-03): МОЛы склада-получателя и экспедиторы
@@ -2181,9 +2226,9 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
     [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, molsForWh, expeditorOptions],
   );
 
-  // «Строка» БЕЗ формы (юзер 2026-07-03): добавляем ПУСТУЮ ручную строку на выбранный
-  // день — данные пишутся прямо в таблице по видимым колонкам (склады/номенклатура/
-  // наименование/ЕИ/кол-во/МОЛ/коммент/поставка+заказ — MANUAL_EDIT_IDS).
+  // Пустая ручная строка «как в обычной таблице» (юзер 2026-07-03): клик по хвостовой
+  // строке грида — данные пишутся прямо в ячейки (склады/номенклатура/наименование/ЕИ/
+  // кол-во/МОЛ/коммент/поставка+заказ — MANUAL_EDIT_IDS), или вставка SAP из буфера.
   const addEmptyRow = useCallback(() => {
     const planDate = mode === 'plan' ? selectedDay : selectedDay ?? isoTodayLocal();
     if (!planDate) {
@@ -2219,7 +2264,7 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
       const spec = COLS[target[0]];
       const pasted = String(values?.[0]?.[0] ?? '').trim();
       if (spec?.id === 'status' && selection.rows.length > 1 && pasted) {
-        if (pasted.startsWith(TRANSFER_REASON)) {
+        if (pasted.startsWith(TRANSFER_REASON) || pasted.startsWith('перенос')) {
           setMsg('Перенос вставкой не копируется — задайте через ячейку статуса');
           return false;
         }
@@ -2367,41 +2412,34 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
           <ClipboardPaste size={13} strokeWidth={1.75} />
           Буфер
         </button>
-        {/* Выгрузка Плана .xlsx из Отчёта (юзер 2026-07-02): план / доп.N / весь день. */}
+        {/* «Скачать» (юзер 2026-07-03): без заголовка в списке — только пункты
+            «Кладовщикам план / Кладовщикам доп. N / Кладовщиков общий / Экспедиторам».
+            Кладовщичьи — с цветом машин; выполненные (зелёные) строки не печатаются. */}
         {mode === 'report' && (
           <select
             defaultValue=""
             onChange={(e) => {
               const v = e.target.value;
-              if (v) void runXlsxExport(v === 'all' ? 'all' : Number(v));
+              if (v) void runXlsxExport(v === 'all' || v === 'exped' ? v : Number(v));
               e.target.value = '';
             }}
-            title="Скачать план экспедиции на выбранный день в Excel (без макросов), лист 2 — «Остаток»"
-            className="h-6 max-w-[150px] shrink-0 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25"
+            title="Скачать файлы дня в Excel: кладовщикам (с цветом машин) или экспедиторам (по машинам)"
+            className="h-6 max-w-[170px] shrink-0 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25"
           >
-            <option value="" disabled>
-              План .xlsx…
+            <option value="" disabled hidden>
+              Скачать…
             </option>
             {reportBatches.map((b) => (
               <option key={b} value={b}>
-                {b === 1 ? 'план' : `доп. ${b - 1}`}
+                {b === 1 ? 'Кладовщикам план' : `Кладовщикам доп. ${b - 1}`}
               </option>
             ))}
-            <option value="all">весь день</option>
+            <option value="all">Кладовщиков общий</option>
+            <option value="exped">Экспедиторам</option>
           </select>
         )}
-        {/* «+ Строка» (юзер 2026-07-02): ручная строка — особый заказ, пишем сами. */}
-        <button
-          type="button"
-          onClick={addEmptyRow}
-          title={mode === 'plan'
-            ? 'Добавить пустую строку на выбранный день — данные пишутся прямо в таблице'
-            : 'Добавить пустую строку в Отчёт — данные в таблице, день меняется в ячейке даты'}
-          className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25 hover:text-[#0A0A0A]"
-        >
-          <Plus size={13} strokeWidth={1.75} />
-          Строка
-        </button>
+        {/* Кнопка «+ Строка» УБРАНА (юзер 2026-07-03): пустая ручная строка добавляется
+            «как в обычной таблице» — клик по хвостовой строке грида (trailing row). */}
         {/* Счётчики/подсказки убраны (юзер 2026-07-02: «лишний текстовый мусор — барахло»).
             Остаются только сообщения об операциях (msg). */}
         {msg && (
@@ -2439,8 +2477,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
               defaultValue=""
               onChange={(e) => {
                 if (e.target.value) {
-                  if (e.target.value === TRANSFER_REASON) setMsg('Перенос делается через ячейку статуса конкретной строки');
-                  else massMark('не увезли', e.target.value);
+                  if (e.target.value === 'перенос') setMsg('Перенос делается через ячейку статуса конкретной строки');
+                  else massMark('не увезли', REASON_CANON[e.target.value] ?? e.target.value);
                   e.target.value = '';
                 }
               }}
@@ -2522,6 +2560,10 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             onCellEdited={onCellEdited}
             onCellsEdited={onCellsEdited}
             onPaste={onPaste}
+            // «Как обычная таблица» (юзер 2026-07-03): хвостовая строка добавляет пустую
+            // ручную строку на выбранный день — данные пишутся прямо в ячейки.
+            onRowAppended={addEmptyRow}
+            trailingRowOptions={{ tint: true, sticky: false }}
             gridSelection={selection}
             onGridSelectionChange={(sel) => {
               // Протяжка по первой колонке → выделение строк. СОХРАНЯЕМ current, иначе Glide
@@ -2545,6 +2587,8 @@ export function FlowPlanGrid({ mode = 'plan' }: { mode?: 'plan' | 'report' }): J
             onKeyDown={(e) => {
               gridSearch.handleKey(e);
             }}
+            // Backspace = Delete и на Windows (дефолт Glide даёт Backspace только на Mac).
+            keybindings={{ search: false, delete: 'Backspace|Delete' }}
             smoothScrollX
             smoothScrollY
           />

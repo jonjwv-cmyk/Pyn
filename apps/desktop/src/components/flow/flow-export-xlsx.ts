@@ -21,7 +21,10 @@ import {
   XLSX_STYLE, colLetter,
   type XlsxSheet, type XlsxValue, type XlsxDefinedName,
 } from '@/lib/xlsx-lite';
-import { makePlanEtalonCompare, type PlanSortable } from './flow-plan-sort';
+import {
+  makePlanEtalonCompare, normalizeRusLat, planSortKeyFr, planSortKeyClst, planSortKeyTo,
+  type PlanSortable,
+} from './flow-plan-sort';
 
 /** Подготовленная строка выгрузки (компонент собирает из строки отчёта + справочников). */
 export interface PlanXlsxRow extends PlanSortable {
@@ -43,6 +46,8 @@ export interface PlanXlsxRow extends PlanSortable {
   garage: string;
   stockNote: string;
   matNote: string; // полное тех-наименование (база ВГХ) → примечание на материале
+  /** Заливка строки ARGB (цвет машины по гаражному — кладовщикам «с цветом»). */
+  fillArgb?: string;
 }
 
 /** Списки для выпадашек Excel (собирает компонент из живых справочников). */
@@ -94,14 +99,15 @@ const MAT_HEAD_DEFAULT = '{MONTH1} {D}, {YY}г. Материал';
 const FALLBACK_LAYOUT: FlowXlsxLayout = {
   plan: {
     matHead: MAT_HEAD_DEFAULT,
+    // FIX первой, ГРАФ второй (юзер 2026-07-03), остальное как было.
     columns: [
+      { id: 'fix', head: 'FIX', width: 8, style: 'text12-r' },
+      { id: 'graph', head: 'ГРАФ', width: 8.5, style: 'text12-r' },
       { id: 'request', head: 'Запросил', width: 13.5, style: 'text' },
       { id: 'fr', head: 'От', width: 7, style: 'bold12-r' },
       { id: 'to', head: 'СП', width: 6.5, style: 'bold12-r' },
       { id: 'pr', head: 'Был', width: 8, style: 'text12-r' },
       { id: 'clst', head: 'CLST', width: 8.5, style: 'text12-r' },
-      { id: 'graph', head: 'ГРАФ', width: 8.5, style: 'text12-r' },
-      { id: 'fix', head: 'FIX', width: 8, style: 'text12-r' },
       { id: 'dlvord', head: 'Поставка', width: 13.2, style: 'bold12-r-wrap' },
       { id: 'trz', head: 'ТЗ', width: 6, style: 'text-r' },
       { id: 'mol', head: 'МОЛ', width: 23.2, style: 'mol' },
@@ -317,6 +323,7 @@ export function buildPlanXlsxSheets(
   const sheetRows: XlsxValue[][] = [head];
   const breaks: number[] = [];
   const notes: Array<{ row: number; col: number; text: string }> = [];
+  const rowFills: Record<number, string> = {}; // цвет машины (кладовщикам «с цветом»)
   const matIdx = planCols.findIndex((c) => c.id === 'mat');
   const molIdx = planCols.findIndex((c) => c.id === 'mol');
   const expIdx = planCols.findIndex((c) => c.id === 'exp');
@@ -327,6 +334,7 @@ export function buildPlanXlsxSheets(
     prevFr = r.fr;
     sheetRows.push(planCols.map((c) => cellValue(r, c.id)));
     const rowNum = sheetRows.length; // 1-based на листе
+    if (r.fillArgb) rowFills[rowNum] = r.fillArgb;
     if (matIdx >= 0 && r.matNote.trim() && r.matNote.trim() !== r.mat.trim()) {
       notes.push({ row: rowNum - 1, col: matIdx, text: r.matNote.trim() });
     }
@@ -378,6 +386,7 @@ export function buildPlanXlsxSheets(
     rowBreaks: breaks,
     dropdowns,
     notes,
+    rowFills,
   };
 
   // Лист 2 «Места хранения»: только строки с местами; пустая строка между отправителями;
@@ -386,6 +395,7 @@ export function buildPlanXlsxSheets(
   const restHead = restCols.map((c) => (c.id === 'mat' ? matHead : c.head));
   const restRows: XlsxValue[][] = [restHead];
   const restNotes: Array<{ row: number; col: number; text: string }> = [];
+  const restFills: Record<number, string> = {};
   const restMatIdx = restCols.findIndex((c) => c.id === 'mat');
   let prevFr2: string | null = null;
   for (const r of rows) {
@@ -393,6 +403,7 @@ export function buildPlanXlsxSheets(
     if (prevFr2 !== null && r.fr !== prevFr2) restRows.push([]);
     prevFr2 = r.fr;
     restRows.push(restCols.map((c) => cellValue(r, c.id)));
+    if (r.fillArgb) restFills[restRows.length] = r.fillArgb;
     if (restMatIdx >= 0 && r.matNote.trim() && r.matNote.trim() !== r.mat.trim()) {
       restNotes.push({ row: restRows.length - 1, col: restMatIdx, text: r.matNote.trim() });
     }
@@ -406,6 +417,7 @@ export function buildPlanXlsxSheets(
     freezeTop: true,
     pageBreakView: true,
     notes: restNotes,
+    rowFills: restFills,
   };
 
   const sheets: XlsxSheet[] = [plan, rest];
@@ -416,4 +428,194 @@ export function buildPlanXlsxSheets(
     sheets.push({ name: 'Списки', rows: listRows, colWidths: listCols.map(() => 34), hidden: true });
   }
   return { sheets, definedNames };
+}
+
+// ============================================================
+// Файл «ЭКСПЕДИТОРАМ» (юзер 2026-07-03, по наработке макроса CPRINT из эталона).
+// ============================================================
+// Отчёт дня, раскиданный по МАШИНАМ (гаражный): перед каждой машиной строка-шапка
+// «гр. № 7.1   ПУЛЬМАН 9М   Иванов И.» + «От: …» + «СП: …» (merged, тон машины),
+// разрыв страницы между машинами. Внутри машины сортировка НЕ по поставке, а
+// От → CLST → СП → МОЛ → МАТЕРИАЛ. СХЛОПЫВАНИЕ: одинаковые получатель+отправитель+
+// материал (+ ЕИ) при ТОМ ЖЕ МОЛе и НЕотличающихся комментах — одна строка, сумма
+// кол-ва/КГ/V, поставки списком. Выполненные (зелёные) строки сюда не попадают
+// (фильтрует вызывающий). Колонки: От СП CLST Поставка МОЛ Ном№ Материал ЕИ Кол-во КГ V Комментарий.
+
+/** Строка для файла экспедиторам (компонент собирает из строк отчёта). */
+export interface ExpedXlsxRow extends PlanSortable {
+  garage: string; // гаражный № (группа-машина); '' — машина не выбрана
+  vehicleType: string;
+  expeditors: string;
+  mol: string;
+  uom: string;
+  kg: number | null;
+  v: number | null;
+  note: string;
+  matNote: string;
+  fillArgb: string; // тон машины (шапка группы)
+}
+
+export function expedXlsxFilename(dateIso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
+  const dateRu = m
+    ? `${MONTHS_NOM[parseInt(m[2] ?? '1', 10) - 1] ?? ''} ${parseInt(m[3] ?? '1', 10)} ${m[1]}`
+    : dateIso;
+  return `Экспедиторам на ${dateRu}.xlsx`;
+}
+
+/** ЕИ-канон для ключа схлопывания (PRN_EICanon эталона): ШТ/КГ/Т/Л без точек и пробелов. */
+function uomCanon(raw: string): string {
+  let t = raw.toUpperCase().replace(/[\s., ]/g, '');
+  t = normalizeRusLat(t);
+  if (t.startsWith('ШТ')) return 'ШТ';
+  if (t.startsWith('КГ')) return 'КГ';
+  if (t.startsWith('Т')) return 'Т';
+  if (t.startsWith('Л')) return 'Л';
+  return t;
+}
+
+const EXPED_COLS: FlowXlsxColumn[] = [
+  { id: 'fr', head: 'От', width: 7, style: 'bold12-r' },
+  { id: 'to', head: 'СП', width: 6.5, style: 'bold12-r' },
+  { id: 'clst', head: 'CLST', width: 8.5, style: 'text12-r' },
+  { id: 'dlv', head: 'Поставка', width: 13.2, style: 'bold12-r-wrap' },
+  { id: 'mol', head: 'МОЛ', width: 23.2, style: 'mol' },
+  { id: 'no_num', head: 'Ном №', width: 11.6, style: 'text12-r' },
+  { id: 'mat', head: 'Материал', width: 50.7, style: 'wrap12' },
+  { id: 'uom', head: 'ЕИ', width: 6.5, style: 'text' },
+  { id: 'qty', head: 'Кол-во', width: 12.6, style: 'num3' },
+  { id: 'kg', head: 'КГ', width: 7, style: 'kgv' },
+  { id: 'v', head: 'V', width: 5, style: 'kgv' },
+  { id: 'note', head: 'Комментарий', width: 21.6, style: 'mol' },
+];
+
+/** Собрать книгу «Экспедиторам»: группы-машины, схлопывание, разрывы по машине. */
+export function buildExpedXlsxBook(
+  dateIso: string,
+  rowsIn: ExpedXlsxRow[],
+  layout?: FlowXlsxLayout | null,
+): PlanXlsxBook {
+  const lay = layout ?? FALLBACK_LAYOUT;
+  const matHead = matHeadOf(
+    lay.plan.matHead && lay.plan.matHead.includes('{MONTH1}') ? lay.plan.matHead : MAT_HEAD_DEFAULT,
+    dateIso,
+  );
+
+  // 1) Группы по машине (гаражный №, натуральный порядок; «без машины» — в конец).
+  const byGarage = new Map<string, ExpedXlsxRow[]>();
+  for (const r of rowsIn) {
+    const g = r.garage.trim();
+    const arr = byGarage.get(g);
+    if (arr) arr.push(r);
+    else byGarage.set(g, [r]);
+  }
+  const garages = [...byGarage.keys()].sort((a, b) => {
+    if (!a) return 1;
+    if (!b) return -1;
+    return a.localeCompare(b, 'ru', { numeric: true });
+  });
+
+  // 2) Внутри машины: СХЛОПЫВАНИЕ (От|СП|МОЛ|Ном№|ЕИ|Материал|Коммент → Σ кол-ва/КГ/V,
+  //    поставки уникальным списком), затем сортировка От → CLST → СП → МОЛ → материал.
+  interface Grp { r: ExpedXlsxRow; qty: number | null; kg: number | null; v: number | null; dlvs: string[] }
+  const cmp = (a: Grp, b: Grp): number =>
+    planSortKeyFr(a.r.fr).localeCompare(planSortKeyFr(b.r.fr), 'ru') ||
+    planSortKeyClst(a.r.clst).localeCompare(planSortKeyClst(b.r.clst), 'ru') ||
+    planSortKeyTo(a.r.to_wh).localeCompare(planSortKeyTo(b.r.to_wh), 'ru') ||
+    (a.r.mol ? 0 : 1) - (b.r.mol ? 0 : 1) || // пустой МОЛ — в конец
+    a.r.mol.localeCompare(b.r.mol, 'ru') ||
+    a.r.mat.localeCompare(b.r.mat, 'ru') ||
+    (Number(a.qty ?? 0) - Number(b.qty ?? 0));
+
+  const head = EXPED_COLS.map((c) => (c.id === 'mat' ? matHead : c.head));
+  const sheetRows: XlsxValue[][] = [head];
+  const merges: string[] = [];
+  const breaks: number[] = [];
+  const rowStyles: Record<number, number> = {};
+  const rowHeights: Record<number, number> = {};
+  const rowFills: Record<number, string> = {};
+  const notes: Array<{ row: number; col: number; text: string }> = [];
+  const matIdx = EXPED_COLS.findIndex((c) => c.id === 'mat');
+  const lastCol = colLetter(EXPED_COLS.length - 1);
+
+  for (const g of garages) {
+    const src = byGarage.get(g) ?? [];
+    const grouped = new Map<string, Grp>();
+    for (const r of src) {
+      const key = [r.fr, r.to_wh, r.mol ? '0' : '1', r.mol, r.no_num, uomCanon(r.uom), r.mat, r.note.trim()]
+        .map((s) => String(s).trim().toUpperCase())
+        .join('|');
+      const dlvLine = [r.dlv, r.dlv_pos].filter(Boolean).join(' | ');
+      const cur = grouped.get(key);
+      if (!cur) {
+        grouped.set(key, {
+          r,
+          qty: r.qty,
+          kg: r.kg,
+          v: r.v,
+          dlvs: dlvLine ? [dlvLine] : [],
+        });
+      } else {
+        cur.qty = (cur.qty ?? 0) + (r.qty ?? 0);
+        cur.kg = cur.kg != null || r.kg != null ? (cur.kg ?? 0) + (r.kg ?? 0) : null;
+        cur.v = cur.v != null || r.v != null ? (cur.v ?? 0) + (r.v ?? 0) : null;
+        if (dlvLine && !cur.dlvs.includes(dlvLine)) cur.dlvs.push(dlvLine);
+      }
+    }
+    const items = [...grouped.values()].sort(cmp);
+    if (items.length === 0) continue;
+
+    // Шапка машины: «гр. № …  машина  экспедиторы» + уникальные От/СП группы.
+    const first = items[0]?.r;
+    const uniq = (vals: string[]): string => [...new Set(vals.filter(Boolean))].join(' | ');
+    const line1 = g
+      ? ['гр. №', g, first?.vehicleType || '', first?.expeditors || ''].filter(Boolean).join('   ')
+      : 'Без машины';
+    const headText = `${line1}\nОт: ${uniq(items.map((x) => x.r.fr))}\nСП: ${uniq(items.map((x) => x.r.to_wh))}`;
+    if (sheetRows.length > 1) breaks.push(sheetRows.length); // разрыв ПЕРЕД шапкой машины
+    sheetRows.push([headText]);
+    const hr = sheetRows.length; // 1-based
+    merges.push(`A${hr}:${lastCol}${hr}`);
+    rowStyles[hr] = XLSX_STYLE.mhead ?? 12;
+    rowHeights[hr] = 45;
+    if (g && first?.fillArgb) rowFills[hr] = first.fillArgb;
+
+    for (const it of items) {
+      const r = it.r;
+      sheetRows.push([
+        r.fr,
+        r.to_wh,
+        r.clst,
+        it.dlvs.join('\n'),
+        r.mol,
+        r.no_num,
+        r.mat,
+        r.uom,
+        num(it.qty),
+        it.kg != null && it.kg !== 0 ? num(it.kg) : '',
+        it.v != null && it.v !== 0 ? num(it.v) : '',
+        r.note,
+      ]);
+      if (matIdx >= 0 && r.matNote.trim() && r.matNote.trim() !== r.mat.trim()) {
+        notes.push({ row: sheetRows.length - 1, col: matIdx, text: r.matNote.trim() });
+      }
+    }
+  }
+
+  const dataRows = sheetRows.filter((_, i) => i > 0 && rowStyles[i + 1] == null);
+  const sheet: XlsxSheet = {
+    name: 'Экспедиторам',
+    rows: sheetRows,
+    colWidths: EXPED_COLS.map((c, ci) => autoWidth(c, dataRows.map((r) => r[ci]), String(head[ci] ?? ''))),
+    colStyles: EXPED_COLS.map(styleOf),
+    freezeTop: true,
+    pageBreakView: true,
+    rowBreaks: breaks,
+    merges,
+    rowStyles,
+    rowHeights,
+    rowFills,
+    notes,
+  };
+  return { sheets: [sheet], definedNames: [] };
 }

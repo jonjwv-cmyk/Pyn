@@ -3843,7 +3843,9 @@ export function FlowSandboxGrid(): JSX.Element {
             headerHeight={rowH}
             smoothScrollX
             smoothScrollY
-            keybindings={{ search: false }}
+            // Backspace = Delete и на Windows (юзер 2026-07-03: «выбрал дату DAY, а удалить
+            // не могу») — дефолт Glide даёт Backspace только на Mac.
+            keybindings={{ search: false, delete: 'Backspace|Delete' }}
           />
         )}
         {tooltip && (

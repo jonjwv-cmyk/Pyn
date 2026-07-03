@@ -9,7 +9,6 @@ import { sessionStore } from '@/lib/token-store';
 import { useUsersStore } from '@/lib/stores';
 import { FlowSandboxGrid } from './FlowSandboxGrid';
 import { FlowPlanGrid } from './FlowPlanGrid';
-import { FlowPlanFormButton } from './FlowPlanFormButton';
 import { FlowPlanCreateButton } from './FlowPlanCreateButton';
 import { FlowPlanFixButton } from './FlowPlanFixButton';
 import { FlowOrderUploadButton } from './FlowOrderUploadButton';
@@ -32,6 +31,8 @@ export function FlowScreen(): JSX.Element {
   const { t } = useTranslation();
   const users = useUsersStore((s) => s.users);
   const [stage, setStage] = useState<FlowStage>('form');
+  // Выбранный день календаря Плана — для кнопки «Создание поставок» (черновики+SAP сразу).
+  const [planDay, setPlanDay] = useState<string | null>(null);
   // Окно-блокировка на время выгрузки заказов (пароль — у самой кнопки). Инициатор держит
   // общий lock (heartbeat + авто-истечение при зависании); остальные видят, кто запустил.
   const [selfRunning, setSelfRunning] = useState(false);
@@ -106,9 +107,9 @@ export function FlowScreen(): JSX.Element {
           )}
           {stage === 'plan' && (
             <>
-              <FlowPlanFormButton />
-              {/* В2 (юзер 2026-07-02): формирование черновиков → создание поставок в SAP → фиксация. */}
-              <FlowPlanCreateButton />
+              {/* «Создание поставок» = ОДНО действие на выбранный день Плана (юзер 2026-07-03):
+                  черновики из формирования + SAP VL10D сразу; прошлые дни неактивны. */}
+              <FlowPlanCreateButton selectedDay={planDay} />
               <FlowPlanFixButton />
             </>
           )}
@@ -120,7 +121,7 @@ export function FlowScreen(): JSX.Element {
         {stage === 'form' ? (
           <FlowSandboxGrid />
         ) : stage === 'plan' ? (
-          <FlowPlanGrid />
+          <FlowPlanGrid onSelectedDayChange={setPlanDay} />
         ) : (
           <FlowPlanGrid mode="report" />
         )}
