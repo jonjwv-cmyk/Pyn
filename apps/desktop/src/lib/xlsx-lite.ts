@@ -65,6 +65,11 @@ export interface XlsxSheet {
   landscape?: boolean;
   /** Открывать лист сразу в СТРАНИЧНОМ режиме (Page Break Preview), зум 100%. */
   pageBreakView?: boolean;
+  /** Область печати (ref «A1:U220») — определяет ПРАВУЮ границу листа: вертикальная
+   *  пунктирная разбивка идёт по концу области (после последней печатной колонки). */
+  printArea?: string;
+  /** ФИКСИРОВАННЫЙ масштаб печати % (не fitToPage — ручные разрывы строк живут). */
+  printScale?: number;
   /** Скрытый лист (перечни для выпадашек). */
   hidden?: boolean;
   /** Выпадающие списки: ячейки sqref («K2:K9 K14») → имя именованного диапазона. */
@@ -242,8 +247,11 @@ function sheetXml(sheet: XlsxSheet, styleOf: StyleResolver): string {
     filter +
     merges +
     validations +
-    `<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.4" header="0.2" footer="0.2"/>` +
-    `<pageSetup paperSize="9" scale="100" orientation="${sheet.landscape === false ? 'portrait' : 'landscape'}"/>` +
+    // Узкие поля как в эталоне (0.197"); ФИКСИРОВАННЫЙ масштаб (не fitToPage — иначе
+    // Excel игнорирует ручные разрывы строк по отправителю). Вертикальная разбивка
+    // идёт по правой границе области печати (printArea) — т.е. после последней колонки.
+    `<pageMargins left="0.2" right="0.2" top="0.2" bottom="0.2" header="0" footer="0"/>` +
+    `<pageSetup paperSize="9" scale="${Math.round(sheet.printScale ?? 100)}" fitToHeight="0" orientation="${sheet.landscape === false ? 'portrait' : 'landscape'}"/>` +
     breaks +
     ((sheet.notes ?? []).length ? `<legacyDrawing r:id="rId2"/>` : '') +
     `</worksheet>`
@@ -384,11 +392,17 @@ export function makeXlsx(sheets: XlsxSheet[], opts?: XlsxBookOpts): Uint8Array {
     `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
     `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
     `</Relationships>`;
-  const definedNames = (opts?.definedNames ?? []).length
-    ? `<definedNames>${opts?.definedNames
-        ?.map((d) => `<definedName name="${xmlEsc(d.name)}">${xmlEsc(d.ref)}</definedName>`)
-        .join('')}</definedNames>`
-    : '';
+  // Область печати листа = локальное имя _xlnm.Print_Area (localSheetId); вместе с
+  // выпадашками-диапазонами идёт в один <definedNames>.
+  const printAreas = sheets
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => !!s.printArea)
+    .map(({ s, i }) => `<definedName name="_xlnm.Print_Area" localSheetId="${i}">'${s.name.replace(/'/g, "''")}'!${s.printArea}</definedName>`)
+    .join('');
+  const bookNames = (opts?.definedNames ?? [])
+    .map((d) => `<definedName name="${xmlEsc(d.name)}">${xmlEsc(d.ref)}</definedName>`)
+    .join('');
+  const definedNames = printAreas || bookNames ? `<definedNames>${printAreas}${bookNames}</definedNames>` : '';
   const workbook =
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +

@@ -46,6 +46,9 @@ export interface FlowDeliveryRow {
   off_schedule: number;
   /** «Справка» — места хранения с остатком (снимок на момент выгрузки). */
   stock_note: string;
+  /** Остаток СУС / ММ (Запас СУС/ММ из zm_vl) — колонки остатков в выгрузке Плана. */
+  stock_sus?: number | null;
+  stock_mm?: number | null;
   /** Кто/когда создал поставку в SAP (из zm_vl). */
   sap_created_by: string;
   sap_created_at: string;

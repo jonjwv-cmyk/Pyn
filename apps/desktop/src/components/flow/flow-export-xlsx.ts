@@ -1,20 +1,19 @@
 // ============================================================
-// flow-export-xlsx.ts — выгрузка Плана из ОТЧЁТА в .xlsx (юзер 2026-07-02/03).
+// flow-export-xlsx.ts — выгрузка Плана из ОТЧЁТА в .xlsx (юзер 2026-07-02/03/04).
 // ============================================================
-// По ЭТАЛОНУ «A. План экспедиции ….xlsm»: те же шрифты/жирность (Segoe UI 8-12), тонкие
-// сетки, жирная шапка с заливкой и АВТОФИЛЬТРОМ, закреплённая строка 1, форматы чисел,
-// разрыв страницы по смене склада-отправителя, сортировка APLAN. БЕЗ колонки «Дата» —
-// дата плана В ЗАГОЛОВКЕ «Материала» («Июль 3, 26г. Материал», на обоих листах).
-// Поставка+заказ — ОДНОЙ ячейкой в 2 строки: «поставка | поз» ЖИРНЫМ, ниже
-// «заказ | поз» обычным (колонка П/П больше не нужна). CLST — только ВЫЕЗД/КХП.
-// Показ сразу в СТРАНИЧНОМ режиме, масштаб 100% (иначе Excel игнорирует разрывы),
-// ширины — АВТОПОДГОНКА по содержимому (кроме wrap-колонок). Остатки в «Месте
-// хранения» — числа без SAP-точек (как Кол-во). Выпадашки: МОЛы склада-получателя
-// (с сотовым) и экспедиторы (роль в потоке) — через скрытый лист «Списки».
-// Примечание на материале — полное техническое наименование (база ВГХ).
-// Раскладка (колонки/заголовки/стили/порядок складов) — СЕРВЕРНАЯ (layout).
-// Имена: файл «План экспедиции на июль 3 2026.xlsx» / «Доп. 1 к плану экспедиции на …»;
-// листы «План» / «Доп. N» и «Места хранения».
+// По ЭТАЛОНУ «A. План экспедиции ….xlsm» (лист 📦ТМЦ). Ключевое (юзер 2026-07-04):
+//  • ОБЛАСТЬ ПЕЧАТИ = A1:<ID> → вертикальная пунктирная разбивка идёт ПО ПРАВОЙ границе
+//    после колонки ID (а не по центру); фиксированный масштаб печати (не fitToPage —
+//    ручные разрывы строк по отправителю живут), узкие поля 0.2" как в эталоне;
+//  • колонки ОСТАТКОВ (остаток СУС/ММ + места хранения) — ТУТ ЖЕ, ПОСЛЕ ID (вне области
+//    печати); ВТОРОГО листа «Места хранения» больше НЕТ;
+//  • колонка «Был» (pr) убрана;
+//  • МОЛ-выпадашка — ЧИСТО ФИО (без сотового); у Экспедитора выпадашки НЕТ;
+//  • «поставка | поз» ЖИРНЫМ 12, «заказ | поз» — МЕНЬШЕ (8, как КГ) той же ячейкой.
+// Дата плана — в заголовке «Материала» («Июль 3, 26г. Материал»). CLST — только
+// ВЫЕЗД/КХП. Примечание на материале — полное тех-наименование (база ВГХ). Раскладка
+// печатных колонок — СЕРВЕРНАЯ (layout). Имена: «План экспедиции на июль 3 2026.xlsx» /
+// «Доп. 1 к плану экспедиции на …»; один лист «План» / «Доп. N».
 
 import type { FlowXlsxLayout, FlowXlsxColumn } from '@pyn/core';
 import {
@@ -44,7 +43,9 @@ export interface PlanXlsxRow extends PlanSortable {
   exp: string;
   vehicleType: string;
   garage: string;
-  stockNote: string;
+  stockNote: string; // «PLACE(qty); PLACE2(qty2)» — места хранения с остатком
+  stockSus: number | null; // остаток СУС (Запас СУС из zm_vl)
+  stockMm: number | null; // остаток ММ (Запас ММ из zm_vl)
   matNote: string; // полное тех-наименование (база ВГХ) → примечание на материале
   /** Заливка строки ARGB (цвет машины по гаражному — кладовщикам «с цветом»). */
   fillArgb?: string;
@@ -106,7 +107,6 @@ const FALLBACK_LAYOUT: FlowXlsxLayout = {
       { id: 'request', head: 'Запросил', width: 13.5, style: 'text' },
       { id: 'fr', head: 'От', width: 7, style: 'bold12-r' },
       { id: 'to', head: 'СП', width: 6.5, style: 'bold12-r' },
-      { id: 'pr', head: 'Был', width: 8, style: 'text12-r' },
       { id: 'clst', head: 'CLST', width: 8.5, style: 'text12-r' },
       { id: 'dlvord', head: 'Поставка', width: 13.2, style: 'bold12-r-wrap' },
       { id: 'trz', head: 'ТЗ', width: 6, style: 'text-r' },
@@ -190,15 +190,42 @@ function stockNoteClean(s: string): string {
     .join('; ');
 }
 
-/** Поставка+заказ одной ячейкой (юзер 2026-07-03): «поставка | поз» ЖИРНЫМ,
- *  ниже «заказ | поз» обычным. */
+/** Разобрать stock_note «PLACE(qty); PLACE2(qty2)» → пары место/остаток (до 4). */
+function parseStockPairs(s: string): Array<{ place: string; qty: number | null }> {
+  if (!s.trim()) return [];
+  const out: Array<{ place: string; qty: number | null }> = [];
+  for (const part of s.split(';')) {
+    const p = part.trim();
+    if (!p) continue;
+    const m = /^(.*?)[\s(：:]*\(?([\d.,\s]+)\)?\s*$/.exec(p);
+    if (m && m[1]) out.push({ place: m[1].trim(), qty: zmNum(m[2] ?? '') });
+    else out.push({ place: p, qty: null });
+  }
+  return out.slice(0, 4);
+}
+
+/** Колонки СЕКЦИИ ОСТАТКОВ (после ID, ВНЕ области печати — юзер 2026-07-04): остаток
+ *  СУС/ММ + до 4 пар «Складское место»/«Остаток». Ширины — из эталона (лист 📦ТМЦ). */
+const STOCK_SECTION: Array<{ head: string; width: number; style: string; get: (r: PlanXlsxRow) => XlsxValue }> = [
+  { head: 'Остаток СУС', width: 13.7, style: 'num3', get: (r) => num(r.stockSus) },
+  { head: 'Остаток ММ', width: 13.9, style: 'num3', get: (r) => num(r.stockMm) },
+  ...[0, 1, 2, 3].flatMap((i) => [
+    { head: i === 0 ? 'Складское место' : `Складское место${i}`, width: i === 0 ? 16.6 : 17.9, style: 'text',
+      get: (r: PlanXlsxRow) => parseStockPairs(r.stockNote)[i]?.place ?? '' },
+    { head: i === 0 ? 'Мест хран' : `Запас СМ${i}`, width: 14.2, style: 'num3',
+      get: (r: PlanXlsxRow) => num(parseStockPairs(r.stockNote)[i]?.qty ?? null) },
+  ]),
+];
+
+/** Поставка+заказ одной ячейкой: «поставка | поз» ЖИРНЫМ 12, ниже «заказ | поз»
+ *  МЕНЬШЕ (8, как КГ — юзер 2026-07-04): поставка крупно, заказ компактно. */
 function dlvOrdCell(r: PlanXlsxRow): XlsxValue {
   const line1 = [r.dlv, r.dlv_pos].filter(Boolean).join(' | ');
   const line2 = [r.ord, r.ord_pos].filter(Boolean).join(' | ');
   if (!line1 && !line2) return '';
-  if (line1 && line2) return { rich: [{ t: line1, bold: true, sz: 12 }, { t: `\n${line2}`, sz: 12 }] };
+  if (line1 && line2) return { rich: [{ t: line1, bold: true, sz: 12 }, { t: `\n${line2}`, sz: 8 }] };
   if (line1) return { rich: [{ t: line1, bold: true, sz: 12 }] };
-  return { rich: [{ t: line2, sz: 12 }] };
+  return { rich: [{ t: line2, sz: 8 }] };
 }
 
 /** Значение колонки по её серверному id. */
@@ -295,10 +322,21 @@ function sqrefOf(colL: string, rowNums: number[]): string {
   return parts.join(' ');
 }
 
+/** Фикс-масштаб печати, чтобы печатные колонки (сумма ширин) влезли в ЛАНДШАФТ A4 по
+ *  ширине (одна страница), не трогая ручные разрывы строк. Ширина Excel-юнита ≈ 7px;
+ *  useful ≈ 11.29" при полях 0.2" → ~1084px @96dpi. Не увеличиваем (cap 100), пол 40. */
+function fitPrintScale(widths: number[]): number {
+  const totalPx = widths.reduce((s, w) => s + w * 7 + 5, 0);
+  if (totalPx <= 0) return 100;
+  const usablePx = 1084;
+  return Math.max(40, Math.min(100, Math.floor((usablePx / totalPx) * 100)));
+}
+
 /**
- * Собрать книгу: «План»/«Доп. N» + «Места хранения» (+ скрытые «Списки» выпадашек).
- * batch: 1=план, 2+=доп, 'all'=весь день. Раскладка серверная (layout, null → дефолт).
- * Сортировка APLAN здесь же. lists — живые МОЛы/экспедиторы для выпадашек.
+ * Собрать книгу: ОДИН лист «План»/«Доп. N» (печатные колонки A:ID + секция остатков
+ * после ID вне области печати) + скрытый лист «Списки» для выпадашек МОЛ. batch:
+ * 1=план, 2+=доп, 'all'=весь день. Раскладка печатных колонок серверная (layout).
+ * lists — живые МОЛы склада (ЧИСТО ФИО, без сотового); у экспедитора выпадашки НЕТ.
  */
 export function buildPlanXlsxSheets(
   dateIso: string,
@@ -311,29 +349,29 @@ export function buildPlanXlsxSheets(
   const rows = [...rowsIn].sort(makePlanEtalonCompare(lay.special_fr));
   const sheetName = batch !== 'all' && batch >= 2 ? `Доп. ${batch - 1}` : 'План';
 
-  // Лист 1: шапка строкой 1 (дата — в заголовке «Материала»), автофильтр, freeze,
-  // разрыв страницы по смене склада-отправителя, страничный режим 100%.
-  // Колонка П/П (dlv_pos) больше не нужна — позиция теперь в ячейке поставки.
-  const planCols = lay.plan.columns.filter((c) => c.id !== 'dlv_pos');
+  // Печатные колонки (без П/П и без «Был»); за ними — секция ОСТАТКОВ (вне печати).
+  const planCols = lay.plan.columns.filter((c) => c.id !== 'dlv_pos' && c.id !== 'pr');
   const matTpl = lay.plan.matHead && lay.plan.matHead.includes('{MONTH1}')
     ? lay.plan.matHead
-    : MAT_HEAD_DEFAULT; // старый серверный шаблон «{DD} {MONTH} …» → новый формат
+    : MAT_HEAD_DEFAULT;
   const matHead = matHeadOf(matTpl, dateIso);
-  const head = planCols.map((c) => (c.id === 'mat' ? matHead : c.head));
+  const head = [
+    ...planCols.map((c) => (c.id === 'mat' ? matHead : c.head)),
+    ...STOCK_SECTION.map((c) => c.head),
+  ];
   const sheetRows: XlsxValue[][] = [head];
   const breaks: number[] = [];
   const notes: Array<{ row: number; col: number; text: string }> = [];
-  const rowFills: Record<number, string> = {}; // цвет машины (кладовщикам «с цветом»)
+  const rowFills: Record<number, string> = {};
   const matIdx = planCols.findIndex((c) => c.id === 'mat');
   const molIdx = planCols.findIndex((c) => c.id === 'mol');
-  const expIdx = planCols.findIndex((c) => c.id === 'exp');
-  const molRowsByWh = new Map<string, number[]>(); // to_wh → 1-based строки листа
+  const molRowsByWh = new Map<string, number[]>();
   let prevFr: string | null = null;
   for (const r of rows) {
     if (prevFr !== null && r.fr !== prevFr) breaks.push(sheetRows.length);
     prevFr = r.fr;
-    sheetRows.push(planCols.map((c) => cellValue(r, c.id)));
-    const rowNum = sheetRows.length; // 1-based на листе
+    sheetRows.push([...planCols.map((c) => cellValue(r, c.id)), ...STOCK_SECTION.map((c) => c.get(r))]);
+    const rowNum = sheetRows.length; // 1-based
     if (r.fillArgb) rowFills[rowNum] = r.fillArgb;
     if (matIdx >= 0 && r.matNote.trim() && r.matNote.trim() !== r.mat.trim()) {
       notes.push({ row: rowNum - 1, col: matIdx, text: r.matNote.trim() });
@@ -345,41 +383,38 @@ export function buildPlanXlsxSheets(
     }
   }
 
-  // Выпадашки: списки уходят на скрытый лист «Списки», ячейки ссылаются через
-  // именованные диапазоны (инлайн-список Excel режет на 255 символах).
+  // Выпадашки: ТОЛЬКО МОЛ склада (чисто ФИО — список готовит компонент). Экспедитор —
+  // без выпадашки (юзер 2026-07-04). Диапазоны на скрытом листе «Списки».
   const definedNames: XlsxDefinedName[] = [];
   const listCols: string[][] = [];
   const dropdowns: Array<{ sqref: string; listName: string }> = [];
-  const addList = (name: string, header: string, items: string[]): void => {
-    const ci = listCols.length;
-    listCols.push([header, ...items]);
-    const L = colLetter(ci);
-    definedNames.push({ name, ref: `'Списки'!$${L}$2:$${L}$${items.length + 1}` });
-  };
-  if (lists && sheetRows.length > 1) {
-    const exp = lists.expeditors.filter(Boolean);
-    if (expIdx >= 0 && exp.length > 0) {
-      addList('_LEXP', 'Экспедиторы', exp);
-      dropdowns.push({ sqref: `${colLetter(expIdx)}2:${colLetter(expIdx)}${sheetRows.length}`, listName: '_LEXP' });
-    }
-    if (molIdx >= 0) {
-      let n = 0;
-      for (const [wh, rowNums] of molRowsByWh) {
-        const mols = (lists.molsByWh.get(wh) ?? []).filter(Boolean);
-        if (mols.length === 0) continue;
-        n += 1;
-        const name = `_LM${n}`;
-        addList(name, `МОЛ ${wh}`, mols);
-        dropdowns.push({ sqref: sqrefOf(colLetter(molIdx), rowNums), listName: name });
-      }
+  if (lists && molIdx >= 0 && sheetRows.length > 1) {
+    let n = 0;
+    for (const [wh, rowNums] of molRowsByWh) {
+      const mols = (lists.molsByWh.get(wh) ?? []).filter(Boolean);
+      if (mols.length === 0) continue;
+      n += 1;
+      const name = `_LM${n}`;
+      const ci = listCols.length;
+      listCols.push([`МОЛ ${wh}`, ...mols]);
+      const L = colLetter(ci);
+      definedNames.push({ name, ref: `'Списки'!$${L}$2:$${L}$${mols.length + 1}` });
+      dropdowns.push({ sqref: sqrefOf(colLetter(molIdx), rowNums), listName: name });
     }
   }
 
+  // Ширины: печатные — автоподгонка, секция остатков — фикс из эталона. Область печати
+  // = A1:<последняя ПЕЧАТНАЯ колонка> → вертикальная разбивка ПОСЛЕ ID. Масштаб фиксируем
+  // под ширину печатных колонок (ручные разрывы по отправителю живут — не fitToPage).
+  const planWidths = planCols.map((c, ci) =>
+    autoWidth(c, sheetRows.slice(1).map((r) => r[ci]), String(head[ci] ?? '')));
+  const colWidths = [...planWidths, ...STOCK_SECTION.map((c) => c.width)];
+  const lastPrintCol = colLetter(planCols.length - 1);
   const plan: XlsxSheet = {
     name: sheetName,
     rows: sheetRows,
-    colWidths: planCols.map((c, ci) => autoWidth(c, sheetRows.slice(1).map((r) => r[ci]), String(head[ci] ?? ''))),
-    colStyles: planCols.map(styleOf),
+    colWidths,
+    colStyles: [...planCols.map(styleOf), ...STOCK_SECTION.map((c) => XLSX_STYLE[c.style] ?? 0)],
     autoFilter: true,
     freezeTop: true,
     pageBreakView: true,
@@ -387,40 +422,11 @@ export function buildPlanXlsxSheets(
     dropdowns,
     notes,
     rowFills,
+    printArea: `$A$1:$${lastPrintCol}$${sheetRows.length}`,
+    printScale: fitPrintScale(planWidths),
   };
 
-  // Лист 2 «Места хранения»: только строки с местами; пустая строка между отправителями;
-  // заголовок «Материала» — тот же, с датой плана (юзер 2026-07-03).
-  const restCols = lay.rest.columns.filter((c) => c.id !== 'dlv_pos');
-  const restHead = restCols.map((c) => (c.id === 'mat' ? matHead : c.head));
-  const restRows: XlsxValue[][] = [restHead];
-  const restNotes: Array<{ row: number; col: number; text: string }> = [];
-  const restFills: Record<number, string> = {};
-  const restMatIdx = restCols.findIndex((c) => c.id === 'mat');
-  let prevFr2: string | null = null;
-  for (const r of rows) {
-    if (!r.stockNote.trim()) continue; // пустые места хранения убираем
-    if (prevFr2 !== null && r.fr !== prevFr2) restRows.push([]);
-    prevFr2 = r.fr;
-    restRows.push(restCols.map((c) => cellValue(r, c.id)));
-    if (r.fillArgb) restFills[restRows.length] = r.fillArgb;
-    if (restMatIdx >= 0 && r.matNote.trim() && r.matNote.trim() !== r.mat.trim()) {
-      restNotes.push({ row: restRows.length - 1, col: restMatIdx, text: r.matNote.trim() });
-    }
-  }
-  const rest: XlsxSheet = {
-    name: 'Места хранения',
-    rows: restRows,
-    colWidths: restCols.map((c, ci) => autoWidth(c, restRows.slice(1).map((r) => r[ci]), String(restHead[ci] ?? ''))),
-    colStyles: restCols.map(styleOf),
-    autoFilter: true,
-    freezeTop: true,
-    pageBreakView: true,
-    notes: restNotes,
-    rowFills: restFills,
-  };
-
-  const sheets: XlsxSheet[] = [plan, rest];
+  const sheets: XlsxSheet[] = [plan];
   if (listCols.length > 0) {
     const depth = Math.max(...listCols.map((c) => c.length));
     const listRows: XlsxValue[][] = [];

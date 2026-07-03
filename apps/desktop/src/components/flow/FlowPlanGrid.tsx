@@ -2338,6 +2338,8 @@ export function FlowPlanGrid({
           vehicleType: splitMultiCell(x.vehicle || '').join(', '),
           garage: splitMultiCell(x.ride_id || '').join(', '),
           stockNote: x.stock_note || '',
+          stockSus: x.stock_sus ?? null,
+          stockMm: x.stock_mm ?? null,
           matNote: (vgh?.tech_name || '').trim(),
           // Кладовщикам — «вместе с цветом» (юзер 2026-07-03): тон машины по гаражному.
           fillArgb: (() => {
@@ -2346,18 +2348,14 @@ export function FlowPlanGrid({
           })(),
         };
       });
-      // Выпадашки Excel (юзер 2026-07-03): МОЛы склада-получателя и экспедиторы
-      // (только роль в потоке) — с сотовым, формат телефона как раздел МОЛ.
-      const withPhone = (fio: string, phone: string): string => (phone ? `${fio}, ${phone}` : fio);
+      // Выпадашка МОЛ склада — ЧИСТО ФИО без сотового (юзер 2026-07-04). Экспедитор —
+      // без выпадашки вовсе.
       const molsByWh = new Map<string, string[]>();
       for (const x of dayRows) {
         if (molsByWh.has(x.to_wh)) continue;
-        molsByWh.set(x.to_wh, molsForWh(x.to_wh).map((o) => withPhone(compactFio(o.fio), o.phoneDisplay)));
+        molsByWh.set(x.to_wh, molsForWh(x.to_wh).map((o) => compactFio(o.fio)));
       }
-      const lists: PlanXlsxLists = {
-        expeditors: expeditorOptions.map((o) => withPhone(o.fio, o.phoneDisplay)),
-        molsByWh,
-      };
+      const lists: PlanXlsxLists = { expeditors: [], molsByWh };
       // Имена (юзер 2026-07-03): «План экспедиции на июль 3 2026.xlsx» /
       // «Доп. 1 к плану экспедиции на …» — по ЖИВОМУ рангу фиксации, не по сырому batch_seq.
       const nameBatch = typeof batch === 'number'
@@ -2367,7 +2365,7 @@ export function FlowPlanGrid({
       downloadXlsx(planXlsxFilename(selectedDay, nameBatch), book.sheets, { definedNames: book.definedNames });
       setMsg(`Выгружено в Excel: ${dayRows.length} строк`);
     },
-    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, molsForWh, expeditorOptions, fixLabelOf, batchRankByDate],
+    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, molsForWh, fixLabelOf, batchRankByDate],
   );
 
   // Пустая ручная строка «как в обычной таблице» (юзер 2026-07-03): клик по хвостовой
