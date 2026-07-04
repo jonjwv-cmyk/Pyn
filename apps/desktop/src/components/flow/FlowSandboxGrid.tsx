@@ -114,6 +114,7 @@ import {
   flowFilterText,
   formatApprovedDates,
   formatUploadDay,
+  formatUploadDayParts,
   buildActiveColumns,
   FLOW_INFO_COLUMNS,
   FLOW_INFO_IDS,
@@ -2207,9 +2208,19 @@ export function FlowSandboxGrid(): JSX.Element {
         };
       }
       if (FLOW_INFO_IDS.has(spec.id)) {
-        // §4 инфо-колонки (read-only): DAY выг. — форматированное время выгрузки;
-        // Дата ORD/ORD созд./TECH NAME — сырое поле строки. В печать/xlsx не идут.
-        const txt = spec.id === 'time_at' ? formatUploadDay(rowData.time_at) : String(raw ?? '');
+        // §4 инфо-колонки (read-only): DAY выг. — дата ЖИРНЫМ + время обычным (юзер
+        // 2026-07-04, составная ячейка); Дата ORD/ORD созд./TECH NAME — сырое поле
+        // строки. В печать/xlsx не идут.
+        if (spec.id === 'time_at') {
+          const p = formatUploadDayParts(rowData.time_at);
+          return {
+            kind: GridCellKind.Custom,
+            allowOverlay: false,
+            copyData: [p.date, p.time].filter(Boolean).join(' '),
+            data: { kind: 'flow-two', primary: p.date, secondary: p.time, bold: true },
+          } satisfies FlowTwoCell;
+        }
+        const txt = String(raw ?? '');
         return {
           kind: GridCellKind.Text,
           data: txt,

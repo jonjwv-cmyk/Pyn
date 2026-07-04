@@ -88,6 +88,9 @@ export interface XlsxSheet {
   rowStyles?: Record<number, number>;
   /** Объединённые диапазоны («A5:L5») — шапки машин. */
   merges?: string[];
+  /** Строки (1-based) с ЗАМЕТНОЙ верхней границей — разделители групп складов
+   *  в файле «Экспедиторам» (юзер 2026-07-04). */
+  rowTopBorders?: number[];
 }
 
 /** Именованный диапазон книги (для выпадашек): ref вида «'Списки'!$A$2:$A$9». */
@@ -166,10 +169,12 @@ const isEmpty = (v: XlsxValue): boolean =>
 const RUN_FONT = (sz: number, bold: boolean): string =>
   `${bold ? '<b/>' : ''}<sz val="${sz}"/><color rgb="FF111827"/><rFont val="Inter"/><family val="2"/><charset val="204"/>`;
 
-/** styleId ячейки с учётом стиля строки и заливки машины (клоны считает makeXlsx). */
-type StyleResolver = (base: number, fill: string) => number;
+/** styleId ячейки с учётом стиля строки, заливки машины и верхней границы-разделителя
+ *  (клоны считает makeXlsx). */
+type StyleResolver = (base: number, fill: string, topBorder: boolean) => number;
 
 function sheetXml(sheet: XlsxSheet, styleOf: StyleResolver): string {
+  const topSet = new Set(sheet.rowTopBorders ?? []);
   const styles = sheet.colStyles ?? [];
   const colsCount = Math.max(
     sheet.colWidths?.length ?? 0,
@@ -189,12 +194,13 @@ function sheetXml(sheet: XlsxSheet, styleOf: StyleResolver): string {
       if (row.every(isEmpty)) return `<row r="${r}"/>`;
       const fill = isHeader ? '' : sheet.rowFills?.[r] ?? '';
       const rowStyle = isHeader ? undefined : sheet.rowStyles?.[r];
+      const topBorder = !isHeader && topSet.has(r);
       const ht = sheet.rowHeights?.[r];
       const cells: string[] = [];
       for (let ci = 0; ci < colsCount; ci++) {
         const v = row[ci];
         const ref = `${colLetter(ci)}${r}`;
-        const s = isHeader ? 1 : styleOf(rowStyle ?? styles[ci] ?? 0, fill);
+        const s = isHeader ? 1 : styleOf(rowStyle ?? styles[ci] ?? 0, fill, topBorder);
         if (isEmpty(v)) {
           cells.push(`<c r="${ref}" s="${s}"/>`);
         } else if (typeof v === 'number' && Number.isFinite(v)) {
@@ -321,24 +327,29 @@ const BASE_XFS: Array<{ nf: number; f: number; h: 'left' | 'right'; wrap: boolea
   { nf: 0, f: 5, h: 'left', wrap: false },          // 11 bold10
   { nf: 0, f: 5, h: 'left', wrap: true },           // 12 mhead (шапка машины: 10 bold wrap)
   { nf: 0, f: 6, h: 'left', wrap: false },          // 13 text8 (хвост плана после ID)
-  { nf: 0, f: 6, h: 'right', wrap: false },         // 14 num8 (остатки хвоста, формат общий)
-  { nf: 0, f: 6, h: 'left', wrap: true },           // 15 wrap8 (Экспедитор — 8 НЕжирный)
+  { nf: 164, f: 6, h: 'right', wrap: false },       // 14 num8 (остатки хвоста, 3 знака — юзер 2026-07-04)
+  { nf: 0, f: 6, h: 'left', wrap: true },           // 15 wrap8 (Экспедитор / поставка+заказ хвоста)
 ];
 
-/** Клоны базовых стилей с заливкой строки (цвет машины): '<base>|<argb>' → новый styleId. */
-function stylesXml(clones: Array<{ base: number; argb: string }>): string {
+/** Клоны базовых стилей: заливка строки (цвет машины/ручная) и/или верхняя граница-
+ *  разделитель — '<base>|<argb>|<top>' → новый styleId. */
+function stylesXml(clones: Array<{ base: number; argb: string; top: boolean }>): string {
   const fonts = [FONT(10, false), FONT(11, true), FONT(12, false), FONT(12, true), FONT(8, true), FONT(10, true), FONT(8, false)];
-  const xf = (p: { nf: number; f: number; h: 'left' | 'right'; wrap: boolean; fill?: number }): string =>
-    `<xf numFmtId="${p.nf}" fontId="${p.f}" fillId="${p.fill ?? 0}" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"${p.fill ? ' applyFill="1"' : ''} applyAlignment="1">` +
+  const xf = (p: { nf: number; f: number; h: 'left' | 'right'; wrap: boolean; fill?: number; border?: number }): string =>
+    `<xf numFmtId="${p.nf}" fontId="${p.f}" fillId="${p.fill ?? 0}" borderId="${p.border ?? 1}" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"${p.fill ? ' applyFill="1"' : ''} applyAlignment="1">` +
     `<alignment horizontal="${p.h}" vertical="center"${p.wrap ? ' wrapText="1"' : ''}/></xf>`;
-  const argbs = [...new Set(clones.map((c) => c.argb))];
+  const argbs = [...new Set(clones.map((c) => c.argb).filter(Boolean))];
   const fillIdOf = new Map(argbs.map((a, i) => [a, 3 + i] as const));
   const extraFills = argbs
     .map((a) => `<fill><patternFill patternType="solid"><fgColor rgb="${a}"/><bgColor indexed="64"/></patternFill></fill>`)
     .join('');
   const cellXfs = [
     ...BASE_XFS.map(xf),
-    ...clones.map((c) => xf({ ...(BASE_XFS[c.base] ?? BASE_XFS[0]!), fill: fillIdOf.get(c.argb) ?? 0 })),
+    ...clones.map((c) => xf({
+      ...(BASE_XFS[c.base] ?? BASE_XFS[0]!),
+      fill: c.argb ? fillIdOf.get(c.argb) ?? 0 : 0,
+      border: c.top ? 2 : 1,
+    })),
   ].join('');
   return (
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
@@ -347,9 +358,12 @@ function stylesXml(clones: Array<{ base: number; argb: string }>): string {
     `<fonts count="${fonts.length}">${fonts.join('')}</fonts>` +
     `<fills count="${3 + argbs.length}"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>` +
     `<fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/><bgColor indexed="64"/></patternFill></fill>${extraFills}</fills>` +
-    `<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>` +
+    // border 2 — разделитель групп складов: заметная (medium) верхняя граница.
+    `<borders count="3"><border><left/><right/><top/><bottom/><diagonal/></border>` +
     `<border><left style="thin"><color rgb="FFD1D5DB"/></left><right style="thin"><color rgb="FFD1D5DB"/></right>` +
-    `<top style="thin"><color rgb="FFD1D5DB"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border></borders>` +
+    `<top style="thin"><color rgb="FFD1D5DB"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border>` +
+    `<border><left style="thin"><color rgb="FFD1D5DB"/></left><right style="thin"><color rgb="FFD1D5DB"/></right>` +
+    `<top style="medium"><color rgb="FF8A8F98"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border></borders>` +
     `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
     `<cellXfs count="${BASE_XFS.length + clones.length}">${cellXfs}</cellXfs>` +
     `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
@@ -361,28 +375,37 @@ function stylesXml(clones: Array<{ base: number; argb: string }>): string {
 export function makeXlsx(sheets: XlsxSheet[], opts?: XlsxBookOpts): Uint8Array {
   const enc = new TextEncoder();
   const withNotes = sheets.map((s, i) => ({ s, i })).filter(({ s }) => (s.notes ?? []).length > 0);
-  // Клоны стилей под заливку строк (цвет машины): собираем реально используемые пары
-  // (базовый стиль × цвет) по всем листам → styleId выдаёт styleOf.
+  // Клоны стилей под заливку строк (цвет машины/ручная) и верхние границы-разделители:
+  // собираем реально используемые комбинации (базовый стиль × цвет × граница) по всем
+  // листам → styleId выдаёт styleOf.
   const cloneId = new Map<string, number>();
-  const clones: Array<{ base: number; argb: string }> = [];
+  const clones: Array<{ base: number; argb: string; top: boolean }> = [];
   for (const s of sheets) {
-    if (!s.rowFills) continue;
+    const tops = new Set(s.rowTopBorders ?? []);
+    if (!s.rowFills && tops.size === 0) continue;
     const styles = s.colStyles ?? [];
     const colsCount = Math.max(s.colWidths?.length ?? 0, styles.length, ...s.rows.map((r) => r.length), 1);
-    for (const [rowStr, argb] of Object.entries(s.rowFills)) {
-      if (!argb) continue;
-      const rowStyle = s.rowStyles?.[Number(rowStr)];
+    const rowNums = new Set<number>([
+      ...Object.keys(s.rowFills ?? {}).map(Number),
+      ...tops,
+    ]);
+    for (const rowNum of rowNums) {
+      const argb = s.rowFills?.[rowNum] ?? '';
+      const top = tops.has(rowNum);
+      if (!argb && !top) continue;
+      const rowStyle = s.rowStyles?.[rowNum];
       for (let ci = 0; ci < colsCount; ci++) {
         const base = rowStyle ?? styles[ci] ?? 0;
-        const key = `${base}|${argb}`;
+        const key = `${base}|${argb}|${top ? 1 : 0}`;
         if (!cloneId.has(key)) {
           cloneId.set(key, BASE_XFS.length + clones.length);
-          clones.push({ base, argb });
+          clones.push({ base, argb, top });
         }
       }
     }
   }
-  const styleOf: StyleResolver = (base, fill) => (fill ? cloneId.get(`${base}|${fill}`) ?? base : base);
+  const styleOf: StyleResolver = (base, fill, top) =>
+    (fill || top ? cloneId.get(`${base}|${fill}|${top ? 1 : 0}`) ?? base : base);
   const contentTypes =
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +

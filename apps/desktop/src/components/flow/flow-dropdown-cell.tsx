@@ -74,23 +74,26 @@ function FlowMultiEditor({
         </div>
       </div>
       <div className="flex min-h-0 flex-col overflow-y-auto">
-        {options.map((o) => {
-          const selected = picked.includes(o);
-          return (
-            <button
-              type="button"
-              key={o}
-              onClick={() => toggle(o)}
-              className={cn(
-                'flex w-full shrink-0 items-center gap-2 rounded px-2 py-1 text-left text-[12px] transition-colors',
-                selected ? 'bg-accent-clay/25 text-text-strong' : 'text-text-primary hover:bg-accent-clay/20',
-              )}
-            >
-              <span className={cn('inline-block h-3 w-3 shrink-0 rounded-sm border', selected ? 'border-accent-clay bg-accent-clay/70' : 'border-white/25')} />
-              {o}
-            </button>
-          );
-        })}
+        {/* Без галочек (юзер 2026-07-04): как у МОЛ — выбранные ВВЕРХУ списка и подсвечены,
+            клик выбирает, повторный клик снимает. */}
+        {[...options]
+          .sort((a, b) => (picked.includes(b) ? 1 : 0) - (picked.includes(a) ? 1 : 0))
+          .map((o) => {
+            const selected = picked.includes(o);
+            return (
+              <button
+                type="button"
+                key={o}
+                onClick={() => toggle(o)}
+                className={cn(
+                  'flex w-full shrink-0 items-center gap-2 rounded px-2 py-1 text-left text-[12px] transition-colors',
+                  selected ? 'bg-accent-clay/25 text-text-strong' : 'text-text-primary hover:bg-accent-clay/20',
+                )}
+              >
+                {o}
+              </button>
+            );
+          })}
       </div>
     </div>
   );

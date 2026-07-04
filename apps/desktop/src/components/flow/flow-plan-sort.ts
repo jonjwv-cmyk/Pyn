@@ -52,6 +52,17 @@ export function planSortKeyClst(raw: string): string {
   return `3|${v}`;
 }
 
+/** База Т-ПАРЫ склада (юзер 2026-07-04: «825Т и 8025 — ОДИН склад, не разделяем»):
+ *  806М/806Т→8006, 821Т→8021, 823Т→8023, 824Т→8024, 825Т→8025; прочие — как есть.
+ *  Для разделительных линий групп в файле «Экспедиторам». */
+export function whPairBase(raw: string): string {
+  const v = normalizeRusLat(raw);
+  const pairs: Record<string, string> = {
+    '806М': '8006', '806Т': '8006', '821Т': '8021', '823Т': '8023', '824Т': '8024', '825Т': '8025',
+  };
+  return pairs[v] ?? v;
+}
+
 /** Ключ ПОЛУЧАТЕЛЯ (BuildKeyD): пустые вперёд; Т-пары перед базовым складом. */
 export function planSortKeyTo(raw: string): string {
   const v = normalizeRusLat(raw);

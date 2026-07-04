@@ -202,16 +202,10 @@ function FlowDriverEditor({
                   selected ? 'border-accent-clay/40 bg-accent-clay/15' : 'border-white/[0.06] bg-white/[0.02] hover:bg-accent-clay/10',
                 )}
               >
+                {/* Без галочек (юзер 2026-07-04): выбор как у МОЛ — клик выбирает (пункт
+                    подсвечен и уходит вверх списка), повторный клик снимает. */}
                 <button type="button" onClick={() => pick(o)} className="block w-full text-left">
                   <span className="flex items-center gap-1.5 text-[12px] font-medium leading-snug" style={{ color: o.color || undefined }}>
-                    {multi && (
-                      <span className={cn(
-                        'flex h-3.5 w-3.5 items-center justify-center rounded border text-[9px]',
-                        selected ? 'border-accent-clay bg-accent-clay text-white' : 'border-white/[0.18] text-transparent',
-                      )}>
-                        ✓
-                      </span>
-                    )}
                     <span>{o.fio}</span>
                   </span>
                   {o.position && (
@@ -315,7 +309,7 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
     ctx.textBaseline = 'middle';
     if (Array.isArray(selectedDrivers)) {
       const names = selectedDrivers.length > 0 ? selectedDrivers : splitDriverNames(driver);
-      const shown = names.slice(0, 3);
+      const shown = names.slice(0, 5);
       const byName = new Map(cell.data.drivers.map((d) => [driverNameKey(d.fio), d] as const));
       // Каждый экспедитор — ПИЛЛ статуса (цвет) + телефон ниже, чётко отделены (юзер: «как мол,
       // пилл статуса и телефон, корректно отделены»). Слот на каждого ≈ высота/кол-во.

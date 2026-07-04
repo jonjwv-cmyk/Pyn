@@ -24,7 +24,7 @@ import {
 } from '@/lib/xlsx-lite';
 import {
   makePlanEtalonCompare, normalizeRusLat, planSortKeyFr, planSortKeyClst, planSortKeyTo,
-  type PlanSortable,
+  whPairBase, type PlanSortable,
 } from './flow-plan-sort';
 
 /** Подготовленная строка выгрузки (компонент собирает из строки отчёта + справочников). */
@@ -75,8 +75,8 @@ export interface PlanXlsxBook {
 const MONTHS_NOM = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
   'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
 
-/** Дата в имени файла — с запятой после дня (юзер 2026-07-04): «июль 6, 2026». */
-function fileDateRu(dateIso: string): string {
+/** Дата в имени файла/титуле — с запятой после дня (юзер 2026-07-04): «июль 6, 2026». */
+export function fileDateRu(dateIso: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
   return m
     ? `${MONTHS_NOM[parseInt(m[2] ?? '1', 10) - 1] ?? ''} ${parseInt(m[3] ?? '1', 10)}, ${m[1]}`
@@ -214,6 +214,9 @@ const TAIL_SECTION: Array<{
   { head: 'АВТОР', width: 10.7, style: 'text8', get: (r) => r.sapAuthor },
   { head: 'ДАТА', width: 9.7, style: 'text8', get: (r) => r.sapDate },
   { head: 'ВРЕМЯ', width: 10, style: 'text8', get: (r) => r.sapTime },
+  // Чистые номера БЕЗ позиций (юзер 2026-07-04): скопировать ячейку → вставить в SAP
+  // (там нужен просто номер поставки или заказа).
+  { head: 'Поставка/Заказ', width: 12.5, style: 'wrap8', get: (r) => [r.dlv, r.ord].filter(Boolean).join('\n') },
   { head: 'ОСТАТ', width: 10.6, style: 'num8', get: (r) => num(r.ostat) },
   { head: 'Запас ММ', width: 13.9, style: 'num8', get: (r) => num(r.stockMm) },
   { head: 'Запас СУС', width: 13.7, style: 'num8', get: (r) => num(r.stockSus) },
@@ -292,7 +295,7 @@ const ruFixed = (n: number, dec: number): string =>
 function cellChars(v: XlsxValue, styleName: string): number {
   if (v == null || v === '') return 0;
   if (typeof v === 'number') {
-    const dec = styleName === 'num3' ? 3 : styleName === 'kgv' ? 2 : 0;
+    const dec = styleName === 'num3' || styleName === 'num8' ? 3 : styleName === 'kgv' ? 2 : 0;
     return ruFixed(v, dec).length;
   }
   const text = typeof v === 'object' ? v.rich.map((r) => r.t).join('') : String(v);
@@ -301,7 +304,7 @@ function cellChars(v: XlsxValue, styleName: string): number {
   return max;
 }
 
-function autoWidth(col: FlowXlsxColumn, values: XlsxValue[], headText: string): number {
+function autoWidth(col: FlowXlsxColumn, values: XlsxValue[], headText: string, opts?: { compactHead?: boolean }): number {
   const styleName = styleNameOf(col);
   if (KEEP_WRAP.has(styleName)) return col.width;
   const f = STYLE_FONT[styleName] ?? { sz: 10, bold: false };
@@ -310,8 +313,9 @@ function autoWidth(col: FlowXlsxColumn, values: XlsxValue[], headText: string): 
   for (const v of values) chars = Math.max(chars, cellChars(v, styleName));
   const dataW = chars * factor + 1.8;
   // Шапка 11 bold + стрелка автофильтра: значок ~2 юнита, иначе перекрывает название
-  // короткой колонки (юзер 2026-07-04 — «ЕИ»/«V» и т.п.).
-  const headW = headText.length * 1.1 * 1.06 + 4.6;
+  // короткой колонки (юзер 2026-07-04 — «ЕИ»/«V» и т.п.). compactHead — файл
+  // «Экспедиторам»: печать компактнее, значок МОЖЕТ наезжать на заголовок.
+  const headW = headText.length * 1.1 * 1.06 + (opts?.compactHead ? 1.5 : 4.6);
   return Math.min(Math.round(Math.max(dataW, headW, 5) * 10) / 10, 60);
 }
 
@@ -496,7 +500,8 @@ const EXPED_COLS: FlowXlsxColumn[] = [
   { id: 'fr', head: 'От', width: 7, style: 'bold12-r' },
   { id: 'to', head: 'СП', width: 6.5, style: 'bold12-r' },
   { id: 'clst', head: 'CLST', width: 8.5, style: 'text12-r' },
-  { id: 'dlv', head: 'Поставка', width: 13.2, style: 'bold12-r-wrap' },
+  // Поставки — просто НОМЕРА без позиций, шрифт 10 (юзер 2026-07-04).
+  { id: 'dlv', head: 'Поставка', width: 11, style: 'wrap10' },
   { id: 'mol', head: 'МОЛ', width: 23.2, style: 'mol' },
   { id: 'no_num', head: 'Ном №', width: 11.6, style: 'text12-r' },
   { id: 'mat', head: 'Материал', width: 50.7, style: 'wrap12' },
@@ -507,18 +512,39 @@ const EXPED_COLS: FlowXlsxColumn[] = [
   { id: 'note', head: 'Комментарий', width: 21.6, style: 'mol' },
 ];
 
-/** Собрать книгу «Экспедиторам»: группы-машины, схлопывание, разрывы по машине. */
-export function buildExpedXlsxBook(
-  dateIso: string,
-  rowsIn: ExpedXlsxRow[],
-  layout?: FlowXlsxLayout | null,
-): PlanXlsxBook {
-  const lay = layout ?? FALLBACK_LAYOUT;
-  const matHead = matHeadOf(
-    lay.plan.matHead && lay.plan.matHead.includes('{MONTH1}') ? lay.plan.matHead : MAT_HEAD_DEFAULT,
-    dateIso,
-  );
+/** Схлопнутый пункт машины (общая модель xlsx-файла и ПЕЧАТИ «Экспедиторам»). */
+export interface ExpedGroupItem {
+  fr: string;
+  to_wh: string;
+  clst: string;
+  /** Номера поставок БЕЗ позиций (юзер 2026-07-04), уникальные. */
+  dlvs: string[];
+  mol: string;
+  no_num: string;
+  mat: string;
+  matNote: string;
+  uom: string;
+  qty: number | null;
+  kg: number | null;
+  v: number | null;
+  note: string;
+  /** Разделительная линия НАД пунктом: смена группы (отправитель, получатель);
+   *  Т-пары (825Т=8025, 824Т=8024, 823Т=8023, 806Т/806М=8006) — один склад. */
+  topBorder: boolean;
+}
+/** Машина с пунктами (страница печати / блок xlsx с разрывом). */
+export interface ExpedGroup {
+  garage: string;
+  vehicleType: string;
+  expeditors: string;
+  fillArgb: string;
+  frList: string;
+  toList: string;
+  items: ExpedGroupItem[];
+}
 
+/** Раскидка по машинам + схлопывание — общая для xlsx и печати «Экспедиторам». */
+export function buildExpedGroups(rowsIn: ExpedXlsxRow[]): ExpedGroup[] {
   // 1) Группы по машине (гаражный №, натуральный порядок; «без машины» — в конец).
   const byGarage = new Map<string, ExpedXlsxRow[]>();
   for (const r of rowsIn) {
@@ -545,17 +571,7 @@ export function buildExpedXlsxBook(
     a.r.mat.localeCompare(b.r.mat, 'ru') ||
     (Number(a.qty ?? 0) - Number(b.qty ?? 0));
 
-  const head = EXPED_COLS.map((c) => (c.id === 'mat' ? matHead : c.head));
-  const sheetRows: XlsxValue[][] = [head];
-  const merges: string[] = [];
-  const breaks: number[] = [];
-  const rowStyles: Record<number, number> = {};
-  const rowHeights: Record<number, number> = {};
-  const rowFills: Record<number, string> = {};
-  const notes: Array<{ row: number; col: number; text: string }> = [];
-  const matIdx = EXPED_COLS.findIndex((c) => c.id === 'mat');
-  const lastCol = colLetter(EXPED_COLS.length - 1);
-
+  const out: ExpedGroup[] = [];
   for (const g of garages) {
     const src = byGarage.get(g) ?? [];
     const grouped = new Map<string, Grp>();
@@ -563,7 +579,8 @@ export function buildExpedXlsxBook(
       const key = [r.fr, r.to_wh, r.mol ? '0' : '1', r.mol, r.no_num, uomCanon(r.uom), r.mat, r.note.trim()]
         .map((s) => String(s).trim().toUpperCase())
         .join('|');
-      const dlvLine = [r.dlv, r.dlv_pos].filter(Boolean).join(' | ');
+      // Просто номер поставки БЕЗ позиции (юзер 2026-07-04) — дубли схлопнутся Set-логикой.
+      const dlvLine = r.dlv;
       const cur = grouped.get(key);
       if (!cur) {
         grouped.set(key, {
@@ -582,50 +599,104 @@ export function buildExpedXlsxBook(
     }
     const items = [...grouped.values()].sort(cmp);
     if (items.length === 0) continue;
-
-    // Шапка машины: «гр. № …  машина  экспедиторы» + уникальные От/СП группы.
     const first = items[0]?.r;
     const uniq = (vals: string[]): string => [...new Set(vals.filter(Boolean))].join(' | ');
-    const line1 = g
-      ? ['гр. №', g, first?.vehicleType || '', first?.expeditors || ''].filter(Boolean).join('   ')
+    let prevGrpKey: string | null = null;
+    out.push({
+      garage: g,
+      vehicleType: first?.vehicleType || '',
+      expeditors: first?.expeditors || '',
+      fillArgb: g ? first?.fillArgb || '' : '',
+      frList: uniq(items.map((x) => x.r.fr)),
+      toList: uniq(items.map((x) => x.r.to_wh)),
+      items: items.map((it) => {
+        const grpKey = `${whPairBase(it.r.fr)}|${whPairBase(it.r.to_wh)}`;
+        const topBorder = prevGrpKey !== null && grpKey !== prevGrpKey;
+        prevGrpKey = grpKey;
+        return {
+          fr: it.r.fr, to_wh: it.r.to_wh, clst: it.r.clst, dlvs: it.dlvs,
+          mol: it.r.mol, no_num: it.r.no_num, mat: it.r.mat, matNote: it.r.matNote.trim(),
+          uom: it.r.uom, qty: it.qty, kg: it.kg, v: it.v, note: it.r.note, topBorder,
+        };
+      }),
+    });
+  }
+  return out;
+}
+
+/** Собрать книгу «Экспедиторам»: группы-машины, схлопывание, разрывы по машине. */
+export function buildExpedXlsxBook(
+  dateIso: string,
+  rowsIn: ExpedXlsxRow[],
+  layout?: FlowXlsxLayout | null,
+): PlanXlsxBook {
+  const lay = layout ?? FALLBACK_LAYOUT;
+  const matHead = matHeadOf(
+    lay.plan.matHead && lay.plan.matHead.includes('{MONTH1}') ? lay.plan.matHead : MAT_HEAD_DEFAULT,
+    dateIso,
+  );
+  const groups = buildExpedGroups(rowsIn);
+
+  const head = EXPED_COLS.map((c) => (c.id === 'mat' ? matHead : c.head));
+  const sheetRows: XlsxValue[][] = [head];
+  const merges: string[] = [];
+  const breaks: number[] = [];
+  const topBorders: number[] = []; // разделители групп (отправитель, получатель)
+  const rowStyles: Record<number, number> = {};
+  const rowHeights: Record<number, number> = {};
+  const rowFills: Record<number, string> = {};
+  const notes: Array<{ row: number; col: number; text: string }> = [];
+  const matIdx = EXPED_COLS.findIndex((c) => c.id === 'mat');
+  const lastCol = colLetter(EXPED_COLS.length - 1);
+
+  for (const grp of groups) {
+    // Шапка машины: «гр. № …  машина  экспедиторы» + уникальные От/СП группы.
+    const line1 = grp.garage
+      ? ['гр. №', grp.garage, grp.vehicleType, grp.expeditors].filter(Boolean).join('   ')
       : 'Без машины';
-    const headText = `${line1}\nОт: ${uniq(items.map((x) => x.r.fr))}\nСП: ${uniq(items.map((x) => x.r.to_wh))}`;
+    const headText = `${line1}\nОт: ${grp.frList}\nСП: ${grp.toList}`;
     if (sheetRows.length > 1) breaks.push(sheetRows.length); // разрыв ПЕРЕД шапкой машины
     sheetRows.push([headText]);
     const hr = sheetRows.length; // 1-based
     merges.push(`A${hr}:${lastCol}${hr}`);
     rowStyles[hr] = XLSX_STYLE.mhead ?? 12;
     rowHeights[hr] = 45;
-    if (g && first?.fillArgb) rowFills[hr] = first.fillArgb;
+    if (grp.fillArgb) rowFills[hr] = grp.fillArgb;
 
-    for (const it of items) {
-      const r = it.r;
+    for (const it of grp.items) {
       sheetRows.push([
-        r.fr,
-        r.to_wh,
-        r.clst,
+        it.fr,
+        it.to_wh,
+        it.clst,
         it.dlvs.join('\n'),
-        r.mol,
-        r.no_num,
-        r.mat,
-        r.uom,
+        it.mol,
+        it.no_num,
+        it.mat,
+        it.uom,
         num(it.qty),
         it.kg != null && it.kg !== 0 ? num(it.kg) : '',
         it.v != null && it.v !== 0 ? num(it.v) : '',
-        r.note,
+        it.note,
       ]);
-      if (matIdx >= 0 && r.matNote.trim() && r.matNote.trim() !== r.mat.trim()) {
-        notes.push({ row: sheetRows.length - 1, col: matIdx, text: r.matNote.trim() });
+      if (it.topBorder) topBorders.push(sheetRows.length);
+      if (matIdx >= 0 && it.matNote && it.matNote !== it.mat.trim()) {
+        notes.push({ row: sheetRows.length - 1, col: matIdx, text: it.matNote });
       }
     }
   }
 
   const dataRows = sheetRows.filter((_, i) => i > 0 && rowStyles[i + 1] == null);
+  // Компактные ширины (файл для ПЕЧАТИ): значок автофильтра может наезжать на заголовок.
+  // Область печати до последней колонки — вертикальная пунктирная разбивка по её правой
+  // границе; фикс-масштаб под ширину колонок (разрывы по машинам живут).
+  const colWidths = EXPED_COLS.map((c, ci) =>
+    autoWidth(c, dataRows.map((r) => r[ci]), String(head[ci] ?? ''), { compactHead: true }));
   const sheet: XlsxSheet = {
     name: 'Экспедиторам',
     rows: sheetRows,
-    colWidths: EXPED_COLS.map((c, ci) => autoWidth(c, dataRows.map((r) => r[ci]), String(head[ci] ?? ''))),
+    colWidths,
     colStyles: EXPED_COLS.map(styleOf),
+    autoFilter: true,
     freezeTop: true,
     pageBreakView: true,
     rowBreaks: breaks,
@@ -633,7 +704,10 @@ export function buildExpedXlsxBook(
     rowStyles,
     rowHeights,
     rowFills,
+    rowTopBorders: topBorders,
     notes,
+    printArea: `$A$1:$${lastCol}$${sheetRows.length}`,
+    printScale: fitPrintScale(colWidths),
   };
   return { sheets: [sheet], definedNames: [] };
 }

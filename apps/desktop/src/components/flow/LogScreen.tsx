@@ -282,6 +282,15 @@ export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Ele
                           )}
                         </span>
                       )}
+                      {/* Разбивка дельты (юзер 2026-07-04: «строк 257, а в логе +199» —
+                          +199 это ИТОГ: новые минус удалённые; показываем слагаемые). */}
+                      {(r.inserted > 0 || r.deleted > 0 || r.updated > 0) && (
+                        <span className="text-[11.5px] tabular-nums text-text-secondary">
+                          {r.inserted > 0 && <span className="text-emerald-600">+{r.inserted} нов</span>}
+                          {r.deleted > 0 && <span>{r.inserted > 0 ? ' · ' : ''}<span className="text-rose-600">−{r.deleted} удал</span></span>}
+                          {r.updated > 0 && <span>{r.inserted > 0 || r.deleted > 0 ? ' · ' : ''}{r.updated} правок</span>}
+                        </span>
+                      )}
                       {r.staging_upserted > 0 && (
                         <span className="text-[11.5px] text-text-secondary">ВГХ +{r.staging_upserted}</span>
                       )}

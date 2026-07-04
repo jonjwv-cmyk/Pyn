@@ -53,6 +53,9 @@ export interface FlowDeliveryRow {
   stock_cs?: number | null;
   spp_cs?: number | null;
   stock_place?: string;
+  /** Ручная пастельная заливка строки «RRGGBB» (раскидка по машинам, юзер 2026-07-04);
+   *  '' — нет. Идёт и в xlsx-выгрузку (приоритет над цветом машины по гаражному). */
+  row_fill?: string;
   /** Кто/когда создал поставку в SAP (из zm_vl). */
   sap_created_by: string;
   sap_created_at: string;

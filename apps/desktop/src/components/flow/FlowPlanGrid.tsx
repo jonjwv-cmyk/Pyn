@@ -20,13 +20,16 @@ import { planEtalonCompare } from './flow-plan-sort';
 import { garageRowColor, garageFillArgb } from './flow-garage-color';
 import {
   buildPlanXlsxSheets, planXlsxFilename, buildExpedXlsxBook, expedXlsxFilename,
+  buildExpedGroups, fileDateRu, type ExpedGroup,
   type PlanXlsxRow, type PlanXlsxLists, type ExpedXlsxRow,
 } from './flow-export-xlsx';
 import { downloadXlsx } from '@/lib/xlsx-lite';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
+import { flowTwoToneRenderer, type FlowTwoCell } from './flow-composed-cells';
 import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
 import { FlowAnchorHistoryCard, type FlowAnchorHistoryTarget } from './FlowAnchorHistoryCard';
+import { FlowExpedPrint } from './FlowExpedPrint';
 import { VghEditCard } from '@/components/vgh/VghEditCard';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { flowVehicleRenderer, type FlowVehicleCell, type FlowVehicleOption } from './flow-vehicle-cell';
@@ -80,7 +83,7 @@ import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-form
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import {
   fmtNum3, MONTH_ABBR_RU, parseMol, compactFio, matCardLines, needsWarn,
-  nearestGraphDate, graphDayLabel, graphDateSoon, todayIsoLocal, formatUploadDay,
+  nearestGraphDate, graphDayLabel, graphDateSoon, todayIsoLocal, formatUploadDay, formatUploadDayParts,
 } from './flow-sandbox.fixtures';
 // CSV-экспорт (flow-export) убран (юзер 2026-07-03) — только «План .xlsx» из Отчёта.
 
@@ -227,7 +230,7 @@ function decodeStatus(opt: string): { done_stat: string; fail_reason: string } {
   return { done_stat: 'не увезли', fail_reason: REASON_CANON[opt] ?? opt }; // выбрана причина
 }
 
-const PLAN_RENDERERS = [flowDropdownRenderer, flowMolRenderer, flowMatRenderer, flowHistoryRenderer, flowDriverRenderer, flowVehicleRenderer, flowDayRenderer];
+const PLAN_RENDERERS = [flowDropdownRenderer, flowMolRenderer, flowMatRenderer, flowHistoryRenderer, flowDriverRenderer, flowVehicleRenderer, flowDayRenderer, flowTwoToneRenderer];
 
 /** Дата плана YYYY-MM-DD → «12 июня» (короткий показ в колонке). */
 function fmtPlanDate(s: string): string {
@@ -1479,6 +1482,16 @@ export function FlowPlanGrid({
         };
         return cell;
       }
+      if (spec.id === 'time_at') {
+        // DAY выг.: дата ЖИРНЫМ + время обычным (юзер 2026-07-04) — составная ячейка.
+        const p = formatUploadDayParts(anchorByKey.get(`${r.ord}|${r.it}`)?.time_at ?? '');
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: false,
+          copyData: [p.date, p.time].filter(Boolean).join(' '),
+          data: { kind: 'flow-two', primary: p.date, secondary: p.time, bold: true },
+        } satisfies FlowTwoCell;
+      }
       if (spec.id === 'mat' && !isFreeEditRow(r)) {
         // MAT-карточка (read-only) — те же данные, что в Формировании: Создал/Выгружен/Удалён/
         // Вывезено%/тех-имя. Источник — ЯКОРЬ (живой расчёт; до фиксации пересчёт виден везде).
@@ -1550,7 +1563,7 @@ export function FlowPlanGrid({
             emptySearchLabel: 'Не найдено среди экспедиторов',
             showPhoneInCell: false,
             selectedDrivers: names,
-            maxSelected: 3,
+            maxSelected: 5, // юзер 2026-07-04: экспедиторов до пяти
           },
         };
         return cell;
@@ -1799,7 +1812,7 @@ export function FlowPlanGrid({
     (r: FlowDeliveryRow, raw: string): { value: string; error?: string } => {
       const values = splitMultiCell(raw);
       if (values.length === 0) return { value: '' };
-      if (values.length > 3) return { value: '', error: 'Можно выбрать не больше трёх экспедиторов' };
+      if (values.length > 5) return { value: '', error: 'Можно выбрать не больше пяти экспедиторов' };
       const opts = expeditorsForWh(r.to_wh);
       const out: string[] = [];
       for (const fioStr of values) {
@@ -2177,6 +2190,9 @@ export function FlowPlanGrid({
         if (r.done_stat === STATUS_DONE || r.done_stat === 'увезли') return { bgCell: '#EAF5EA' };
         if (r.fail_reason || r.done_stat === 'не увезли') return { bgCell: '#F0F0EE', textDark: '#6B6862' };
         if (rowLocked(r)) return { textDark: '#8C8983' }; // закрытый отчёт (>7 дней) — приглушён
+        // Ручная пастельная ЗАЛИВКА (кисть, юзер 2026-07-04) — раскидка по машинам ДО
+        // отметок; приоритетнее авто-тона по гаражному.
+        if ((r.row_fill || '').trim()) return { bgCell: `#${r.row_fill}` };
         // Ожидание + выбран гаражный → свой пастельный тон машины (юзер 2026-07-03:
         // «каждый гаражный получит свой уникальный цвет — визуально группировать машины»).
         const garage = splitMultiCell(r.ride_id || '')[0];
@@ -2189,6 +2205,68 @@ export function FlowPlanGrid({
   );
 
   const selectedCount = selection.rows.length;
+
+  // ── «Заливка» (юзер 2026-07-04): пастельная кисть для раскидки по машинам ────────
+  // Выбрал цвет в палитре → кисть АКТИВНА: клик по строке заливает (повторный клик тем
+  // же цветом снимает), протяжка мышью заливает диапазон. Хранится на строке (row_fill),
+  // реалтайм всем, уходит и в xlsx-скачку. «Снять» — кисть-ластик.
+  const PAINT_COLORS = [
+    'FDE2E4', 'FFE0B5', 'FDF3B4', 'DFF5CE', 'CDEFE3',
+    'D6E9FF', 'E4DAFF', 'F9D8F2', 'E2E2DE', 'F3D9C9',
+  ];
+  const [paintColor, setPaintColor] = useState<string | 'clear' | null>(null);
+  const [paintOpen, setPaintOpen] = useState(false);
+  const applyPaint = useCallback(
+    (rowIdxs: number[]) => {
+      if (!paintColor) return;
+      const targets: FlowDeliveryRow[] = [];
+      for (const i of rowIdxs) {
+        const r = viewRows[i];
+        if (r && !rowLocked(r)) targets.push(r);
+      }
+      if (targets.length === 0) return;
+      // Один ряд тем же цветом — тогл (снять); диапазон/другой цвет — покрасить.
+      const single = targets.length === 1;
+      const fillOf = (t: FlowDeliveryRow): string =>
+        paintColor === 'clear' ? '' : single && (t.row_fill || '') === paintColor ? '' : paintColor;
+      setRows((prev) => {
+        const byId = new Map(targets.map((t) => [t.id, fillOf(t)] as const));
+        const next = prev.map((x) => (byId.has(x.id) ? ({ ...x, row_fill: byId.get(x.id) } as FlowDeliveryRow) : x));
+        planDlvCache = next;
+        return next;
+      });
+      void flowDeliveriesEdit(
+        api,
+        targets.map((t) => ({ id: t.id, row_version: t.row_version, fields: { row_fill: fillOf(t) } })),
+      ).then((res) => applyServerDlv(res.rows));
+    },
+    [paintColor, viewRows, rowLocked, applyServerDlv],
+  );
+  /** Индексы строк из выделения Glide (строки + текущий прямоугольник). */
+  const selectionRowIdxs = (sel: GridSelection): number[] => {
+    const out = new Set<number>();
+    for (const i of sel.rows) out.add(i);
+    const range = sel.current?.range;
+    if (range) for (let y = range.y; y < range.y + range.height; y++) out.add(y);
+    return [...out];
+  };
+  // Кисть активна: жест (клик/протяжка) копится в выделении, красим ОДИН раз на отпускании
+  // мыши (иначе протяжка красила бы каждое движение — конфликт row_version).
+  const paintSelRef = useRef<GridSelection | null>(null);
+  useEffect(() => {
+    if (!paintColor) return undefined;
+    const up = (): void => {
+      const sel = paintSelRef.current;
+      paintSelRef.current = null;
+      if (!sel) return;
+      const idxs = selectionRowIdxs(sel);
+      if (idxs.length > 0) applyPaint(idxs);
+      setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
+    };
+    window.addEventListener('pointerup', up);
+    return () => window.removeEventListener('pointerup', up);
+  }, [paintColor, applyPaint]);
+
   /** Массовая отметка отчёта (ТЗ §5.1): одно значение на все выделенные строки,
    *  БЕЗ привязки к складу — выбрал → протянулось. Причина чистится при «увезли». */
   // Применить статус ко ВСЕМ выделенным строкам разом (массовая отметка + вставка значения
@@ -2266,11 +2344,11 @@ export function FlowPlanGrid({
     },
     [mode, selectedDay, pushHistory],
   );
-  // Выгрузка Плана из Отчёта в .xlsx (юзер 2026-07-02): на выбранную дату — план /
-  // доп.N / весь день. Формат эталона экспедиции: сорт APLAN, разрывы по отправителю,
-  // МОЛ без телефона, титул с датой; лист 2 «Остаток» (места хранения).
+  // Выгрузка .xlsx на выбранную дату — план / доп.N / весь день / экспедиторам.
+  // Доступна и из ОТЧЁТА, и из ПЛАНА (юзер 2026-07-04): в Плане качается тот же
+  // зафиксированный слепок, формат одинаковый.
   const reportBatches = useMemo(() => {
-    if (mode !== 'report' || !selectedDay) return [] as { batch: number; rank: number }[];
+    if (!selectedDay) return [] as { batch: number; rank: number }[];
     const ranks = batchRankByDate.get(selectedDay);
     const s = new Set<number>();
     for (const r of rows) {
@@ -2286,8 +2364,10 @@ export function FlowPlanGrid({
   // Раскладка выгрузки — СЕРВЕРНАЯ (кэш на сессию): формат правится без обновления
   // приложения; сервер недоступен → встроенный дефолт.
   const xlsxLayoutRef = useRef<FlowXlsxLayout | null | undefined>(undefined);
+  // Печать «Экспедиторам» из приложения (юзер 2026-07-04) — превью как у Транспорта.
+  const [expedPrint, setExpedPrint] = useState<{ title: string; groups: ExpedGroup[] } | null>(null);
   const runXlsxExport = useCallback(
-    async (batch: number | 'all' | 'exped') => {
+    async (batch: number | 'all' | 'exped' | 'exped-print') => {
       if (!selectedDay) {
         setMsg('Выберите день отчёта в календаре');
         return;
@@ -2301,7 +2381,7 @@ export function FlowPlanGrid({
           Number(x.fixation_id) > 0 &&
           Number(x.reserved) !== 1 &&
           (x.plan_date || '').slice(0, 10) === selectedDay &&
-          (batch === 'all' || batch === 'exped' || Number(x.batch_seq) === batch) &&
+          (batch === 'all' || batch === 'exped' || batch === 'exped-print' || Number(x.batch_seq) === batch) &&
           !isDone(x),
       );
       if (dayRows.length === 0) {
@@ -2311,10 +2391,10 @@ export function FlowPlanGrid({
       if (xlsxLayoutRef.current === undefined) {
         xlsxLayoutRef.current = await flowXlsxLayoutGet(api);
       }
-      // Файл «Экспедиторам» (юзер 2026-07-03): раскидка по машинам (гаражный), схлопывание
-      // одинаковых получатель+отправитель+материал (МОЛ тот же, комменты не отличаются),
-      // разрыв страницы по машине, внутри сортировка по материалу.
-      if (batch === 'exped') {
+      // Файл/ПЕЧАТЬ «Экспедиторам» (юзер 2026-07-03/04): раскидка по машинам (гаражный),
+      // схлопывание одинаковых получатель+отправитель+материал (МОЛ тот же, комменты не
+      // отличаются), разрыв страницы по машине, внутри сортировка по материалу.
+      if (batch === 'exped' || batch === 'exped-print') {
         const expInputs: ExpedXlsxRow[] = dayRows.map((x) => {
           const vgh = vghByKey.get(normVghKey(x.no_num));
           const q = effQty(x);
@@ -2337,6 +2417,10 @@ export function FlowPlanGrid({
             fillArgb: garage ? garageFillArgb(garage) : '',
           };
         });
+        if (batch === 'exped-print') {
+          setExpedPrint({ title: fileDateRu(selectedDay), groups: buildExpedGroups(expInputs) });
+          return;
+        }
         const book = buildExpedXlsxBook(selectedDay, expInputs, xlsxLayoutRef.current);
         downloadXlsx(expedXlsxFilename(selectedDay), book.sheets, { definedNames: book.definedNames });
         setMsg(`Экспедиторам: ${dayRows.length} строк выгружено`);
@@ -2385,8 +2469,10 @@ export function FlowPlanGrid({
           sppCs: x.spp_cs ?? null,
           stockPlace: x.stock_place || '',
           matNote: (vgh?.tech_name || '').trim(),
-          // Кладовщикам — «вместе с цветом» (юзер 2026-07-03): тон машины по гаражному.
+          // Кладовщикам — «вместе с цветом»: ручная пастельная заливка (кисть, юзер
+          // 2026-07-04) приоритетнее авто-тона машины по гаражному.
           fillArgb: (() => {
+            if ((x.row_fill || '').trim()) return `FF${x.row_fill}`;
             const g = splitMultiCell(x.ride_id || '')[0] ?? '';
             return g ? garageFillArgb(g) : '';
           })(),
@@ -2616,15 +2702,73 @@ export function FlowPlanGrid({
             </button>
           );
         })}
+        {/* «Заливка» (юзер 2026-07-04): пастельная кисть — визуальная раскидка по машинам
+            до отметок. Выбрал цвет → клик/протяжка по строкам красит, повторный клик тем
+            же цветом снимает; «Ластик» стирает. Уходит и в xlsx-скачку. */}
+        {mode === 'report' && (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setPaintOpen((o) => !o)}
+              title={paintColor ? 'Кисть активна: клик/протяжка по строкам красит. Клик — сменить цвет/выключить' : 'Заливка строк пастельным цветом (раскидка по машинам)'}
+              className={`flex h-6 shrink-0 items-center gap-1.5 rounded-md border px-1.5 text-[12px] outline-none transition-colors ${
+                paintColor ? 'border-accent-clay/70 text-[#0A0A0A]' : 'border-black/10 text-[#3F3D38] hover:border-black/25 hover:text-[#0A0A0A]'
+              }`}
+            >
+              <span
+                className="h-3.5 w-3.5 rounded-sm border border-black/15"
+                style={{ background: paintColor && paintColor !== 'clear' ? `#${paintColor}` : 'transparent' }}
+              />
+              Заливка
+            </button>
+            {paintOpen && (
+              <div className="absolute left-0 top-7 z-50 w-[168px] rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-lg">
+                <div className="grid grid-cols-5 gap-1.5">
+                  {PAINT_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => { setPaintColor(c); setPaintOpen(false); setMsg('Кисть: клик/протяжка по строкам красит, повторный клик снимает'); }}
+                      title={`Красить #${c}`}
+                      className={`h-6 w-6 rounded-md border transition-transform hover:scale-110 ${
+                        paintColor === c ? 'border-accent-clay ring-1 ring-accent-clay/50' : 'border-black/10'
+                      }`}
+                      style={{ background: `#${c}` }}
+                    />
+                  ))}
+                </div>
+                <div className="mt-1.5 flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => { setPaintColor('clear'); setPaintOpen(false); setMsg('Ластик: клик/протяжка по строкам снимает заливку'); }}
+                    className={`h-6 flex-1 rounded-md border text-[11px] transition-colors ${
+                      paintColor === 'clear' ? 'border-accent-clay/70 text-text-strong' : 'border-border-subtle text-text-secondary hover:border-border-default'
+                    }`}
+                  >
+                    Ластик
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setPaintColor(null); setPaintOpen(false); setMsg(''); }}
+                    className="h-6 flex-1 rounded-md border border-border-subtle text-[11px] text-text-secondary transition-colors hover:border-border-default"
+                  >
+                    Выключить
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {/* «Скачать» (юзер 2026-07-03): без заголовка в списке — только пункты
             «Кладовщикам план / Кладовщикам доп. N / Кладовщиков общий / Экспедиторам».
-            Кладовщичьи — с цветом машин; выполненные (зелёные) строки не печатаются. */}
-        {mode === 'report' && (
+            Кладовщичьи — с цветом машин; выполненные (зелёные) строки не печатаются.
+            В ПЛАНЕ доступно, когда день зафиксирован (юзер 2026-07-04: качается слепок). */}
+        {(mode === 'report' || reportBatches.length > 0) && (
           <select
             defaultValue=""
             onChange={(e) => {
               const v = e.target.value;
-              if (v) void runXlsxExport(v === 'all' || v === 'exped' ? v : Number(v));
+              if (v) void runXlsxExport(v === 'all' || v === 'exped' || v === 'exped-print' ? v : Number(v));
               e.target.value = '';
             }}
             title="Скачать файлы дня в Excel: кладовщикам (с цветом машин) или экспедиторам (по машинам)"
@@ -2640,6 +2784,7 @@ export function FlowPlanGrid({
             ))}
             <option value="all">Кладовщиков общий</option>
             <option value="exped">Экспедиторам</option>
+            <option value="exped-print">Печать экспедиторам</option>
           </select>
         )}
         {/* Кнопка «+ Строка» УБРАНА (юзер 2026-07-03): пустая ручная строка добавляется
@@ -2770,6 +2915,12 @@ export function FlowPlanGrid({
             trailingRowOptions={{ tint: true, sticky: false }}
             gridSelection={selection}
             onGridSelectionChange={(sel) => {
+              // Кисть-заливка активна: жест копится, красим на mouseup (см. paintSelRef).
+              if (paintColor) {
+                paintSelRef.current = sel;
+                setSelection(sel);
+                return;
+              }
               // Протяжка по первой колонке → выделение строк. СОХРАНЯЕМ current, иначе Glide
               // теряет активную протяжку и выделяется только одна строка (юзер 2026-06-15).
               const rowsSel = colZeroRowSelection(sel);
@@ -2829,6 +2980,10 @@ export function FlowPlanGrid({
         load={(ord, it) => flowDeliveryEventsGet(api, ord, it)}
         onClose={() => setHistoryCard(null)}
       />
+      {/* Печать «Экспедиторам» из приложения (юзер 2026-07-04) — превью как у Транспорта. */}
+      {expedPrint && (
+        <FlowExpedPrint title={expedPrint.title} groups={expedPrint.groups} onClose={() => setExpedPrint(null)} />
+      )}
       {pendingTransfer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
           <div className="w-[360px] rounded-xl border border-black/10 bg-[#FDFDFB] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.28)]">

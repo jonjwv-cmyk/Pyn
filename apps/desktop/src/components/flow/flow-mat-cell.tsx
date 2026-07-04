@@ -1,5 +1,6 @@
 import { GridCellKind, type CustomCell, type CustomRenderer } from '@glideapps/glide-data-grid';
 import type { FlowCardLine } from './flow-sandbox.fixtures';
+import { useFlipUpIfClipped } from './flow-cell-flip';
 
 /**
  * Ячейка MAT: ⚠ (если заказ не GROKHOVSKIJ = ручной) + название. Двойной клик →
@@ -16,8 +17,10 @@ export type FlowMatCell = CustomCell<FlowMatData>;
 
 function FlowMatEditor({ value: cell }: { value: FlowMatCell }) {
   const { lines } = cell.data;
+  // У нижнего края экрана карточка обрезалась (юзер 2026-07-04) — показываем ВЫШЕ ячейки.
+  const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   return (
-    <div className="flex max-h-[60vh] min-w-[280px] max-w-[70vw] flex-col gap-0.5 overflow-y-auto p-2 text-[12px] leading-relaxed text-text-secondary">
+    <div ref={flipRef} className="flex max-h-[60vh] min-w-[280px] max-w-[70vw] flex-col gap-0.5 overflow-y-auto p-2 text-[12px] leading-relaxed text-text-secondary">
       {lines.length === 0 && <div className="text-text-muted/70">Нет данных</div>}
       {lines.map((ln, i) => (
         <div

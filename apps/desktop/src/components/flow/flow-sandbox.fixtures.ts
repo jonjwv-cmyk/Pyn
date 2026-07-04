@@ -199,18 +199,27 @@ export function buildActiveColumns(visibleInfo: ReadonlySet<string>): FlowColumn
 /** Формат «DAY выг.» (юзер 2026-07-04): «июль 6 12:59 pm». Время выгрузки сервер пишет
  *  в UTC (nowStr) — показываем по ЕКАТЕРИНБУРГУ (+05:00, DST нет; скрипт гнал в 12:50,
  *  а колонка показывала 7:51 utc). Год дописываем только если НЕ текущий («июль 6 2025 …»). */
-export function formatUploadDay(timeAt: string | undefined): string {
+export function formatUploadDayParts(timeAt: string | undefined): { date: string; time: string } {
   const s = String(timeAt ?? '').trim();
-  if (!s) return '';
+  if (!s) return { date: '', time: '' };
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
-  if (!m) return s;
+  if (!m) return { date: s, time: '' };
   const utcMs = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
   const yek = new Date(utcMs + 5 * 3600_000);
   const h = yek.getUTCHours();
   const mm = String(yek.getUTCMinutes()).padStart(2, '0');
   const nowYekYear = new Date(Date.now() + 5 * 3600_000).getUTCFullYear();
   const y = yek.getUTCFullYear();
-  return `${MONTH_ABBR_RU[yek.getUTCMonth()] ?? ''} ${yek.getUTCDate()}${y === nowYekYear ? '' : ` ${y}`} ${h % 12 || 12}:${mm} ${h < 12 ? 'am' : 'pm'}`;
+  return {
+    // Дата — ЖИРНЫМ в гриде (юзер 2026-07-04), время — обычным (вторичная часть ячейки).
+    date: `${MONTH_ABBR_RU[yek.getUTCMonth()] ?? ''} ${yek.getUTCDate()}${y === nowYekYear ? '' : ` ${y}`}`,
+    time: `${h % 12 || 12}:${mm} ${h < 12 ? 'am' : 'pm'}`,
+  };
+}
+
+export function formatUploadDay(timeAt: string | undefined): string {
+  const p = formatUploadDayParts(timeAt);
+  return [p.date, p.time].filter(Boolean).join(' ');
 }
 
 /**
@@ -672,20 +681,24 @@ export interface MatCardRow {
 }
 
 /** Read-only строки карточки материала: Создал → Выгружен → (Удалён) → Вывезено% → тех-имя.
- *  Единый источник (ТЗ §7) — данные из ЯКОРЯ (живой расчёт, до фиксации меняется везде). */
-export function matCardLines(row: MatCardRow): FlowCardLine[] | null {
+ *  Единый источник (ТЗ §7) — данные из ЯКОРЯ (живой расчёт, до фиксации меняется везде).
+ *  `pctOnly` (Формирование, юзер 2026-07-04): только «Вывезено N% — X из Y» — Создал/
+ *  Выгружен/тех-имя там и так есть отдельными колонками. */
+export function matCardLines(row: MatCardRow, opts?: { pctOnly?: boolean }): FlowCardLine[] | null {
   const lines: FlowCardLine[] = [];
-  if (row.created_by) {
-    const cd = formatDateRu(row.load_dt);
-    lines.push({ t: `Создал: ${row.created_by}${cd ? ` — ${cd}` : ''}`, muted: true, nowrap: true });
-  }
-  // time_at/off_at — серверные UTC-метки: показ по Екатеринбургу (formatUploadDay).
-  const up = formatUploadDay(row.time_at);
-  if (up) lines.push({ t: `Выгружен: ${up}`, muted: true, nowrap: true });
-  // Дата удаления — для OFF-строк (когда заказ пропал из выгрузки).
-  if (row.day_wk === 'OFF' && row.off_at) {
-    const off = formatUploadDay(row.off_at);
-    if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
+  if (!opts?.pctOnly) {
+    if (row.created_by) {
+      const cd = formatDateRu(row.load_dt);
+      lines.push({ t: `Создал: ${row.created_by}${cd ? ` — ${cd}` : ''}`, muted: true, nowrap: true });
+    }
+    // time_at/off_at — серверные UTC-метки: показ по Екатеринбургу (formatUploadDay).
+    const up = formatUploadDay(row.time_at);
+    if (up) lines.push({ t: `Выгружен: ${up}`, muted: true, nowrap: true });
+    // Дата удаления — для OFF-строк (когда заказ пропал из выгрузки).
+    if (row.day_wk === 'OFF' && row.off_at) {
+      const off = formatUploadDay(row.off_at);
+      if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
+    }
   }
   // В КАРТОЧКЕ показываем вывоз всегда, когда есть данные (в т.ч. 0%); в КОЛОНКЕ 0 не пишем.
   const p = livePct(row);
@@ -697,14 +710,14 @@ export function matCardLines(row: MatCardRow): FlowCardLine[] | null {
     });
   }
   // Тех-имя ПЕРЕНОСИТСЯ, если длиннее стандарта (ширину задаёт шапка карточки).
-  if (row.mat_full) lines.push({ t: row.mat_full });
+  if (!opts?.pctOnly && row.mat_full) lines.push({ t: row.mat_full });
   return lines.length ? lines : null;
 }
 
 export function flowCard(spec: FlowColumnSpec, row: FlowSandboxRow): FlowCardLine[] | null {
   switch (spec.id) {
     case 'mat':
-      return matCardLines(row);
+      return matCardLines(row, { pctOnly: true });
     case 'mol': {
       const m = parseMol(row.mol);
       if (!m) return null;
