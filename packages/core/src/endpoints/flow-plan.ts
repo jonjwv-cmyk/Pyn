@@ -49,6 +49,10 @@ export interface FlowDeliveryRow {
   /** Остаток СУС / ММ (Запас СУС/ММ из zm_vl) — колонки остатков в выгрузке Плана. */
   stock_sus?: number | null;
   stock_mm?: number | null;
+  /** Хвост выгрузки Плана (юзер 2026-07-04): ОСТАТ (СвОстЦС) / СПП Остат ЦС / «Складское место» SAP. */
+  stock_cs?: number | null;
+  spp_cs?: number | null;
+  stock_place?: string;
   /** Кто/когда создал поставку в SAP (из zm_vl). */
   sap_created_by: string;
   sap_created_at: string;

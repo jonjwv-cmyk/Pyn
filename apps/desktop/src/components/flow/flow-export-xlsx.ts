@@ -5,15 +5,17 @@
 //  • ОБЛАСТЬ ПЕЧАТИ = A1:<ID> → вертикальная пунктирная разбивка идёт ПО ПРАВОЙ границе
 //    после колонки ID (а не по центру); фиксированный масштаб печати (не fitToPage —
 //    ручные разрывы строк по отправителю живут), узкие поля 0.2" как в эталоне;
-//  • колонки ОСТАТКОВ (остаток СУС/ММ + места хранения) — ТУТ ЖЕ, ПОСЛЕ ID (вне области
-//    печати); ВТОРОГО листа «Места хранения» больше НЕТ;
+//  • ХВОСТ ПОСЛЕ ID (вне области печати, юзер 2026-07-04): АВТОР · ДАТА · ВРЕМЯ · ОСТАТ ·
+//    Запас ММ · Запас СУС · СПП Ост ЦС · Склад место · Мест хран (по ширине заполнения);
+//    пары «Складское место1..3 / Запас СМ1..3» в Excel НЕ идут; весь хвост Inter 8;
 //  • колонка «Был» (pr) убрана;
 //  • МОЛ-выпадашка — ЧИСТО ФИО (без сотового); у Экспедитора выпадашки НЕТ;
-//  • «поставка | поз» ЖИРНЫМ 12, «заказ | поз» — МЕНЬШЕ (8, как КГ) той же ячейкой.
-// Дата плана — в заголовке «Материала» («Июль 3, 26г. Материал»). CLST — только
-// ВЫЕЗД/КХП. Примечание на материале — полное тех-наименование (база ВГХ). Раскладка
-// печатных колонок — СЕРВЕРНАЯ (layout). Имена: «План экспедиции на июль 3 2026.xlsx» /
-// «Доп. 1 к плану экспедиции на …»; один лист «План» / «Доп. N».
+//  • «поставка | поз» ЖИРНЫМ 11, «заказ | поз» — МЕНЬШЕ (8, как КГ) той же ячейкой;
+//  • FIX/ГРАФ — 10, ГРАФ жирным; Экспедитор — 8 (эталон 📦ТМЦ).
+// Дата плана — в заголовке «Материала», год ЦЕЛИКОМ («Июль 6, 2026г. Материал»). CLST —
+// только ВЫЕЗД/КХП. Примечание на материале — полное тех-наименование (база ВГХ). Раскладка
+// печатных колонок — СЕРВЕРНАЯ (layout). Имена с запятой после дня (юзер 2026-07-04):
+// «План экспедиции на июль 6, 2026.xlsx» / «Доп. 1 к плану …»; один лист «План» / «Доп. N».
 
 import type { FlowXlsxLayout, FlowXlsxColumn } from '@pyn/core';
 import {
@@ -46,6 +48,12 @@ export interface PlanXlsxRow extends PlanSortable {
   stockNote: string; // «PLACE(qty); PLACE2(qty2)» — места хранения с остатком
   stockSus: number | null; // остаток СУС (Запас СУС из zm_vl)
   stockMm: number | null; // остаток ММ (Запас ММ из zm_vl)
+  sapAuthor: string; // АВТОР — кто создал поставку в SAP (Создал из zm_vl)
+  sapDate: string; // ДАТА создания поставки (как в выгрузке, «03.07.2026»)
+  sapTime: string; // ВРЕМЯ создания («13:15:13»)
+  ostat: number | null; // ОСТАТ — свободный остаток ЦС (СвОстЦС из zm_vl)
+  sppCs: number | null; // СПП Ост ЦС
+  stockPlace: string; // «Складское место» SAP (основное; обычно пусто)
   matNote: string; // полное тех-наименование (база ВГХ) → примечание на материале
   /** Заливка строки ARGB (цвет машины по гаражному — кладовщикам «с цветом»). */
   fillArgb?: string;
@@ -67,19 +75,24 @@ export interface PlanXlsxBook {
 const MONTHS_NOM = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
   'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
 
-/** Имя файла по правилу юзера: план → «План экспедиции на июль 3 2026.xlsx»,
- *  доп → «Доп. 1 к плану экспедиции на июль 3 2026.xlsx». batch 0/'all' → план. */
-export function planXlsxFilename(dateIso: string, batch: number | 'all'): string {
+/** Дата в имени файла — с запятой после дня (юзер 2026-07-04): «июль 6, 2026». */
+function fileDateRu(dateIso: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
-  const dateRu = m
-    ? `${MONTHS_NOM[parseInt(m[2] ?? '1', 10) - 1] ?? ''} ${parseInt(m[3] ?? '1', 10)} ${m[1]}`
+  return m
+    ? `${MONTHS_NOM[parseInt(m[2] ?? '1', 10) - 1] ?? ''} ${parseInt(m[3] ?? '1', 10)}, ${m[1]}`
     : dateIso;
+}
+
+/** Имя файла по правилу юзера: план → «План экспедиции на июль 6, 2026.xlsx»,
+ *  доп → «Доп. 1 к плану экспедиции на июль 6, 2026.xlsx». batch 0/'all' → план. */
+export function planXlsxFilename(dateIso: string, batch: number | 'all'): string {
+  const dateRu = fileDateRu(dateIso);
   if (batch !== 'all' && batch >= 2) return `Доп. ${batch - 1} к плану экспедиции на ${dateRu}.xlsx`;
   return `План экспедиции на ${dateRu}.xlsx`;
 }
 
-/** Заголовок «Материала» с датой плана (юзер 2026-07-03): «Июль 3, 26г. Материал».
- *  Плейсхолдеры: {MONTH1}=Июль {D}=3 {YY}=26; легаси {DD}/{MONTH}/{YYYY} тоже понимаем. */
+/** Заголовок «Материала» с датой плана — год ЦЕЛИКОМ (юзер 2026-07-04): «Июль 6, 2026г.
+ *  Материал». Плейсхолдеры: {MONTH1}=Июль {D}=6 {YYYY}=2026; {YY}/{DD}/{MONTH} — легаси. */
 function matHeadOf(tpl: string, dateIso: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
   if (!m) return 'Материал';
@@ -93,17 +106,17 @@ function matHeadOf(tpl: string, dateIso: string): string {
     .replace('{YYYY}', m[1] ?? '');
 }
 
-const MAT_HEAD_DEFAULT = '{MONTH1} {D}, {YY}г. Материал';
+const MAT_HEAD_DEFAULT = '{MONTH1} {D}, {YYYY}г. Материал';
 
 // Fallback-раскладка — зеркало серверного DEFAULT_XLSX_LAYOUT (сервер недоступен).
 // ФОРМАТ правь на СЕРВЕРЕ (юзер: «не привязкой к приложению»).
 const FALLBACK_LAYOUT: FlowXlsxLayout = {
   plan: {
     matHead: MAT_HEAD_DEFAULT,
-    // FIX первой, ГРАФ второй (юзер 2026-07-03), остальное как было.
+    // FIX первой, ГРАФ второй (юзер 2026-07-03); шрифт 10, ГРАФ жирным (юзер 2026-07-04).
     columns: [
-      { id: 'fix', head: 'FIX', width: 8, style: 'text12-r' },
-      { id: 'graph', head: 'ГРАФ', width: 8.5, style: 'text12-r' },
+      { id: 'fix', head: 'FIX', width: 8, style: 'text-r' },
+      { id: 'graph', head: 'ГРАФ', width: 8.5, style: 'bold10' },
       { id: 'request', head: 'Запросил', width: 13.5, style: 'text' },
       { id: 'fr', head: 'От', width: 7, style: 'bold12-r' },
       { id: 'to', head: 'СП', width: 6.5, style: 'bold12-r' },
@@ -119,7 +132,7 @@ const FALLBACK_LAYOUT: FlowXlsxLayout = {
       { id: 'kg', head: 'КГ', width: 7, style: 'kgv' },
       { id: 'v', head: 'V', width: 5, style: 'kgv' },
       { id: 'note', head: 'Комментарий', width: 21.6, style: 'mol' },
-      { id: 'exp', head: 'Экспедитор', width: 15.7, style: 'wrap10' },
+      { id: 'exp', head: 'Экспедитор', width: 15.7, style: 'wrap8' },
       { id: 'vehicle_type', head: 'Машина', width: 12.3, style: 'text' },
       { id: 'garage', head: 'ID', width: 5.9, style: 'text-r' },
     ],
@@ -143,9 +156,9 @@ const FALLBACK_LAYOUT: FlowXlsxLayout = {
 /** Стиль по умолчанию для id (если сервер не прислал пресет). */
 const DEFAULT_STYLE_BY_ID: Record<string, string> = {
   request: 'text', fr: 'bold12-r', to: 'bold12-r', pr: 'text12-r', clst: 'text12-r',
-  graph: 'text12-r', fix: 'text12-r', dlvord: 'bold12-r-wrap', dlv: 'bold12-r', dlv_pos: 'text-r',
+  graph: 'bold10', fix: 'text-r', dlvord: 'bold12-r-wrap', dlv: 'bold12-r', dlv_pos: 'text-r',
   trz: 'text-r', mol: 'mol', q: 'bold10', no_num: 'text12-r', mat: 'wrap12', uom: 'text',
-  qty: 'num3', kg: 'kgv', v: 'kgv', note: 'mol', exp: 'wrap10', vehicle_type: 'text', garage: 'text-r',
+  qty: 'num3', kg: 'kgv', v: 'kgv', note: 'mol', exp: 'wrap8', vehicle_type: 'text', garage: 'text-r',
   stock_note: 'wrap10',
 };
 
@@ -190,41 +203,33 @@ function stockNoteClean(s: string): string {
     .join('; ');
 }
 
-/** Разобрать stock_note «PLACE(qty); PLACE2(qty2)» → пары место/остаток (до 4). */
-function parseStockPairs(s: string): Array<{ place: string; qty: number | null }> {
-  if (!s.trim()) return [];
-  const out: Array<{ place: string; qty: number | null }> = [];
-  for (const part of s.split(';')) {
-    const p = part.trim();
-    if (!p) continue;
-    const m = /^(.*?)[\s(：:]*\(?([\d.,\s]+)\)?\s*$/.exec(p);
-    if (m && m[1]) out.push({ place: m[1].trim(), qty: zmNum(m[2] ?? '') });
-    else out.push({ place: p, qty: null });
-  }
-  return out.slice(0, 4);
-}
-
-/** Колонки СЕКЦИИ ОСТАТКОВ (после ID, ВНЕ области печати — юзер 2026-07-04): остаток
- *  СУС/ММ + до 4 пар «Складское место»/«Остаток». Ширины — из эталона (лист 📦ТМЦ). */
-const STOCK_SECTION: Array<{ head: string; width: number; style: string; get: (r: PlanXlsxRow) => XlsxValue }> = [
-  { head: 'Остаток СУС', width: 13.7, style: 'num3', get: (r) => num(r.stockSus) },
-  { head: 'Остаток ММ', width: 13.9, style: 'num3', get: (r) => num(r.stockMm) },
-  ...[0, 1, 2, 3].flatMap((i) => [
-    { head: i === 0 ? 'Складское место' : `Складское место${i}`, width: i === 0 ? 16.6 : 17.9, style: 'text',
-      get: (r: PlanXlsxRow) => parseStockPairs(r.stockNote)[i]?.place ?? '' },
-    { head: i === 0 ? 'Мест хран' : `Запас СМ${i}`, width: 14.2, style: 'num3',
-      get: (r: PlanXlsxRow) => num(parseStockPairs(r.stockNote)[i]?.qty ?? null) },
-  ]),
+/** Колонки ХВОСТА (после ID, ВНЕ области печати — юзер 2026-07-04, порядок его словами):
+ *  АВТОР · ДАТА · ВРЕМЯ (кто/когда создал поставку в SAP) · ОСТАТ (СвОстЦС) · Запас ММ ·
+ *  Запас СУС · СПП Ост ЦС · Склад место (SAP) · Мест хран (места с остатком; ширина —
+ *  ПО ЗАПОЛНЕНИЮ). Пары «Складское место1..3 / Запас СМ1..3» в Excel НЕ идут (в выгрузке
+ *  zm_vl могут остаться — уйдут с конца, парсер матчит по именам). Весь хвост Inter 8. */
+const TAIL_SECTION: Array<{
+  head: string; width: number; style: string; autofit?: boolean; get: (r: PlanXlsxRow) => XlsxValue;
+}> = [
+  { head: 'АВТОР', width: 10.7, style: 'text8', get: (r) => r.sapAuthor },
+  { head: 'ДАТА', width: 9.7, style: 'text8', get: (r) => r.sapDate },
+  { head: 'ВРЕМЯ', width: 10, style: 'text8', get: (r) => r.sapTime },
+  { head: 'ОСТАТ', width: 10.6, style: 'num8', get: (r) => num(r.ostat) },
+  { head: 'Запас ММ', width: 13.9, style: 'num8', get: (r) => num(r.stockMm) },
+  { head: 'Запас СУС', width: 13.7, style: 'num8', get: (r) => num(r.stockSus) },
+  { head: 'СПП Ост ЦС', width: 15.9, style: 'num8', get: (r) => num(r.sppCs) },
+  { head: 'Склад место', width: 16.6, style: 'text8', get: (r) => r.stockPlace },
+  { head: 'Мест хран', width: 14.1, style: 'text8', autofit: true, get: (r) => stockNoteClean(r.stockNote) },
 ];
 
-/** Поставка+заказ одной ячейкой: «поставка | поз» ЖИРНЫМ 12, ниже «заказ | поз»
- *  МЕНЬШЕ (8, как КГ — юзер 2026-07-04): поставка крупно, заказ компактно. */
+/** Поставка+заказ одной ячейкой: «поставка | поз» ЖИРНЫМ 11 (юзер 2026-07-04), ниже
+ *  «заказ | поз» МЕНЬШЕ (8, как КГ): поставка крупно, заказ компактно. */
 function dlvOrdCell(r: PlanXlsxRow): XlsxValue {
   const line1 = [r.dlv, r.dlv_pos].filter(Boolean).join(' | ');
   const line2 = [r.ord, r.ord_pos].filter(Boolean).join(' | ');
   if (!line1 && !line2) return '';
-  if (line1 && line2) return { rich: [{ t: line1, bold: true, sz: 12 }, { t: `\n${line2}`, sz: 8 }] };
-  if (line1) return { rich: [{ t: line1, bold: true, sz: 12 }] };
+  if (line1 && line2) return { rich: [{ t: line1, bold: true, sz: 11 }, { t: `\n${line2}`, sz: 8 }] };
+  if (line1) return { rich: [{ t: line1, bold: true, sz: 11 }] };
   return { rich: [{ t: line2, sz: 8 }] };
 }
 
@@ -270,13 +275,14 @@ function styleOf(c: FlowXlsxColumn): number {
 // Единица ширины Excel ≈ цифра Calibri 11 ≈ цифра Segoe UI 10 → фактор = размер/10.
 // Wrap-колонки (наименование/МОЛ/комментарий/экспедитор/место хранения) переносят
 // текст по ДИЗАЙНУ — им остаётся серверная ширина; остальным ширина по содержимому.
-const KEEP_WRAP = new Set(['wrap12', 'mol', 'wrap10']);
+const KEEP_WRAP = new Set(['wrap12', 'mol', 'wrap10', 'wrap8']);
 const STYLE_FONT: Record<string, { sz: number; bold: boolean }> = {
   text: { sz: 10, bold: false }, 'text-r': { sz: 10, bold: false },
   'text12-r': { sz: 12, bold: false }, 'bold12-r': { sz: 12, bold: true },
   'bold12-r-wrap': { sz: 12, bold: true }, wrap12: { sz: 12, bold: false },
   mol: { sz: 8, bold: true }, num3: { sz: 12, bold: false }, kgv: { sz: 8, bold: true },
   wrap10: { sz: 10, bold: false }, bold10: { sz: 10, bold: true },
+  text8: { sz: 8, bold: false }, num8: { sz: 8, bold: false }, wrap8: { sz: 8, bold: false },
 };
 
 const ruFixed = (n: number, dec: number): string =>
@@ -303,7 +309,9 @@ function autoWidth(col: FlowXlsxColumn, values: XlsxValue[], headText: string): 
   let chars = 0;
   for (const v of values) chars = Math.max(chars, cellChars(v, styleName));
   const dataW = chars * factor + 1.8;
-  const headW = headText.length * 1.1 * 1.06 + 2.5; // шапка 11 bold + стрелка автофильтра
+  // Шапка 11 bold + стрелка автофильтра: значок ~2 юнита, иначе перекрывает название
+  // короткой колонки (юзер 2026-07-04 — «ЕИ»/«V» и т.п.).
+  const headW = headText.length * 1.1 * 1.06 + 4.6;
   return Math.min(Math.round(Math.max(dataW, headW, 5) * 10) / 10, 60);
 }
 
@@ -333,8 +341,8 @@ function fitPrintScale(widths: number[]): number {
 }
 
 /**
- * Собрать книгу: ОДИН лист «План»/«Доп. N» (печатные колонки A:ID + секция остатков
- * после ID вне области печати) + скрытый лист «Списки» для выпадашек МОЛ. batch:
+ * Собрать книгу: ОДИН лист «План»/«Доп. N» (печатные колонки A:ID + хвост
+ * АВТОР…Мест хран после ID вне области печати) + скрытый лист «Списки» для выпадашек МОЛ. batch:
  * 1=план, 2+=доп, 'all'=весь день. Раскладка печатных колонок серверная (layout).
  * lists — живые МОЛы склада (ЧИСТО ФИО, без сотового); у экспедитора выпадашки НЕТ.
  */
@@ -349,7 +357,7 @@ export function buildPlanXlsxSheets(
   const rows = [...rowsIn].sort(makePlanEtalonCompare(lay.special_fr));
   const sheetName = batch !== 'all' && batch >= 2 ? `Доп. ${batch - 1}` : 'План';
 
-  // Печатные колонки (без П/П и без «Был»); за ними — секция ОСТАТКОВ (вне печати).
+  // Печатные колонки (без П/П и без «Был»); за ними — ХВОСТ после ID (вне печати).
   const planCols = lay.plan.columns.filter((c) => c.id !== 'dlv_pos' && c.id !== 'pr');
   const matTpl = lay.plan.matHead && lay.plan.matHead.includes('{MONTH1}')
     ? lay.plan.matHead
@@ -357,7 +365,7 @@ export function buildPlanXlsxSheets(
   const matHead = matHeadOf(matTpl, dateIso);
   const head = [
     ...planCols.map((c) => (c.id === 'mat' ? matHead : c.head)),
-    ...STOCK_SECTION.map((c) => c.head),
+    ...TAIL_SECTION.map((c) => c.head),
   ];
   const sheetRows: XlsxValue[][] = [head];
   const breaks: number[] = [];
@@ -370,7 +378,7 @@ export function buildPlanXlsxSheets(
   for (const r of rows) {
     if (prevFr !== null && r.fr !== prevFr) breaks.push(sheetRows.length);
     prevFr = r.fr;
-    sheetRows.push([...planCols.map((c) => cellValue(r, c.id)), ...STOCK_SECTION.map((c) => c.get(r))]);
+    sheetRows.push([...planCols.map((c) => cellValue(r, c.id)), ...TAIL_SECTION.map((c) => c.get(r))]);
     const rowNum = sheetRows.length; // 1-based
     if (r.fillArgb) rowFills[rowNum] = r.fillArgb;
     if (matIdx >= 0 && r.matNote.trim() && r.matNote.trim() !== r.mat.trim()) {
@@ -403,18 +411,26 @@ export function buildPlanXlsxSheets(
     }
   }
 
-  // Ширины: печатные — автоподгонка, секция остатков — фикс из эталона. Область печати
-  // = A1:<последняя ПЕЧАТНАЯ колонка> → вертикальная разбивка ПОСЛЕ ID. Масштаб фиксируем
-  // под ширину печатных колонок (ручные разрывы по отправителю живут — не fitToPage).
+  // Ширины: печатные — автоподгонка; хвост — фикс из эталона, кроме «Мест хран» —
+  // по ширине заполнения (юзер 2026-07-04). Область печати = A1:<последняя ПЕЧАТНАЯ
+  // колонка> → вертикальная разбивка ПОСЛЕ ID. Масштаб фиксируем под ширину печатных
+  // колонок (ручные разрывы по отправителю живут — не fitToPage).
   const planWidths = planCols.map((c, ci) =>
     autoWidth(c, sheetRows.slice(1).map((r) => r[ci]), String(head[ci] ?? '')));
-  const colWidths = [...planWidths, ...STOCK_SECTION.map((c) => c.width)];
+  const tailWidths = TAIL_SECTION.map((c, ti) => (c.autofit
+    ? Math.max(c.width, autoWidth(
+        { id: `tail${ti}`, head: c.head, width: c.width, style: c.style },
+        sheetRows.slice(1).map((r) => r[planCols.length + ti]),
+        c.head,
+      ))
+    : c.width));
+  const colWidths = [...planWidths, ...tailWidths];
   const lastPrintCol = colLetter(planCols.length - 1);
   const plan: XlsxSheet = {
     name: sheetName,
     rows: sheetRows,
     colWidths,
-    colStyles: [...planCols.map(styleOf), ...STOCK_SECTION.map((c) => XLSX_STYLE[c.style] ?? 0)],
+    colStyles: [...planCols.map(styleOf), ...TAIL_SECTION.map((c) => XLSX_STYLE[c.style] ?? 0)],
     autoFilter: true,
     freezeTop: true,
     pageBreakView: true,
@@ -462,11 +478,7 @@ export interface ExpedXlsxRow extends PlanSortable {
 }
 
 export function expedXlsxFilename(dateIso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
-  const dateRu = m
-    ? `${MONTHS_NOM[parseInt(m[2] ?? '1', 10) - 1] ?? ''} ${parseInt(m[3] ?? '1', 10)} ${m[1]}`
-    : dateIso;
-  return `Экспедиторам на ${dateRu}.xlsx`;
+  return `Экспедиторам на ${fileDateRu(dateIso)}.xlsx`;
 }
 
 /** ЕИ-канон для ключа схлопывания (PRN_EICanon эталона): ШТ/КГ/Т/Л без точек и пробелов. */

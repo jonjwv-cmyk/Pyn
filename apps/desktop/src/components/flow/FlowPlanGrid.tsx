@@ -911,8 +911,12 @@ export function FlowPlanGrid({
     }).catch(() => undefined);
     return () => { alive = false; };
   }, []);
+  // ПЛАН: зафиксированные строки ВИДНЫ, но недоступны изменению (юзер 2026-07-04 —
+  // «слепок остался неизменный»); правки/скачивание фиксированного — в Отчёте.
   const rowLocked = useCallback(
-    (r: FlowDeliveryRow) => !isDev && mode === 'report' && (r.plan_date || '') < reportCutoff,
+    (r: FlowDeliveryRow) =>
+      (mode === 'plan' && Number(r.fixation_id) > 0) ||
+      (!isDev && mode === 'report' && (r.plan_date || '') < reportCutoff),
     [mode, reportCutoff, isDev],
   );
   const canEditMol = useCallback(
@@ -941,14 +945,20 @@ export function FlowPlanGrid({
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   }, []);
   const baseRows = useMemo(() => {
-    // P3 (юзер 2026-06-14): ПЛАН = только НЕзафиксированные черновики (fixation_id===0 и не
-    // в резерве). Зафиксированное и сеяный импорт отчёта (fixation_id>0) сюда не попадают.
+    // ПЛАН = черновики (fixation_id===0) + ЗАФИКСИРОВАННЫЕ строки текущего месяца
+    // (юзер 2026-07-04: при фиксации строки НЕ исчезают — видны слепком, read-only
+    // через rowLocked). Контрольные zmvl-эпизоды (fixation_id=-1) не показываем.
     let out =
       mode === 'report'
         ? rows.filter(
             (r) => Number(r.fixation_id) > 0 && (r.plan_date || '').slice(0, 7) >= currentMonthPrefix,
           )
-        : rows.filter((r) => Number(r.fixation_id) === 0 && Number(r.reserved) !== 1);
+        : rows.filter(
+            (r) =>
+              Number(r.reserved) !== 1 &&
+              (Number(r.fixation_id) === 0 ||
+                (Number(r.fixation_id) > 0 && (r.plan_date || '').slice(0, 7) >= currentMonthPrefix)),
+          );
     // Календарь (P7): выбран день → показываем только его.
     if (selectedDay) out = out.filter((r) => (r.plan_date || '').slice(0, 10) === selectedDay);
     // Сортировка ЭТАЛОНА экспедиции (юзер 2026-07-02, скрипт APLAN): внутри дня —
@@ -2340,6 +2350,14 @@ export function FlowPlanGrid({
           stockNote: x.stock_note || '',
           stockSus: x.stock_sus ?? null,
           stockMm: x.stock_mm ?? null,
+          // Хвост после ID (юзер 2026-07-04): АВТОР/ДАТА/ВРЕМЯ создания поставки в SAP,
+          // ОСТАТ (СвОстЦС) / СПП Ост ЦС / «Складское место» — с zm_vl-сверки.
+          sapAuthor: x.sap_created_by || '',
+          sapDate: (x.sap_created_at || '').split(/\s+/)[0] ?? '',
+          sapTime: (x.sap_created_at || '').split(/\s+/)[1] ?? '',
+          ostat: x.stock_cs ?? null,
+          sppCs: x.spp_cs ?? null,
+          stockPlace: x.stock_place || '',
           matNote: (vgh?.tech_name || '').trim(),
           // Кладовщикам — «вместе с цветом» (юзер 2026-07-03): тон машины по гаражному.
           fillArgb: (() => {

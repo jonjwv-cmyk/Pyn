@@ -8,6 +8,11 @@ import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
 import { reportClientError } from '@/lib/error-report';
 import { runFlowStockExport } from '@/components/flow/flow-stock-run';
 
+/** Гонять ли выгрузку ОСТАТКОВ тем же SAP-сеансом после заказов. Выключено (юзер
+ *  2026-07-04) — остатки ни разу не доехали (нет ни таблицы, ни stock_last_header в D1);
+ *  включим обратно после отдельного разбирательства с макросом Y_DVK_31000007. */
+const FLOW_STOCK_CHAIN: boolean = false;
+
 /**
  * Кнопка «Выгрузка заказов» (этап Формирование раздела «Поток»). Запускает ТОТ ЖЕ
  * VBS-макрос заказов, что и раздел «Таблицы» (SAP VL10D → TSV), но результат шлёт в
@@ -79,12 +84,16 @@ export function FlowOrderUploadButton({
       }
       const r = await flowImport(api, rows, startedAt);
       const ordersMsg = `Готово: было ${r.total_before} → стало ${r.total_after} · +${r.inserted} нов · ${r.deleted} удал · ${r.off} OFF`;
-      setMsg(`${ordersMsg} · остатки…`);
-      // Цепочка (ТЗ «после заказов выгрузка остатков»): сразу запускаем выгрузку остатков
-      // в ТОМ ЖЕ SAP-сеансе. Тот же пароль — второй раз не спрашиваем. Сбой остатков НЕ
-      // валит уже сохранённые заказы — просто дописываем его итог в сообщение.
-      const stock = await runFlowStockExport(password);
-      setMsg(`${ordersMsg} · ${stock.msg}`);
+      // Цепочка «после заказов выгрузка остатков» ВЫКЛЮЧЕНА (юзер 2026-07-04: остатки
+      // не тянутся — SAP-шаг ни разу не доехал до сервера; отключаем до отдельного
+      // разбирательства, заказы живут сами по себе). Вернуть: FLOW_STOCK_CHAIN = true.
+      if (FLOW_STOCK_CHAIN) {
+        setMsg(`${ordersMsg} · остатки…`);
+        const stock = await runFlowStockExport(password);
+        setMsg(`${ordersMsg} · ${stock.msg}`);
+      } else {
+        setMsg(ordersMsg);
+      }
     } catch (e) {
       setMsg(`Ошибка: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
       reportClientError('flow_import', e instanceof Error ? e.message : String(e), {

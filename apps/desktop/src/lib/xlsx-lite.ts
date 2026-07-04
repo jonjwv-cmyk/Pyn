@@ -21,7 +21,8 @@
 //   0 text (Inter 10 left) · 1 header (Inter 11 bold, заливка) · 2 text-r · 3 text12-r ·
 //   4 bold12-r · 5 bold12-r-wrap · 6 wrap12 · 7 mol (Inter 8 bold wrap) · 8 num3
 //   (#,##0.000, 12) · 9 kgv (0.00, 8 bold) · 10 wrap10 · 11 bold10 · 12 mhead
-//   (10 bold wrap, шапка машины). + клоны с заливкой (генерятся по rowFills).
+//   (10 bold wrap, шапка машины) · 13 text8 · 14 num8 · 15 wrap8 (Inter 8 НЕжирный —
+//   хвост плана после ID + Экспедитор, эталон 📦ТМЦ). + клоны с заливкой (по rowFills).
 
 /** Прогон rich-текста: свой шрифт/жирность внутри одной ячейки. */
 export interface XlsxRichRun {
@@ -46,6 +47,9 @@ export const XLSX_STYLE: Record<string, number> = {
   wrap10: 10,
   bold10: 11,
   mhead: 12,
+  text8: 13,
+  num8: 14,
+  wrap8: 15,
 };
 
 export interface XlsxSheet {
@@ -297,7 +301,7 @@ function vmlXml(sheet: XlsxSheet): string {
   );
 }
 
-// Шрифты эталона (Inter): 0=10, 1=11 bold (шапка), 2=12, 3=12 bold, 4=8 bold, 5=10 bold.
+// Шрифты эталона (Inter): 0=10, 1=11 bold (шапка), 2=12, 3=12 bold, 4=8 bold, 5=10 bold, 6=8.
 const FONT = (sz: number, bold: boolean): string =>
   `<font>${bold ? '<b/>' : ''}<sz val="${sz}"/><color rgb="FF111827"/><name val="Inter"/><family val="2"/><charset val="204"/></font>`;
 
@@ -316,11 +320,14 @@ const BASE_XFS: Array<{ nf: number; f: number; h: 'left' | 'right'; wrap: boolea
   { nf: 0, f: 0, h: 'left', wrap: true },           // 10 wrap10
   { nf: 0, f: 5, h: 'left', wrap: false },          // 11 bold10
   { nf: 0, f: 5, h: 'left', wrap: true },           // 12 mhead (шапка машины: 10 bold wrap)
+  { nf: 0, f: 6, h: 'left', wrap: false },          // 13 text8 (хвост плана после ID)
+  { nf: 0, f: 6, h: 'right', wrap: false },         // 14 num8 (остатки хвоста, формат общий)
+  { nf: 0, f: 6, h: 'left', wrap: true },           // 15 wrap8 (Экспедитор — 8 НЕжирный)
 ];
 
 /** Клоны базовых стилей с заливкой строки (цвет машины): '<base>|<argb>' → новый styleId. */
 function stylesXml(clones: Array<{ base: number; argb: string }>): string {
-  const fonts = [FONT(10, false), FONT(11, true), FONT(12, false), FONT(12, true), FONT(8, true), FONT(10, true)];
+  const fonts = [FONT(10, false), FONT(11, true), FONT(12, false), FONT(12, true), FONT(8, true), FONT(10, true), FONT(8, false)];
   const xf = (p: { nf: number; f: number; h: 'left' | 'right'; wrap: boolean; fill?: number }): string =>
     `<xf numFmtId="${p.nf}" fontId="${p.f}" fillId="${p.fill ?? 0}" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"${p.fill ? ' applyFill="1"' : ''} applyAlignment="1">` +
     `<alignment horizontal="${p.h}" vertical="center"${p.wrap ? ' wrapText="1"' : ''}/></xf>`;

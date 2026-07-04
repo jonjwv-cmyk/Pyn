@@ -357,6 +357,12 @@ export interface FlowZmvlRow {
   stock_sus: string;
   /** Остаток ММ (Запас ММ из zm_vl). */
   stock_mm: string;
+  /** ОСТАТ — свободный остаток ЦС (СвОстЦС) — хвост выгрузки Плана (юзер 2026-07-04). */
+  stock_cs: string;
+  /** СПП Остат ЦС. */
+  spp_cs: string;
+  /** «Складское место» SAP (основное; обычно пусто). */
+  stock_place: string;
   /** Признак удаления SAP («Удалить»). */
   deleted: string;
 }
@@ -440,6 +446,9 @@ export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
   const iCreTm = col('Время');
   const iSus = col('Запас СУС'); // остаток СУС (колонка остатков)
   const iMm = col('Запас ММ'); // остаток ММ
+  const iCs = col('СвОстЦС'); // ОСТАТ — свободный остаток ЦС (хвост xlsx-плана)
+  const iSpp = col('СПП Остат ЦС', 'СПП Ост ЦС');
+  const iPlace = col('Складское место'); // основное SAP-место (обычно пусто)
   const iDel = col('Удалить');
   const iUom = col('Базовая ЕИ');
   const iNo = col('Материал');
@@ -452,6 +461,7 @@ export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
     ord: 22, it: 23, creBy: 24, creDt: 25, creTm: 26, factDt: 64, planDt: 68,
     factQty: 86, qty: 14, del: 143, // qty=col15 «Объем поставки» (0-based 14); col104 «Объем Пост»=0
     sus: -1, mm: -1, // остаток СУС / ММ — только по имени заголовка (безголовый TSV пропускает)
+    cs: 21, spp: 28, place: 30, // СвОстЦС / СПП Остат ЦС / Складское место (хвост xlsx-плана)
     stock: [[30, 21], [32, 33], [34, 35], [36, 37]] as Array<[number, number]>,
   };
   const ix = (named: number, fallback: number): number => (hasHeader ? named : fallback);
@@ -498,6 +508,9 @@ export function parseZmvlTsv(tsv: string): FlowZmvlRow[] {
       stock_note: place.join('; '),
       stock_sus: at(p, ix(iSus, fixed.sus)),
       stock_mm: at(p, ix(iMm, fixed.mm)),
+      stock_cs: at(p, ix(iCs, fixed.cs)),
+      spp_cs: at(p, ix(iSpp, fixed.spp)),
+      stock_place: at(p, ix(iPlace, fixed.place)),
       deleted: at(p, ix(iDel, fixed.del)),
     });
   }

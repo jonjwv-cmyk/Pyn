@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   flowImportRunsGet,
@@ -43,8 +43,13 @@ function fmtDuration(startedAt: string, finishedAt: string): string {
  * (новых/правок/снято OFF/вернулось/смен складов/в ВГХ) + длительность от нажатия
  * до полного завершения пересчёта. Чтение `flow_import_runs_get` + реалтайм-добавление
  * новых записей сверху (`flow_import_logged`). Admin/developer-only (гейт `showLog`).
+ *
+ * Экран always-mounted (display-toggle в App) — журнал ПЕРЕЧИТЫВАЕТСЯ при каждом
+ * ОТКРЫТИИ раздела (юзер 2026-07-04: прогон был в БД, а в LOG не появился — WS-пуш
+ * `flow_import_logged` во время 70-сек SAP-прогона легко теряется на reconnect'е).
+ * Не polling: чтение только по действию юзера, с троттлом 15 с.
  */
-export function LogScreen(): JSX.Element {
+export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Element {
   const { t } = useTranslation();
   const [runs, setRuns] = useState<FlowImportRun[]>([]);
   const [scriptRuns, setScriptRuns] = useState<FlowScriptRun[]>([]);
@@ -54,23 +59,32 @@ export function LogScreen(): JSX.Element {
   // Presence — из единого источника (как у всех аватаров): статус-точка на аватаре прогона.
   const presenceByLogin = usePresenceStore((s) => s.byLogin);
 
-  useEffect(() => {
+  const lastFetchRef = useRef(0);
+  const fetchAll = useCallback(() => {
+    lastFetchRef.current = Date.now();
     let alive = true;
+    // Каждое чтение со своим catch: сбой одного журнала не прячет остальные.
     Promise.all([
-      flowImportRunsGet(api),
+      flowImportRunsGet(api).catch(() => [] as FlowImportRun[]),
       flowScriptRunsGet(api).catch(() => []),
       flowSapRunsGet(api).catch(() => []),
     ])
       .then(([imp, scr, sap]) => {
         if (!alive) return;
-        setRuns(imp);
-        setScriptRuns(scr);
-        setSapRuns(sap);
+        if (imp.length > 0) setRuns(imp);
+        if (scr.length > 0) setScriptRuns(scr);
+        if (sap.length > 0) setSapRuns(sap);
       })
-      .catch(() => { /* пусто — покажем 0 записей */ })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []);
+
+  useEffect(() => fetchAll(), [fetchAll]);
+  // Открытие раздела — перечитать (свежая правда сервера), не чаще раза в 15 с.
+  useEffect(() => {
+    if (!active || Date.now() - lastFetchRef.current < 15_000) return undefined;
+    return fetchAll();
+  }, [active, fetchAll]);
 
   // Реалтайм: завершённый прогон выгрузки — добавляем сверху (если ещё нет по id).
   useWsEvent<FlowImportLoggedEvent>('flow_import_logged', (e) => {
