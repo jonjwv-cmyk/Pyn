@@ -87,7 +87,7 @@ function FlowDriverEditor({
   } = cell.data;
   const [query, setQuery] = useState('');
   const multi = Array.isArray(selectedDrivers);
-  const [picked, setPicked] = useState<string[]>(() => (selectedDrivers ? [...selectedDrivers] : splitDriverNames(driver)));
+  const picked = selectedDrivers ? [...selectedDrivers] : splitDriverNames(driver);
 
   const matches = useMemo<readonly FlowDriverOption[]>(() => {
     const q = query.trim().toLowerCase();
@@ -126,12 +126,15 @@ function FlowDriverEditor({
 
   const pick = (o: FlowDriverOption): void => {
     if (multi) {
-      setPicked((prev) => {
-        const exists = prev.some((x) => x.toUpperCase() === o.fio.toUpperCase());
-        if (exists) return prev.filter((x) => x.toUpperCase() !== o.fio.toUpperCase());
-        if (prev.length >= maxSelected) return prev;
-        return [...prev, o.fio];
-      });
+      // БЕЗ кнопки «Готово» (юзер 2026-07-04): клик выбрал — сразу применилось,
+      // повторный клик по выбранному — снял.
+      const exists = picked.some((x) => x.toUpperCase() === o.fio.toUpperCase());
+      const next = exists
+        ? picked.filter((x) => x.toUpperCase() !== o.fio.toUpperCase())
+        : picked.length >= maxSelected
+          ? picked
+          : [...picked, o.fio];
+      finishMulti(next);
       return;
     }
     onFinishedEditing({
@@ -151,27 +154,6 @@ function FlowDriverEditor({
   const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   return (
     <div ref={flipRef} className="flex max-h-80 w-72 flex-col">
-      {multi && (
-        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-text-muted">
-          <span className="tabular-nums">{picked.length}/{maxSelected}</span>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => finishMulti([])}
-              className="rounded border border-white/[0.10] px-1.5 py-0.5 transition-colors hover:bg-white/[0.06] hover:text-text-strong"
-            >
-              Очистить
-            </button>
-            <button
-              type="button"
-              onClick={() => finishMulti(picked)}
-              className="rounded border border-accent-clay/40 px-1.5 py-0.5 text-accent-clay transition-colors hover:bg-accent-clay/10"
-            >
-              Готово
-            </button>
-          </div>
-        </div>
-      )}
       <input
         value={query}
         onChange={(e) => setQuery(e.target.value)}
@@ -318,7 +300,9 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
       for (let i = 0; i < shown.length; i += 1) {
         const name = shown[i] ?? '';
         const opt = byName.get(driverNameKey(name));
-        const label = shortFio(opt?.fio ?? name);
+        // Нумерация (юзер 2026-07-04): «1. Нанкин Александр М.», каждый на своей строке;
+        // отчество — инициалом (shortFio).
+        const label = `${i + 1}. ${shortFio(opt?.fio ?? name)}`;
         const color = opt?.color || '#9AA0A6';
         const cy = startY + i * slot;
         const hasPhone = phoneInCell && !!opt?.phoneDisplay;

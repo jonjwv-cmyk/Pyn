@@ -121,7 +121,8 @@ const FALLBACK_LAYOUT: FlowXlsxLayout = {
       { id: 'fr', head: 'От', width: 7, style: 'bold12-r' },
       { id: 'to', head: 'СП', width: 6.5, style: 'bold12-r' },
       { id: 'clst', head: 'CLST', width: 8.5, style: 'text12-r' },
-      { id: 'dlvord', head: 'Поставка', width: 13.2, style: 'bold12-r-wrap' },
+      // «Пост/Зак» (юзер 2026-07-04): в ячейке «поставка|поз» + «заказ|поз».
+      { id: 'dlvord', head: 'Пост/Зак', width: 13.2, style: 'bold12-r-wrap' },
       { id: 'trz', head: 'ТЗ', width: 6, style: 'text-r' },
       { id: 'mol', head: 'МОЛ', width: 23.2, style: 'mol' },
       { id: 'q', head: 'Q', width: 5.2, style: 'bold10' },
@@ -214,9 +215,10 @@ const TAIL_SECTION: Array<{
   { head: 'АВТОР', width: 10.7, style: 'text8', get: (r) => r.sapAuthor },
   { head: 'ДАТА', width: 9.7, style: 'text8', get: (r) => r.sapDate },
   { head: 'ВРЕМЯ', width: 10, style: 'text8', get: (r) => r.sapTime },
-  // Чистые номера БЕЗ позиций (юзер 2026-07-04): скопировать ячейку → вставить в SAP
-  // (там нужен просто номер поставки или заказа).
-  { head: 'Поставка/Заказ', width: 12.5, style: 'wrap8', get: (r) => [r.dlv, r.ord].filter(Boolean).join('\n') },
+  // Чистые номера БЕЗ позиций двумя колонками (юзер 2026-07-04): скопировать ячейку →
+  // вставить в SAP (там нужен просто номер заказа или поставки).
+  { head: 'ЗАКАЗ', width: 11.5, style: 'text8', get: (r) => r.ord },
+  { head: 'Поставка', width: 10.5, style: 'text8', get: (r) => r.dlv },
   { head: 'ОСТАТ', width: 10.6, style: 'num8', get: (r) => num(r.ostat) },
   { head: 'Запас ММ', width: 13.9, style: 'num8', get: (r) => num(r.stockMm) },
   { head: 'Запас СУС', width: 13.7, style: 'num8', get: (r) => num(r.stockSus) },
@@ -576,8 +578,13 @@ export function buildExpedGroups(rowsIn: ExpedXlsxRow[]): ExpedGroup[] {
     const src = byGarage.get(g) ?? [];
     const grouped = new Map<string, Grp>();
     for (const r of src) {
-      const key = [r.fr, r.to_wh, r.mol ? '0' : '1', r.mol, r.no_num, uomCanon(r.uom), r.mat, r.note.trim()]
-        .map((s) => String(s).trim().toUpperCase())
+      // Нормализуем части ключа (юзер 2026-07-04: «объединение пропало» — лишние
+      // пробелы/переводы строк в МОЛ/комменте не должны мешать схлопыванию). МОЛ —
+      // фамилия + ИНИЦИАЛ имени: «Черепанов Д.» и «Черепанов Дмитрий М.» = один человек.
+      const molWords = r.mol.trim().split(/\s+/);
+      const molKey = molWords.length > 0 ? `${molWords[0]} ${(molWords[1] ?? '').slice(0, 1)}` : '';
+      const key = [r.fr, r.to_wh, r.mol ? '0' : '1', molKey, r.no_num, uomCanon(r.uom), r.mat, r.note]
+        .map((s) => String(s).replace(/\s+/g, ' ').trim().toUpperCase())
         .join('|');
       // Просто номер поставки БЕЗ позиции (юзер 2026-07-04) — дубли схлопнутся Set-логикой.
       const dlvLine = r.dlv;

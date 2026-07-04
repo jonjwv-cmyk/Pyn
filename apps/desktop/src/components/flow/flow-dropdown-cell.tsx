@@ -42,40 +42,22 @@ function FlowMultiEditor({
   onFinishedEditing: (newValue?: FlowDropdownCell) => void;
 }) {
   const { options, value, maxSelected = 3 } = cell.data;
-  const [picked, setPicked] = useState<string[]>(() =>
-    value.split('\n').map((s) => s.trim()).filter(Boolean),
-  );
-  const commit = (items: readonly string[]) =>
-    onFinishedEditing({ ...cell, data: { ...cell.data, value: items.join('\n') } });
-  const toggle = (o: string) =>
-    setPicked((prev) =>
-      prev.includes(o) ? prev.filter((x) => x !== o) : prev.length >= maxSelected ? prev : [...prev, o],
-    );
+  const picked = value.split('\n').map((s) => s.trim()).filter(Boolean);
+  // БЕЗ кнопки «Готово» (юзер 2026-07-04): клик выбрал — сразу применилось (окно
+  // закрылось), повторный клик по выбранному — снял. Как у МОЛ, без галочек.
+  const toggle = (o: string): void => {
+    const next = picked.includes(o)
+      ? picked.filter((x) => x !== o)
+      : picked.length >= maxSelected
+        ? picked
+        : [...picked, o];
+    onFinishedEditing({ ...cell, data: { ...cell.data, value: next.join('\n') } });
+  };
   const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   return (
     <div ref={flipRef} className="flex w-56 flex-col text-text-secondary">
-      <div className="mb-1 flex items-center justify-between px-1 text-[11px] text-text-muted">
-        <span className="tabular-nums">{picked.length}/{maxSelected}</span>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => commit([])}
-            className="rounded border border-white/10 px-1.5 py-0.5 transition-colors hover:bg-white/[0.06] hover:text-text-strong"
-          >
-            Очистить
-          </button>
-          <button
-            type="button"
-            onClick={() => commit(picked)}
-            className="rounded border border-accent-clay/40 bg-accent-clay/20 px-1.5 py-0.5 text-text-strong transition-colors hover:bg-accent-clay/30"
-          >
-            Готово
-          </button>
-        </div>
-      </div>
       <div className="flex min-h-0 flex-col overflow-y-auto">
-        {/* Без галочек (юзер 2026-07-04): как у МОЛ — выбранные ВВЕРХУ списка и подсвечены,
-            клик выбирает, повторный клик снимает. */}
+        {/* Выбранные ВВЕРХУ списка и подсвечены. */}
         {[...options]
           .sort((a, b) => (picked.includes(b) ? 1 : 0) - (picked.includes(a) ? 1 : 0))
           .map((o) => {

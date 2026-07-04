@@ -115,6 +115,7 @@ import {
   formatApprovedDates,
   formatUploadDay,
   formatUploadDayParts,
+  flowDate,
   buildActiveColumns,
   FLOW_INFO_COLUMNS,
   FLOW_INFO_IDS,
@@ -2220,7 +2221,10 @@ export function FlowSandboxGrid(): JSX.Element {
             data: { kind: 'flow-two', primary: p.date, secondary: p.time, bold: true },
           } satisfies FlowTwoCell;
         }
-        const txt = String(raw ?? '');
+        // Дата создания заказа — «июнь 6, 2026» (месяц день, год целиком; юзер 2026-07-04).
+        const txt = spec.id === 'load_dt' && rowData.load_dt
+          ? flowDate(rowData.load_dt, { year: true })
+          : String(raw ?? '');
         return {
           kind: GridCellKind.Text,
           data: txt,

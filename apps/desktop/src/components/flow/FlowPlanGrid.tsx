@@ -20,7 +20,6 @@ import { planEtalonCompare } from './flow-plan-sort';
 import { garageRowColor, garageFillArgb } from './flow-garage-color';
 import {
   buildPlanXlsxSheets, planXlsxFilename, buildExpedXlsxBook, expedXlsxFilename,
-  buildExpedGroups, fileDateRu, type ExpedGroup,
   type PlanXlsxRow, type PlanXlsxLists, type ExpedXlsxRow,
 } from './flow-export-xlsx';
 import { downloadXlsx } from '@/lib/xlsx-lite';
@@ -29,7 +28,6 @@ import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
 import { flowTwoToneRenderer, type FlowTwoCell } from './flow-composed-cells';
 import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
 import { FlowAnchorHistoryCard, type FlowAnchorHistoryTarget } from './FlowAnchorHistoryCard';
-import { FlowExpedPrint } from './FlowExpedPrint';
 import { VghEditCard } from '@/components/vgh/VghEditCard';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { flowVehicleRenderer, type FlowVehicleCell, type FlowVehicleOption } from './flow-vehicle-cell';
@@ -83,7 +81,7 @@ import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-form
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import {
   fmtNum3, MONTH_ABBR_RU, parseMol, compactFio, matCardLines, needsWarn,
-  nearestGraphDate, graphDayLabel, graphDateSoon, todayIsoLocal, formatUploadDay, formatUploadDayParts,
+  nearestGraphDate, graphDayLabel, graphDateSoon, todayIsoLocal, formatUploadDay, formatUploadDayParts, flowDate,
 } from './flow-sandbox.fixtures';
 // CSV-экспорт (flow-export) убран (юзер 2026-07-03) — только «План .xlsx» из Отчёта.
 
@@ -1182,7 +1180,9 @@ export function FlowPlanGrid({
           // НАШ маркер кузова (БОРТ/ПУЛЬМАН/…) из поля vehicle — НЕ тянем из машины (юзер 2026-06-15).
           return r.vehicle || '';
         case 'vehicle':
-          return splitMultiCell(r.ride_id || r.vehicle || '').join('\n');
+          // ID (гаражный) — ТОЛЬКО ride_id, руками; тип ТС сюда НЕ подставляем
+          // (юзер 2026-07-04: «выбор типа ТС не должен появляться в колонке ID»).
+          return splitMultiCell(r.ride_id || '').join('\n');
         case 'note':
           // Черновик с якорем — живой коммент якоря; ручная строка БЕЗ якоря — со строки.
           return Number(r.fixation_id) > 0 ? r.snap_note || '' : anchor ? anchor.note ?? '' : r.snap_note || '';
@@ -1202,7 +1202,8 @@ export function FlowPlanGrid({
         case 'time_at':
           return formatUploadDay(anchor?.time_at ?? '');
         case 'load_dt':
-          return anchor?.load_dt ?? '';
+          // Дата создания заказа — «июнь 6, 2026» (месяц день, год целиком; юзер 2026-07-04).
+          return anchor?.load_dt ? flowDate(anchor.load_dt, { year: true }) : '';
         case 'created_by':
           return anchor?.created_by ?? '';
         case 'mat_full':
@@ -1506,7 +1507,9 @@ export function FlowPlanGrid({
             kind: 'flow-mat',
             name: r.mat ?? '',
             warn: anchor ? needsWarn(anchor) : false,
-            lines: anchor ? matCardLines(anchor) ?? [] : [],
+            // Как в Формировании (юзер 2026-07-04): только «Вывезено % — X из Y» —
+            // Создал/Выгружен/тех-имя уже разнесены по инфо-колонкам.
+            lines: anchor ? matCardLines(anchor, { pctOnly: true }) ?? [] : [],
           },
         };
         return cell;
@@ -1585,7 +1588,8 @@ export function FlowPlanGrid({
       const text = cellText(spec, r);
       const displayText =
         spec.id === 'vehicleType'
-          ? wrapWordsMaxLines(text, (colWidths.vehicleType ?? 130) - REPORT_HPAD * 2, 2)
+          // До 3 строк, чтобы тип влезал ЦЕЛИКОМ («ПУЛЬМАН 9М» резался на 2 — юзер 2026-07-04).
+          ? wrapWordsMaxLines(text, (colWidths.vehicleType ?? 130) - REPORT_HPAD * 2, 3)
           : text;
       // Ручные строки (написанные с нуля): поля пишутся прямо в таблице — сверх editable.
       // Буферные/SAP-строки сюда не попадают (юзер 2026-07-04: у них стандартный набор).
@@ -1972,7 +1976,8 @@ export function FlowPlanGrid({
         }
         if (spec.id === 'vehicleType' && data.kind === 'flow-dropdown') {
           // ТИП ТС — наш маркер кузова (до 3), НЕ из машины. Пишем в vehicle, ride_id не трогаем.
-          const types = splitMultiCell(String(data.value ?? ''));
+          // Вставка скопированной ячейки «БОРТ, ПУЛЬМАН» (copyData через запятую) — тоже понимаем.
+          const types = splitMultiCell(String(data.value ?? '').replace(/,\s*/g, '\n'));
           if (types.length > 3) {
             setMsg('Можно выбрать не больше трёх типов ТС');
             return;
@@ -2175,6 +2180,9 @@ export function FlowPlanGrid({
       if (!r) return undefined;
       // P5: дубль/ERROR-подсветка — только в Плане (в Отчёте поставка одна и та же).
       if (mode === 'plan') {
+        // Зафиксированный слепок в Плане — СЕРОВАТАЯ ЗАЛИВКА, не только текст (юзер
+        // 2026-07-04): видно, что строки не активны и там ничего не выбрать.
+        if (Number(r.fixation_id) > 0) return { bgCell: '#EFEEE9', textDark: '#8C8983' };
         const flag = flagById.get(r.id) ?? '';
         if (flag === 'ERROR') return { bgCell: '#FBE3E0', textDark: '#8A1F11' };
         if (flag === 'DUPLICATE') return { bgCell: '#FCEFD9', textDark: '#7A4B0F' };
@@ -2210,9 +2218,11 @@ export function FlowPlanGrid({
   // Выбрал цвет в палитре → кисть АКТИВНА: клик по строке заливает (повторный клик тем
   // же цветом снимает), протяжка мышью заливает диапазон. Хранится на строке (row_fill),
   // реалтайм всем, уходит и в xlsx-скачку. «Снять» — кисть-ластик.
+  // Контрастнее, чтобы соседние машины не сливались (юзер 2026-07-04) — но пастель:
+  // тёмный текст читается на любом из них.
   const PAINT_COLORS = [
-    'FDE2E4', 'FFE0B5', 'FDF3B4', 'DFF5CE', 'CDEFE3',
-    'D6E9FF', 'E4DAFF', 'F9D8F2', 'E2E2DE', 'F3D9C9',
+    'F5A3A3', 'FFBE7A', 'F5DE5A', '9FDD8C', '7ED4C0',
+    '8FC1F7', 'B79BF0', 'F191D3', 'C9C9C2', 'D9A98C',
   ];
   const [paintColor, setPaintColor] = useState<string | 'clear' | null>(null);
   const [paintOpen, setPaintOpen] = useState(false);
@@ -2364,10 +2374,8 @@ export function FlowPlanGrid({
   // Раскладка выгрузки — СЕРВЕРНАЯ (кэш на сессию): формат правится без обновления
   // приложения; сервер недоступен → встроенный дефолт.
   const xlsxLayoutRef = useRef<FlowXlsxLayout | null | undefined>(undefined);
-  // Печать «Экспедиторам» из приложения (юзер 2026-07-04) — превью как у Транспорта.
-  const [expedPrint, setExpedPrint] = useState<{ title: string; groups: ExpedGroup[] } | null>(null);
   const runXlsxExport = useCallback(
-    async (batch: number | 'all' | 'exped' | 'exped-print') => {
+    async (batch: number | 'all' | 'exped') => {
       if (!selectedDay) {
         setMsg('Выберите день отчёта в календаре');
         return;
@@ -2381,7 +2389,7 @@ export function FlowPlanGrid({
           Number(x.fixation_id) > 0 &&
           Number(x.reserved) !== 1 &&
           (x.plan_date || '').slice(0, 10) === selectedDay &&
-          (batch === 'all' || batch === 'exped' || batch === 'exped-print' || Number(x.batch_seq) === batch) &&
+          (batch === 'all' || batch === 'exped' || Number(x.batch_seq) === batch) &&
           !isDone(x),
       );
       if (dayRows.length === 0) {
@@ -2391,10 +2399,10 @@ export function FlowPlanGrid({
       if (xlsxLayoutRef.current === undefined) {
         xlsxLayoutRef.current = await flowXlsxLayoutGet(api);
       }
-      // Файл/ПЕЧАТЬ «Экспедиторам» (юзер 2026-07-03/04): раскидка по машинам (гаражный),
-      // схлопывание одинаковых получатель+отправитель+материал (МОЛ тот же, комменты не
-      // отличаются), разрыв страницы по машине, внутри сортировка по материалу.
-      if (batch === 'exped' || batch === 'exped-print') {
+      // Файл «Экспедиторам» (юзер 2026-07-03/04, печать из приложения УБРАНА — только
+      // скачка): раскидка по машинам (гаражный), схлопывание одинаковых получатель+
+      // отправитель+материал (МОЛ тот же, комменты не отличаются), разрыв по машине.
+      if (batch === 'exped') {
         const expInputs: ExpedXlsxRow[] = dayRows.map((x) => {
           const vgh = vghByKey.get(normVghKey(x.no_num));
           const q = effQty(x);
@@ -2417,10 +2425,6 @@ export function FlowPlanGrid({
             fillArgb: garage ? garageFillArgb(garage) : '',
           };
         });
-        if (batch === 'exped-print') {
-          setExpedPrint({ title: fileDateRu(selectedDay), groups: buildExpedGroups(expInputs) });
-          return;
-        }
         const book = buildExpedXlsxBook(selectedDay, expInputs, xlsxLayoutRef.current);
         downloadXlsx(expedXlsxFilename(selectedDay), book.sheets, { definedNames: book.definedNames });
         setMsg(`Экспедиторам: ${dayRows.length} строк выгружено`);
@@ -2759,32 +2763,41 @@ export function FlowPlanGrid({
             )}
           </div>
         )}
-        {/* «Скачать» (юзер 2026-07-03): без заголовка в списке — только пункты
-            «Кладовщикам план / Кладовщикам доп. N / Кладовщиков общий / Экспедиторам».
-            Кладовщичьи — с цветом машин; выполненные (зелёные) строки не печатаются.
-            В ПЛАНЕ доступно, когда день зафиксирован (юзер 2026-07-04: качается слепок). */}
+        {/* «Скачать» (юзер 2026-07-04): раздельно по вкладкам. ПЛАН (день зафиксирован,
+            качается слепок): Кладовщикам план / доп. N / Кладовщиков общий. ОТЧЁТ:
+            Экспедиторам (по машинам) + «Кладовщикам экспедиторы» (общий с цветами машин/
+            заливкой). Выполненные (зелёные) строки в файлы не идут. */}
         {(mode === 'report' || reportBatches.length > 0) && (
           <select
             defaultValue=""
             onChange={(e) => {
               const v = e.target.value;
-              if (v) void runXlsxExport(v === 'all' || v === 'exped' || v === 'exped-print' ? v : Number(v));
+              if (v) void runXlsxExport(v === 'all' || v === 'exped' ? v : Number(v));
               e.target.value = '';
             }}
-            title="Скачать файлы дня в Excel: кладовщикам (с цветом машин) или экспедиторам (по машинам)"
-            className="h-6 max-w-[170px] shrink-0 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25"
+            title={mode === 'plan'
+              ? 'Скачать зафиксированный план дня в Excel (кладовщикам)'
+              : 'Скачать файлы дня в Excel: экспедиторам (по машинам) или кладовщикам с раскидкой'}
+            className="h-6 max-w-[190px] shrink-0 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25"
           >
             <option value="" disabled hidden>
               Скачать…
             </option>
-            {reportBatches.map(({ batch, rank }) => (
-              <option key={batch} value={batch}>
-                {rank === 1 ? 'Кладовщикам план' : `Кладовщикам доп. ${rank - 1}`}
-              </option>
-            ))}
-            <option value="all">Кладовщиков общий</option>
-            <option value="exped">Экспедиторам</option>
-            <option value="exped-print">Печать экспедиторам</option>
+            {mode === 'plan' ? (
+              <>
+                {reportBatches.map(({ batch, rank }) => (
+                  <option key={batch} value={batch}>
+                    {rank === 1 ? 'Кладовщикам план' : `Кладовщикам доп. ${rank - 1}`}
+                  </option>
+                ))}
+                <option value="all">Кладовщиков общий</option>
+              </>
+            ) : (
+              <>
+                <option value="exped">Экспедиторам</option>
+                <option value="all">Кладовщикам экспедиторы</option>
+              </>
+            )}
           </select>
         )}
         {/* Кнопка «+ Строка» УБРАНА (юзер 2026-07-03): пустая ручная строка добавляется
@@ -2980,10 +2993,6 @@ export function FlowPlanGrid({
         load={(ord, it) => flowDeliveryEventsGet(api, ord, it)}
         onClose={() => setHistoryCard(null)}
       />
-      {/* Печать «Экспедиторам» из приложения (юзер 2026-07-04) — превью как у Транспорта. */}
-      {expedPrint && (
-        <FlowExpedPrint title={expedPrint.title} groups={expedPrint.groups} onClose={() => setExpedPrint(null)} />
-      )}
       {pendingTransfer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
           <div className="w-[360px] rounded-xl border border-black/10 bg-[#FDFDFB] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.28)]">
