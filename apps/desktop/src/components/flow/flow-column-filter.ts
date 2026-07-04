@@ -50,8 +50,18 @@ export function useFlowColumnFilters<TRow extends { id: number }>(args: {
   columns: { id: string; title: string }[];
   rows: TRow[];
   getValue: (row: TRow, colId: string) => string;
+  /** Ключ СОРТИРОВКИ значения колонки (даты: сырой ISO → хронология, юзер 2026-07-04
+   *  «июль июнь 2 вместе»). null/не задан — сортируем по видимому значению (getValue). */
+  sortKeyOf?: (row: TRow, colId: string) => string | null;
 }): FlowColumnFiltersApi<TRow> {
-  const { columns, rows, getValue } = args;
+  const { columns, rows, getValue, sortKeyOf } = args;
+  const keyOf = useCallback(
+    (row: TRow, colId: string): string => {
+      const k = sortKeyOf?.(row, colId);
+      return k == null || k === '' ? getValue(row, colId) : k;
+    },
+    [sortKeyOf, getValue],
+  );
   const [filters, setFilters] = useState<Record<string, FlowColFilter>>({});
   const [sort, setSort] = useState<{ colId: string; dir: 'asc' | 'desc' } | null>(null);
   const [menu, setMenu] = useState<FlowHeaderMenuAnchor | null>(null);
@@ -92,22 +102,26 @@ export function useFlowColumnFilters<TRow extends { id: number }>(args: {
       const { colId, dir } = sort;
       const sign = dir === 'asc' ? 1 : -1;
       return [...src].sort(
-        (a, b) => sign * getValue(a, colId).localeCompare(getValue(b, colId), 'ru', { numeric: true }),
+        (a, b) => sign * keyOf(a, colId).localeCompare(keyOf(b, colId), 'ru', { numeric: true }),
       );
     },
-    [sort, getValue],
+    [sort, keyOf],
   );
 
   // Каскадные значения колонки открытого меню (по строкам, прошедшим ОСТАЛЬНЫЕ фильтры).
+  // Сортировка чек-листа — по sortKeyOf (даты хронологически), показ — getValue.
   const menuValues = useMemo<string[]>(() => {
     if (!menuColId) return [];
-    const set = new Set<string>();
+    const byLabel = new Map<string, string>(); // label → sort key (первое вхождение)
     for (const r of filterRows(rows, menuColId)) {
-      set.add(getValue(r, menuColId));
-      if (set.size >= MAX_DISTINCT) break;
+      const label = getValue(r, menuColId);
+      if (!byLabel.has(label)) byLabel.set(label, keyOf(r, menuColId));
+      if (byLabel.size >= MAX_DISTINCT) break;
     }
-    return [...set].sort((a, b) => a.localeCompare(b, 'ru', { numeric: true }));
-  }, [menuColId, filterRows, rows, getValue]);
+    return [...byLabel.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1], 'ru', { numeric: true }))
+      .map(([label]) => label);
+  }, [menuColId, filterRows, rows, getValue, keyOf]);
 
   const menuFilter = menuColId ? filters[menuColId] : undefined;
   const menuSearch = menuFilter?.search ?? '';

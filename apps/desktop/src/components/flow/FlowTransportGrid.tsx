@@ -536,10 +536,14 @@ export function FlowTransportGrid(): JSX.Element {
   const cols = useMemo(() => (showDate ? TR_COLS : TR_COLS.filter((c) => c.id !== 'date')), [showDate]);
 
   // База показа: статус-чипы и день (свободный поиск НЕ прячет строки — он подсвечивает).
-  // Свежий день сверху, внутри дня — по номеру работы.
+  // Свежий день сверху, внутри дня — по номеру работы. Дни НЕ выбраны → ТЕКУЩИЙ МЕСЯЦ
+  // (+ будущее), а не весь архив (юзер 2026-07-04); прошлые месяцы — выбором дней в календаре.
+  const currentMonthPrefix = useMemo(() => isoToday().slice(0, 7), []);
   const baseRows = useMemo(() => {
     const out = rows.filter((r) => {
-      if (daySel.size > 0 && !daySel.has(r.tdate)) return false;
+      if (daySel.size > 0) {
+        if (!daySel.has(r.tdate)) return false;
+      } else if ((r.tdate || '').slice(0, 7) < currentMonthPrefix) return false;
       if (statusFilter.size > 0 && !statusFilter.has(r.status || '')) return false;
       return true;
     });
@@ -551,7 +555,7 @@ export function FlowTransportGrid(): JSX.Element {
         a.id - b.id,
     );
     return out;
-  }, [rows, statusFilter, daySel]);
+  }, [rows, statusFilter, daySel, currentMonthPrefix]);
 
   // Значение ячейки для поиска/фильтра: объединённые колонки склеиваем «A · B» (№/ГОС,
   // Марка/Цвет, Водитель/тел) → чек-лист и поиск-сужение по любому под-значению.
@@ -1424,7 +1428,7 @@ export function FlowTransportGrid(): JSX.Element {
               )}
             >
               {daySel.size === 0
-                ? 'Все дни'
+                ? 'Текущий месяц'
                 : daySel.size === 1
                   ? fmtDay([...daySel][0] ?? '')
                   : daySel.size <= 4
@@ -1448,7 +1452,7 @@ export function FlowTransportGrid(): JSX.Element {
                     : 'border-accent-clay/60 text-text-strong',
                 )}
               >
-                Все дни
+                Текущий месяц
               </button>
               <FlowDayMultiPicker selected={daySel} onChange={setDaySel} dataDays={allDaysSet} />
               <div className="mt-1.5 px-1 text-[10.5px] leading-tight text-text-muted/60">

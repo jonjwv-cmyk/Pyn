@@ -286,6 +286,14 @@ function isManualRow(r: FlowDeliveryRow): boolean {
   return cb.startsWith('transfer:') || cb.startsWith('manual:') || cb.startsWith('paste:');
 }
 
+/** Строка, НАПИСАННАЯ руками с нуля (trailing-строка) — правятся ВСЕ видимые колонки
+ *  (юзер 2026-07-04). Вставленные из буфера в САПОВСКОМ формате (paste:) и перенесённые
+ *  (transfer:) — данные SAP: редактируется только стандартный набор (машина/экспедиторы/
+ *  статусы/МОЛ/коммент), как у строк выгрузки. */
+function isFreeEditRow(r: FlowDeliveryRow): boolean {
+  return String(r.created_by || '').startsWith('manual:');
+}
+
 /** Колонки, которые у РУЧНЫХ строк пишутся прямо в таблице (юзер 2026-07-03). */
 const MANUAL_EDIT_IDS = new Set(['date', 'qty', 'q', 'fr', 'to', 'no', 'mat', 'uom', 'dlvord']);
 
@@ -1237,10 +1245,21 @@ export function FlowPlanGrid({
   // Фильтры/сортировка колонок — меню-чек-лист как в Формировании. getValue = cellText
   // (объединённые ПОСТАВКА=dlv|pos, ЗАКАЗ=ord|it уже склеены — фильтр по любому под-значению
   // через поиск в меню). Индексы searchColumns выровнены с COLS/DataEditor.columns.
+  // Дат-колонки (DAY выг./Дата ORD) сортируются по СЫРОМУ ISO якоря — хронологически,
+  // а не по алфавиту ярлыков («июль июнь 2 вместе», юзер 2026-07-04).
+  const filterSortKey = useCallback(
+    (r: FlowDeliveryRow, colId: string): string | null => {
+      if (colId !== 'time_at' && colId !== 'load_dt') return null;
+      const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
+      return String((colId === 'time_at' ? anchor?.time_at : anchor?.load_dt) ?? '');
+    },
+    [anchorByKey],
+  );
   const colFilters = useFlowColumnFilters<FlowDeliveryRow>({
     columns: searchColumns,
     rows: baseRows,
     getValue: searchRaw,
+    sortKeyOf: filterSortKey,
   });
 
   // Показ = база → фильтры колонок → (колоночная сортировка перекрывает дефолтную).
@@ -1460,7 +1479,7 @@ export function FlowPlanGrid({
         };
         return cell;
       }
-      if (spec.id === 'mat' && !isManualRow(r)) {
+      if (spec.id === 'mat' && !isFreeEditRow(r)) {
         // MAT-карточка (read-only) — те же данные, что в Формировании: Создал/Выгружен/Удалён/
         // Вывезено%/тех-имя. Источник — ЯКОРЬ (живой расчёт; до фиксации пересчёт виден везде).
         // Доступна на ВСЕХ строках (это просмотр, ограничение 7 дней не применяем). ТЗ §7.
@@ -1555,8 +1574,9 @@ export function FlowPlanGrid({
         spec.id === 'vehicleType'
           ? wrapWordsMaxLines(text, (colWidths.vehicleType ?? 130) - REPORT_HPAD * 2, 2)
           : text;
-      // Ручные строки: поля пишутся прямо в таблице (юзер 2026-07-03) — сверх editable.
-      const manualCell = isManualRow(r) && spec.id !== 'date' && MANUAL_EDIT_IDS.has(spec.id);
+      // Ручные строки (написанные с нуля): поля пишутся прямо в таблице — сверх editable.
+      // Буферные/SAP-строки сюда не попадают (юзер 2026-07-04: у них стандартный набор).
+      const manualCell = isFreeEditRow(r) && spec.id !== 'date' && MANUAL_EDIT_IDS.has(spec.id);
       const editable = (!!spec.editable || manualCell) && !locked;
       // Перенос по словам (П6) — МАТЕРИАЛ/КОММЕНТАРИЙ; ПОСТАВКА·ЗАКАЗ — 2 строки через \n.
       // ТИП ТС переносим сами по словам в 2 строки, чтобы Glide не резал буквы.
@@ -2026,8 +2046,9 @@ export function FlowPlanGrid({
       // Поля самой поставки. Кол-во валидируем ДО оптимистичного показа.
       const fields: Record<string, string | number | null> = {};
       if (spec.id === 'qty') {
-        // Ручные строки (вставка/добавление) — кол-во правится и после фиксации (юзер 2026-07-02).
-        if (Number(r.fixation_id) > 0 && !isManualRow(r)) {
+        // Ручные (написанные с нуля) строки — кол-во правится и после фиксации; буферные/
+        // SAP-строки после фиксации неизменны (юзер 2026-07-04: «слепок»).
+        if (Number(r.fixation_id) > 0 && !isFreeEditRow(r)) {
           setMsg('Состав зафиксирован — кол-во не меняется (свободны машина/экспедиторы/ID)');
           return;
         }
@@ -2067,13 +2088,14 @@ export function FlowPlanGrid({
         fields.ride_id = ids.join('\n');
       }
       else if (spec.id === 'q') fields.q_spec = raw;
-      // Ручные строки: остальные поля пишутся прямо в таблице (юзер 2026-07-03).
-      else if (isManualRow(r) && spec.id === 'fr') fields.fr = raw.trim();
-      else if (isManualRow(r) && spec.id === 'to') fields.to_wh = raw.trim();
-      else if (isManualRow(r) && spec.id === 'no') fields.no_num = raw.trim();
-      else if (isManualRow(r) && spec.id === 'mat') fields.mat = raw;
-      else if (isManualRow(r) && spec.id === 'uom') fields.uom = raw.trim();
-      else if (isManualRow(r) && spec.id === 'dlvord') {
+      // Ручные (написанные с нуля) строки: остальные поля пишутся прямо в таблице.
+      // Буферные (paste:)/SAP — эти поля НЕ правятся (юзер 2026-07-04: саповский формат).
+      else if (isFreeEditRow(r) && spec.id === 'fr') fields.fr = raw.trim();
+      else if (isFreeEditRow(r) && spec.id === 'to') fields.to_wh = raw.trim();
+      else if (isFreeEditRow(r) && spec.id === 'no') fields.no_num = raw.trim();
+      else if (isFreeEditRow(r) && spec.id === 'mat') fields.mat = raw;
+      else if (isFreeEditRow(r) && spec.id === 'uom') fields.uom = raw.trim();
+      else if (isFreeEditRow(r) && spec.id === 'dlvord') {
         // «Поставка|П/П» первой строкой, «заказ|позиция» второй (как показ ячейки).
         const lines = raw.replace(/\r\n?/g, '\n').split('\n').map((s) => s.trim());
         const [dlvLine = '', ordLine = ''] = lines;
@@ -2351,9 +2373,13 @@ export function FlowPlanGrid({
           stockSus: x.stock_sus ?? null,
           stockMm: x.stock_mm ?? null,
           // Хвост после ID (юзер 2026-07-04): АВТОР/ДАТА/ВРЕМЯ создания поставки в SAP,
-          // ОСТАТ (СвОстЦС) / СПП Ост ЦС / «Складское место» — с zm_vl-сверки.
+          // ОСТАТ (СвОстЦС) / СПП Ост ЦС / «Складское место» — из буфера/zm_vl-сверки.
+          // Дата может быть ISO (вставка) или DD.MM.YYYY (zm_vl) — в файл единообразно DD.MM.YYYY.
           sapAuthor: x.sap_created_by || '',
-          sapDate: (x.sap_created_at || '').split(/\s+/)[0] ?? '',
+          sapDate: (() => {
+            const d = (x.sap_created_at || '').split(/\s+/)[0] ?? '';
+            return /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : d;
+          })(),
           sapTime: (x.sap_created_at || '').split(/\s+/)[1] ?? '',
           ostat: x.stock_cs ?? null,
           sppCs: x.spp_cs ?? null,

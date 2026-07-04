@@ -196,10 +196,21 @@ export function buildActiveColumns(visibleInfo: ReadonlySet<string>): FlowColumn
   return out;
 }
 
-/** Формат «DAY выг.» (time_at → «3 июля 2026, 1:16 pm»): месяц, день, время am/pm. */
+/** Формат «DAY выг.» (юзер 2026-07-04): «июль 6 12:59 pm». Время выгрузки сервер пишет
+ *  в UTC (nowStr) — показываем по ЕКАТЕРИНБУРГУ (+05:00, DST нет; скрипт гнал в 12:50,
+ *  а колонка показывала 7:51 utc). Год дописываем только если НЕ текущий («июль 6 2025 …»). */
 export function formatUploadDay(timeAt: string | undefined): string {
-  const t = parseTime(timeAt ?? '');
-  return t ? t.full : '';
+  const s = String(timeAt ?? '').trim();
+  if (!s) return '';
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return s;
+  const utcMs = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+  const yek = new Date(utcMs + 5 * 3600_000);
+  const h = yek.getUTCHours();
+  const mm = String(yek.getUTCMinutes()).padStart(2, '0');
+  const nowYekYear = new Date(Date.now() + 5 * 3600_000).getUTCFullYear();
+  const y = yek.getUTCFullYear();
+  return `${MONTH_ABBR_RU[yek.getUTCMonth()] ?? ''} ${yek.getUTCDate()}${y === nowYekYear ? '' : ` ${y}`} ${h % 12 || 12}:${mm} ${h < 12 ? 'am' : 'pm'}`;
 }
 
 /**
@@ -620,7 +631,8 @@ export function flowMatSubText(sub: FlowMatSubId, row: FlowSandboxRow): string {
     case 'load_dt':
       return row.load_dt ? flowDate(row.load_dt, { year: true }) : '';
     case 'time_at':
-      return row.time_at ? formatDateRu(row.time_at) : '';
+      // Как в колонке «DAY выг.» (единый показ + Екб-время, юзер 2026-07-04).
+      return row.time_at ? formatUploadDay(row.time_at) : '';
     default: {
       const raw = row[sub];
       return raw == null ? '' : String(raw);
@@ -667,11 +679,12 @@ export function matCardLines(row: MatCardRow): FlowCardLine[] | null {
     const cd = formatDateRu(row.load_dt);
     lines.push({ t: `Создал: ${row.created_by}${cd ? ` — ${cd}` : ''}`, muted: true, nowrap: true });
   }
-  const up = formatDateRu(row.time_at);
+  // time_at/off_at — серверные UTC-метки: показ по Екатеринбургу (formatUploadDay).
+  const up = formatUploadDay(row.time_at);
   if (up) lines.push({ t: `Выгружен: ${up}`, muted: true, nowrap: true });
   // Дата удаления — для OFF-строк (когда заказ пропал из выгрузки).
   if (row.day_wk === 'OFF' && row.off_at) {
-    const off = formatDateRu(row.off_at);
+    const off = formatUploadDay(row.off_at);
     if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
   }
   // В КАРТОЧКЕ показываем вывоз всегда, когда есть данные (в т.ч. 0%); в КОЛОНКЕ 0 не пишем.

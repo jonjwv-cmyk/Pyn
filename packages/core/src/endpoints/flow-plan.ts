@@ -369,6 +369,12 @@ export interface FlowPlanPasteRow {
    *  Запас СМ1 (AH) / СМ2 (AJ) / СМ3 (AL), строками. ВСЕ нули/пусто → сервер пишет
    *  «нет на <дата создания>»; хоть одна > 0 → наличие есть. Пустой массив = неизвестно. */
   stock_vals: string[];
+  /** Хвост xlsx-плана из буфера (юзер 2026-07-04, «данные уже есть — тянуть сразу»):
+   *  ОСТАТ = СвОстЦС (V=21) / Запас СУС (AD=29) / СПП Ост ЦС (AC=28) / Склад место (AE=30). */
+  stock_cs: string;
+  stock_sus: string;
+  spp_cs: string;
+  stock_place: string;
   /** Q — аварийный/особый запас (кол. «Особый запас», K буфера). */
   q_spec: string;
 }
@@ -407,8 +413,9 @@ function planPasteTime(raw: string): string {
 const PP = {
   date: 0, fr: 2, to: 3, dlv: 6, dlvPos: 7, trz: 8, qSpec: 10,
   noNum: 11, mat: 12, uom: 13, qty: 14,
+  ostat: 21, // СвОстЦС → ОСТАТ (хвост xlsx-плана)
   ord: 22, it: 23, createdBy: 24, createdDate: 25, createdTime: 26,
-  stockMm: 27,
+  stockMm: 27, spp: 28, stockSus: 29,
   place1: 30, place1Qty: 31, place2: 32,
 } as const;
 /** Колонки НАЛИЧИЯ (юзер 2026-07-03): Запас ММ (AB=27), Запас СУС (AD=29),
@@ -454,6 +461,11 @@ export function parsePlanPasteTsv(text: string): FlowPlanPasteRow[] {
       stock_mm: c.length > PP.stockMm ? (c[PP.stockMm] ?? '').trim() || '0' : '',
       // Все 5 колонок запасов (наличие); недоступные в короткой строке пропускаются.
       stock_vals: PP_STOCKS.filter((i) => c.length > i).map((i) => (c[i] ?? '').trim() || '0'),
+      // Хвост xlsx-плана — сразу из буфера (юзер 2026-07-04), не ждём zm_vl-сверку.
+      stock_cs: c[PP.ostat] ?? '',
+      stock_sus: c[PP.stockSus] ?? '',
+      spp_cs: c[PP.spp] ?? '',
+      stock_place: c[PP.place1] ?? '',
       q_spec: c[PP.qSpec] ?? '',
     });
   }
