@@ -33,25 +33,29 @@ export interface FlowDropdownData {
   readonly maxSelected?: number;
 }
 
-/** Мульти-редактор (ТИП ТС): чек-лист опций, локальный набор → «Готово» коммитит. */
+/** Мульти-редактор (ТИП ТС): клик копит выбор без закрытия, коммит — кликом вне окна. */
 function FlowMultiEditor({
   value: cell,
+  onChange,
   onFinishedEditing,
 }: {
   value: FlowDropdownCell;
+  onChange?: (newValue: FlowDropdownCell) => void;
   onFinishedEditing: (newValue?: FlowDropdownCell) => void;
 }) {
+  void onFinishedEditing; // закрытие делает Glide (клик вне / Escape)
   const { options, value, maxSelected = 3 } = cell.data;
   const picked = value.split('\n').map((s) => s.trim()).filter(Boolean);
-  // БЕЗ кнопки «Готово» (юзер 2026-07-04): клик выбрал — сразу применилось (окно
-  // закрылось), повторный клик по выбранному — снял. Как у МОЛ, без галочек.
+  // БЕЗ кнопки «Готово» (юзер 2026-07-04): клик выбрал / повторный снял; окно НЕ
+  // закрываем — можно выбрать ещё (onChange копит temp-значение Glide, коммит — кликом
+  // ВНЕ окна, Escape — отмена). Как у МОЛ, без галочек.
   const toggle = (o: string): void => {
     const next = picked.includes(o)
       ? picked.filter((x) => x !== o)
       : picked.length >= maxSelected
         ? picked
         : [...picked, o];
-    onFinishedEditing({ ...cell, data: { ...cell.data, value: next.join('\n') } });
+    onChange?.({ ...cell, data: { ...cell.data, value: next.join('\n') } });
   };
   const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   return (

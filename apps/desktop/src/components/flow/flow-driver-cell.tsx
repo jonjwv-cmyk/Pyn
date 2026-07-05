@@ -68,12 +68,16 @@ function shortFio(fio: string): string {
   return fio.trim();
 }
 
-/** Редактор: поиск по ФИО/должности/сот среди водителей базы. Выбор ТОЛЬКО из базы. */
+/** Редактор: поиск по ФИО/должности/сот среди водителей базы. Выбор ТОЛЬКО из базы.
+ *  Мультивыбор (экспедиторы): клик копит выбор БЕЗ закрытия окна (onChange → temp-значение
+ *  Glide), коммит — кликом ВНЕ окна (юзер 2026-07-04: «снова нужно выбирать ещё одного»). */
 function FlowDriverEditor({
   value: cell,
+  onChange,
   onFinishedEditing,
 }: {
   value: FlowDriverCell;
+  onChange?: (next: FlowDriverCell) => void;
   onFinishedEditing: (next?: FlowDriverCell) => void;
 }) {
   const {
@@ -109,32 +113,31 @@ function FlowDriverEditor({
     return sorted.slice(0, 40);
   }, [drivers, query, picked]);
 
-  const finishMulti = (items: readonly string[]): void =>
-    onFinishedEditing({
-      ...cell,
-      data: {
-        ...cell.data,
-        driver: items.join('\n'),
-        phone: '',
-        phoneDisplay: '',
-        color: '',
-        isMol: false,
-        until: '',
-        selectedDrivers: [...items],
-      },
-    });
+  const multiCell = (items: readonly string[]): FlowDriverCell => ({
+    ...cell,
+    data: {
+      ...cell.data,
+      driver: items.join('\n'),
+      phone: '',
+      phoneDisplay: '',
+      color: '',
+      isMol: false,
+      until: '',
+      selectedDrivers: [...items],
+    },
+  });
 
   const pick = (o: FlowDriverOption): void => {
     if (multi) {
-      // БЕЗ кнопки «Готово» (юзер 2026-07-04): клик выбрал — сразу применилось,
-      // повторный клик по выбранному — снял.
+      // Клик выбрал / повторный снял — окно НЕ закрываем (onChange копит temp-значение,
+      // Glide коммитит его кликом ВНЕ окна; Escape — отмена).
       const exists = picked.some((x) => x.toUpperCase() === o.fio.toUpperCase());
       const next = exists
         ? picked.filter((x) => x.toUpperCase() !== o.fio.toUpperCase())
         : picked.length >= maxSelected
           ? picked
           : [...picked, o.fio];
-      finishMulti(next);
+      onChange?.(multiCell(next));
       return;
     }
     onFinishedEditing({

@@ -17,9 +17,9 @@ import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { planEtalonCompare } from './flow-plan-sort';
-import { garageRowColor, garageFillArgb } from './flow-garage-color';
+import { garageRowColor, garageFillArgb, FLOW_FILL_PALETTE } from './flow-garage-color';
 import {
-  buildPlanXlsxSheets, planXlsxFilename, buildExpedXlsxBook, expedXlsxFilename,
+  buildPlanXlsxSheets, planXlsxFilename, buildExpedXlsxBook, expedXlsxFilename, kladExpedFilename,
   type PlanXlsxRow, type PlanXlsxLists, type ExpedXlsxRow,
 } from './flow-export-xlsx';
 import { downloadXlsx } from '@/lib/xlsx-lite';
@@ -1643,7 +1643,10 @@ export function FlowPlanGrid({
   // Вставка из буфера — тоже отменяемое действие (юзер 2026-07-02): undo убирает
   // вставленные строки (в резерв), redo вставляет их заново (новые id).
   type PasteAction = { kind: 'paste'; ids: number[]; rows: FlowPlanPasteRow[]; planDate?: string; target: 'plan' | 'report' };
-  type HistoryEntry = PlanEdit | PasteAction;
+  // Заливка выделенных строк — ОДНО действие истории (юзер 2026-07-04: «отмена как в
+  // экселе» снимает всю заливку разом).
+  type FillAction = { kind: 'fill'; items: PlanEdit[] };
+  type HistoryEntry = PlanEdit | PasteAction | FillAction;
   const undoRef = useRef<HistoryEntry[]>([]);
   const redoRef = useRef<HistoryEntry[]>([]);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
@@ -1697,10 +1700,36 @@ export function FlowPlanGrid({
     },
     [syncHistory],
   );
+  // Применить пачку правок заливки (одно действие: оптимистично + один запрос серверу).
+  const applyFillItems = useCallback(
+    (items: PlanEdit[], side: 'before' | 'after') => {
+      const cur = new Map(rowsRef.current.map((x) => [x.id, x] as const));
+      setRows((prev) => {
+        const byId = new Map(items.map((it) => [it.id, it[side]] as const));
+        const next = prev.map((x) => (byId.has(x.id) ? ({ ...x, ...byId.get(x.id) } as FlowDeliveryRow) : x));
+        planDlvCache = next;
+        rowsRef.current = next;
+        return next;
+      });
+      void flowDeliveriesEdit(
+        api,
+        items.map((it) => ({ id: it.id, row_version: cur.get(it.id)?.row_version ?? 0, fields: it[side] })),
+      ).then((res) => applyServerDlv(res.rows));
+    },
+    [applyServerDlv],
+  );
+
   const undo = useCallback(() => {
     const e = undoRef.current.pop();
     if (!e) return;
     if ('kind' in e) {
+      if (e.kind === 'fill') {
+        applyFillItems(e.items, 'before');
+        setMsg('Заливка отменена');
+        redoRef.current.push(e);
+        syncHistory();
+        return;
+      }
       // Отмена вставки: вставленные строки в резерв (повтор вставит заново).
       if (e.ids.length > 0) {
         setRows((prev) => {
@@ -1720,11 +1749,17 @@ export function FlowPlanGrid({
     applyDlvFields(e.id, e.before);
     redoRef.current.push(e);
     syncHistory();
-  }, [applyDlvFields, syncHistory]);
+  }, [applyDlvFields, applyFillItems, syncHistory]);
   const redo = useCallback(() => {
     const e = redoRef.current.pop();
     if (!e) return;
     if ('kind' in e) {
+      if (e.kind === 'fill') {
+        applyFillItems(e.items, 'after');
+        undoRef.current.push(e);
+        syncHistory();
+        return;
+      }
       // Повтор вставки: те же строки заново (сервер выдаст новые id — обновляем в записи).
       void flowPlanRowsApply(api, e.rows, { planDate: e.planDate, source: 'paste', target: e.target })
         .then((r) => {
@@ -1739,7 +1774,7 @@ export function FlowPlanGrid({
     applyDlvFields(e.id, e.after);
     undoRef.current.push(e);
     syncHistory();
-  }, [applyDlvFields, syncHistory]);
+  }, [applyDlvFields, applyFillItems, syncHistory]);
 
   const applyAnchorFields = useCallback(
     (anchor: FlowRow, fields: Record<string, string | number | null>) => {
@@ -2214,44 +2249,13 @@ export function FlowPlanGrid({
 
   const selectedCount = selection.rows.length;
 
-  // ── «Заливка» (юзер 2026-07-04): пастельная кисть для раскидки по машинам ────────
-  // Выбрал цвет в палитре → кисть АКТИВНА: клик по строке заливает (повторный клик тем
-  // же цветом снимает), протяжка мышью заливает диапазон. Хранится на строке (row_fill),
-  // реалтайм всем, уходит и в xlsx-скачку. «Снять» — кисть-ластик.
-  // Контрастнее, чтобы соседние машины не сливались (юзер 2026-07-04) — но пастель:
-  // тёмный текст читается на любом из них.
-  const PAINT_COLORS = [
-    'F5A3A3', 'FFBE7A', 'F5DE5A', '9FDD8C', '7ED4C0',
-    '8FC1F7', 'B79BF0', 'F191D3', 'C9C9C2', 'D9A98C',
-  ];
-  const [paintColor, setPaintColor] = useState<string | 'clear' | null>(null);
+  // ── «Заливка» как в Excel (юзер 2026-07-04): выделил ячейки → кнопка красит ВСЮ
+  // строку выбранным цветом. Цвет выбирается в палитре (квадрат в кнопке его показывает),
+  // окно палитры закрывается после выбора. Ластика нет: отмена = Undo (одно действие);
+  // повторная заливка тем же цветом по тем же строкам — снимает. Палитра единая с
+  // авто-цветом машин (FLOW_FILL_PALETTE).
+  const [paintColor, setPaintColor] = useState<string>(FLOW_FILL_PALETTE[0]);
   const [paintOpen, setPaintOpen] = useState(false);
-  const applyPaint = useCallback(
-    (rowIdxs: number[]) => {
-      if (!paintColor) return;
-      const targets: FlowDeliveryRow[] = [];
-      for (const i of rowIdxs) {
-        const r = viewRows[i];
-        if (r && !rowLocked(r)) targets.push(r);
-      }
-      if (targets.length === 0) return;
-      // Один ряд тем же цветом — тогл (снять); диапазон/другой цвет — покрасить.
-      const single = targets.length === 1;
-      const fillOf = (t: FlowDeliveryRow): string =>
-        paintColor === 'clear' ? '' : single && (t.row_fill || '') === paintColor ? '' : paintColor;
-      setRows((prev) => {
-        const byId = new Map(targets.map((t) => [t.id, fillOf(t)] as const));
-        const next = prev.map((x) => (byId.has(x.id) ? ({ ...x, row_fill: byId.get(x.id) } as FlowDeliveryRow) : x));
-        planDlvCache = next;
-        return next;
-      });
-      void flowDeliveriesEdit(
-        api,
-        targets.map((t) => ({ id: t.id, row_version: t.row_version, fields: { row_fill: fillOf(t) } })),
-      ).then((res) => applyServerDlv(res.rows));
-    },
-    [paintColor, viewRows, rowLocked, applyServerDlv],
-  );
   /** Индексы строк из выделения Glide (строки + текущий прямоугольник). */
   const selectionRowIdxs = (sel: GridSelection): number[] => {
     const out = new Set<number>();
@@ -2260,22 +2264,28 @@ export function FlowPlanGrid({
     if (range) for (let y = range.y; y < range.y + range.height; y++) out.add(y);
     return [...out];
   };
-  // Кисть активна: жест (клик/протяжка) копится в выделении, красим ОДИН раз на отпускании
-  // мыши (иначе протяжка красила бы каждое движение — конфликт row_version).
-  const paintSelRef = useRef<GridSelection | null>(null);
-  useEffect(() => {
-    if (!paintColor) return undefined;
-    const up = (): void => {
-      const sel = paintSelRef.current;
-      paintSelRef.current = null;
-      if (!sel) return;
-      const idxs = selectionRowIdxs(sel);
-      if (idxs.length > 0) applyPaint(idxs);
-      setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
-    };
-    window.addEventListener('pointerup', up);
-    return () => window.removeEventListener('pointerup', up);
-  }, [paintColor, applyPaint]);
+  const applyFillToSelection = useCallback(() => {
+    const targets: FlowDeliveryRow[] = [];
+    for (const i of selectionRowIdxs(selection)) {
+      const r = viewRows[i];
+      if (r && !rowLocked(r)) targets.push(r);
+    }
+    if (targets.length === 0) {
+      setMsg('Выделите ячейки строк — заливка красит строки целиком');
+      return;
+    }
+    // Все выбранные уже этого цвета → снимаем (повторное нажатие = убрать заливку).
+    const allSame = targets.every((t) => (t.row_fill || '') === paintColor);
+    const next = allSame ? '' : paintColor;
+    const items = targets.map((t) => ({
+      id: t.id,
+      before: { row_fill: t.row_fill || '' } as Record<string, string | number | null>,
+      after: { row_fill: next } as Record<string, string | number | null>,
+    }));
+    applyFillItems(items, 'after');
+    pushHistory({ kind: 'fill', items });
+    setMsg(next ? `Залито строк: ${targets.length}` : `Заливка снята: ${targets.length}`);
+  }, [selection, viewRows, rowLocked, paintColor, applyFillItems, pushHistory]);
 
   /** Массовая отметка отчёта (ТЗ §5.1): одно значение на все выделенные строки,
    *  БЕЗ привязки к складу — выбрал → протянулось. Причина чистится при «увезли». */
@@ -2415,8 +2425,11 @@ export function FlowPlanGrid({
             clst: clstRaw === 'ВЫЕЗД' || clstRaw === 'КХП' ? clstRaw : '',
             garage,
             vehicleType: splitMultiCell(x.vehicle || '').join(', '),
-            expeditors: deliveryExpeditors(x).map(expeditorDisplayName).join(', '),
+            // ПОЛНЫЕ ФИО выбранных экспедиторов машины (юзер 2026-07-04) — в шапку группы.
+            expeditors: deliveryExpeditors(x).map((n) => resolveExpeditorOpt(n)?.fio ?? expeditorDisplayName(n)),
             mol: compactFio(molFio),
+            // Сотовый МОЛа «8 901 438 8831» — в ячейку МОЛ файла (юзер 2026-07-04).
+            molPhone: formatMobilePhone(parseMol(x.snap_mol || '')?.phone ?? ''),
             uom: x.uom || '',
             kg: vgh?.weight_kg != null && q != null ? q * vgh.weight_kg : null,
             v: vgh?.volume_m3 != null && q != null ? q * vgh.volume_m3 : null,
@@ -2496,10 +2509,14 @@ export function FlowPlanGrid({
         ? batchRankByDate.get(selectedDay)?.get(batch) ?? batch
         : batch;
       const book = buildPlanXlsxSheets(selectedDay, nameBatch, inputs, xlsxLayoutRef.current, lists);
-      downloadXlsx(planXlsxFilename(selectedDay, nameBatch), book.sheets, { definedNames: book.definedNames });
+      // «Кладовщикам экспедиторы» из Отчёта (batch='all') — своё имя файла (юзер 2026-07-04).
+      const fileName = mode === 'report' && batch === 'all'
+        ? kladExpedFilename(selectedDay)
+        : planXlsxFilename(selectedDay, nameBatch);
+      downloadXlsx(fileName, book.sheets, { definedNames: book.definedNames });
       setMsg(`Выгружено в Excel: ${dayRows.length} строк`);
     },
-    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, molsForWh, fixLabelOf, batchRankByDate],
+    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, resolveExpeditorOpt, molsForWh, fixLabelOf, batchRankByDate, mode],
   );
 
   // Пустая ручная строка «как в обычной таблице» (юзер 2026-07-03): клик по хвостовой
@@ -2547,9 +2564,29 @@ export function FlowPlanGrid({
         applyStatusToSelected(decodeStatus(pasted));
         return false; // обработали сами — Glide не вставляет
       }
+      // «Как в Excel» (юзер 2026-07-04): скопировал ячейку (или блок 2 колонок — тип ТС +
+      // гаражный), выделил диапазон → вставка ТИРАЖИРУЕТСЯ на всё выделение, а не только
+      // на первую ячейку. Работает для любых колонок (экспедиторы/ТС/гаражный и т.д.).
+      const range = selection.current?.range;
+      const H = Array.isArray(values) ? values.length : 0;
+      const W = H > 0 ? Math.max(...values.map((row) => row.length)) : 0;
+      if (range && H > 0 && W > 0 && (range.height > H || range.width > W)) {
+        for (let dy = 0; dy < range.height; dy++) {
+          for (let dx = 0; dx < range.width; dx++) {
+            const v = String(values[dy % H]?.[dx % W] ?? '');
+            onCellEdited([range.x + dx, range.y + dy], {
+              kind: GridCellKind.Text,
+              data: v,
+              displayData: v,
+              allowOverlay: true,
+            });
+          }
+        }
+        return false; // обработали сами — растянули на всё выделение
+      }
       return true; // остальное — обычная вставка диапазона Glide
     },
-    [COLS, selection, applyStatusToSelected, applyPastedRows],
+    [COLS, selection, applyStatusToSelected, applyPastedRows, onCellEdited],
   );
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];
@@ -2706,58 +2743,46 @@ export function FlowPlanGrid({
             </button>
           );
         })}
-        {/* «Заливка» (юзер 2026-07-04): пастельная кисть — визуальная раскидка по машинам
-            до отметок. Выбрал цвет → клик/протяжка по строкам красит, повторный клик тем
-            же цветом снимает; «Ластик» стирает. Уходит и в xlsx-скачку. */}
+        {/* «Заливка» как в Excel (юзер 2026-07-04): квадрат в кнопке показывает выбранный
+            цвет; выделил ячейки строк → кнопка красит строки целиком. ▾ — палитра (выбор
+            закрывает окно). Отмена — Undo; повтор той же заливки — снимает. */}
         {mode === 'report' && (
-          <div className="relative">
+          <div className="relative flex shrink-0">
             <button
               type="button"
-              onClick={() => setPaintOpen((o) => !o)}
-              title={paintColor ? 'Кисть активна: клик/протяжка по строкам красит. Клик — сменить цвет/выключить' : 'Заливка строк пастельным цветом (раскидка по машинам)'}
-              className={`flex h-6 shrink-0 items-center gap-1.5 rounded-md border px-1.5 text-[12px] outline-none transition-colors ${
-                paintColor ? 'border-accent-clay/70 text-[#0A0A0A]' : 'border-black/10 text-[#3F3D38] hover:border-black/25 hover:text-[#0A0A0A]'
-              }`}
+              onClick={applyFillToSelection}
+              title="Залить выделенные строки выбранным цветом (повторно тем же цветом — снять). Отмена — ⌘Z"
+              className="flex h-6 items-center gap-1.5 rounded-l-md border border-black/10 px-1.5 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25 hover:text-[#0A0A0A]"
             >
               <span
                 className="h-3.5 w-3.5 rounded-sm border border-black/15"
-                style={{ background: paintColor && paintColor !== 'clear' ? `#${paintColor}` : 'transparent' }}
+                style={{ background: `#${paintColor}` }}
               />
               Заливка
+            </button>
+            <button
+              type="button"
+              onClick={() => setPaintOpen((o) => !o)}
+              title="Выбрать цвет заливки"
+              className="flex h-6 w-5 items-center justify-center rounded-r-md border border-l-0 border-black/10 text-[10px] text-[#6B6862] outline-none transition-colors hover:border-black/25 hover:text-[#0A0A0A]"
+            >
+              ▾
             </button>
             {paintOpen && (
               <div className="absolute left-0 top-7 z-50 w-[168px] rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-lg">
                 <div className="grid grid-cols-5 gap-1.5">
-                  {PAINT_COLORS.map((c) => (
+                  {FLOW_FILL_PALETTE.map((c) => (
                     <button
                       key={c}
                       type="button"
-                      onClick={() => { setPaintColor(c); setPaintOpen(false); setMsg('Кисть: клик/протяжка по строкам красит, повторный клик снимает'); }}
-                      title={`Красить #${c}`}
+                      onClick={() => { setPaintColor(c); setPaintOpen(false); }}
+                      title={`Цвет #${c}`}
                       className={`h-6 w-6 rounded-md border transition-transform hover:scale-110 ${
                         paintColor === c ? 'border-accent-clay ring-1 ring-accent-clay/50' : 'border-black/10'
                       }`}
                       style={{ background: `#${c}` }}
                     />
                   ))}
-                </div>
-                <div className="mt-1.5 flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => { setPaintColor('clear'); setPaintOpen(false); setMsg('Ластик: клик/протяжка по строкам снимает заливку'); }}
-                    className={`h-6 flex-1 rounded-md border text-[11px] transition-colors ${
-                      paintColor === 'clear' ? 'border-accent-clay/70 text-text-strong' : 'border-border-subtle text-text-secondary hover:border-border-default'
-                    }`}
-                  >
-                    Ластик
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setPaintColor(null); setPaintOpen(false); setMsg(''); }}
-                    className="h-6 flex-1 rounded-md border border-border-subtle text-[11px] text-text-secondary transition-colors hover:border-border-default"
-                  >
-                    Выключить
-                  </button>
                 </div>
               </div>
             )}
@@ -2928,12 +2953,6 @@ export function FlowPlanGrid({
             trailingRowOptions={{ tint: true, sticky: false }}
             gridSelection={selection}
             onGridSelectionChange={(sel) => {
-              // Кисть-заливка активна: жест копится, красим на mouseup (см. paintSelRef).
-              if (paintColor) {
-                paintSelRef.current = sel;
-                setSelection(sel);
-                return;
-              }
               // Протяжка по первой колонке → выделение строк. СОХРАНЯЕМ current, иначе Glide
               // теряет активную протяжку и выделяется только одна строка (юзер 2026-06-15).
               const rowsSel = colZeroRowSelection(sel);

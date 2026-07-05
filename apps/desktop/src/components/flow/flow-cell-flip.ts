@@ -35,6 +35,14 @@ export function useFlipUpIfClipped<T extends HTMLElement>(): (el: T | null) => v
     if (shiftedRef.current && shiftedRef.current !== target) shiftedRef.current.style.transform = '';
     target.style.transform = '';
     shiftedRef.current = target;
+    // КЛЮЧЕВОЕ (юзер 2026-07-04, «виден один МОЛ и прокрутка»): у нижних строк Glide
+    // ЗАЖИМАЕТ оверлей maxHeight'ом до нижней кромки окна — список сплющивался до одной
+    // строки. Снимаем maxHeight с контейнера и обёрток до нашего элемента: высоту
+    // ограничивает сам редактор (max-h-80 и т.п.), а положение — сдвиг ниже.
+    for (let n: HTMLElement | null = el.parentElement; n; n = n.parentElement) {
+      if (n.style.maxHeight) n.style.maxHeight = 'none';
+      if (n === target) break;
+    }
     const rect = target.getBoundingClientRect();
     const margin = 8;
     const overflowBottom = rect.bottom - (window.innerHeight - margin);

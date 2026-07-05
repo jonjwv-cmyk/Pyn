@@ -20,7 +20,7 @@
 import type { FlowXlsxLayout, FlowXlsxColumn } from '@pyn/core';
 import {
   XLSX_STYLE, colLetter,
-  type XlsxSheet, type XlsxValue, type XlsxDefinedName,
+  type XlsxSheet, type XlsxValue, type XlsxDefinedName, type XlsxRichRun,
 } from '@/lib/xlsx-lite';
 import {
   makePlanEtalonCompare, normalizeRusLat, planSortKeyFr, planSortKeyClst, planSortKeyTo,
@@ -306,14 +306,37 @@ function cellChars(v: XlsxValue, styleName: string): number {
   return max;
 }
 
+/** Ширина RICH-ячейки в юнитах — ПО ПРОГОНАМ: у «Пост/Зак» строки разных кеглей (11/8),
+ *  мерить всё 12-м кеглем раздувало колонку (юзер 2026-07-04: «слишком широка»). */
+function richUnits(v: { rich: XlsxRichRun[] }): number {
+  let max = 0;
+  let cur = 0;
+  for (const run of v.rich) {
+    const f = ((run.sz ?? 12) / 10) * (run.bold ? 1.06 : 1);
+    const parts = run.t.split('\n');
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) {
+        max = Math.max(max, cur);
+        cur = 0;
+      }
+      cur += (parts[i]?.length ?? 0) * f;
+    }
+  }
+  return Math.max(max, cur);
+}
+
 function autoWidth(col: FlowXlsxColumn, values: XlsxValue[], headText: string, opts?: { compactHead?: boolean }): number {
   const styleName = styleNameOf(col);
   if (KEEP_WRAP.has(styleName)) return col.width;
   const f = STYLE_FONT[styleName] ?? { sz: 10, bold: false };
   const factor = (f.sz / 10) * (f.bold ? 1.06 : 1);
   let chars = 0;
-  for (const v of values) chars = Math.max(chars, cellChars(v, styleName));
-  const dataW = chars * factor + 1.8;
+  let richW = 0;
+  for (const v of values) {
+    if (v != null && typeof v === 'object' && 'rich' in v) richW = Math.max(richW, richUnits(v));
+    else chars = Math.max(chars, cellChars(v, styleName));
+  }
+  const dataW = Math.max(chars * factor, richW) + 1.8;
   // Шапка 11 bold + стрелка автофильтра: значок ~2 юнита, иначе перекрывает название
   // короткой колонки (юзер 2026-07-04 — «ЕИ»/«V» и т.п.). compactHead — файл
   // «Экспедиторам»: печать компактнее, значок МОЖЕТ наезжать на заголовок.
@@ -473,8 +496,11 @@ export function buildPlanXlsxSheets(
 export interface ExpedXlsxRow extends PlanSortable {
   garage: string; // гаражный № (группа-машина); '' — машина не выбрана
   vehicleType: string;
-  expeditors: string;
+  /** ПОЛНЫЕ ФИО выбранных экспедиторов машины (юзер 2026-07-04) — в шапку группы. */
+  expeditors: string[];
   mol: string;
+  /** Сотовый МОЛа «8 901 438 8831» — в ячейку МОЛ файла (юзер 2026-07-04). */
+  molPhone: string;
   uom: string;
   kg: number | null;
   v: number | null;
@@ -485,6 +511,19 @@ export interface ExpedXlsxRow extends PlanSortable {
 
 export function expedXlsxFilename(dateIso: string): string {
   return `Экспедиторам на ${fileDateRu(dateIso)}.xlsx`;
+}
+
+/** «Кладовщикам экспедиторы» из Отчёта (юзер 2026-07-04) — тот же план-файл с заливкой,
+ *  но своё имя: «Экспедиторы по плану на июнь 6, 2026.xlsx». */
+export function kladExpedFilename(dateIso: string): string {
+  return `Экспедиторы по плану на ${fileDateRu(dateIso)}.xlsx`;
+}
+
+/** «Фамилия Имя Отчество» → «Фамилия Имя О.» (нумерованные экспедиторы шапки машины). */
+function shortFio(fio: string): string {
+  const p = fio.trim().split(/\s+/).filter(Boolean);
+  if (p.length >= 3) return `${p[0]} ${p[1]} ${p[2]?.slice(0, 1)}.`;
+  return fio.trim();
 }
 
 /** ЕИ-канон для ключа схлопывания (PRN_EICanon эталона): ШТ/КГ/Т/Л без точек и пробелов. */
@@ -514,14 +553,15 @@ const EXPED_COLS: FlowXlsxColumn[] = [
   { id: 'note', head: 'Комментарий', width: 21.6, style: 'mol' },
 ];
 
-/** Схлопнутый пункт машины (общая модель xlsx-файла и ПЕЧАТИ «Экспедиторам»). */
+/** Схлопнутый пункт машины (модель xlsx-файла «Экспедиторам»). */
 export interface ExpedGroupItem {
   fr: string;
   to_wh: string;
   clst: string;
-  /** Номера поставок БЕЗ позиций (юзер 2026-07-04), уникальные. */
+  /** Номера поставок БЕЗ позиций (юзер 2026-07-04), уникальные, один под одним. */
   dlvs: string[];
   mol: string;
+  molPhone: string;
   no_num: string;
   mat: string;
   matNote: string;
@@ -534,11 +574,12 @@ export interface ExpedGroupItem {
    *  Т-пары (825Т=8025, 824Т=8024, 823Т=8023, 806Т/806М=8006) — один склад. */
   topBorder: boolean;
 }
-/** Машина с пунктами (страница печати / блок xlsx с разрывом). */
+/** Машина с пунктами (блок xlsx с разрывом страницы). */
 export interface ExpedGroup {
   garage: string;
   vehicleType: string;
-  expeditors: string;
+  /** ПОЛНЫЕ ФИО экспедиторов машины (нумеруются в шапке). */
+  expeditors: string[];
   fillArgb: string;
   frList: string;
   toList: string;
@@ -612,7 +653,7 @@ export function buildExpedGroups(rowsIn: ExpedXlsxRow[]): ExpedGroup[] {
     out.push({
       garage: g,
       vehicleType: first?.vehicleType || '',
-      expeditors: first?.expeditors || '',
+      expeditors: first?.expeditors ?? [],
       fillArgb: g ? first?.fillArgb || '' : '',
       frList: uniq(items.map((x) => x.r.fr)),
       toList: uniq(items.map((x) => x.r.to_wh)),
@@ -622,7 +663,8 @@ export function buildExpedGroups(rowsIn: ExpedXlsxRow[]): ExpedGroup[] {
         prevGrpKey = grpKey;
         return {
           fr: it.r.fr, to_wh: it.r.to_wh, clst: it.r.clst, dlvs: it.dlvs,
-          mol: it.r.mol, no_num: it.r.no_num, mat: it.r.mat, matNote: it.r.matNote.trim(),
+          mol: it.r.mol, molPhone: it.r.molPhone, no_num: it.r.no_num, mat: it.r.mat,
+          matNote: it.r.matNote.trim(),
           uom: it.r.uom, qty: it.qty, kg: it.kg, v: it.v, note: it.r.note, topBorder,
         };
       }),
@@ -656,27 +698,44 @@ export function buildExpedXlsxBook(
   const matIdx = EXPED_COLS.findIndex((c) => c.id === 'mat');
   const lastCol = colLetter(EXPED_COLS.length - 1);
 
+  const molIdx = EXPED_COLS.findIndex((c) => c.id === 'mol');
+  const molL = colLetter(molIdx);
   for (const grp of groups) {
-    // Шапка машины: «гр. № …  машина  экспедиторы» + уникальные От/СП группы.
+    // Шапка машины (юзер 2026-07-04): «гр. № …  тип ТС», ниже экспедиторы НУМЕРОВАННЫМ
+    // списком «1. Фамилия Имя О.» каждый со своей строки, затем От/СП. Высота — по числу
+    // строк, чтобы тип ТС/экспедиторы не обрезались.
     const line1 = grp.garage
-      ? ['гр. №', grp.garage, grp.vehicleType, grp.expeditors].filter(Boolean).join('   ')
+      ? ['гр. №', grp.garage, grp.vehicleType].filter(Boolean).join('   ')
       : 'Без машины';
-    const headText = `${line1}\nОт: ${grp.frList}\nСП: ${grp.toList}`;
+    const expLines = grp.expeditors.map((fio, i) => `${i + 1}. ${shortFio(fio)}`);
+    const headLines = [line1, ...expLines, `От: ${grp.frList}`, `СП: ${grp.toList}`];
     if (sheetRows.length > 1) breaks.push(sheetRows.length); // разрыв ПЕРЕД шапкой машины
-    sheetRows.push([headText]);
+    sheetRows.push([headLines.join('\n')]);
     const hr = sheetRows.length; // 1-based
     merges.push(`A${hr}:${lastCol}${hr}`);
     rowStyles[hr] = XLSX_STYLE.mhead ?? 12;
-    rowHeights[hr] = 45;
+    rowHeights[hr] = headLines.length * 13 + 8;
     if (grp.fillArgb) rowFills[hr] = grp.fillArgb;
 
+    // МОЛ ОДНОЙ ЯЧЕЙКОЙ на подряд идущие пункты того же МОЛа/складов (юзер 2026-07-04:
+    // «чтобы дубликата не было») — вертикальное объединение; в ячейке ФИО + сотовый.
+    let molRunStart = 0; // 1-based строка начала текущей серии МОЛ
+    let molRunKey = '';
+    const closeMolRun = (endRow: number): void => {
+      if (molRunStart > 0 && endRow > molRunStart) merges.push(`${molL}${molRunStart}:${molL}${endRow}`);
+      molRunStart = 0;
+      molRunKey = '';
+    };
     for (const it of grp.items) {
+      const molCell = it.mol ? (it.molPhone ? `${it.mol}\n${it.molPhone}` : it.mol) : '';
+      const runKey = molCell ? `${whPairBase(it.fr)}|${whPairBase(it.to_wh)}|${molCell.toUpperCase()}` : '';
+      const sameRun = runKey !== '' && runKey === molRunKey;
       sheetRows.push([
         it.fr,
         it.to_wh,
         it.clst,
         it.dlvs.join('\n'),
-        it.mol,
+        sameRun ? '' : molCell,
         it.no_num,
         it.mat,
         it.uom,
@@ -685,11 +744,20 @@ export function buildExpedXlsxBook(
         it.v != null && it.v !== 0 ? num(it.v) : '',
         it.note,
       ]);
-      if (it.topBorder) topBorders.push(sheetRows.length);
+      const rowNum = sheetRows.length;
+      if (!sameRun) {
+        closeMolRun(rowNum - 1);
+        if (runKey) {
+          molRunStart = rowNum;
+          molRunKey = runKey;
+        }
+      }
+      if (it.topBorder) topBorders.push(rowNum);
       if (matIdx >= 0 && it.matNote && it.matNote !== it.mat.trim()) {
-        notes.push({ row: sheetRows.length - 1, col: matIdx, text: it.matNote });
+        notes.push({ row: rowNum - 1, col: matIdx, text: it.matNote });
       }
     }
+    closeMolRun(sheetRows.length);
   }
 
   const dataRows = sheetRows.filter((_, i) => i > 0 && rowStyles[i + 1] == null);
