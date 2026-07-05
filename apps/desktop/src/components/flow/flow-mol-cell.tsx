@@ -149,7 +149,8 @@ export const flowMolRenderer: CustomRenderer<FlowMolCell> = {
       const padP = 7;
       const ph = Math.min(rect.height - 5, 17);
       const pw = padP + tw + padP;
-      ctx.fillStyle = noMol ? 'rgba(220,38,38,0.26)' : color + '33';
+      // Плотнее, чем '33': пилл читается и на заливке машины (юзер 2026-07-05).
+      ctx.fillStyle = noMol ? 'rgba(220,38,38,0.26)' : color + '4D';
       ctx.beginPath();
       ctx.roundRect(x, fioCy - ph / 2, pw, ph, ph / 2);
       ctx.fill();

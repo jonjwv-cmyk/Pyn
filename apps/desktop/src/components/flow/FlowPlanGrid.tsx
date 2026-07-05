@@ -17,7 +17,7 @@ import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { planEtalonCompare } from './flow-plan-sort';
-import { garageRowColor, garageFillArgb, FLOW_FILL_PALETTE } from './flow-garage-color';
+import { garageRowColor, garageFillArgb, softenRowFill, FLOW_FILL_PALETTE } from './flow-garage-color';
 import {
   buildPlanXlsxSheets, planXlsxFilename, buildExpedXlsxBook, expedXlsxFilename, kladExpedFilename,
   numberedFioLines,
@@ -366,7 +366,9 @@ const MEASURE_CTX = document.createElement('canvas').getContext('2d');
 const REPORT_FONT_PX = 10; // baseFontStyle грида
 const REPORT_HPAD = 8; // горизонтальный padding ячейки (с запасом)
 /** Колонки с мягким переносом по словам (растут в высоту, ширина клампится). */
-const WRAP_COLS = new Set(['mat', 'note', 'vehicleType', 'sed']);
+// 'vehicle' (ГАРАЖНЫЙ) — чтобы «363 под 331» было ВИДНО и после выхода из ячейки
+// (юзер 2026-07-05), не только в редакторе.
+const WRAP_COLS = new Set(['mat', 'note', 'vehicleType', 'sed', 'vehicle']);
 const PLAN_COL_FONT_PX: Record<string, number> = {
   graph: 7,
   clst: 7,
@@ -1416,17 +1418,20 @@ export function FlowPlanGrid({
       const noteLines = reportWrapLines(noteText, (colWidths.note ?? 230) - REPORT_HPAD * 2);
       // ТИП ТС — наш маркер (поле vehicle, до 3 через \n); высота по числу выбранных типов.
       const vtypeLines = Math.max(1, splitMultiCell(rowVehicle(r)).length);
+      // ГАРАЖНЫЙ — тоже до 3 через \n: строки видны в ячейке (юзер 2026-07-05).
+      const rideLines = Math.max(1, splitMultiCell(rowRide(r)).length);
       const expN = rowExpeditors(r).length;
       const cands = [
         32, // база: 2 строки ПОСТАВКА·ЗАКАЗ (телефон в ячейке убран — R3.1)
         16 + (matLines - 1) * LINE,
         16 + (noteLines - 1) * LINE,
         16 + (vtypeLines - 1) * LINE,
+        16 + (rideLines - 1) * LINE,
         expN > 1 ? expN * 16 + 4 : 0, // экспедиторы — по строке на каждого (без телефона)
       ];
       return Math.max(30, Math.min(150, Math.max(...cands)));
     },
-    [viewRows, colWidths, anchorByKey, vehicleByGarage, rowVehicle, rowExpeditors],
+    [viewRows, colWidths, anchorByKey, vehicleByGarage, rowVehicle, rowRide, rowExpeditors],
   );
 
   const gridSearch = useFlowGridSearch<FlowDeliveryRow>({
@@ -2381,8 +2386,9 @@ export function FlowPlanGrid({
         if (r.fail_reason || r.done_stat === 'не увезли') return { bgCell: '#F0F0EE', textDark: '#6B6862' };
         if (rowLocked(r)) return { textDark: '#8C8983' }; // закрытый отчёт (>7 дней) — приглушён
         // Ручная пастельная ЗАЛИВКА (кисть, юзер 2026-07-04) — раскидка по машинам ДО
-        // отметок; приоритетнее авто-тона по гаражному.
-        if ((r.row_fill || '').trim()) return { bgCell: `#${r.row_fill}` };
+        // отметок; приоритетнее авто-тона по гаражному. В гриде — смягчённый тон
+        // (пиллы контрастнее, юзер 2026-07-05); в xlsx — полный цвет.
+        if ((r.row_fill || '').trim()) return { bgCell: softenRowFill(`#${r.row_fill}`) };
         // Ожидание + выбран гаражный → свой пастельный тон машины (юзер 2026-07-03:
         // «каждый гаражный получит свой уникальный цвет — визуально группировать машины»).
         const garage = splitMultiCell(r.ride_id || '')[0];

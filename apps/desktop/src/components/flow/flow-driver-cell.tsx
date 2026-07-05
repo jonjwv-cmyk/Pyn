@@ -314,7 +314,8 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
         const tw = ctx.measureText(label).width;
         const padP = 6;
         const ph = 14;
-        ctx.fillStyle = color + '33';
+        // Плотнее, чем '33': пилл читается и на заливке машины (юзер 2026-07-05).
+        ctx.fillStyle = color + '4D';
         ctx.beginPath();
         ctx.roundRect(x0, fy - ph / 2, padP + tw + padP, ph, ph / 2);
         ctx.fill();
@@ -336,7 +337,7 @@ export const flowDriverRenderer: CustomRenderer<FlowDriverCell> = {
       const tw = ctx.measureText(driver).width;
       const padP = 6;
       const ph = 15;
-      ctx.fillStyle = (color || '#9AA0A6') + '33';
+      ctx.fillStyle = (color || '#9AA0A6') + '4D';
       ctx.beginPath();
       ctx.roundRect(x0, yTop - ph / 2, padP + tw + padP, ph, ph / 2);
       ctx.fill();

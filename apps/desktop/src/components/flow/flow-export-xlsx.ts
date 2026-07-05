@@ -346,9 +346,13 @@ function richUnits(v: { rich: XlsxRichRun[] }): number {
 
 function autoWidth(col: FlowXlsxColumn, values: XlsxValue[], headText: string, opts?: { compactHead?: boolean }): number {
   const styleName = styleNameOf(col);
-  if (KEEP_WRAP.has(styleName) && !LINE_FIT_IDS.has(col.id)) return col.width;
+  const lineFit = LINE_FIT_IDS.has(col.id);
+  if (KEEP_WRAP.has(styleName) && !lineFit) return col.width;
   const f = STYLE_FONT[styleName] ?? { sz: 10, bold: false };
-  const factor = (f.sz / 10) * (f.bold ? 1.06 : 1);
+  // Кириллический текст шире «цифрового» юнита Excel — колонкам «по самой длинной
+  // строке» (ФИО экспедиторов/типы ТС) даём запас, чтобы имя влезало ЦЕЛИКОМ в свою
+  // строку без доворота (юзер 2026-07-05).
+  const factor = (f.sz / 10) * (f.bold ? 1.06 : 1) * (lineFit ? 1.2 : 1);
   let chars = 0;
   let richW = 0;
   for (const v of values) {
@@ -482,6 +486,8 @@ export function buildPlanXlsxSheets(
     colStyles: [...planCols.map(styleOf), ...TAIL_SECTION.map((c) => XLSX_STYLE[c.style] ?? 0)],
     autoFilter: true,
     freezeTop: true,
+    // Шапка колонок ПОВТОРЯЕТСЯ на каждой печатной странице (юзер 2026-07-05).
+    repeatHeader: true,
     pageBreakView: true,
     rowBreaks: breaks,
     dropdowns,
@@ -742,20 +748,29 @@ export function buildExpedXlsxBook(
   const molIdx = EXPED_COLS.findIndex((c) => c.id === 'mol');
   const molL = colLetter(molIdx);
   for (const grp of groups) {
-    // Шапка машины (юзер 2026-07-04/05): «гр. № …  тип ТС», ниже экспедиторы НУМЕРОВАННЫМ
-    // списком — ФИО ЦЕЛИКОМ («1. Нанкин Александр Михайлович»), каждый со своей строки,
-    // затем От/СП. Высота — по числу строк, чтобы тип ТС/экспедиторы не обрезались.
+    // Шапка машины (юзер 2026-07-05): экспедиторы В ОДНУ СТРОКУ после типа ТС —
+    // «гр. № 363   ПУЛЬМАН 9М   1. Нанкин Александр Михайлович   2. …», номера ЖИРНЫМ,
+    // ФИО целиком обычным; ниже От/СП. Высота — по строкам (+запас, если строка
+    // экспедиторов длинная и перенесётся).
     const line1 = grp.garage
       ? ['гр. №', grp.garage, grp.vehicleType].filter(Boolean).join('   ')
       : 'Без машины';
-    const expLines = grp.expeditors.map((fio, i) => `${i + 1}. ${fio}`);
-    const headLines = [line1, ...expLines, `От: ${grp.frList}`, `СП: ${grp.toList}`];
+    const runs: XlsxRichRun[] = [{ t: line1, bold: true, sz: 10 }];
+    for (let i = 0; i < grp.expeditors.length; i++) {
+      runs.push({ t: `   ${i + 1}. `, bold: true, sz: 10 });
+      runs.push({ t: grp.expeditors[i] ?? '', sz: 10 });
+    }
+    runs.push({ t: `\nОт: ${grp.frList}\nСП: ${grp.toList}`, bold: true, sz: 10 });
     if (sheetRows.length > 1) breaks.push(sheetRows.length); // разрыв ПЕРЕД шапкой машины
-    sheetRows.push([headLines.join('\n')]);
+    sheetRows.push([{ rich: runs }]);
     const hr = sheetRows.length; // 1-based
     merges.push(`A${hr}:${lastCol}${hr}`);
     rowStyles[hr] = XLSX_STYLE.mhead ?? 12;
-    rowHeights[hr] = headLines.length * 13 + 8;
+    // 3 строки (машина+экспедиторы / От / СП) + перенос длинной первой строки:
+    // ширина листа ~ сумма колонок (юниты ≈ символы 10-го кегля).
+    const line1Chars = line1.length + grp.expeditors.reduce((s, f) => s + f.length + 6, 0);
+    const wrapExtra = Math.max(0, Math.ceil(line1Chars / 150) - 1);
+    rowHeights[hr] = (3 + wrapExtra) * 13 + 8;
     if (grp.fillArgb) rowFills[hr] = grp.fillArgb;
 
     // МОЛ ОДНОЙ ЯЧЕЙКОЙ на подряд идущие пункты того же МОЛа/складов (юзер 2026-07-04:
@@ -814,6 +829,8 @@ export function buildExpedXlsxBook(
     colStyles: EXPED_COLS.map(styleOf),
     autoFilter: true,
     freezeTop: true,
+    // Шапка колонок — на каждой странице (у каждой машины свой лист печати).
+    repeatHeader: true,
     pageBreakView: true,
     rowBreaks: breaks,
     merges,

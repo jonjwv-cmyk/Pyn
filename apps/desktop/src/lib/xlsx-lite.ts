@@ -74,6 +74,9 @@ export interface XlsxSheet {
   /** Область печати (ref «A1:U220») — определяет ПРАВУЮ границу листа: вертикальная
    *  пунктирная разбивка идёт по концу области (после последней печатной колонки). */
   printArea?: string;
+  /** Сквозная шапка при печати: строка 1 ПОВТОРЯЕТСЯ на каждой странице
+   *  (_xlnm.Print_Titles, юзер 2026-07-05 — заголовок не отдельным листом). */
+  repeatHeader?: boolean;
   /** ФИКСИРОВАННЫЙ масштаб печати % (не fitToPage — ручные разрывы строк живут). */
   printScale?: number;
   /** Скрытый лист (перечни для выпадашек). */
@@ -431,6 +434,10 @@ export function makeXlsx(sheets: XlsxSheet[], opts?: XlsxBookOpts): Uint8Array {
     .map((s, i) => ({ s, i }))
     .filter(({ s }) => !!s.printArea)
     .map(({ s, i }) => `<definedName name="_xlnm.Print_Area" localSheetId="${i}">'${s.name.replace(/'/g, "''")}'!${s.printArea}</definedName>`)
+    .join('') + sheets
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => !!s.repeatHeader)
+    .map(({ s, i }) => `<definedName name="_xlnm.Print_Titles" localSheetId="${i}">'${s.name.replace(/'/g, "''")}'!$1:$1</definedName>`)
     .join('');
   const bookNames = (opts?.definedNames ?? [])
     .map((d) => `<definedName name="${xmlEsc(d.name)}">${xmlEsc(d.ref)}</definedName>`)

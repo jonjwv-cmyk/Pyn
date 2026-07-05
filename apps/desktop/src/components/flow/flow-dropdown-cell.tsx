@@ -159,9 +159,28 @@ export const flowDropdownRenderer: CustomRenderer<FlowDropdownCell> = {
     (c.data as { kind?: unknown }).kind === 'flow-dropdown',
   draw: (args, cell) => {
     // Без стрелки — раскрытие двойным кликом (как в Google Sheets). В multi-режиме
-    // значения через `\n` показываем в одну строку через запятую.
+    // (тип ТС) КАЖДОЕ значение — СО СВОЕЙ СТРОКИ (юзер 2026-07-05), как экспедиторы.
     const v = cell.data.value ?? '';
-    drawTextCell(args, cell.data.multi ? v.replace(/\n/g, ', ') : v, cell.contentAlign);
+    if (!cell.data.multi || !v.includes('\n')) {
+      drawTextCell(args, v, cell.contentAlign);
+      return true;
+    }
+    const { ctx, rect, theme } = args;
+    const lines = v.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 3);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rect.x, rect.y, rect.width, rect.height);
+    ctx.clip();
+    ctx.font = `${theme.baseFontStyle} ${theme.fontFamily}`;
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = theme.textDark;
+    const padX = theme.cellHorizontalPadding;
+    const slot = Math.max(13, Math.min(17, rect.height / lines.length));
+    const startY = rect.y + rect.height / 2 - ((lines.length - 1) * slot) / 2;
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i] ?? '', rect.x + padX, startY + i * slot, rect.width - padX * 2);
+    }
+    ctx.restore();
     return true;
   },
   provideEditor: (cell) => ({

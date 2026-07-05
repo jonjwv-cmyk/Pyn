@@ -27,11 +27,25 @@ function paletteIndex(id: string): number {
   return Math.abs(Math.imul(h >>> 0, 2654435761)) % FLOW_FILL_PALETTE.length;
 }
 
-/** Пастельная заливка строки грида: css-цвет (светлый, текст остаётся тёмным). */
+/** Мягкий тон для ФОНА строки В ПРИЛОЖЕНИИ: тот же цвет, разбавленный к белому —
+ *  чтобы пиллы МОЛ/экспедиторов не сливались с заливкой (юзер 2026-07-05: «мягче,
+ *  но заметнее»). В xlsx уходит ПОЛНЫЙ цвет палитры (там пиллов нет). */
+export function softenRowFill(hex: string): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1] ?? '0', 16);
+  const mix = (c: number): number => Math.round(c + (255 - c) * 0.45);
+  const r = mix((n >> 16) & 255);
+  const g = mix((n >> 8) & 255);
+  const b = mix(n & 255);
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0').toUpperCase()}`;
+}
+
+/** Пастельная заливка строки грида: css-цвет (смягчённый, текст остаётся тёмным). */
 export function garageRowColor(id: string): string {
   const g = id.trim();
   if (!g) return '';
-  return `#${FLOW_FILL_PALETTE[paletteIndex(g)]}`;
+  return softenRowFill(`#${FLOW_FILL_PALETTE[paletteIndex(g)]}`);
 }
 
 /** Тот же тон для Excel: ARGB `FFRRGGBB` (заливка строк кладовщикам). */
