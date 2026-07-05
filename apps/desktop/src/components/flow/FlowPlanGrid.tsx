@@ -20,6 +20,7 @@ import { planEtalonCompare } from './flow-plan-sort';
 import { garageRowColor, garageFillArgb, FLOW_FILL_PALETTE } from './flow-garage-color';
 import {
   buildPlanXlsxSheets, planXlsxFilename, buildExpedXlsxBook, expedXlsxFilename, kladExpedFilename,
+  numberedFioLines,
   type PlanXlsxRow, type PlanXlsxLists, type ExpedXlsxRow,
 } from './flow-export-xlsx';
 import { downloadXlsx } from '@/lib/xlsx-lite';
@@ -932,6 +933,28 @@ export function FlowPlanGrid({
     (r: FlowDeliveryRow) => Number(r.fixation_id) === 0 || (mode === 'report' && isManualRow(r)),
     [mode],
   );
+  // ПЛАН = СЛЕПОК (юзер 2026-07-05): машина/экспедиторы/гаражный/заливка у зафикс.
+  // строк показываются КАК НА МОМЕНТ ФИКСАЦИИ (snap_* пишет сервер при фиксации),
+  // а не живые значения из Отчёта. Отчёт (и черновики Плана) — живьём.
+  const isSnapRow = useCallback(
+    (r: FlowDeliveryRow) => mode === 'plan' && Number(r.fixation_id) > 0,
+    [mode],
+  );
+  const rowExpeditors = useCallback(
+    (r: FlowDeliveryRow): string[] =>
+      isSnapRow(r)
+        ? splitMultiCell([r.snap_exp1 || '', r.snap_exp2 || ''].filter(Boolean).join('\n'))
+        : deliveryExpeditors(r),
+    [isSnapRow],
+  );
+  const rowVehicle = useCallback(
+    (r: FlowDeliveryRow): string => (isSnapRow(r) ? r.snap_vehicle || '' : r.vehicle || ''),
+    [isSnapRow],
+  );
+  const rowRide = useCallback(
+    (r: FlowDeliveryRow): string => (isSnapRow(r) ? r.snap_ride || '' : r.ride_id || ''),
+    [isSnapRow],
+  );
   // Удаление (юзер 2026-07-03): «сброс — начинаем сначала». ПЛАН — любой черновик;
   // ОТЧЁТ — ЛЮБАЯ строка (в резерв, восстановимо): позиция возвращается в Формирование,
   // выгрузка заказов/открытых потом уточнит, жива ли поставка. Закрытый архив (>7 дней) — нет.
@@ -1175,14 +1198,15 @@ export function FlowPlanGrid({
         }
         case 'exp':
           // Сокращённые имена отчёта («Черепанов Д.») резолвим в полное ФИО роли (П6/П5).
-          return deliveryExpeditors(r).map(expeditorDisplayName).join('\n');
+          // В Плане у зафикс. строк — СЛЕПОК (snap_exp*), не живые из Отчёта.
+          return rowExpeditors(r).map(expeditorDisplayName).join('\n');
         case 'vehicleType':
           // НАШ маркер кузова (БОРТ/ПУЛЬМАН/…) из поля vehicle — НЕ тянем из машины (юзер 2026-06-15).
-          return r.vehicle || '';
+          return rowVehicle(r);
         case 'vehicle':
           // ID (гаражный) — ТОЛЬКО ride_id, руками; тип ТС сюда НЕ подставляем
           // (юзер 2026-07-04: «выбор типа ТС не должен появляться в колонке ID»).
-          return splitMultiCell(r.ride_id || '').join('\n');
+          return splitMultiCell(rowRide(r)).join('\n');
         case 'note':
           // Черновик с якорем — живой коммент якоря; ручная строка БЕЗ якоря — со строки.
           return Number(r.fixation_id) > 0 ? r.snap_note || '' : anchor ? anchor.note ?? '' : r.snap_note || '';
@@ -1214,7 +1238,7 @@ export function FlowPlanGrid({
           return '';
       }
     },
-    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName, transferChainDates, effQty, graphInfo, fixLabelOf],
+    [anchorByKey, vghByKey, flagById, whById, scheduleMetaMap, molByKey, vehicleByGarage, expeditorDisplayName, transferChainDates, effQty, graphInfo, fixLabelOf, rowExpeditors, rowVehicle, rowRide],
   );
 
   // ── Поиск как в Формировании (подсветка/перелёт, не фильтр) ───────────────────
@@ -1391,8 +1415,8 @@ export function FlowPlanGrid({
       const noteText = Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchorByKey.get(`${r.ord}|${r.it}`)?.note || '');
       const noteLines = reportWrapLines(noteText, (colWidths.note ?? 230) - REPORT_HPAD * 2);
       // ТИП ТС — наш маркер (поле vehicle, до 3 через \n); высота по числу выбранных типов.
-      const vtypeLines = Math.max(1, splitMultiCell(r.vehicle || '').length);
-      const expN = deliveryExpeditors(r).length;
+      const vtypeLines = Math.max(1, splitMultiCell(rowVehicle(r)).length);
+      const expN = rowExpeditors(r).length;
       const cands = [
         32, // база: 2 строки ПОСТАВКА·ЗАКАЗ (телефон в ячейке убран — R3.1)
         16 + (matLines - 1) * LINE,
@@ -1402,7 +1426,7 @@ export function FlowPlanGrid({
       ];
       return Math.max(30, Math.min(150, Math.max(...cands)));
     },
-    [viewRows, colWidths, anchorByKey, vehicleByGarage],
+    [viewRows, colWidths, anchorByKey, vehicleByGarage, rowVehicle, rowExpeditors],
   );
 
   const gridSearch = useFlowGridSearch<FlowDeliveryRow>({
@@ -1544,7 +1568,8 @@ export function FlowPlanGrid({
       if (spec.id === 'exp') {
         // Резолвим сокращённые имена отчёта в полное ФИО роли — тогда ячейка-водитель находит
         // опцию по ФИО и рисует телефон под ФИО (П5/П6). Неоднозначные остаются как есть.
-        const names = deliveryExpeditors(r).map(expeditorDisplayName);
+        // В Плане у зафикс. строк — слепок фиксации.
+        const names = rowExpeditors(r).map(expeditorDisplayName);
         const opt = names[0] ? resolveExpeditorOpt(names[0]) : undefined;
         const editable = !!spec.editable && !locked;
         const cell: FlowDriverCell = {
@@ -1573,13 +1598,15 @@ export function FlowPlanGrid({
       }
       if (spec.id === 'vehicleType') {
         // ТИП ТС — наш мультимаркер кузова (до 3); правится/удаляется в окне 7 дней.
+        // В Плане у зафикс. строк — слепок фиксации (snap_vehicle).
         const editable = !!spec.editable && !locked;
+        const v = rowVehicle(r);
         const cell: FlowDropdownCell = {
           kind: GridCellKind.Custom,
           allowOverlay: editable,
-          copyData: (r.vehicle || '').replace(/\n/g, ', '),
+          copyData: v.replace(/\n/g, ', '),
           themeOverride: planCellTheme(spec.id),
-          data: { kind: 'flow-dropdown', value: r.vehicle || '', options: BODY_TYPES as unknown as string[], multi: true, maxSelected: 3 },
+          data: { kind: 'flow-dropdown', value: v, options: BODY_TYPES as unknown as string[], multi: true, maxSelected: 3 },
         };
         return cell;
       }
@@ -1613,7 +1640,7 @@ export function FlowPlanGrid({
         contentAlign: spec.id === 'qty' || spec.id === 'kg' || spec.id === 'v' ? 'right' : 'left',
       };
     },
-    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo, whStatusNote],
+    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo, whStatusNote, rowExpeditors, rowVehicle],
   );
 
   /** Применить серверные строки поставок (ответ правки/конфликта). */
@@ -1627,6 +1654,7 @@ export function FlowPlanGrid({
       }
       const next = [...byId.values()];
       planDlvCache = next;
+      rowsRef.current = next;
       return next;
     });
   }, []);
@@ -1644,8 +1672,8 @@ export function FlowPlanGrid({
   // вставленные строки (в резерв), redo вставляет их заново (новые id).
   type PasteAction = { kind: 'paste'; ids: number[]; rows: FlowPlanPasteRow[]; planDate?: string; target: 'plan' | 'report' };
   // Заливка выделенных строк — ОДНО действие истории (юзер 2026-07-04: «отмена как в
-  // экселе» снимает всю заливку разом).
-  type FillAction = { kind: 'fill'; items: PlanEdit[] };
+  // экселе» снимает всю заливку разом). label — подпись отмены («Вставка» и т.п.).
+  type FillAction = { kind: 'fill'; items: PlanEdit[]; label?: string };
   type HistoryEntry = PlanEdit | PasteAction | FillAction;
   const undoRef = useRef<HistoryEntry[]>([]);
   const redoRef = useRef<HistoryEntry[]>([]);
@@ -1725,7 +1753,7 @@ export function FlowPlanGrid({
     if ('kind' in e) {
       if (e.kind === 'fill') {
         applyFillItems(e.items, 'before');
-        setMsg('Заливка отменена');
+        setMsg(`${e.label ?? 'Заливка'} отменена`);
         redoRef.current.push(e);
         syncHistory();
         return;
@@ -1849,7 +1877,8 @@ export function FlowPlanGrid({
 
   const resolveExpeditorsForRow = useCallback(
     (r: FlowDeliveryRow, raw: string): { value: string; error?: string } => {
-      const values = splitMultiCell(raw);
+      // Вставка из Excel/наших файлов может нести нумерацию «1. Фамилия…» — срезаем.
+      const values = splitMultiCell(raw).map((s) => s.replace(/^\d+[.)]\s*/, ''));
       if (values.length === 0) return { value: '' };
       if (values.length > 5) return { value: '', error: 'Можно выбрать не больше пяти экспедиторов' };
       const opts = expeditorsForWh(r.to_wh);
@@ -2186,12 +2215,130 @@ export function FlowPlanGrid({
     ],
   );
 
+  /** Поля СТРОКИ для вставки значения в колонку (общая часть текстовых правок).
+   *  null — колонка не «поле строки» (статус/якорные и т.п.) → одиночный путь. */
+  const fieldsForPaste = useCallback(
+    (r: FlowDeliveryRow, spec: PlanColSpec, rawIn: string): { fields?: Record<string, string | number | null>; error?: string } | null => {
+      const raw = rawIn.trim();
+      const manualExtra = isManualRow(r) && MANUAL_EDIT_IDS.has(spec.id);
+      if ((!spec.editable && !manualExtra) || rowLocked(r)) return null;
+      switch (spec.id) {
+        case 'exp': {
+          const resolved = resolveExpeditorsForRow(r, raw);
+          if (resolved.error) return { error: resolved.error };
+          return { fields: { exp1: resolved.value, exp2: '' } };
+        }
+        case 'vehicleType': {
+          // «БОРТ, ПУЛЬМАН» через запятую (копия нашей ячейки) тоже понимаем.
+          const types = splitMultiCell(raw.replace(/,\s*/g, '\n'));
+          if (types.length > 3) return { error: 'Можно выбрать не больше трёх типов ТС' };
+          return { fields: { vehicle: types.join('\n') } };
+        }
+        case 'vehicle': {
+          const ids = splitMultiCell(raw.replace(/,\s*/g, '\n'));
+          if (ids.length > 3) return { error: 'Не больше трёх гаражных' };
+          return { fields: { ride_id: ids.join('\n') } };
+        }
+        case 'trz':
+          return { fields: { trz: raw } };
+        case 'q':
+          return { fields: { q_spec: raw } };
+        case 'mol': {
+          const resolved = resolveMolForRow(r, raw, { allowFree: isManualRow(r) });
+          if (resolved.error) return { error: resolved.error };
+          return { fields: { snap_mol: resolved.value } };
+        }
+        case 'qty': {
+          if (Number(r.fixation_id) > 0 && !isFreeEditRow(r)) {
+            return { error: 'Состав зафиксирован — кол-во не меняется (свободны машина/экспедиторы/ID)' };
+          }
+          const n = raw === '' ? null : parseQty(raw);
+          if (raw !== '' && (n == null || n < 0)) return { error: `«${raw}» — не число` };
+          return { fields: { qty: n } };
+        }
+        case 'note':
+          // Комментарий НА СТРОКЕ (зафикс./ручная без якоря); якорный — одиночный путь.
+          if (Number(r.fixation_id) > 0 || (isManualRow(r) && !anchorByKey.get(`${r.ord}|${r.it}`))) {
+            return { fields: { snap_note: raw } };
+          }
+          return null;
+        default:
+          return null;
+      }
+    },
+    [rowLocked, resolveExpeditorsForRow, resolveMolForRow, anchorByKey],
+  );
+
+  // Пачка правок вставки: ВСЕ поля одной строки — ОДНИМ элементом запроса. Раньше каждая
+  // ячейка шла отдельным запросом с ОДНИМ row_version строки — второй (гаражный после
+  // типа ТС) падал конфликтом, и эхо первого стирало вторую колонку: «вставилось и
+  // сбросилось» (юзер 2026-07-05). Заодно вся вставка — одно действие истории.
+  const applyFieldsBatch = useCallback(
+    (batch: Array<{ id: number; fields: Record<string, string | number | null> }>) => {
+      const merged = new Map<number, Record<string, string | number | null>>();
+      for (const b of batch) merged.set(b.id, { ...(merged.get(b.id) ?? {}), ...b.fields });
+      const items: PlanEdit[] = [];
+      for (const [id, fields] of merged) {
+        const cur = rowsRef.current.find((x) => x.id === id);
+        if (!cur || rowLocked(cur)) continue;
+        const before = captureBefore(cur, fields);
+        if (!Object.keys(fields).some((k) => String(before[k] ?? '') !== String(fields[k] ?? ''))) continue;
+        items.push({ id, before, after: fields });
+      }
+      if (items.length === 0) return;
+      applyFillItems(items, 'after');
+      pushHistory({ kind: 'fill', items, label: 'Вставка' });
+    },
+    [rowLocked, captureBefore, applyFillItems, pushHistory],
+  );
+
   const onCellsEdited = useCallback(
     (edits: readonly { location: Item; value: EditableGridCell }[]) => {
-      for (const e of edits) onCellEdited(e.location, e.value);
+      // Одиночная правка — прежний путь (свои сообщения/история). Пачка (вставка
+      // диапазоном) — собираем поля по строкам и шлём одним запросом (см. applyFieldsBatch).
+      if (edits.length <= 1) {
+        for (const e of edits) onCellEdited(e.location, e.value);
+        return true;
+      }
+      const batch: Array<{ id: number; fields: Record<string, string | number | null> }> = [];
+      const molAnchors: Array<{ anchor: FlowRow; mol: string }> = [];
+      let lastError = '';
+      for (const e of edits) {
+        const spec = COLS[e.location[0]];
+        const r = viewRows[e.location[1]];
+        if (!spec || !r) continue;
+        let raw: string | undefined;
+        if (e.value.kind === GridCellKind.Text) raw = String(e.value.data ?? '');
+        else if (e.value.kind === GridCellKind.Custom) {
+          const d = e.value.data as { kind?: string; value?: string; driver?: string } | undefined;
+          if (d?.kind === 'flow-driver' && spec.id === 'exp') raw = String(d.driver ?? '');
+          else if (d?.kind === 'flow-dropdown' && spec.id === 'vehicleType') raw = String(d.value ?? '');
+        }
+        const res = raw === undefined ? null : fieldsForPaste(r, spec, raw);
+        if (res === null) {
+          onCellEdited(e.location, e.value);
+          continue;
+        }
+        if (res.error) {
+          lastError = res.error;
+          continue;
+        }
+        if (res.fields) {
+          batch.push({ id: r.id, fields: res.fields });
+          // §13: МОЛ в Отчёте — обратная связь с формированием (как одиночная правка).
+          if (spec.id === 'mol' && mode === 'report') {
+            const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
+            const mol = String(res.fields.snap_mol ?? '');
+            if (anchor && String(anchor.mol ?? '') !== mol) molAnchors.push({ anchor, mol });
+          }
+        }
+      }
+      if (batch.length > 0) applyFieldsBatch(batch);
+      for (const a of molAnchors) applyAnchorFields(a.anchor, { mol: a.mol });
+      if (lastError) setMsg(lastError);
       return true;
     },
-    [onCellEdited],
+    [COLS, viewRows, onCellEdited, fieldsForPaste, applyFieldsBatch, applyAnchorFields, anchorByKey, mode],
   );
 
   // §7-B: двойной клик (Enter) по НОМЕНКЛАТУРЕ (NO.№) → карточка изменения материала.
@@ -2467,9 +2614,12 @@ export function FlowPlanGrid({
           kg: vgh?.weight_kg != null && q != null ? q * vgh.weight_kg : null,
           v: vgh?.volume_m3 != null && q != null ? q * vgh.volume_m3 : null,
           note: x.snap_note || '',
-          exp: deliveryExpeditors(x).map(expeditorDisplayName).join(', '),
-          vehicleType: splitMultiCell(x.vehicle || '').join(', '),
-          garage: splitMultiCell(x.ride_id || '').join(', '),
+          // Как в гриде (юзер 2026-07-05): экспедиторы «1. Фамилия Имя О.» по строкам,
+          // типы ТС и гаражные — друг под другом. Из Плана — СЛЕПОК фиксации (rowExpeditors
+          // и др. сами читают snap_* в режиме плана).
+          exp: numberedFioLines(rowExpeditors(x).map(expeditorDisplayName)),
+          vehicleType: splitMultiCell(rowVehicle(x)).join('\n'),
+          garage: splitMultiCell(rowRide(x)).join('\n'),
           stockNote: x.stock_note || '',
           stockSus: x.stock_sus ?? null,
           stockMm: x.stock_mm ?? null,
@@ -2487,10 +2637,12 @@ export function FlowPlanGrid({
           stockPlace: x.stock_place || '',
           matNote: (vgh?.tech_name || '').trim(),
           // Кладовщикам — «вместе с цветом»: ручная пастельная заливка (кисть, юзер
-          // 2026-07-04) приоритетнее авто-тона машины по гаражному.
+          // 2026-07-04) приоритетнее авто-тона машины по гаражному. Из Плана — слепок
+          // (snap_fill/snap_ride): цвета Отчёта в исторический план не тянем.
           fillArgb: (() => {
-            if ((x.row_fill || '').trim()) return `FF${x.row_fill}`;
-            const g = splitMultiCell(x.ride_id || '')[0] ?? '';
+            const fill = (isSnapRow(x) ? x.snap_fill || '' : x.row_fill || '').trim();
+            if (fill) return `FF${fill}`;
+            const g = splitMultiCell(rowRide(x))[0] ?? '';
             return g ? garageFillArgb(g) : '';
           })(),
         };
@@ -2516,7 +2668,7 @@ export function FlowPlanGrid({
       downloadXlsx(fileName, book.sheets, { definedNames: book.definedNames });
       setMsg(`Выгружено в Excel: ${dayRows.length} строк`);
     },
-    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, resolveExpeditorOpt, molsForWh, fixLabelOf, batchRankByDate, mode],
+    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, resolveExpeditorOpt, molsForWh, fixLabelOf, batchRankByDate, mode, isSnapRow, rowExpeditors, rowVehicle, rowRide],
   );
 
   // Пустая ручная строка «как в обычной таблице» (юзер 2026-07-03): клик по хвостовой
@@ -2566,27 +2718,28 @@ export function FlowPlanGrid({
       }
       // «Как в Excel» (юзер 2026-07-04): скопировал ячейку (или блок 2 колонок — тип ТС +
       // гаражный), выделил диапазон → вставка ТИРАЖИРУЕТСЯ на всё выделение, а не только
-      // на первую ячейку. Работает для любых колонок (экспедиторы/ТС/гаражный и т.д.).
+      // на первую ячейку. Правки идут ПАЧКОЙ через onCellsEdited: одна строка = один
+      // элемент запроса (иначе гонка row_version — «вставилось и сбросилось»).
       const range = selection.current?.range;
       const H = Array.isArray(values) ? values.length : 0;
       const W = H > 0 ? Math.max(...values.map((row) => row.length)) : 0;
       if (range && H > 0 && W > 0 && (range.height > H || range.width > W)) {
+        const list: Array<{ location: Item; value: EditableGridCell }> = [];
         for (let dy = 0; dy < range.height; dy++) {
           for (let dx = 0; dx < range.width; dx++) {
             const v = String(values[dy % H]?.[dx % W] ?? '');
-            onCellEdited([range.x + dx, range.y + dy], {
-              kind: GridCellKind.Text,
-              data: v,
-              displayData: v,
-              allowOverlay: true,
+            list.push({
+              location: [range.x + dx, range.y + dy] as Item,
+              value: { kind: GridCellKind.Text, data: v, displayData: v, allowOverlay: true },
             });
           }
         }
+        onCellsEdited(list);
         return false; // обработали сами — растянули на всё выделение
       }
-      return true; // остальное — обычная вставка диапазона Glide
+      return true; // остальное — обычная вставка диапазона Glide (придёт в onCellsEdited)
     },
-    [COLS, selection, applyStatusToSelected, applyPastedRows, onCellEdited],
+    [COLS, selection, applyStatusToSelected, applyPastedRows, onCellsEdited],
   );
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];

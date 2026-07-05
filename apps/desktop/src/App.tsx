@@ -45,6 +45,7 @@ import { extractPresenceFromChatWires } from '@/lib/repositories/presence-fill';
 import { isAuthFailure } from '@/lib/version';
 import { triggerAppLockWipe, wipeUserData } from '@/lib/wipe';
 import { useSessionRemaining } from '@/lib/use-session-remaining';
+import { installGridAltEnterNewline } from '@/lib/grid-newline';
 import {
   useAuthFailureHandler,
   useInitI18n,
@@ -193,6 +194,9 @@ export function App() {
   useEffect(() => {
     window.pyn?.debugLog?.('splash:stage', `${splashStage} @${Date.now()}`);
   }, [splashStage]);
+  // Alt+Enter (⌥+Enter на Mac) — перенос строки в ячейке ЛЮБОЙ таблицы, как в Excel
+  // (юзер 2026-07-05). Один глобальный обработчик на все Glide-гриды (общий #portal).
+  useEffect(() => installGridAltEnterNewline(), []);
   const [collapsed, setCollapsed] = useState(false);
   // Update flow state machine вынесен в useUpdateFlow hook (см. lib/hooks/use-update-flow.ts).
   // Источник правды — sidebar pill (click drives transitions).

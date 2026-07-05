@@ -22,7 +22,8 @@
 //   4 bold12-r · 5 bold12-r-wrap · 6 wrap12 · 7 mol (Inter 8 bold wrap) · 8 num3
 //   (#,##0.000, 12) · 9 kgv (0.00, 8 bold) · 10 wrap10 · 11 bold10 · 12 mhead
 //   (10 bold wrap, шапка машины) · 13 text8 · 14 num8 · 15 wrap8 (Inter 8 НЕжирный —
-//   хвост плана после ID + Экспедитор, эталон 📦ТМЦ). + клоны с заливкой (по rowFills).
+//   хвост плана после ID + Экспедитор, эталон 📦ТМЦ) · 16 wrap10-r (10 право+перенос —
+//   гаражные в 2 строки, юзер 2026-07-05). + клоны с заливкой (по rowFills).
 
 /** Прогон rich-текста: свой шрифт/жирность внутри одной ячейки. */
 export interface XlsxRichRun {
@@ -50,6 +51,7 @@ export const XLSX_STYLE: Record<string, number> = {
   text8: 13,
   num8: 14,
   wrap8: 15,
+  'wrap10-r': 16,
 };
 
 export interface XlsxSheet {
@@ -329,6 +331,7 @@ const BASE_XFS: Array<{ nf: number; f: number; h: 'left' | 'right'; wrap: boolea
   { nf: 0, f: 6, h: 'left', wrap: false },          // 13 text8 (хвост плана после ID)
   { nf: 164, f: 6, h: 'right', wrap: false },       // 14 num8 (остатки хвоста, 3 знака — юзер 2026-07-04)
   { nf: 0, f: 6, h: 'left', wrap: true },           // 15 wrap8 (Экспедитор / поставка+заказ хвоста)
+  { nf: 49, f: 0, h: 'right', wrap: true },         // 16 wrap10-r (гаражные №№ по строкам)
 ];
 
 /** Клоны базовых стилей: заливка строки (цвет машины/ручная) и/или верхняя граница-

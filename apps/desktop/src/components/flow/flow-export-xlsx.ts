@@ -83,11 +83,11 @@ export function fileDateRu(dateIso: string): string {
     : dateIso;
 }
 
-/** Имя файла по правилу юзера: план → «План экспедиции на июль 6, 2026.xlsx»,
- *  доп → «Доп. 1 к плану экспедиции на июль 6, 2026.xlsx». batch 0/'all' → план. */
+/** Имя файла по правилу юзера (2026-07-05): план → «План экспедиции на июль 6, 2026.xlsx»,
+ *  доп → «Дополнение (1) к плану экспедиции на июль 6, 2026.xlsx». batch 0/'all' → план. */
 export function planXlsxFilename(dateIso: string, batch: number | 'all'): string {
   const dateRu = fileDateRu(dateIso);
-  if (batch !== 'all' && batch >= 2) return `Доп. ${batch - 1} к плану экспедиции на ${dateRu}.xlsx`;
+  if (batch !== 'all' && batch >= 2) return `Дополнение (${batch - 1}) к плану экспедиции на ${dateRu}.xlsx`;
   return `План экспедиции на ${dateRu}.xlsx`;
 }
 
@@ -134,8 +134,9 @@ const FALLBACK_LAYOUT: FlowXlsxLayout = {
       { id: 'v', head: 'V', width: 5, style: 'kgv' },
       { id: 'note', head: 'Комментарий', width: 21.6, style: 'mol' },
       { id: 'exp', head: 'Экспедитор', width: 15.7, style: 'wrap8' },
-      { id: 'vehicle_type', head: 'Машина', width: 12.3, style: 'text' },
-      { id: 'garage', head: 'ID', width: 5.9, style: 'text-r' },
+      // Тип ТС/гаражные — ПО СТРОКАМ в ячейке с переносом (юзер 2026-07-05: «не обрезать»).
+      { id: 'vehicle_type', head: 'Машина', width: 12.3, style: 'wrap10' },
+      { id: 'garage', head: 'ID', width: 5.9, style: 'wrap10-r' },
     ],
   },
   rest: {
@@ -159,9 +160,22 @@ const DEFAULT_STYLE_BY_ID: Record<string, string> = {
   request: 'text', fr: 'bold12-r', to: 'bold12-r', pr: 'text12-r', clst: 'text12-r',
   graph: 'bold10', fix: 'text-r', dlvord: 'bold12-r-wrap', dlv: 'bold12-r', dlv_pos: 'text-r',
   trz: 'text-r', mol: 'mol', q: 'bold10', no_num: 'text12-r', mat: 'wrap12', uom: 'text',
-  qty: 'num3', kg: 'kgv', v: 'kgv', note: 'mol', exp: 'wrap8', vehicle_type: 'text', garage: 'text-r',
+  qty: 'num3', kg: 'kgv', v: 'kgv', note: 'mol', exp: 'wrap8', vehicle_type: 'wrap10', garage: 'wrap10-r',
   stock_note: 'wrap10',
 };
+
+// Многострочные ячейки (экспедиторы нумерованно / типы ТС / гаражные по строкам) обязаны
+// ПЕРЕНОСИТЬ текст, каким бы ни пришёл серверный layout (там мог остаться старый 'text' —
+// именно поэтому тип ТС «оставался обрезанным», юзер 2026-07-05).
+const WRAP_FLOOR: Record<string, string> = { exp: 'wrap8', vehicle_type: 'wrap10', garage: 'wrap10-r' };
+function withWrapFloor(cols: FlowXlsxColumn[]): FlowXlsxColumn[] {
+  return cols.map((c) => {
+    const floor = WRAP_FLOOR[c.id];
+    if (!floor) return c;
+    const st = String(c.style ?? '');
+    return st.startsWith('wrap') || st === 'mol' || st === 'mhead' ? c : { ...c, style: floor };
+  });
+}
 
 const num = (v: number | null | undefined): XlsxValue =>
   v == null || !Number.isFinite(v) ? '' : Math.round(v * 1000) / 1000;
@@ -281,6 +295,10 @@ function styleOf(c: FlowXlsxColumn): number {
 // Wrap-колонки (наименование/МОЛ/комментарий/экспедитор/место хранения) переносят
 // текст по ДИЗАЙНУ — им остаётся серверная ширина; остальным ширина по содержимому.
 const KEEP_WRAP = new Set(['wrap12', 'mol', 'wrap10', 'wrap8']);
+// Многострочные колонки, где ширину всё же меряем ПО САМОЙ ДЛИННОЙ СТРОКЕ ячейки
+// (перенос там — разделение пунктов, а не укладка длинного текста): экспедиторы
+// нумерованно, типы ТС, гаражные (юзер 2026-07-05 — «тип ТС не вписан по ширине»).
+const LINE_FIT_IDS = new Set(['exp', 'vehicle_type', 'garage']);
 const STYLE_FONT: Record<string, { sz: number; bold: boolean }> = {
   text: { sz: 10, bold: false }, 'text-r': { sz: 10, bold: false },
   'text12-r': { sz: 12, bold: false }, 'bold12-r': { sz: 12, bold: true },
@@ -288,6 +306,7 @@ const STYLE_FONT: Record<string, { sz: number; bold: boolean }> = {
   mol: { sz: 8, bold: true }, num3: { sz: 12, bold: false }, kgv: { sz: 8, bold: true },
   wrap10: { sz: 10, bold: false }, bold10: { sz: 10, bold: true },
   text8: { sz: 8, bold: false }, num8: { sz: 8, bold: false }, wrap8: { sz: 8, bold: false },
+  'wrap10-r': { sz: 10, bold: false },
 };
 
 const ruFixed = (n: number, dec: number): string =>
@@ -327,7 +346,7 @@ function richUnits(v: { rich: XlsxRichRun[] }): number {
 
 function autoWidth(col: FlowXlsxColumn, values: XlsxValue[], headText: string, opts?: { compactHead?: boolean }): number {
   const styleName = styleNameOf(col);
-  if (KEEP_WRAP.has(styleName)) return col.width;
+  if (KEEP_WRAP.has(styleName) && !LINE_FIT_IDS.has(col.id)) return col.width;
   const f = STYLE_FONT[styleName] ?? { sz: 10, bold: false };
   const factor = (f.sz / 10) * (f.bold ? 1.06 : 1);
   let chars = 0;
@@ -387,7 +406,8 @@ export function buildPlanXlsxSheets(
   const sheetName = batch !== 'all' && batch >= 2 ? `Доп. ${batch - 1}` : 'План';
 
   // Печатные колонки (без П/П и без «Был»); за ними — ХВОСТ после ID (вне печати).
-  const planCols = lay.plan.columns.filter((c) => c.id !== 'dlv_pos' && c.id !== 'pr');
+  // Экспедиторы/тип ТС/гаражный — принудительно wrap (многострочные ячейки).
+  const planCols = withWrapFloor(lay.plan.columns.filter((c) => c.id !== 'dlv_pos' && c.id !== 'pr'));
   const matTpl = lay.plan.matHead && lay.plan.matHead.includes('{MONTH1}')
     ? lay.plan.matHead
     : MAT_HEAD_DEFAULT;
@@ -519,11 +539,21 @@ export function kladExpedFilename(dateIso: string): string {
   return `Экспедиторы по плану на ${fileDateRu(dateIso)}.xlsx`;
 }
 
-/** «Фамилия Имя Отчество» → «Фамилия Имя О.» (нумерованные экспедиторы шапки машины). */
+/** «Фамилия Имя Отчество» → «Фамилия Имя О.» (компактные нумерованные списки). */
 function shortFio(fio: string): string {
   const p = fio.trim().split(/\s+/).filter(Boolean);
   if (p.length >= 3) return `${p[0]} ${p[1]} ${p[2]?.slice(0, 1)}.`;
   return fio.trim();
+}
+
+/** Экспедиторы ячейки xlsx — как в гриде (юзер 2026-07-05): «1. Фамилия Имя О.»,
+ *  каждый со своей строки. Пусто → ''. */
+export function numberedFioLines(fios: readonly string[]): string {
+  return fios
+    .map((f) => f.trim())
+    .filter(Boolean)
+    .map((f, i) => `${i + 1}. ${shortFio(f)}`)
+    .join('\n');
 }
 
 /** ЕИ-канон для ключа схлопывания (PRN_EICanon эталона): ШТ/КГ/Т/Л без точек и пробелов. */
@@ -647,14 +677,25 @@ export function buildExpedGroups(rowsIn: ExpedXlsxRow[]): ExpedGroup[] {
     }
     const items = [...grouped.values()].sort(cmp);
     if (items.length === 0) continue;
-    const first = items[0]?.r;
     const uniq = (vals: string[]): string => [...new Set(vals.filter(Boolean))].join(' | ');
+    // Экспедиторы/тип ТС машины — ПО ВСЕМ строкам группы, не только первой (юзер
+    // 2026-07-05: «в шапке нет ФИО» — первая по сортировке строка могла быть без них).
+    const expSeen = new Set<string>();
+    const expeditors: string[] = [];
+    for (const it of items) {
+      for (const fio of it.r.expeditors) {
+        const k = fio.trim().toUpperCase();
+        if (!k || expSeen.has(k)) continue;
+        expSeen.add(k);
+        expeditors.push(fio.trim());
+      }
+    }
     let prevGrpKey: string | null = null;
     out.push({
       garage: g,
-      vehicleType: first?.vehicleType || '',
-      expeditors: first?.expeditors ?? [],
-      fillArgb: g ? first?.fillArgb || '' : '',
+      vehicleType: items.find((x) => x.r.vehicleType.trim())?.r.vehicleType || '',
+      expeditors,
+      fillArgb: g ? items.find((x) => x.r.fillArgb)?.r.fillArgb || '' : '',
       frList: uniq(items.map((x) => x.r.fr)),
       toList: uniq(items.map((x) => x.r.to_wh)),
       items: items.map((it) => {
@@ -701,13 +742,13 @@ export function buildExpedXlsxBook(
   const molIdx = EXPED_COLS.findIndex((c) => c.id === 'mol');
   const molL = colLetter(molIdx);
   for (const grp of groups) {
-    // Шапка машины (юзер 2026-07-04): «гр. № …  тип ТС», ниже экспедиторы НУМЕРОВАННЫМ
-    // списком «1. Фамилия Имя О.» каждый со своей строки, затем От/СП. Высота — по числу
-    // строк, чтобы тип ТС/экспедиторы не обрезались.
+    // Шапка машины (юзер 2026-07-04/05): «гр. № …  тип ТС», ниже экспедиторы НУМЕРОВАННЫМ
+    // списком — ФИО ЦЕЛИКОМ («1. Нанкин Александр Михайлович»), каждый со своей строки,
+    // затем От/СП. Высота — по числу строк, чтобы тип ТС/экспедиторы не обрезались.
     const line1 = grp.garage
       ? ['гр. №', grp.garage, grp.vehicleType].filter(Boolean).join('   ')
       : 'Без машины';
-    const expLines = grp.expeditors.map((fio, i) => `${i + 1}. ${shortFio(fio)}`);
+    const expLines = grp.expeditors.map((fio, i) => `${i + 1}. ${fio}`);
     const headLines = [line1, ...expLines, `От: ${grp.frList}`, `СП: ${grp.toList}`];
     if (sheetRows.length > 1) breaks.push(sheetRows.length); // разрыв ПЕРЕД шапкой машины
     sheetRows.push([headLines.join('\n')]);
