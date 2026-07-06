@@ -1,15 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Copy, LocateFixed, MapPinned, Navigation, Phone, TrainTrack, Trash2, X } from 'lucide-react';
-import { groupByWarehouse, type MolRecord } from '@pyn/core';
+import { Copy, LocateFixed, MapPinned, Navigation, TrainTrack, Trash2, Warehouse, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { splitAndFormatWorkPhones } from '@/lib/mol-format';
 import { useWarehousesStore } from '@/lib/warehouses-store';
-import { useMolStore } from '@/lib/stores';
-import { WarehouseCard } from '@/components/mol/WarehouseSidebar';
 import { useMapStore } from '@/lib/map-store';
 import {
   AREA_COLORS,
   EMPTY_POINT_EQUIPMENT,
+  EQUIPMENT_META,
   VEHICLE_TYPES,
   roadPaintOption,
   vehicleLabel,
@@ -38,6 +35,8 @@ interface Props {
   routeVehicle: VehicleType | null;
   onSetRouteFromPoint: (id: string) => void;
   onClearRoute: () => void;
+  /** Открыть оверлей «карточка склада + МОЛы» поверх карты. */
+  onShowWarehouseCard: (warehouseId: string) => void;
 }
 
 /** Плитка-карточка деталей выбранного объекта (точка / область / дорога / переезд). */
@@ -54,6 +53,7 @@ export function MapDetailPanel({
   routeVehicle,
   onSetRouteFromPoint,
   onClearRoute,
+  onShowWarehouseCard,
 }: Props) {
   return (
     <div className="flex min-h-0 flex-col">
@@ -97,6 +97,7 @@ export function MapDetailPanel({
             routeVehicle={routeVehicle}
             onSetRouteFromPoint={onSetRouteFromPoint}
             onClearRoute={onClearRoute}
+            onShowWarehouseCard={onShowWarehouseCard}
           />
         )}
         {selection.type === 'area' && <AreaEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
@@ -125,6 +126,7 @@ function PointEditor({
   routeVehicle,
   onSetRouteFromPoint,
   onClearRoute,
+  onShowWarehouseCard,
 }: {
   id: string;
   canEdit: boolean;
@@ -138,6 +140,7 @@ function PointEditor({
   routeVehicle: VehicleType | null;
   onSetRouteFromPoint: (id: string) => void;
   onClearRoute: () => void;
+  onShowWarehouseCard: (warehouseId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const point = useMapStore((s) => s.doc.points.find((p) => p.id === id));
@@ -187,22 +190,16 @@ function PointEditor({
         />
       )}
 
-      {/* Карточка склада «как в Цеха» (название цеха, телефоны, статус, график) */}
-      {point.warehouseId && (
-        <FoldBlock title="Карточка склада" defaultOpen>
-          <WarehouseCard
-            warehouseId={point.warehouseId}
-            hideMapLink
-            onContactAction={(req) => { void navigator.clipboard?.writeText(req.target); }}
-          />
-        </FoldBlock>
-      )}
-
-      {/* МОЛы склада */}
-      {point.warehouseId && (
-        <FoldBlock title="МОЛы и телефоны" defaultOpen>
-          <MolBlock warehouseId={point.warehouseId} />
-        </FoldBlock>
+      {/* Данные склада (карточка «как в Цеха» + МОЛы) — оверлеем ПОВЕРХ карты,
+          в панели точки остаются чисто данные точки (юзер 2026-07-05). */}
+      {point.warehouseId && !editing && (
+        <button
+          type="button"
+          onClick={() => onShowWarehouseCard(point.warehouseId!)}
+          className="flex h-8 w-full items-center justify-center gap-1.5 rounded border border-accent-clay/40 bg-accent-clay-bg/50 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/15"
+        >
+          <Warehouse className="h-3.5 w-3.5" strokeWidth={1.75} /> Карточка склада и МОЛы
+        </button>
       )}
 
       {point.warehouseId && siblingPointCount > 1 && (
@@ -251,13 +248,16 @@ function PointEditor({
 
           <Field label="Оснастка на месте (что грузит/разгружает)">
             <div className="grid grid-cols-2 gap-1">
-              <ToggleChip label="КРАН" active={equipment.crane} onClick={() => updatePoint(id, { equipment: { ...equipment, crane: !equipment.crane } })} />
-              <ToggleChip label="КРАН-БАЛКА" active={equipment.craneBeam} onClick={() => updatePoint(id, { equipment: { ...equipment, craneBeam: !equipment.craneBeam } })} />
-              <ToggleChip label="АВТО-КРАН" active={equipment.autoCrane} onClick={() => updatePoint(id, { equipment: { ...equipment, autoCrane: !equipment.autoCrane } })} />
-              <ToggleChip label="ШТАБЕЛЕР" active={equipment.stacker} onClick={() => updatePoint(id, { equipment: { ...equipment, stacker: !equipment.stacker } })} />
-              <ToggleChip label="РУЧНОЕ" active={equipment.manual} onClick={() => updatePoint(id, { equipment: { ...equipment, manual: !equipment.manual } })} />
+              {EQUIPMENT_META.map((m) => (
+                <ToggleChip
+                  key={m.key}
+                  label={m.label}
+                  active={!!equipment[m.key]}
+                  onClick={() => updatePoint(id, { equipment: { ...equipment, [m.key]: !equipment[m.key] } })}
+                />
+              ))}
             </div>
-            {!equipment.crane && !equipment.craneBeam && !equipment.autoCrane && !equipment.stacker && !equipment.manual && (
+            {EQUIPMENT_META.every((m) => !equipment[m.key]) && (
               <p className="mt-1 rounded border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
                 Оснастка не выбрана — отметьте, чем грузят (или «РУЧНОЕ»).
               </p>
@@ -323,7 +323,17 @@ function PointEditor({
         </>
       )}
 
-      <CoordsBlock point={point} />
+      {canEdit && editing ? (
+        <CoordsEditBlock
+          point={point}
+          onCommit={(latlng) => {
+            updatePoint(id, latlng);
+            onFocus(latlng);
+          }}
+        />
+      ) : (
+        <CoordsBlock point={point} />
+      )}
 
       {canEdit && (
         <div className="grid grid-cols-2 gap-1.5">
@@ -364,13 +374,9 @@ function PointEditor({
 function PointSummary({ point }: { point: MapPoint }) {
   const warehouse = useWarehousesStore((s) => (point.warehouseId ? s.byId.get(point.warehouseId) : undefined));
   const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
-  const equipmentList = [
-    equipment.crane ? 'кран' : null,
-    equipment.craneBeam ? 'кран-балка' : null,
-    equipment.autoCrane ? 'авто-кран' : null,
-    equipment.stacker ? 'штабелёр' : null,
-    equipment.manual ? 'ручное' : null,
-  ].filter(Boolean) as string[];
+  const equipmentList = EQUIPMENT_META
+    .filter((m) => equipment[m.key])
+    .map((m) => m.label.toLowerCase());
   const allowedVehicles = point.allowedVehicles ?? [];
   const title = point.warehouseId
     ? `Склад ${point.warehouseId}`
@@ -508,6 +514,87 @@ function CoordsBlock({ point }: { point: MapPoint }) {
   );
 }
 
+/** '57,919494' → 57.919494; пусто/мусор → null (Number('') даёт 0 — отсекаем). */
+function parseCoord(raw: string): number | null {
+  const t = raw.trim().replace(',', '.');
+  if (!t) return null;
+  const v = Number(t);
+  return Number.isFinite(v) ? v : null;
+}
+
+/**
+ * Правка координат точки руками (юзер 2026-07-05). Ввод широты/долготы,
+ * понимает вставку пары «57.919494, 60.028350» в поле широты. Коммит —
+ * Enter или потеря фокуса; после коммита карта наводится на новое место.
+ */
+function CoordsEditBlock({ point, onCommit }: { point: MapPoint; onCommit: (latlng: LatLng) => void }) {
+  const [lat, setLat] = useState(point.lat.toFixed(6));
+  const [lng, setLng] = useState(point.lng.toFixed(6));
+
+  // Точку переместили мышью/выбрали другую — обновляем поля.
+  useEffect(() => {
+    setLat(point.lat.toFixed(6));
+    setLng(point.lng.toFixed(6));
+  }, [point.id, point.lat, point.lng]);
+
+  const latVal = parseCoord(lat);
+  const lngVal = parseCoord(lng);
+  const valid = latVal !== null && lngVal !== null
+    && Math.abs(latVal) <= 90 && Math.abs(lngVal) <= 180;
+  const changed = valid && (latVal !== point.lat || lngVal !== point.lng);
+
+  const commit = () => {
+    if (changed && latVal !== null && lngVal !== null) onCommit({ lat: latVal, lng: lngVal });
+  };
+
+  // Вставили «lat, lng» одной строкой — раскладываем по полям.
+  const onLatChange = (raw: string) => {
+    const pair = /^\s*(-?\d+(?:[.,]\d+)?)\s*[,;]\s*(-?\d+(?:[.,]\d+)?)\s*$/.exec(raw);
+    if (pair) {
+      setLat(pair[1]!.replace(',', '.'));
+      setLng(pair[2]!.replace(',', '.'));
+    } else {
+      setLat(raw);
+    }
+  };
+
+  const inputCls = cn(
+    'w-full rounded border bg-bg-surface px-2 py-1 font-mono text-[12.5px] tabular-nums text-text-primary outline-none focus:border-accent-clay/40',
+    valid ? 'border-border-default' : 'border-danger/45',
+  );
+
+  return (
+    <Field label="Координаты места выгрузки (широта / долгота)">
+      <div className="grid grid-cols-2 gap-1.5">
+        <input
+          value={lat}
+          onChange={(e) => onLatChange(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
+          placeholder="57.919494"
+          className={inputCls}
+        />
+        <input
+          value={lng}
+          onChange={(e) => setLng(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
+          placeholder="60.028350"
+          className={inputCls}
+        />
+      </div>
+      {!valid && (
+        <p className="mt-1 text-[10.5px] text-danger">
+          Нужны числа: широта −90…90, долгота −180…180.
+        </p>
+      )}
+      <p className="mt-1 text-[10.5px] text-text-muted">
+        Можно вставить пару «57.919494, 60.028350» в поле широты. Enter — применить.
+      </p>
+    </Field>
+  );
+}
+
 function WarehousePointsBlock({
   currentId,
   warehouseId,
@@ -554,44 +641,6 @@ function WarehousePointsBlock({
           );
         })}
       </div>
-    </div>
-  );
-}
-
-// ─── МОЛы склада ──────────────────────────────────────────────────────────
-
-function MolBlock({ warehouseId }: { warehouseId: string }) {
-  const records = useMolStore((s) => s.records);
-  const mols = useMemo(() => {
-    const m = groupByWarehouse(records);
-    return m.get(warehouseId.trim().toLowerCase()) ?? [];
-  }, [records, warehouseId]);
-
-  if (mols.length === 0) return null;
-  return (
-    <div className="rounded-lg border border-border-subtle bg-bg-elevated/40 px-3 py-2.5">
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">МОЛы склада</p>
-      <div className="space-y-2">
-        {mols.map((r) => <MolRow key={r.remoteId} r={r} />)}
-      </div>
-    </div>
-  );
-}
-
-function MolRow({ r }: { r: MolRecord }) {
-  const phones = r.work ? splitAndFormatWorkPhones(r.work) : [];
-  return (
-    <div className="text-[12px]">
-      <p className="font-semibold text-text-strong">{r.fio || '—'}</p>
-      {r.position && <p className="text-text-muted">{r.position}</p>}
-      {r.mobile && (
-        <p className="mt-0.5 flex items-center gap-1.5 font-mono tabular-nums text-text-secondary">
-          <Phone className="h-3 w-3 text-text-muted" strokeWidth={1.75} /> {r.mobile}
-        </p>
-      )}
-      {phones.map((p, i) => (
-        <p key={i} className="font-mono tabular-nums text-text-secondary">{p}</p>
-      ))}
     </div>
   );
 }

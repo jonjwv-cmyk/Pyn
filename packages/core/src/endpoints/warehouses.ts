@@ -49,6 +49,7 @@ interface WarehouseWire {
   cluster?: string | null;
   delivery_day?: string | null;
   in_schedule?: number;
+  tech_cluster?: number;
   is_shipping?: number;
   is_removed?: number;
   removal_kind?: string | null;
@@ -61,6 +62,8 @@ export interface WarehousePatch {
   cluster?: WarehouseCluster | null;
   delivery_day?: WarehouseWeekday | null;
   in_schedule?: 0 | 1;
+  /** Кластер «Технология» — справочный, в плане не участвует (юзер 2026-07-05). */
+  tech_cluster?: 0 | 1;
   is_shipping?: 0 | 1;
   is_removed?: 0 | 1;
   removal_kind?: 'auto' | 'manual' | null;
@@ -89,6 +92,7 @@ function wireToWarehouse(w: WarehouseWire): Warehouse {
     cluster,
     delivery_day: day,
     in_schedule: flag(w.in_schedule),
+    tech_cluster: flag(w.tech_cluster),
     is_shipping: flag(w.is_shipping),
     is_removed: flag(w.is_removed),
     removal_kind: kind,

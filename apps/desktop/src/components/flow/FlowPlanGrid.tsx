@@ -14,6 +14,7 @@ import {
 import { ClipboardPaste, Redo2, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
+import { BODY_TYPES } from './flow-body-types';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { planEtalonCompare } from './flow-plan-sort';
@@ -199,9 +200,8 @@ const FAIL_REASONS = [
 ] as const;
 
 /** ТИП ТС (юзер 2026-06-15) — НАШ маркер кузова, НЕ тянется из машины. До 3 на строку
- *  (соответствует до 3 гаражным). Хранится в поле `vehicle` (через `\n`). */
-// Типы ТС (юзер 2026-07-02, по эталону экспедиции).
-const BODY_TYPES = ['ФУРГОН КХП', 'БОРТОВИК', 'ПУЛЬМАН 9М', 'ПУЛЬМАН 12М', 'ГАЗЕЛЬ', 'МАСЛОВОЗ'] as const;
+ *  (соответствует до 3 гаражным). Хранится в поле `vehicle` (через `\n`).
+ *  Список имён единый с картой — см. flow-body-types.ts. */
 
 /** Статус выполнения (юзер 2026-06-14): по умолчанию «ОЖИДАНИЕ» (пусто в БД), «выполнено»
  *  (зелёный в исходном отчёте) или ПРИЧИНА (серый, не увезено). Стереть ячейку → снова ожидание. */

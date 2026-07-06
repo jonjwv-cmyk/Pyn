@@ -33,6 +33,7 @@ import { useUiStateStore } from '@/lib/stores';
 import { useMapStore } from '@/lib/map-store';
 import {
   EMPTY_POINT_EQUIPMENT,
+  EQUIPMENT_META,
   vehicleShort,
   type MapPoint,
 } from '@/components/map/map-types';
@@ -276,11 +277,9 @@ function pointBadges(point: MapPoint): string[] {
   const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
   const badges: string[] = [];
   if (point.rearUnload) badges.push('ТМЦ сзади');
-  if (equipment.crane) badges.push('кран');
-  if (equipment.craneBeam) badges.push('кран-балка');
-  if (equipment.autoCrane) badges.push('авто-кран');
-  if (equipment.stacker) badges.push('штабелер');
-  if (equipment.manual) badges.push('ручное');
+  for (const m of EQUIPMENT_META) {
+    if (equipment[m.key]) badges.push(m.label.toLowerCase());
+  }
   if ((point.allowedVehicles ?? []).length > 0) {
     badges.push((point.allowedVehicles ?? []).map(vehicleShort).join(' '));
   }
@@ -449,6 +448,12 @@ function StatusPills({ warehouse }: { warehouse: Warehouse }) {
           {clusterLabel(warehouse.cluster, t)} · {weekdayShortLabel(warehouse.delivery_day, t)}
         </span>
       )}
+      {/* Кластер «Технология» — справочный пилл, к плану отношения не имеет. */}
+      {warehouse.tech_cluster === 1 && (
+        <span className="rounded bg-sky-400/15 px-1.5 py-0.5 text-[10.5px] font-semibold tracking-wide text-sky-300">
+          {t('mol_sidebar.tech_cluster_pill')}
+        </span>
+      )}
       <span
         className={cn(
           'ml-auto inline-flex items-center rounded px-2 py-0.5 text-[10.5px] font-semibold tracking-wide',
@@ -504,6 +509,8 @@ export function EditDialog({ warehouse }: { warehouse: Warehouse }) {
   const [status, setStatus] = useState<StatusOption>(initialStatus);
   const [cluster, setCluster] = useState<WarehouseCluster | null>(warehouse.cluster);
   const [day, setDay] = useState<WarehouseWeekday | null>(warehouse.delivery_day);
+  // Кластер «Технология» — справочный признак, от статуса не зависит.
+  const [techCluster, setTechCluster] = useState(warehouse.tech_cluster === 1);
   // Inline confirm when current=delivery + draft=shipping
   const [confirmShipping, setConfirmShipping] = useState(false);
 
@@ -513,9 +520,10 @@ export function EditDialog({ warehouse }: { warehouse: Warehouse }) {
       setStatus(initialStatus);
       setCluster(warehouse.cluster);
       setDay(warehouse.delivery_day);
+      setTechCluster(warehouse.tech_cluster === 1);
       setConfirmShipping(false);
     }
-  }, [open, initialPhones, initialStatus, warehouse.cluster, warehouse.delivery_day]);
+  }, [open, initialPhones, initialStatus, warehouse.cluster, warehouse.delivery_day, warehouse.tech_cluster]);
 
   const setOne = (i: number, v: string) =>
     setPhones((prev) => prev.map((p, idx) => (idx === i ? formatPhoneLive(v) : p)));
@@ -551,6 +559,7 @@ export function EditDialog({ warehouse }: { warehouse: Warehouse }) {
       .filter((p) => p.length > 0);
     const patch: WarehousePatch = {
       work_phone: cleanPhones.length > 0 ? cleanPhones.join('\n') : null,
+      tech_cluster: techCluster ? 1 : 0,
     };
     if (status === 'delivery') {
       patch.in_schedule = 1; patch.is_shipping = 0; patch.is_removed = 0;
@@ -698,6 +707,30 @@ export function EditDialog({ warehouse }: { warehouse: Warehouse }) {
               </div>
             </div>
           )}
+
+          {/* Кластер «Технология» — справочный, от статуса не зависит,
+              к плану/графику отношения не имеет (юзер 2026-07-05). */}
+          <div className="mt-3">
+            <span className="mb-1 block text-[9.5px] font-medium uppercase tracking-wider text-text-muted">
+              {t('mol_sidebar.section_tech_cluster')}
+            </span>
+            <button
+              type="button"
+              onClick={() => setTechCluster((v) => !v)}
+              className={cn(
+                'flex h-7 w-full items-center justify-between rounded px-2 text-[11px] font-semibold outline-none transition-colors',
+                techCluster
+                  ? 'bg-accent-clay-bg text-accent-clay ring-1 ring-inset ring-accent-clay/40'
+                  : 'bg-white/[0.04] text-text-primary hover:bg-white/[0.08] hover:text-text-strong',
+              )}
+            >
+              <span>{t('mol_sidebar.tech_cluster_pill')}</span>
+              <span className="text-[10px] font-medium">{techCluster ? '✓' : ''}</span>
+            </button>
+            <p className="mt-1 text-[10px] leading-snug text-text-muted">
+              {t('mol_sidebar.tech_cluster_hint')}
+            </p>
+          </div>
 
           {/* Phones — всегда */}
           <div className="mt-3">

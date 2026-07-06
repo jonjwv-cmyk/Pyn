@@ -90,6 +90,11 @@ interface TrColSpec {
 
 /** Шаг истории отмены/повтора (юзер 2026-06-12): правка полей одной строки. */
 type TrEdit = { id: number; before: Record<string, string>; after: Record<string, string> };
+/** Шаг «вставка из буфера» (юзер 2026-07-06): отмена = удалить вставленные новые строки,
+ *  повтор = вставить те же строки заново (id обновятся). */
+type TrPasteStep = { kind: 'paste'; insertedIds: number[]; rows: ReturnType<typeof parseTransportPaste> };
+type TrHistStep = TrEdit | TrPasteStep;
+const isPasteStep = (s: TrHistStep): s is TrPasteStep => 'kind' in s && s.kind === 'paste';
 
 // Порядок колонок (юзер 2026-06-12): дата · ИСТОРИЯ(рейс) · статус · работа · время · марка ·
 // №·ГОС · выезд · водитель · комментарий. ТИП/ДОП.ТН/ТН/Д/Ш/В — НЕ колонки, а карточка машины
@@ -97,6 +102,7 @@ type TrEdit = { id: number; before: Record<string, string>; after: Record<string
 // все поля хранятся отдельно (flow_vehicles), вставки приходят по колонкам — мы лишь красиво объединяем.
 const TR_COLS: readonly TrColSpec[] = [
   { id: 'date', title: 'ДАТА' },
+  { id: 'order', title: 'ЗАКАЗ', editable: true }, // № заказа (НТ000…) — скрыта, тумблер «Заказ» (как инфо-колонки Формирования)
   { id: 'trip', title: 'ИСТОРИЯ' }, // бывш. РЕЙС — двойной клик: история машины за день
   { id: 'status', title: 'СТАТУС', editable: true },
   { id: 'work', title: 'РАБОТА', editable: true },
@@ -490,6 +496,8 @@ export function FlowTransportGrid(): JSX.Element {
           return veh?.model ? vehicleBrand(veh.model) : '';
         case 'garage':
           return r.garage_no || '';
+        case 'order':
+          return r.order_no || '';
         case 'out':
           return r.garage_no ? (veh ? (veh.ban ? 'НЕТ' : 'ДА') : '?') : '';
         case 'gos':
@@ -533,7 +541,14 @@ export function FlowTransportGrid(): JSX.Element {
 
   // Колонка ДАТА видна ТОЛЬКО в режиме «Все дни» (иначе дата — в шапке-фильтре).
   const showDate = daySel.size !== 1;
-  const cols = useMemo(() => (showDate ? TR_COLS : TR_COLS.filter((c) => c.id !== 'date')), [showDate]);
+  // Колонка ЗАКАЗ (№ заказа) — по тумблеру «Заказ» (юзер 2026-07-06, как инфо-колонки Формирования);
+  // по умолчанию скрыта. Стоит сразу после ДАТЫ.
+  const [showOrder, setShowOrder] = useState(false);
+  const cols = useMemo(
+    () =>
+      TR_COLS.filter((c) => (c.id === 'date' ? showDate : c.id === 'order' ? showOrder : true)),
+    [showDate, showOrder],
+  );
 
   // База показа: статус-чипы и день (свободный поиск НЕ прячет строки — он подсвечивает).
   // Свежий день сверху, внутри дня — по номеру работы. Дни НЕ выбраны → ТЕКУЩИЙ МЕСЯЦ
@@ -847,9 +862,9 @@ export function FlowTransportGrid(): JSX.Element {
     rowsRef.current = rows;
   }, [rows]);
 
-  // История отмены/повтора (юзер 2026-06-12, как в Формировании) — для ПРАВОК ячеек.
-  const undoRef = useRef<TrEdit[]>([]);
-  const redoRef = useRef<TrEdit[]>([]);
+  // История отмены/повтора (юзер 2026-06-12, как в Формировании) — правки ячеек + вставка из буфера.
+  const undoRef = useRef<TrHistStep[]>([]);
+  const redoRef = useRef<TrHistStep[]>([]);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
   const syncHistory = useCallback(() => {
     setHistory({ canUndo: undoRef.current.length > 0, canRedo: redoRef.current.length > 0 });
@@ -876,7 +891,7 @@ export function FlowTransportGrid(): JSX.Element {
   );
 
   const pushHistory = useCallback(
-    (e: TrEdit) => {
+    (e: TrHistStep) => {
       undoRef.current.push(e);
       if (undoRef.current.length > 100) undoRef.current.shift();
       redoRef.current = []; // новый шаг обнуляет «повтор»
@@ -884,20 +899,45 @@ export function FlowTransportGrid(): JSX.Element {
     },
     [syncHistory],
   );
+  // Отмена вставки — убрать вставленные новые строки (оптимистично + сервер).
+  const undoPasteStep = useCallback((e: TrPasteStep) => {
+    if (e.insertedIds.length === 0) return;
+    const drop = new Set(e.insertedIds);
+    setRows((prev) => {
+      const next = prev.filter((r) => !drop.has(r.id));
+      trRowsCache = next;
+      rowsRef.current = next;
+      return next;
+    });
+    setMsg(`Вставка отменена — убрано строк: ${e.insertedIds.length}`);
+    void flowTransportDelete(api, e.insertedIds).catch(() => undefined);
+  }, []);
+  // Повтор вставки — вставить те же строки заново; id обновятся для следующей отмены.
+  const redoPasteStep = useCallback((e: TrPasteStep) => {
+    setMsg('Повтор вставки…');
+    void flowTransportPaste(api, e.rows)
+      .then((res) => {
+        e.insertedIds = res.insertedIds;
+        setMsg(`Вставка повторена: +${res.inserted} · ${res.updated} обновлено`);
+      })
+      .catch((err) => setMsg(`Ошибка повтора: ${(err instanceof Error ? err.message : String(err)).slice(0, 80)}`));
+  }, []);
   const undo = useCallback(() => {
     const e = undoRef.current.pop();
     if (!e) return;
-    applyFields(e.id, e.before);
+    if (isPasteStep(e)) undoPasteStep(e);
+    else applyFields(e.id, e.before);
     redoRef.current.push(e);
     syncHistory();
-  }, [applyFields, syncHistory]);
+  }, [applyFields, syncHistory, undoPasteStep]);
   const redo = useCallback(() => {
     const e = redoRef.current.pop();
     if (!e) return;
-    applyFields(e.id, e.after);
+    if (isPasteStep(e)) redoPasteStep(e);
+    else applyFields(e.id, e.after);
     undoRef.current.push(e);
     syncHistory();
-  }, [applyFields, syncHistory]);
+  }, [applyFields, syncHistory, redoPasteStep]);
 
   // ⌘Z / ⌘⇧Z (Ctrl на Win) — отмена/повтор, кроме случая когда фокус в поле ввода
   // (там Cmd+Z правит текст). Грид монтируется только на активной вкладке Транспорт.
@@ -948,6 +988,7 @@ export function FlowTransportGrid(): JSX.Element {
 
       const fieldByCol: Record<string, string> = {
         garage: 'garage_no',
+        order: 'order_no',
         work: 'work',
         time: 'time_range',
         status: 'status',
@@ -1009,14 +1050,19 @@ export function FlowTransportGrid(): JSX.Element {
           return;
         }
         const res = await flowTransportPaste(api, parsed);
+        // Вставка = один шаг Undo (юзер 2026-07-06): ⌘Z уберёт вставленные строки.
+        if (res.insertedIds.length > 0) {
+          pushHistory({ kind: 'paste', insertedIds: res.insertedIds, rows: parsed });
+        }
         const parts = [`+${res.inserted} новых`, `${res.updated} обновлено`];
         if (res.autoAdded > 0) parts.push(`${res.autoAdded} авто 0.x`);
         if (res.vehicles > 0) parts.push(`машин: ${res.vehicles}`);
+        if (res.insertedIds.length > 0) parts.push('⌘Z — отменить');
         setMsg(`Вставка: ${parts.join(' · ')}`);
       })
       .catch((e) => setMsg(`Ошибка вставки: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`))
       .finally(() => setBusy(false));
-  }, [busy]);
+  }, [busy, pushHistory]);
 
   const runAdd = useCallback((date: string, garage: string) => {
     setBusy(true);
@@ -1353,6 +1399,21 @@ export function FlowTransportGrid(): JSX.Element {
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
+        {/* Тумблер колонки «Заказ» (№ заказа НТ…) — показать/скрыть, как инфо-колонки
+            Формирования (юзер 2026-07-06). Колонка встаёт сразу после ДАТЫ. */}
+        <button
+          type="button"
+          onClick={() => setShowOrder((v) => !v)}
+          title="Показать/скрыть колонку «Заказ» (№ заказа НТ…)"
+          className={cn(
+            'flex h-6 items-center rounded-md border px-2 text-[12px] outline-none transition-colors',
+            showOrder
+              ? 'border-accent-clay/70 text-[#0A0A0A]'
+              : 'border-black/10 text-[#3F3D38] hover:border-black/25 hover:text-[#0A0A0A]',
+          )}
+        >
+          Заказ
+        </button>
         {/* Печать: поповер — ТОТ ЖЕ календарь выбора дней (несколько или один), внизу
             кнопка «Печать» → печать по выбранным дням (юзер 2026-06-12). */}
         <Popover.Root

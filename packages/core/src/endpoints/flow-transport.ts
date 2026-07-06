@@ -173,6 +173,8 @@ export interface FlowTransportPasteResult {
   autoAdded: number;
   vehicles: number;
   dates: string[];
+  /** ID вставленных НОВЫХ строк (для «отменить вставку» — удалить их обратно). */
+  insertedIds: number[];
 }
 
 /** Вставка из буфера: upsert машин + строки дня (повтор того же дня не дублирует). */
@@ -182,6 +184,7 @@ export async function flowTransportPaste(
 ): Promise<FlowTransportPasteResult> {
   const wire = await client.call<{
     inserted?: number; updated?: number; auto_added?: number; vehicles?: number; dates?: string[];
+    inserted_ids?: number[];
   }>('flow_transport_paste', { rows });
   return {
     inserted: Number(wire.inserted) || 0,
@@ -189,6 +192,7 @@ export async function flowTransportPaste(
     autoAdded: Number(wire.auto_added) || 0,
     vehicles: Number(wire.vehicles) || 0,
     dates: Array.isArray(wire.dates) ? wire.dates : [],
+    insertedIds: Array.isArray(wire.inserted_ids) ? wire.inserted_ids.map(Number).filter(Number.isFinite) : [],
   };
 }
 

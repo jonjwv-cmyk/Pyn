@@ -7,6 +7,8 @@
  * (MapLibre). Поэтому у каждой точки сразу есть lat/lng, калибровка не нужна.
  */
 
+import { BODY_TYPES, type BodyType } from '@/components/flow/flow-body-types';
+
 /** Географическая точка (широта/долгота). */
 export interface LatLng {
   lat: number;
@@ -46,6 +48,8 @@ export interface PointEquipment {
   /** Авто-кран (стреловой кран на шасси). */
   autoCrane: boolean;
   stacker: boolean;
+  /** Погрузчик (вилочный/фронтальный). В старых документах поля нет — читать falsy. */
+  forklift: boolean;
   /** Ручная выгрузка/погрузка. */
   manual: boolean;
 }
@@ -55,6 +59,7 @@ export const EMPTY_POINT_EQUIPMENT: PointEquipment = {
   craneBeam: false,
   autoCrane: false,
   stacker: false,
+  forklift: false,
   manual: false,
 };
 
@@ -64,6 +69,7 @@ export const EQUIPMENT_META: ReadonlyArray<{ key: keyof PointEquipment; label: s
   { key: 'craneBeam', label: 'КРАН-БАЛКА', short: 'КБ' },
   { key: 'autoCrane', label: 'АВТО-КРАН', short: 'АК' },
   { key: 'stacker', label: 'ШТАБЕЛЕР', short: 'Шт' },
+  { key: 'forklift', label: 'ПОГРУЗЧИК', short: 'Пгр' },
   { key: 'manual', label: 'РУЧНОЕ', short: 'Руч' },
 ];
 
@@ -119,18 +125,37 @@ export interface MapRailway {
 }
 
 /**
- * Тип машины для «особенностей» дороги — кто может проехать по участку.
- * Фиксированный список (юзер 2026-06-24). Два «Пульмана» — это разный метраж.
+ * Тип машины для «особенностей» дороги и «какая машина заедет в точку».
+ * Названия и порядок — ЕДИНЫЙ список «ТИП ТС» Плана/Отчёта (юзер 2026-07-05),
+ * см. flow-body-types.ts. Внутренние id стабильны — лежат в сохранённых картах.
  */
-export type VehicleType = 'pullman9' | 'pullman12' | 'bortovik' | 'gazelle' | 'furgon_khp';
+export type VehicleType = 'pullman9' | 'pullman12' | 'bortovik' | 'gazelle' | 'furgon_khp' | 'maslovoz';
 
-export const VEHICLE_TYPES: ReadonlyArray<{ id: VehicleType; label: string; short: string }> = [
-  { id: 'furgon_khp', label: 'ФУРГОН КХП', short: 'КХП' },
-  { id: 'gazelle', label: 'ГАЗЕЛЬ', short: 'ГАЗ' },
-  { id: 'pullman9', label: 'ПУЛЬМАН 9м', short: 'П9' },
-  { id: 'pullman12', label: 'ПУЛЬМАН 12м', short: 'П12' },
-  { id: 'bortovik', label: 'БОРТОВИК', short: 'БОРТ' },
-];
+/** Имя из списка ТИП ТС → стабильный id карты (TS ругнётся, если списки разъедутся). */
+const BODY_TYPE_TO_VEHICLE: Record<BodyType, VehicleType> = {
+  'ФУРГОН КХП': 'furgon_khp',
+  'БОРТОВИК': 'bortovik',
+  'ПУЛЬМАН 9М': 'pullman9',
+  'ПУЛЬМАН 12М': 'pullman12',
+  'ГАЗЕЛЬ': 'gazelle',
+  'МАСЛОВОЗ': 'maslovoz',
+};
+
+const VEHICLE_SHORT: Record<VehicleType, string> = {
+  furgon_khp: 'КХП',
+  bortovik: 'БОРТ',
+  pullman9: 'П9',
+  pullman12: 'П12',
+  gazelle: 'ГАЗ',
+  maslovoz: 'МАСЛ',
+};
+
+export const VEHICLE_TYPES: ReadonlyArray<{ id: VehicleType; label: string; short: string }> =
+  BODY_TYPES.map((label) => ({
+    id: BODY_TYPE_TO_VEHICLE[label],
+    label,
+    short: VEHICLE_SHORT[BODY_TYPE_TO_VEHICLE[label]],
+  }));
 
 export function vehicleLabel(id: VehicleType): string {
   return VEHICLE_TYPES.find((v) => v.id === id)?.label ?? id;
@@ -172,9 +197,10 @@ export const ROAD_PAINT_OPTIONS: ReadonlyArray<{
   { id: 'closed', label: 'Закрыто', short: 'Закрыто', color: '#EF4444', kind: 'closed', vehicles: [] },
   { id: 'furgon_khp', label: 'ФУРГОН КХП', short: 'ФУРГОН КХП', color: '#06B6D4', kind: 'limited', vehicles: ['furgon_khp'] },
   { id: 'gazelle', label: 'ГАЗЕЛЬ', short: 'ГАЗЕЛЬ', color: '#22C55E', kind: 'limited', vehicles: ['gazelle'] },
-  { id: 'pullman9', label: 'ПУЛЬМАН 9м', short: 'ПУЛЬМАН 9м', color: '#8B5CF6', kind: 'limited', vehicles: ['pullman9'] },
-  { id: 'pullman12', label: 'ПУЛЬМАН 12м', short: 'ПУЛЬМАН 12м', color: '#A855F7', kind: 'limited', vehicles: ['pullman12'] },
+  { id: 'pullman9', label: 'ПУЛЬМАН 9М', short: 'ПУЛЬМАН 9М', color: '#8B5CF6', kind: 'limited', vehicles: ['pullman9'] },
+  { id: 'pullman12', label: 'ПУЛЬМАН 12М', short: 'ПУЛЬМАН 12М', color: '#A855F7', kind: 'limited', vehicles: ['pullman12'] },
   { id: 'bortovik', label: 'БОРТОВИК', short: 'БОРТОВИК', color: '#F59E0B', kind: 'limited', vehicles: ['bortovik'] },
+  { id: 'maslovoz', label: 'МАСЛОВОЗ', short: 'МАСЛОВОЗ', color: '#EC4899', kind: 'limited', vehicles: ['maslovoz'] },
   { id: 'erase', label: 'Ластик', short: 'Ластик', color: '#94A3B8', kind: 'erase', vehicles: [] },
 ];
 

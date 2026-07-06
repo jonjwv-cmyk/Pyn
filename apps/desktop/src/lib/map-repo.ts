@@ -183,9 +183,11 @@ function normalizePointEquipment(raw: unknown): PointEquipment {
   return {
     crane: r.crane === true,
     craneBeam: r.craneBeam === true,
-    // Авто-кран добавлен позже; старый «погрузчик» (forklift) больше не используем.
     autoCrane: r.autoCrane === true,
     stacker: r.stacker === true,
+    // Погрузчик возвращён в оснастку (юзер 2026-07-05); старые документы с
+    // давним forklift-флагом просто подхватят его обратно.
+    forklift: r.forklift === true,
     manual: r.manual === true,
   };
 }

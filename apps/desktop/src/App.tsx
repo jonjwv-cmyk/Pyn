@@ -238,6 +238,7 @@ export function App() {
     activeSection === 'log' ||
     activeSection === 'broadcast' ||
     activeSection === 'map' ||
+    activeSection === 'tech' ||
     activeSection === 'news' ||
     activeSection === 'chats' ||
     activeSection.startsWith('sheet:')

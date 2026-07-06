@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
-import { Check, CheckCheck, CloudRain, Crosshair, Eraser, Eye, EyeOff, Filter, MapPin, MousePointer2, Pause, Pentagon, Play, Route, Satellite, Settings2, TrainTrack, Trash2, Truck } from 'lucide-react';
+import { Check, CheckCheck, CloudRain, Crosshair, Eraser, Eye, EyeOff, Filter, MapPin, MousePointer2, Pause, Pentagon, Play, Route, Satellite, Settings2, TrainTrack, Trash2, Truck, Warehouse } from 'lucide-react';
 import { getWarehouseState } from '@pyn/core';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { cn } from '@/lib/cn';
@@ -26,6 +26,7 @@ import {
 } from './map-types';
 import { MapCanvas, type MapSelection, type OptimizeOverlay } from './MapCanvas';
 import { MapDetailPanel } from './MapDetailPanel';
+import { MapWarehouseOverlay } from './MapWarehouseOverlay';
 import { GlonassPanel } from './GlonassPanel';
 import {
   PLAYBACK_SPEEDS,
@@ -133,6 +134,8 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const [weatherField, setWeatherField] = useState<WeatherFieldPoint[]>([]);
   const [pointScreen, setPointScreen] = useState<{ x: number; y: number } | null>(null);
   const [detailExpanded, setDetailExpanded] = useState(false);
+  // Оверлей «карточка склада + МОЛы» поверх карты (кнопка на точке).
+  const [warehouseCardId, setWarehouseCardId] = useState<string | null>(null);
   const [ghost, setGhost] = useState<LatLng | null>(null);
   const [focus, setFocus] = useState<{ latlng: LatLng; nonce: number; zoom?: number } | null>(null);
   const [openedOnDefaultPoint, setOpenedOnDefaultPoint] = useState(false);
@@ -666,6 +669,9 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               category={categoryOfPoint(selectedPoint.warehouseId)}
               onDetails={() => setDetailExpanded(true)}
               onRouteFrom={() => setRouteSourcePointId(selectedPoint.id)}
+              onWarehouseCard={selectedPoint.warehouseId
+                ? () => setWarehouseCardId(selectedPoint.warehouseId)
+                : null}
               onClose={() => setSelection(null)}
             />
           )}
@@ -696,8 +702,17 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
                   setSelection({ type: 'point', id });
                   setMoveByMapPointId(id);
                 }}
+                onShowWarehouseCard={setWarehouseCardId}
               />
             </div>
+          )}
+
+          {/* Данные склада (карточка + МОЛы) поверх карты, с прокруткой */}
+          {warehouseCardId && (
+            <MapWarehouseOverlay
+              warehouseId={warehouseCardId}
+              onClose={() => setWarehouseCardId(null)}
+            />
           )}
         </div>
       </div>
@@ -1480,10 +1495,13 @@ function weatherText(code: number | null | undefined, precipMm: number | null, s
   return 'прогноз';
 }
 
-/** Краткий поповер у пина точки: название, цех, категория + «Подробно». */
-function PinPopover({ x, y, title, subtitle, category, onDetails, onRouteFrom, onClose }: {
+/** Краткий поповер у пина точки: название, цех, категория + «Подробно» + «Склад». */
+function PinPopover({ x, y, title, subtitle, category, onDetails, onRouteFrom, onWarehouseCard, onClose }: {
   x: number; y: number; title: string; subtitle: string; category: PointCategory;
-  onDetails: () => void; onRouteFrom: () => void; onClose: () => void;
+  onDetails: () => void; onRouteFrom: () => void;
+  /** null — у точки нет склада, кнопку не показываем. */
+  onWarehouseCard: (() => void) | null;
+  onClose: () => void;
 }) {
   const cat = POINT_CATEGORY_META.find((c) => c.id === category) ?? POINT_CATEGORY_META[2]!;
   return (
@@ -1504,6 +1522,14 @@ function PinPopover({ x, y, title, subtitle, category, onDetails, onRouteFrom, o
           onClick={onDetails}
           className="h-7 flex-1 rounded border border-accent-clay/45 bg-accent-clay-bg px-2 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/15"
         >Подробно →</button>
+        {onWarehouseCard && (
+          <button
+            type="button"
+            onClick={onWarehouseCard}
+            title="Карточка склада и МОЛы — поверх карты"
+            className="flex h-7 items-center justify-center rounded border border-emerald-400/35 px-2 text-[12px] text-emerald-300 outline-none transition-colors hover:bg-emerald-400/10"
+          ><Warehouse size={13} strokeWidth={1.75} /></button>
+        )}
         <button
           type="button"
           onClick={onRouteFrom}
