@@ -15,7 +15,7 @@ import { legacyNormToLatLng } from '@/components/map/geo';
 import {
   EMPTY_MAP_DOC,
   EMPTY_POINT_EQUIPMENT,
-  VEHICLE_TYPES,
+  normalizeVehicleId,
   type LatLng,
   type MapDoc,
   type PointEquipment,
@@ -53,7 +53,6 @@ function toLatLng(raw: unknown): LatLng | null {
 }
 
 function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
-  const validVehicles = new Set<string>(VEHICLE_TYPES.map((v) => v.id));
   const points = Array.isArray(raw.points)
     ? raw.points.flatMap((p) => {
       const ll = toLatLng(p);
@@ -68,8 +67,10 @@ function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
         weight: typeof r.weight === 'number' ? r.weight : 1,
         equipment: normalizePointEquipment(r.equipment),
         rearUnload: r.rearUnload === true,
+        // Старые id (bortovik→bort) ПЕРЕИМЕНОВЫВАЕМ, не выкидываем — иначе
+        // пересохранение молча стирает отметки с точек.
         allowedVehicles: Array.isArray(r.allowedVehicles)
-          ? r.allowedVehicles.filter((v): v is VehicleType => typeof v === 'string' && validVehicles.has(v))
+          ? [...new Set(r.allowedVehicles.map(normalizeVehicleId).filter((v): v is VehicleType => v !== null))]
           : [],
       }];
     })
@@ -125,7 +126,7 @@ function normalizeDoc(raw: Partial<MapDoc> & Record<string, unknown>): MapDoc {
       const verts = Array.isArray(r.vertices) ? r.vertices.map(toLatLng).filter(Boolean) as LatLng[] : [];
       if (verts.length < 2) return [];
       const vehicles = Array.isArray(r.vehicles)
-        ? (r.vehicles.filter((v): v is VehicleType => typeof v === 'string' && validVehicles.has(v)))
+        ? [...new Set(r.vehicles.map(normalizeVehicleId).filter((v): v is VehicleType => v !== null))]
         : [];
       const kind: 'limited' | 'closed' = r.kind === 'closed' ? 'closed' : 'limited';
       return [{

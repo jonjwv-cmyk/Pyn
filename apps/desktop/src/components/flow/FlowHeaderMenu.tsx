@@ -71,7 +71,7 @@ export function FlowHeaderMenu({
   }, [values, search]);
 
   const sortBtn =
-    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-accent-clay/20 hover:text-text-strong';
+    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-[#202124] transition-colors hover:bg-[#F1F3F4]';
 
   return (
     <Popover.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -91,41 +91,41 @@ export function FlowHeaderMenu({
           sideOffset={4}
           collisionPadding={8}
           onInteractOutside={guardInteractOutside}
-          className="z-30 flex w-64 flex-col rounded-xl border border-border-subtle bg-bg-elevated p-1.5 text-text-secondary shadow-[0_8px_28px_rgba(0,0,0,0.45)]"
+          className="z-30 flex w-64 flex-col rounded-lg border border-[#DADCE0] bg-white p-1.5 text-[#202124] shadow-[0_8px_24px_rgba(60,64,67,0.24)]"
         >
           <button type="button" className={sortBtn} onClick={() => onSort('asc')}>
-            <ArrowUp size={14} strokeWidth={1.75} className={sortDir === 'asc' ? 'text-accent-clay' : ''} />
+            <ArrowUp size={14} strokeWidth={1.75} className={sortDir === 'asc' ? 'text-[#1A73E8]' : 'text-[#5F6368]'} />
             По возрастанию
           </button>
           <button type="button" className={sortBtn} onClick={() => onSort('desc')}>
-            <ArrowDown size={14} strokeWidth={1.75} className={sortDir === 'desc' ? 'text-accent-clay' : ''} />
+            <ArrowDown size={14} strokeWidth={1.75} className={sortDir === 'desc' ? 'text-[#1A73E8]' : 'text-[#5F6368]'} />
             По убыванию
           </button>
           {sortDir !== null && (
             <button type="button" className={sortBtn} onClick={onSortReset}>
-              <X size={14} strokeWidth={1.75} />
+              <X size={14} strokeWidth={1.75} className="text-[#5F6368]" />
               Без сортировки
             </button>
           )}
 
-          <div className="my-1.5 h-px bg-border-subtle/60" />
+          <div className="my-1.5 h-px bg-[#DADCE0]" />
 
           {/* Поиск по колонке — фильтрует строки и сужает чек-лист ниже. */}
-          <div className="flex items-center gap-1.5 rounded-md border border-border-subtle px-2 py-1">
-            <Search size={13} strokeWidth={1.75} className="shrink-0 text-text-muted/70" />
+          <div className="flex items-center gap-1.5 rounded-md border border-[#DADCE0] bg-white px-2 py-1 focus-within:border-[#1A73E8]">
+            <Search size={13} strokeWidth={1.75} className="shrink-0 text-[#5F6368]" />
             <input
               autoFocus
               value={search}
               onChange={(e) => onSearchChange(e.target.value)}
               placeholder="Поиск в колонке…"
-              className="w-full bg-transparent text-[12px] text-text-primary outline-none placeholder:text-text-muted/60"
+              className="w-full bg-transparent text-[12px] text-[#202124] outline-none placeholder:text-[#80868B]"
             />
             {search !== '' && (
               <button
                 type="button"
                 onClick={() => onSearchChange('')}
                 title="Очистить"
-                className="shrink-0 rounded p-0.5 text-text-muted/70 transition-colors hover:text-text-strong"
+                className="shrink-0 rounded p-0.5 text-[#5F6368] transition-colors hover:bg-[#F1F3F4] hover:text-[#202124]"
               >
                 <X size={12} strokeWidth={2} />
               </button>
@@ -133,14 +133,14 @@ export function FlowHeaderMenu({
           </div>
 
           <div className="flex items-center justify-between px-1 pt-1.5 text-[12px]">
-            <span className="text-text-muted/70">Значения</span>
+            <span className="text-[#5F6368]">Значения</span>
             <div className="flex items-center gap-2.5">
               {/* «Сбросить» — снять все галочки (дальше отметить нужные). */}
               <button
                 type="button"
                 onClick={onDeselectAll}
                 disabled={values.length === 0}
-                className="text-text-muted transition-colors hover:text-text-strong disabled:opacity-40"
+                className="text-[#5F6368] transition-colors hover:text-[#202124] disabled:opacity-40"
               >
                 Сбросить
               </button>
@@ -149,7 +149,7 @@ export function FlowHeaderMenu({
                 type="button"
                 onClick={onClear}
                 disabled={!filterActive}
-                className="text-text-muted transition-colors hover:text-text-strong disabled:opacity-40"
+                className="text-[#5F6368] transition-colors hover:text-[#202124] disabled:opacity-40"
               >
                 Очистить
               </button>
@@ -164,25 +164,25 @@ export function FlowHeaderMenu({
                   type="button"
                   key={v}
                   onClick={() => onToggleValue(v)}
-                  className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[12px] transition-colors hover:bg-accent-clay/20"
+                  className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[12px] transition-colors hover:bg-[#F1F3F4]"
                 >
                   <span
                     className={cn(
                       'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border',
-                      checked ? 'border-accent-clay bg-accent-clay/20' : 'border-border-strong',
+                      checked ? 'border-[#1A73E8] bg-[#E8F0FE]' : 'border-[#DADCE0]',
                     )}
                   >
-                    {checked && <Check size={11} strokeWidth={3} className="text-accent-clay" />}
+                    {checked && <Check size={11} strokeWidth={3} className="text-[#1A73E8]" />}
                   </span>
-                  <span className="truncate text-text-primary">{v === '' ? '(пусто)' : v}</span>
+                  <span className="truncate text-[#202124]">{v === '' ? '(пусто)' : v}</span>
                 </button>
               );
             })}
             {shown.items.length === 0 && (
-              <div className="px-1.5 py-2 text-[12px] text-text-muted/70">Ничего не найдено</div>
+              <div className="px-1.5 py-2 text-[12px] text-[#5F6368]">Ничего не найдено</div>
             )}
             {shown.truncated && (
-              <div className="px-1.5 py-1 text-[12px] text-text-muted/70">
+              <div className="px-1.5 py-1 text-[12px] text-[#5F6368]">
                 …показаны первые {MAX_VISIBLE}, уточните поиском
               </div>
             )}

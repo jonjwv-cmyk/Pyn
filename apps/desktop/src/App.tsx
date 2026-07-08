@@ -1118,6 +1118,7 @@ export function App() {
             onClick={() => {
               const dummy: any = {
                 token: 'dev-bypass',
+                role: 'developer',
                 user: {
                   id: 'dev',
                   login: 'dev',

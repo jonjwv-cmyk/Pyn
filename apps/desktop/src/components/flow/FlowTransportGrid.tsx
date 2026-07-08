@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   CompactSelection,
   DataEditor,
@@ -55,6 +55,7 @@ import { useFlowColumnFilters } from './flow-column-filter';
 import { VehicleCard } from './VehicleCard';
 import { FlowTransportPrint } from './FlowTransportPrint';
 import { FlowViewSwitch } from './FlowViewSwitch';
+import { BODY_TYPES } from './flow-body-types';
 import type { FlowViewMode } from './flow-view';
 import {
   EMPTY_TRANSPORT_VIEW,
@@ -106,16 +107,22 @@ const TR_COLS: readonly TrColSpec[] = [
   { id: 'trip', title: 'ИСТОРИЯ' }, // бывш. РЕЙС — двойной клик: история машины за день
   { id: 'status', title: 'СТАТУС', editable: true },
   { id: 'work', title: 'РАБОТА', editable: true },
+  { id: 'vehicle_type', title: 'ТИП ТС', editable: true },
   { id: 'time', title: 'ВРЕМЯ', editable: true },
+  { id: 'fact_start', title: 'ФАКТ НАЧ', editable: true },
+  { id: 'fact_end', title: 'ФАКТ КОН', editable: true },
+  { id: 'force', title: 'ФОРМ М', editable: true },
   { id: 'brand', title: 'МАРКА' }, // стек: марка + цвет
   { id: 'garage', title: '№ · ГОС' }, // стек: № (жирный) + гос; двойной клик → карточка характеристик
-  { id: 'out', title: 'ВЫЕЗД' },
+  { id: 'out', title: 'ВЫЕЗД', editable: true },
   { id: 'driver', title: 'ВОДИТЕЛЬ', editable: true }, // ФИО + СОТ под ним
   { id: 'comment', title: 'КОММЕНТАРИЙ', editable: true },
 ];
 
 /** Порядок статусов в выпадашке — по слову юзера; «(пусто)» НЕТ (снять = Delete). */
 const STATUS_ORDER = ['Размещен', 'Отклонен', 'Отмена', 'Новый', 'Открыт'] as const;
+const OUT_STATUS_ORDER = ['ДА', 'НЕТ'] as const;
+const FORCE_REASONS = ['ожидание выгрузки', 'поломка ТС'] as const;
 
 /** Шрифт как в Формировании: стандарт 10px на всю таблицу. Мелкие (8px) — только стек-ячейки
  *  МАРКА и №·ГОС (рисуют свой размер сами). Отдельных второстепенных текст-колонок не осталось
@@ -239,7 +246,7 @@ export function fmtDaysTitle(days: string[]): string {
 }
 
 /** «08:00-20:00» → «8:00-20:00» (ведущие нули из показа убраны). */
-function fmtTimeRange(s: string): string {
+export function fmtTimeRange(s: string): string {
   return (s || '').replace(/(^|[^\d])0(\d:)/g, '$1$2');
 }
 
@@ -253,16 +260,79 @@ function to12h(hm: string): string {
   if (h === 0) h = 12;
   return `${h}:${m[2]} ${ampm}`;
 }
-/** «08:00-20:00» (хранение 24ч) → ['8:00 am','8:00 pm'] (показ/печать 12ч); null если не диапазон. */
+/** «08:00-20:00» (хранение 24ч) → ['8:00 am','8:00 pm']; оставлено для старых экспортов. */
 export function timeRange12hLines(s: string): [string, string] | null {
   const m = /^\s*(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})\s*$/.exec(s || '');
   if (!m) return null;
   return [to12h(m[1] ?? ''), to12h(m[2] ?? '')];
 }
-/** Для ячейки грида: две строки 12ч (или одной строкой 24ч без ведущих нулей, если не диапазон). */
+/** Для ячейки грида: 24 часа без ведущих нулей. */
 function fmtTimeTwoLine(s: string): string {
-  const lines = timeRange12hLines(s);
-  return lines ? `${lines[0]}\n${lines[1]}` : fmtTimeRange(s);
+  return fmtTimeRange(s);
+}
+
+export function forceSummary(json: string): string {
+  let rows: Array<{ reason?: string; start?: string; end?: string; comment?: string }> = [];
+  try {
+    const parsed = JSON.parse(json || '[]');
+    rows = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return json || '';
+  }
+  return rows
+    .map((r) => [r.reason, [r.start, r.end].filter(Boolean).join('-'), r.comment].filter(Boolean).join(' · '))
+    .filter(Boolean)
+    .join('\n');
+}
+
+type ForceDraft = { reason: string; start: string; end: string; comment: string };
+const TIME_WHEEL_HOURS = Array.from({ length: 13 }, (_, i) => i + 8);
+const TIME_WHEEL_MINUTES = Array.from({ length: 60 }, (_, i) => i);
+
+function normalizeForceReason(value: unknown): string {
+  const s = String(value || '').trim();
+  if (FORCE_REASONS.includes(s as (typeof FORCE_REASONS)[number])) return s;
+  const low = s.toLowerCase();
+  if (low.includes('полом')) return 'поломка ТС';
+  if (low.includes('ожидан') || low.includes('выгруз') || low.includes('задерж')) return 'ожидание выгрузки';
+  return 'ожидание выгрузки';
+}
+
+function parseHmValue(value: string, fallback = '8:00'): { h: number; m: number } {
+  const m = /^(\d{1,2}):(\d{2})$/.exec((value || '').trim()) ?? /^(\d{1,2}):(\d{2})$/.exec(fallback);
+  const h = Math.max(8, Math.min(20, Number(m?.[1] ?? 8)));
+  const minute = Math.max(0, Math.min(59, Number(m?.[2] ?? 0)));
+  return { h, m: minute };
+}
+
+function hmValue(h: number, m: number): string {
+  return `${h}:${String(m).padStart(2, '0')}`;
+}
+
+function parseForceDrafts(json: string): ForceDraft[] {
+  try {
+    const rows = JSON.parse(json || '[]');
+    if (!Array.isArray(rows)) return [];
+    return rows.map((r) => ({
+      reason: normalizeForceReason(r?.reason),
+      start: String(r?.start || ''),
+      end: String(r?.end || ''),
+      comment: String(r?.comment || ''),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function forceDraftsToJson(rows: ForceDraft[]): string {
+  return JSON.stringify(rows
+    .map((r) => ({
+      reason: normalizeForceReason(r.reason),
+      start: r.start || '',
+      end: r.end || '',
+      comment: r.comment.trim(),
+    }))
+    .filter((r) => r.reason || r.start || r.end || r.comment));
 }
 
 /** Ключ сортировки РАБОТЫ по числовому префиксу. */
@@ -386,7 +456,9 @@ export function FlowTransportGrid(): JSX.Element {
   const [printSel, setPrintSel] = useState<Set<string>>(() => new Set());
   const [trip, setTrip] = useState<{ row: FlowTransportRow; x: number; y: number } | null>(null);
   // Карточка характеристик машины (по двойному клику на №·ГОС).
-  const [specCard, setSpecCard] = useState<{ garage: string; veh: FlowVehicle | null; x: number; y: number } | null>(null);
+  const [specCard, setSpecCard] = useState<{ row: FlowTransportRow; garage: string; veh: FlowVehicle | null; x: number; y: number } | null>(null);
+  const [forceEdit, setForceEdit] = useState<{ row: FlowTransportRow } | null>(null);
+  const [timeEdit, setTimeEdit] = useState<{ row: FlowTransportRow; field: 'fact_start' | 'fact_end' } | null>(null);
   const gridRef = useRef<DataEditorRef | null>(null);
   // Контейнер грида — нужен и для замера размера, и чтобы понять, ВИДИМА ли вкладка
   // Транспорт (экран display-toggle, компонент остаётся монтирован) для ⌘Z-хоткея.
@@ -499,7 +571,15 @@ export function FlowTransportGrid(): JSX.Element {
         case 'order':
           return r.order_no || '';
         case 'out':
-          return r.garage_no ? (veh ? (veh.ban ? 'НЕТ' : 'ДА') : '?') : '';
+          return r.out_status || '';
+        case 'vehicle_type':
+          return r.vehicle_type || '';
+        case 'fact_start':
+          return fmtTimeRange(r.fact_start || '');
+        case 'fact_end':
+          return fmtTimeRange(r.fact_end || '');
+        case 'force':
+          return forceSummary(r.force_json || '[]');
         case 'gos':
           return veh?.gos_no ?? '';
         case 'color':
@@ -670,15 +750,7 @@ export function FlowTransportGrid(): JSX.Element {
       ctx.font = `${STD_FONT} "Inter Variable", system-ui, sans-serif`;
       const uniq = new Set<string>();
       if (spec.id === 'time') {
-        // ВРЕМЯ рисуется в ДВЕ строки 12ч («8:00 am»/«8:00 pm») — мерим именно их, а не
-        // снимочное «8:00-20:00», иначе колонка шире нужного.
-        for (const r of sample) {
-          const lines = timeRange12hLines(r.time_range);
-          if (lines) {
-            uniq.add(lines[0]);
-            uniq.add(lines[1]);
-          } else uniq.add(fmtTimeRange(r.time_range));
-        }
+        for (const r of sample) uniq.add(fmtTimeRange(r.time_range));
       } else {
         for (const r of sample) uniq.add(cellText(spec.id, r));
         // Объединённые ячейки — учесть и нижнюю строку (ГОС у гаражного, ЦВЕТ у марки).
@@ -757,6 +829,24 @@ export function FlowTransportGrid(): JSX.Element {
         };
         return cell;
       }
+      if (spec.id === 'vehicle_type') {
+        const cell: FlowDropdownCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: !locked,
+          copyData: r.vehicle_type || '',
+          data: { kind: 'flow-dropdown', value: r.vehicle_type || '', options: BODY_TYPES as unknown as string[] },
+        };
+        return cell;
+      }
+      if (spec.id === 'out') {
+        const cell: FlowDropdownCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: !locked,
+          copyData: r.out_status || '',
+          data: { kind: 'flow-dropdown', value: r.out_status || '', options: OUT_STATUS_ORDER },
+        };
+        return cell;
+      }
       if (spec.id === 'trip') {
         // §8: значок истории ТОЛЬКО где есть НАШИ зафикс. поставки на эту машину+день; иначе пусто
         // (отмена/отклонённые/открытые без поставок — без значка). Двойной клик → карточка.
@@ -818,16 +908,35 @@ export function FlowTransportGrid(): JSX.Element {
         };
         return cell;
       }
+      if (spec.id === 'force') {
+        return {
+          kind: GridCellKind.Text,
+          data: r.force_json || '[]',
+          displayData: forceSummary(r.force_json || '[]') || '',
+          allowOverlay: false,
+          readonly: true,
+          allowWrapping: true,
+        };
+      }
+      if (spec.id === 'fact_start' || spec.id === 'fact_end') {
+        return {
+          kind: GridCellKind.Text,
+          data: spec.id === 'fact_start' ? (r.fact_start || '') : (r.fact_end || ''),
+          displayData: spec.id === 'fact_start' ? fmtTimeRange(r.fact_start || '') : fmtTimeRange(r.fact_end || ''),
+          allowOverlay: false,
+          readonly: true,
+        };
+      }
       const editable = !!spec.editable && !locked;
       if (spec.id === 'time') {
-        // ВРЕМЯ в две строки: начало сверху, конец снизу (юзер 2026-06-12 п.6).
+        // ВРЕМЯ: 24 часа без ведущих нулей.
         return {
           kind: GridCellKind.Text,
           data: r.time_range,
           displayData: fmtTimeTwoLine(r.time_range),
           allowOverlay: editable,
           readonly: !editable,
-          allowWrapping: true,
+          allowWrapping: false,
         };
       }
       const rawData = text;
@@ -990,7 +1099,12 @@ export function FlowTransportGrid(): JSX.Element {
         garage: 'garage_no',
         order: 'order_no',
         work: 'work',
+        vehicle_type: 'vehicle_type',
         time: 'time_range',
+        fact_start: 'fact_start',
+        fact_end: 'fact_end',
+        force: 'force_json',
+        out: 'out_status',
         status: 'status',
         comment: 'comment',
       };
@@ -1010,17 +1124,34 @@ export function FlowTransportGrid(): JSX.Element {
     ([col, row]: Item) => {
       const spec = cols[col];
       const r = viewRows[row];
-      if (!spec || !r || !r.garage_no) return;
+      if (!spec || !r) return;
+      if (spec.id === 'force') {
+        if (rowLocked(r)) {
+          setMsg('Старше 7 дней — архив, правки заблокированы');
+          return;
+        }
+        setForceEdit({ row: r });
+        return;
+      }
+      if (spec.id === 'fact_start' || spec.id === 'fact_end') {
+        if (rowLocked(r)) {
+          setMsg('Старше 7 дней — архив, правки заблокированы');
+          return;
+        }
+        setTimeEdit({ row: r, field: spec.id });
+        return;
+      }
+      if (!r.garage_no) return;
       const b = gridRef.current?.getBounds(col, row);
       if (!b) return;
       if (spec.id === 'trip') {
         setTrip({ row: r, x: b.x + b.width / 2, y: b.y + b.height });
       } else if (spec.id === 'garage') {
         const veh = vehByGarage.get(r.garage_no) ?? null;
-        setSpecCard({ garage: r.garage_no, veh, x: b.x + b.width / 2, y: b.y + b.height });
+        setSpecCard({ row: r, garage: r.garage_no, veh, x: b.x + b.width / 2, y: b.y + b.height });
       }
     },
-    [viewRows, cols, vehByGarage],
+    [viewRows, cols, vehByGarage, rowLocked, applyFields, pushHistory],
   );
 
   // Подкраска по статусу (юзер): Размещен — зелёная; Отклонен/Отмена — красная;
@@ -1071,7 +1202,7 @@ export function FlowTransportGrid(): JSX.Element {
       .then(() => {
         setAddOpen(false);
         setAddGarage('');
-        setMsg(`Машина ${garage} добавлена на ${fmtDay(date)}`);
+        setMsg(garage ? `Машина ${garage} добавлена на ${fmtDay(date)}` : `Пустая строка добавлена на ${fmtDay(date)}`);
       })
       .catch((e) => {
         const t = e instanceof Error ? e.message : String(e);
@@ -1359,7 +1490,7 @@ export function FlowTransportGrid(): JSX.Element {
             <button
               type="button"
               disabled={busy}
-              title="Добавить машину на дату по гаражному № (новая машина — через карточку)"
+              title="Добавить строку транспорта на дату; гаражный можно заполнить позже"
               className="flex h-6 items-center gap-1.5 rounded-md border border-black/10 px-2 text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:opacity-50"
             >
               <Plus size={13} strokeWidth={1.75} />
@@ -1380,20 +1511,20 @@ export function FlowTransportGrid(): JSX.Element {
                     value={addGarage}
                     onChange={(e) => setAddGarage(e.target.value.trim())}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && addGarage && addDate) runAdd(addDate, addGarage);
+                      if (e.key === 'Enter' && addDate) runAdd(addDate, addGarage);
                     }}
-                    placeholder="363"
+                    placeholder="можно пусто"
                     autoFocus
                     className="h-7 rounded-md border border-border-subtle bg-transparent px-2 text-[12px] text-text-primary outline-none focus:border-accent-clay/60"
                   />
                 </label>
                 <button
                   type="button"
-                  disabled={!addGarage || !addDate || busy}
+                  disabled={!addDate || busy}
                   onClick={() => runAdd(addDate, addGarage)}
                   className="h-7 rounded-md border border-accent-clay/60 text-[12px] text-text-strong transition-colors hover:bg-accent-clay/15 disabled:opacity-40"
                 >
-                  Добавить на {fmtDay(addDate)}
+                  {addGarage ? `Добавить на ${fmtDay(addDate)}` : `Добавить пустую строку`}
                 </button>
               </div>
             </Popover.Content>
@@ -1684,11 +1815,50 @@ export function FlowTransportGrid(): JSX.Element {
       )}
       {specCard && (
         <VehicleSpecCard
+          row={specCard.row}
           garage={specCard.garage}
           veh={specCard.veh}
           x={specCard.x}
           y={specCard.y}
           onClose={() => setSpecCard(null)}
+          onGarageChange={(nextGarage) => {
+            const before = specCard.row.garage_no || '';
+            const after = nextGarage.trim();
+            if (!after || before === after) return;
+            applyFields(specCard.row.id, { garage_no: after });
+            pushHistory({ id: specCard.row.id, before: { garage_no: before }, after: { garage_no: after } });
+            setSpecCard(null);
+          }}
+        />
+      )}
+      {forceEdit && (
+        <ForceMajorModal
+          row={forceEdit.row}
+          onClose={() => setForceEdit(null)}
+          onSave={(next) => {
+            const prev = forceEdit.row.force_json || '[]';
+            if (next !== prev) {
+              applyFields(forceEdit.row.id, { force_json: next });
+              pushHistory({ id: forceEdit.row.id, before: { force_json: prev }, after: { force_json: next } });
+            }
+            setForceEdit(null);
+          }}
+        />
+      )}
+      {timeEdit && (
+        <TransportTimeModal
+          title={timeEdit.field === 'fact_start' ? 'Факт начало' : 'Факт конец'}
+          value={timeEdit.field === 'fact_start' ? timeEdit.row.fact_start : timeEdit.row.fact_end}
+          onClose={() => setTimeEdit(null)}
+          onSave={(value) => {
+            const field = timeEdit.field;
+            const before = String((timeEdit.row as unknown as Record<string, unknown>)[field] ?? '');
+            if (value !== before) {
+              applyFields(timeEdit.row.id, { [field]: value });
+              pushHistory({ id: timeEdit.row.id, before: { [field]: before }, after: { [field]: value } });
+            }
+            setTimeEdit(null);
+          }}
         />
       )}
       {printDays && (
@@ -2025,6 +2195,12 @@ function TransportTripCard({
           <History size={13} strokeWidth={1.75} className="text-accent-clay" />
           Машина {row.garage_no} · {fmtDay(row.tdate)}
         </div>
+        {(row.fact_start || row.fact_end) && (
+          <div className="mt-2 rounded-md border border-accent-clay/25 bg-accent-clay/10 px-2 py-1.5 text-[12px] text-text-secondary">
+            <div className="text-[10px] uppercase tracking-wide text-text-muted/60">Смена факт</div>
+            <div className="mt-0.5 tabular-nums">{fmtTimeRange(row.fact_start || '—')} — {fmtTimeRange(row.fact_end || '—')}</div>
+          </div>
+        )}
         {dlv === null && <div className="mt-2 text-[12px] text-text-muted">Загрузка…</div>}
         {dlv !== null && dlv.length === 0 && (
           <div className="mt-2 text-[12px] text-text-muted">
@@ -2057,24 +2233,244 @@ function TransportTripCard({
   );
 }
 
+function TransportTimeModal({
+  title,
+  value,
+  onClose,
+  onSave,
+  allowClear = false,
+}: {
+  title: string;
+  value: string;
+  onClose: () => void;
+  onSave: (value: string) => void;
+  allowClear?: boolean;
+}): JSX.Element {
+  const [current, setCurrent] = useState(value || '8:00');
+  return (
+    <>
+      <div className="fixed inset-0 z-50 bg-black/35" onClick={onClose} />
+      <div className="fixed left-1/2 top-1/2 z-[60] w-[300px] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border-subtle bg-bg-surface p-3 text-[12px] shadow-2xl">
+        <div className="text-[13px] font-semibold text-text-strong">{title}</div>
+        <TimeWheel value={current} onChange={setCurrent} />
+        <div className="mt-2 text-center text-[18px] font-semibold tabular-nums text-text-strong">{current}</div>
+        <div className="mt-3 flex items-center justify-end gap-2">
+          {allowClear && (
+            <button
+              type="button"
+              onClick={() => onSave('')}
+              className="mr-auto h-8 rounded-md border border-border-subtle px-3 text-[12px] text-text-muted transition-colors hover:text-text-strong"
+            >
+              Очистить
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 rounded-md border border-border-subtle px-3 text-[12px] text-text-secondary transition-colors hover:text-text-strong"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(current)}
+            className="h-8 rounded-md border border-accent-clay/60 px-3 text-[12px] font-medium text-text-strong transition-colors hover:bg-accent-clay/15"
+          >
+            Сохранить
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function TimeWheel({ value, onChange }: { value: string; onChange: (value: string) => void }): JSX.Element {
+  const { h, m } = parseHmValue(value);
+  const hourRef = useRef<HTMLDivElement | null>(null);
+  const minuteRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const center = (el: HTMLDivElement | null, selected: string): void => {
+      const item = el?.querySelector<HTMLElement>(`[data-v="${selected}"]`);
+      if (!el || !item) return;
+      el.scrollTop = item.offsetTop - el.clientHeight / 2 + item.clientHeight / 2;
+    };
+    center(hourRef.current, String(h));
+    center(minuteRef.current, String(m));
+  }, [h, m]);
+  const col = (items: number[], selected: number, unit: 'h' | 'm', ref: RefObject<HTMLDivElement>) => (
+    <div className="relative flex-1">
+      <div className="pointer-events-none absolute inset-x-1 top-1/2 z-10 h-8 -translate-y-1/2 rounded-md border border-accent-clay/45 bg-accent-clay/10" />
+      <div ref={ref} className="h-40 overflow-y-auto rounded-md border border-border-subtle bg-black/[0.02] py-16">
+        {items.map((x) => {
+          const active = x === selected;
+          return (
+            <button
+              key={x}
+              type="button"
+              data-v={x}
+              onClick={() => onChange(unit === 'h' ? hmValue(x, m) : hmValue(h, x))}
+              className={`block h-8 w-full text-center text-[15px] tabular-nums transition-colors ${
+                active ? 'font-semibold text-text-strong' : 'text-text-muted hover:text-text-secondary'
+              }`}
+            >
+              {unit === 'h' ? x : String(x).padStart(2, '0')}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+  return (
+    <div className="mt-3">
+      <div className="mb-1 grid grid-cols-[1fr_18px_1fr] px-1 text-center text-[10px] uppercase tracking-wide text-text-muted/70">
+        <span>Час</span>
+        <span />
+        <span>Мин</span>
+      </div>
+      <div className="grid grid-cols-[1fr_18px_1fr] items-center">
+        {col(TIME_WHEEL_HOURS, h, 'h', hourRef)}
+        <div className="text-center text-[18px] font-semibold text-text-muted">:</div>
+        {col(TIME_WHEEL_MINUTES, m, 'm', minuteRef)}
+      </div>
+    </div>
+  );
+}
+
+function ForceMajorModal({
+  row,
+  onClose,
+  onSave,
+}: {
+  row: FlowTransportRow;
+  onClose: () => void;
+  onSave: (json: string) => void;
+}): JSX.Element {
+  const [items, setItems] = useState<ForceDraft[]>(() => {
+    const parsed = parseForceDrafts(row.force_json || '[]');
+    return parsed.length ? parsed : [{ reason: 'ожидание выгрузки', start: row.fact_start || '8:00', end: '', comment: '' }];
+  });
+  const [timePicker, setTimePicker] = useState<{ idx: number; field: 'start' | 'end'; title: string } | null>(null);
+  const update = (idx: number, patch: Partial<ForceDraft>): void => {
+    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  };
+  return (
+    <>
+      <div className="fixed inset-0 z-50 bg-black/35" onClick={onClose} />
+      <div className="fixed left-1/2 top-1/2 z-[60] flex max-h-[82vh] w-[620px] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border-subtle bg-bg-surface p-4 text-[12px] shadow-2xl">
+        <div className="flex items-baseline justify-between gap-3">
+          <div>
+            <div className="text-[14px] font-semibold text-text-strong">ФОРМ М · машина {row.garage_no || '—'}</div>
+            <div className="mt-0.5 text-[11px] text-text-muted/70">{fmtDay(row.tdate)} · {row.work || 'без работы'}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setItems((prev) => [...prev, { reason: 'ожидание выгрузки', start: row.fact_start || '8:00', end: '', comment: '' }])}
+            className="h-8 rounded-md border border-accent-clay/50 px-3 text-[12px] text-text-strong transition-colors hover:bg-accent-clay/15"
+          >
+            Добавить
+          </button>
+        </div>
+        <div className="mt-3 flex min-h-0 flex-col gap-2 overflow-y-auto pr-1">
+          {items.map((it, idx) => (
+            <div key={idx} className="rounded-md border border-border-subtle p-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={it.reason}
+                  onChange={(e) => update(idx, { reason: e.target.value })}
+                  className="h-8 rounded-md border border-border-subtle bg-transparent px-2 text-[12px] text-text-primary outline-none focus:border-accent-clay/60"
+                >
+                  {FORCE_REASONS.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setTimePicker({ idx, field: 'start', title: 'ФОРМ М начало' })}
+                  className="h-8 rounded-md border border-border-subtle px-2 text-[12px] tabular-nums text-text-primary transition-colors hover:border-accent-clay/60"
+                >
+                  с {it.start || '—'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTimePicker({ idx, field: 'end', title: 'ФОРМ М окончание' })}
+                  className="h-8 rounded-md border border-border-subtle px-2 text-[12px] tabular-nums text-text-primary transition-colors hover:border-accent-clay/60"
+                >
+                  по {it.end || '—'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setItems((prev) => prev.filter((_, i) => i !== idx))}
+                  className="ml-auto h-8 rounded-md border border-danger/35 px-2 text-[12px] text-danger transition-colors hover:bg-danger/10"
+                >
+                  Удалить
+                </button>
+              </div>
+              <textarea
+                value={it.comment}
+                onChange={(e) => update(idx, { comment: e.target.value })}
+                placeholder="Комментарий причины"
+                className="mt-2 h-16 w-full resize-none rounded-md border border-border-subtle bg-transparent px-2 py-1.5 text-[12px] text-text-primary outline-none focus:border-accent-clay/60"
+              />
+            </div>
+          ))}
+          {items.length === 0 && <div className="rounded-md border border-border-subtle p-3 text-text-muted">Форс-мажоры не указаны.</div>}
+        </div>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 rounded-md border border-border-subtle px-3 text-[12px] text-text-secondary transition-colors hover:text-text-strong"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(forceDraftsToJson(items))}
+            className="h-8 rounded-md border border-accent-clay/60 px-3 text-[12px] font-medium text-text-strong transition-colors hover:bg-accent-clay/15"
+          >
+            Сохранить
+          </button>
+        </div>
+      </div>
+      {timePicker && (
+        <TransportTimeModal
+          title={timePicker.title}
+          value={items[timePicker.idx]?.[timePicker.field] || '8:00'}
+          allowClear={timePicker.field === 'end'}
+          onClose={() => setTimePicker(null)}
+          onSave={(value) => {
+            update(timePicker.idx, { [timePicker.field]: value });
+            setTimePicker(null);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
 /**
  * Карточка характеристик машины (двойной клик по №·ГОС) — как карточка MAT в формировании.
  * ЧИСТО UI-показ: данные из базы машин (flow_vehicles), на сервере поля хранятся отдельно.
  * Порядок (юзер 2026-06-12): ТИП · ДОП.ТН · ТН · Длина · Ширина · Высота от площадки (метры).
  */
 function VehicleSpecCard({
+  row,
   garage,
   veh,
   x,
   y,
   onClose,
+  onGarageChange,
 }: {
+  row: FlowTransportRow;
   garage: string;
   veh: FlowVehicle | null;
   x: number;
   y: number;
   onClose: () => void;
+  onGarageChange: (garage: string) => void;
 }): JSX.Element {
+  const [nextGarage, setNextGarage] = useState(row.garage_no || garage);
   const Row = ({ label, value }: { label: string; value: string }): JSX.Element => (
     <div className="flex items-baseline justify-between gap-3">
       <span className="text-[10px] uppercase tracking-wide text-text-muted/60">{label}</span>
@@ -2092,6 +2488,19 @@ function VehicleSpecCard({
           Машина {garage}
           {veh?.gos_no && <span className="tabular-nums text-text-muted">{veh.gos_no}</span>}
         </div>
+        <label className="mt-2 flex flex-col gap-1 text-[10px] uppercase tracking-wide text-text-muted/60">
+          Заменить гаражный
+          <input
+            value={nextGarage}
+            onChange={(e) => setNextGarage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return;
+              e.preventDefault();
+              onGarageChange(nextGarage);
+            }}
+            className="h-7 rounded-md border border-border-subtle bg-transparent px-2 text-[12px] normal-case tabular-nums text-text-primary outline-none focus:border-accent-clay/60"
+          />
+        </label>
         {!veh ? (
           <div className="mt-2 text-[12px] text-text-muted">Машины {garage} нет в базе.</div>
         ) : (

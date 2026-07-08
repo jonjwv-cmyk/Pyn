@@ -7,7 +7,8 @@ import { formatMobilePhone } from '@/lib/mol-format';
 import { formatUntilDate } from './flow-sandbox.fixtures';
 import {
   vehicleBrand,
-  timeRange12hLines,
+  fmtTimeRange,
+  forceSummary,
   workIsSixPlus,
   fmtDaysTitle,
   fmtDaysSummary,
@@ -102,7 +103,7 @@ export function FlowTransportPrint({
         }
         .tr-print-frame {
           display: flex; flex-direction: column; gap: 8px;
-          max-height: 92vh; width: min(900px, 94vw);
+          max-height: 92vh; width: min(1180px, 96vw);
         }
         .tr-print-sheet {
           background: #fff; color: #111; border-radius: 6px;
@@ -139,14 +140,15 @@ export function FlowTransportPrint({
         .tr-print-sheet .tr-drsub { white-space: nowrap; }
         .tr-print-sheet .tr-phone { font-weight: 700; color: #33312E; font-variant-numeric: tabular-nums; }
         .tr-print-sheet .tr-mol { color: #8A4B2E; font-weight: 600; }
-        /* Чёрная линия — переход в блок пунктов «6+» внутри дня (отделяет от 0–5). */
-        .tr-print-sheet .tr-cluster td { border-top: 2px solid #1E1E1E; }
+        /* Разделительный блок 6+ — серая строка, текст тёмный и читабельный. */
+        .tr-print-sheet .tr-cluster td { background: #D9D9D9; color: #222; border-top: 1px solid #666; }
         /* Заголовок ДНЯ (при печати нескольких дней) — ОРАНЖЕВАЯ линия + подпись. */
         .tr-print-sheet .tr-dayhead td {
           background: #FBEDE7; color: #8A4B2E; font-weight: 700; font-size: 10px;
           border-top: 2.5px solid #D97757; padding: 4px 6px;
         }
         @media print {
+          @page { size: A4 landscape; margin: 8mm 10mm; }
           body.tr-printing #root { display: none !important; }
           .tr-print-overlay { position: static; background: none; display: block; }
           .tr-print-frame { max-height: none; width: auto; }
@@ -197,17 +199,20 @@ export function FlowTransportPrint({
             {multiDay ? ` · Дней: ${days.length}` : ''}
           </p>
           {/* Колонки — как в UI, БЕЗ Истории/Даты (юзер 2026-06-12):
-              СТАТУС · РАБОТА · ВРЕМЯ · МАРКА · № · ГОС · ВЫЕЗД · ВОДИТЕЛЬ(ФИО+тел+МОЛ) · КОММЕНТАРИЙ. */}
+              СТАТУС · РАБОТА · ТИП ТС · ВРЕМЯ · ФАКТ · МАРКА · № · ГОС · ВЫЕЗД · ВОДИТЕЛЬ · ФОРМ М · КОММЕНТАРИЙ. */}
           <table>
             <thead>
               <tr>
                 <th>СТАТУС</th>
                 <th>РАБОТА</th>
+                <th>ТИП ТС</th>
                 <th>ВРЕМЯ</th>
+                <th>ФАКТ</th>
                 <th>МАРКА</th>
                 <th>№ · ГОС</th>
                 <th>ВЫЕЗД</th>
                 <th>ВОДИТЕЛЬ</th>
+                <th>ФОРМ М</th>
                 <th>КОММЕНТАРИЙ</th>
               </tr>
             </thead>
@@ -215,9 +220,8 @@ export function FlowTransportPrint({
               {rows.map((r, i) => {
                 const veh = vehByGarage.get(r.garage_no);
                 const off = r.status === 'Отклонен' || r.status === 'Отмена';
-                const timeLines = timeRange12hLines(r.time_range);
                 const brand = veh?.model ? vehicleBrand(veh.model) : '';
-                const out = r.garage_no ? (veh ? (veh.ban ? 'НЕТ' : 'ДА') : '?') : '';
+                const out = r.out_status || '';
                 const driver = r.driver || veh?.driver || '';
                 const dInfo = driver ? driverByFio.get(driver) : undefined;
                 const phone = r.driver_phone || veh?.driver_phone || '';
@@ -231,7 +235,7 @@ export function FlowTransportPrint({
                   <Fragment key={r.id}>
                     {multiDay && dayChanged && (
                       <tr className="tr-dayhead">
-                        <td colSpan={8}>
+                        <td colSpan={11}>
                           {weekdayRu(r.tdate)}, {fmtDaysSummary([r.tdate])}
                         </td>
                       </tr>
@@ -239,16 +243,10 @@ export function FlowTransportPrint({
                     <tr className={cn(off && 'tr-off', cluster && 'tr-cluster') || undefined}>
                       <td>{r.status}</td>
                       <td className="tr-work">{r.work}</td>
+                      <td>{r.vehicle_type}</td>
+                      <td className="tr-time">{fmtTimeRange(r.time_range)}</td>
                       <td className="tr-time">
-                        {timeLines ? (
-                          <>
-                            {timeLines[0]}
-                            <br />
-                            {timeLines[1]}
-                          </>
-                        ) : (
-                          (r.time_range || '').replace(/(^|[^\d])0(\d:)/g, '$1$2')
-                        )}
+                        {[fmtTimeRange(r.fact_start || ''), fmtTimeRange(r.fact_end || '')].filter(Boolean).join(' / ')}
                       </td>
                       <td>
                         {brand}
@@ -287,6 +285,7 @@ export function FlowTransportPrint({
                           </>
                         ) : null}
                       </td>
+                      <td className="tr-grow">{forceSummary(r.force_json || '[]')}</td>
                       <td className="tr-grow">{r.comment}</td>
                     </tr>
                   </Fragment>

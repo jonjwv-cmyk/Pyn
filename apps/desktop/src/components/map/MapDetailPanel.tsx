@@ -7,6 +7,7 @@ import {
   AREA_COLORS,
   EMPTY_POINT_EQUIPMENT,
   EQUIPMENT_META,
+  POINT_VEHICLE_TYPES,
   VEHICLE_TYPES,
   roadPaintOption,
   vehicleLabel,
@@ -280,7 +281,7 @@ function PointEditor({
                 <span>{allowedVehicles.length === 0 ? '✓' : ''}</span>
               </button>
               <div className="grid grid-cols-2 gap-1">
-                {VEHICLE_TYPES.map((vehicle) => {
+                {POINT_VEHICLE_TYPES.map((vehicle) => {
                   const active = allowedVehicles.includes(vehicle.id);
                   return (
                     <button

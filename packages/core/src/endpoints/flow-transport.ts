@@ -54,6 +54,15 @@ export interface FlowTransportRow {
   sp: string;
   /** Заказ (НТ000…), может быть пуст. */
   order_no: string;
+  /** Ручная колонка ВЫЕЗД: '' | ДА | НЕТ. Не заполняется из буфера. */
+  out_status: string;
+  /** Свой ТИП ТС на день: Фургон КХП / Борт / Пульман 9м / ... */
+  vehicle_type: string;
+  /** Факт начало/конец работы машины, HH:MM без ведущего нуля на показе. */
+  fact_start: string;
+  fact_end: string;
+  /** JSON массива форс-мажоров [{reason,start,end,comment}]. */
+  force_json: string;
   created_by: string;
   created_at: string;
   row_version: number;
@@ -86,6 +95,11 @@ export interface FlowTransportPasteRow {
   ot: string;
   sp: string;
   order_no: string;
+  out_status?: string;
+  vehicle_type?: string;
+  fact_start?: string;
+  fact_end?: string;
+  force_json?: string;
 }
 
 /** «08.06.2026» / «2026-06-08» / с временем → 'YYYY-MM-DD'. Пусто — не дата. */
@@ -220,16 +234,17 @@ export async function flowTransportEdit(
 }
 
 /**
- * Добавить машину на дату по гаражному №. Машины нет в базе → ApiError
- * `vehicle_not_found` (клиент открывает карточку машины и повторяет).
+ * Добавить строку транспорта на дату. Гаражный № необязателен: пустая строка
+ * нужна для ручной работы/заказа/ТИП ТС. Если гаражный указан и машины нет в
+ * базе → ApiError `vehicle_not_found`.
  */
 export async function flowTransportAdd(
   client: ApiClient,
-  params: { date: string; garageNo: string; work?: string; timeRange?: string; orderNo?: string },
+  params: { date: string; garageNo?: string; work?: string; timeRange?: string; orderNo?: string },
 ): Promise<FlowTransportRow | null> {
   const wire = await client.call<{ row?: FlowTransportRow }>('flow_transport_add', {
     date: params.date,
-    garage_no: params.garageNo,
+    garage_no: params.garageNo ?? '',
     work: params.work ?? '',
     time_range: params.timeRange ?? '',
     order_no: params.orderNo ?? '',

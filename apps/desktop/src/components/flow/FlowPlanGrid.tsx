@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CompactSelection,
-  DataEditor,
   type DataEditorRef,
   GridCellKind,
   type EditableGridCell,
@@ -33,7 +31,7 @@ import { FlowAnchorHistoryCard, type FlowAnchorHistoryTarget } from './FlowAncho
 import { VghEditCard } from '@/components/vgh/VghEditCard';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { flowVehicleRenderer, type FlowVehicleCell, type FlowVehicleOption } from './flow-vehicle-cell';
-import { colZeroRowSelection } from './flow-grid-selection';
+import { FlowGridEditor, EMPTY_GRID_SELECTION, type FlowGridEditorHandle } from './FlowGridEditor';
 import { FlowSearchPanel } from './FlowSearchPanel';
 import { FlowDayPicker } from './FlowDayPicker';
 import { useFlowGridSearch, type FlowSearchColumn } from './flow-grid-search';
@@ -502,10 +500,11 @@ export function FlowPlanGrid({
   const [anchors, setAnchors] = useState<FlowRow[]>(() => planAnchorsCache ?? []);
   const [vehicles, setVehicles] = useState<FlowVehicle[]>(() => planVehiclesCache ?? []);
   const [loading, setLoading] = useState(() => planDlvCache === null);
-  const [selection, setSelection] = useState<GridSelection>({
-    columns: CompactSelection.empty(),
-    rows: CompactSelection.empty(),
-  });
+  // Выделение живёт ВНУТРИ FlowGridEditor (Фаза 1: протяжка не ре-рендерит этот
+  // 3000-строчный компонент). Здесь — только лёгкий счётчик для тулбара «Выбрано: N»
+  // и императивный handle, чтобы задавать выделение извне (поиск/очистка).
+  const [selectedCount, setSelectedCount] = useState(0);
+  const editorRef = useRef<FlowGridEditorHandle | null>(null);
   const gridRef = useRef<DataEditorRef | null>(null);
   // §7-B: карточка ИЗМЕНЕНИЯ материала (вес/объём/норма) — двойной клик по NO.№ (как в
   // Формировании). Правка пересчитывает KG/V live (подписка vgh_changed). Для Плана действует
@@ -1297,8 +1296,23 @@ export function FlowPlanGrid({
     () => colFilters.applySort(colFilters.applyFilters(baseRows)),
     [baseRows, colFilters.applyFilters, colFilters.applySort],
   );
-  const selectionRef = useRef(selection);
-  selectionRef.current = selection;
+  // Живое выделение из FlowGridEditor (обновляется его колбэком). Все действия
+  // (заливка/копирование/удаление/вставка/статус) читают ОТСЮДА — без ре-рендера.
+  const selectionRef = useRef<GridSelection>(EMPTY_GRID_SELECTION);
+  // Стабильный (deps []) колбэк: пишем свежее выделение в ref + двигаем лёгкий
+  // счётчик. setSelectedCount с тем же числом — no-op (React бейлит), поэтому
+  // протяжка внутри одной строки родителя не трогает.
+  const handleSelectionChange = useCallback((sel: GridSelection) => {
+    selectionRef.current = sel;
+    setSelectedCount(sel.rows.length);
+  }, []);
+  // Задать выделение извне (поиск-переход) и очистить (после удаления/переноса).
+  const applyGridSelection = useCallback((sel: GridSelection) => {
+    editorRef.current?.setSelection(sel);
+  }, []);
+  const clearSelection = useCallback(() => {
+    editorRef.current?.setSelection(EMPTY_GRID_SELECTION);
+  }, []);
   const viewRowsRef = useRef(viewRows);
   viewRowsRef.current = viewRows;
   const colsRef = useRef(COLS);
@@ -1441,7 +1455,7 @@ export function FlowPlanGrid({
     gridRef,
     getRaw: searchRaw,
     getDisplay: searchDisplay,
-    setSelection,
+    setSelection: applyGridSelection,
   });
 
   const getCellContent = useCallback(
@@ -2400,8 +2414,6 @@ export function FlowPlanGrid({
     [viewRows, flagById, mode, rowLocked, molsForWh],
   );
 
-  const selectedCount = selection.rows.length;
-
   // ── «Заливка» как в Excel (юзер 2026-07-04): выделил ячейки → кнопка красит ВСЮ
   // строку выбранным цветом. Цвет выбирается в палитре (квадрат в кнопке его показывает),
   // окно палитры закрывается после выбора. Ластика нет: отмена = Undo (одно действие);
@@ -2419,7 +2431,7 @@ export function FlowPlanGrid({
   };
   const applyFillToSelection = useCallback(() => {
     const targets: FlowDeliveryRow[] = [];
-    for (const i of selectionRowIdxs(selection)) {
+    for (const i of selectionRowIdxs(selectionRef.current)) {
       const r = viewRows[i];
       if (r && !rowLocked(r)) targets.push(r);
     }
@@ -2438,7 +2450,7 @@ export function FlowPlanGrid({
     applyFillItems(items, 'after');
     pushHistory({ kind: 'fill', items });
     setMsg(next ? `Залито строк: ${targets.length}` : `Заливка снята: ${targets.length}`);
-  }, [selection, viewRows, rowLocked, paintColor, applyFillItems, pushHistory]);
+  }, [viewRows, rowLocked, paintColor, applyFillItems, pushHistory]);
 
   /** Массовая отметка отчёта (ТЗ §5.1): одно значение на все выделенные строки,
    *  БЕЗ привязки к складу — выбрал → протянулось. Причина чистится при «увезли». */
@@ -2448,7 +2460,7 @@ export function FlowPlanGrid({
     (fields: { done_stat: string; fail_reason: string }) => {
       const targets: FlowDeliveryRow[] = [];
       let lockedHit = false;
-      for (const idx of selection.rows) {
+      for (const idx of selectionRef.current.rows) {
         const r = viewRows[idx];
         if (!r) continue;
         if (rowLocked(r)) {
@@ -2471,7 +2483,7 @@ export function FlowPlanGrid({
         targets.map((t) => ({ id: t.id, row_version: t.row_version, fields })),
       ).then((res) => applyServerDlv(res.rows));
     },
-    [selection, viewRows, applyServerDlv, rowLocked],
+    [viewRows, applyServerDlv, rowLocked],
   );
   const massMark = useCallback(
     (done: 'выполнено' | 'не увезли', reason: string) =>
@@ -2714,7 +2726,7 @@ export function FlowPlanGrid({
       }
       const spec = COLS[target[0]];
       const pasted = String(values?.[0]?.[0] ?? '').trim();
-      if (spec?.id === 'status' && selection.rows.length > 1 && pasted) {
+      if (spec?.id === 'status' && selectionRef.current.rows.length > 1 && pasted) {
         if (pasted.startsWith(TRANSFER_REASON) || pasted.startsWith('перенос')) {
           setMsg('Перенос вставкой не копируется — задайте через ячейку статуса');
           return false;
@@ -2726,7 +2738,7 @@ export function FlowPlanGrid({
       // гаражный), выделил диапазон → вставка ТИРАЖИРУЕТСЯ на всё выделение, а не только
       // на первую ячейку. Правки идут ПАЧКОЙ через onCellsEdited: одна строка = один
       // элемент запроса (иначе гонка row_version — «вставилось и сбросилось»).
-      const range = selection.current?.range;
+      const range = selectionRef.current.current?.range;
       const H = Array.isArray(values) ? values.length : 0;
       const W = H > 0 ? Math.max(...values.map((row) => row.length)) : 0;
       if (range && H > 0 && W > 0 && (range.height > H || range.width > W)) {
@@ -2745,12 +2757,12 @@ export function FlowPlanGrid({
       }
       return true; // остальное — обычная вставка диапазона Glide (придёт в onCellsEdited)
     },
-    [COLS, selection, applyStatusToSelected, applyPastedRows, onCellsEdited],
+    [COLS, applyStatusToSelected, applyPastedRows, onCellsEdited],
   );
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];
     let blocked = 0;
-    for (const idx of selection.rows) {
+    for (const idx of selectionRef.current.rows) {
       const r = viewRows[idx];
       if (!r) continue;
       if (canDeleteRow(r)) ids.push(r.id);
@@ -2770,9 +2782,9 @@ export function FlowPlanGrid({
       planDlvCache = next;
       return next;
     });
-    setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
+    clearSelection();
     void flowDeliveriesDelete(api, ids).catch(() => undefined);
-  }, [selection, viewRows, canDeleteRow, mode]);
+  }, [viewRows, canDeleteRow, mode, clearSelection]);
 
   // Перенос — ЧЕРЕЗ ФОРМИРОВАНИЕ (В1, юзер 2026-07-02): копий в Плане/Отчёте не создаём.
   // Источник сереет «перенос: дата», позиция возвращается в Формирование на дату переноса;
@@ -2788,7 +2800,7 @@ export function FlowPlanGrid({
       void flowTransfer(api, [...ids], toDate, keepDlv)
         .then((res) => {
           applyServerDlv(res.rows);
-          setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
+          clearSelection();
           setPendingTransfer(null);
           setMsg(
             mode === 'report'
@@ -2801,7 +2813,7 @@ export function FlowPlanGrid({
           setMsg(`Не удалось перенести: ${text.slice(0, 90)}`);
         });
     },
-    [applyServerDlv, mode, transferMinDate],
+    [applyServerDlv, mode, transferMinDate, clearSelection],
   );
 
   const commitPendingTransfer = useCallback(
@@ -3094,8 +3106,11 @@ export function FlowPlanGrid({
           </div>
         )}
         {size.width > 0 && size.height > 0 && (
-          <DataEditor
-            ref={gridRef}
+          <FlowGridEditor
+            ref={editorRef}
+            gridRef={gridRef}
+            onSelectionChange={handleSelectionChange}
+            colZeroRowSelect
             theme={gridTheme}
             width={size.width}
             height={size.height}
@@ -3110,13 +3125,6 @@ export function FlowPlanGrid({
             // ручную строку на выбранный день — данные пишутся прямо в ячейки.
             onRowAppended={addEmptyRow}
             trailingRowOptions={{ tint: true, sticky: false }}
-            gridSelection={selection}
-            onGridSelectionChange={(sel) => {
-              // Протяжка по первой колонке → выделение строк. СОХРАНЯЕМ current, иначе Glide
-              // теряет активную протяжку и выделяется только одна строка (юзер 2026-06-15).
-              const rowsSel = colZeroRowSelection(sel);
-              setSelection(rowsSel ? { ...rowsSel, current: sel.current } : sel);
-            }}
             getRowThemeOverride={getRowThemeOverride}
             customRenderers={PLAN_RENDERERS}
             getCellsForSelection
