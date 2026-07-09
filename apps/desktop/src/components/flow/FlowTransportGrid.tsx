@@ -120,7 +120,7 @@ const TR_COLS: readonly TrColSpec[] = [
 ];
 
 /** Порядок статусов в выпадашке — по слову юзера; «(пусто)» НЕТ (снять = Delete). */
-const STATUS_ORDER = ['Размещен', 'Отклонен', 'Отмена', 'Новый', 'Открыт'] as const;
+const STATUS_ORDER = ['Размещен', 'Отклонен', 'Отмена', 'Не приехал', 'Новый', 'Открыт'] as const;
 const OUT_STATUS_ORDER = ['ДА', 'НЕТ'] as const;
 const FORCE_REASONS = ['ожидание выгрузки', 'поломка ТС'] as const;
 
@@ -1161,7 +1161,7 @@ export function FlowTransportGrid(): JSX.Element {
       const r = viewRows[row];
       if (!r) return undefined;
       if (r.status === 'Размещен') return { bgCell: '#EAF5EA' };
-      if (r.status === 'Отклонен' || r.status === 'Отмена') return { bgCell: '#FBE7E4', textDark: '#7A2A1D' };
+      if (r.status === 'Отклонен' || r.status === 'Отмена' || r.status === 'Не приехал') return { bgCell: '#FBE7E4', textDark: '#7A2A1D' };
       if (rowLocked(r)) return { textDark: '#8C8983' };
       return undefined;
     },
