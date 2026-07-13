@@ -74,6 +74,7 @@ export interface FlowSandboxRow {
   unload_equip?: string; // override оснастки выгрузки (метки через \n); пусто = из точки
   score?: undefined; // БАЛЛ — синтетическая колонка (EPS считается на клиенте; ключ спеки)
   load_info?: undefined; // ПОГРУЗКА — синтетическая (типы ТС точки + сзади, из карты)
+  ord_info?: undefined; // ORD name+date — синтетическая (CREATEDBY + LOADDT, один тумблер §3)
 }
 
 /** Спецификация колонки грида. */
@@ -141,43 +142,28 @@ export const FLOW_STAT_DROPDOWN = ['мало', 'заявка', 'вопрос', '
  * материала; вторичные поля выгрузки (TIME/%/CREATEDBY/LOADDT/CHG/тех-имя) скрыты
  * и уходят в карточку материала. Правятся только вспомогательные (editable).
  */
+/** §3.1 Формирование — 21 видимая + 3 скрываемые (FLOW_INFO_COLUMNS) = 24. */
 export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'clst', title: 'ГРАФ', width: 70, kind: 'text' },
   { id: 'ord', title: 'ORD', width: 128, kind: 'order' },
   { id: 'fr', title: 'FR', width: 62, kind: 'text', editable: true },
   { id: 'to_wh', title: 'TO', width: 62, kind: 'to', editable: true },
   { id: 'pr', title: 'PR', width: 62, kind: 'text' },
+  { id: 'point', title: 'ТОЧКА', width: 156, kind: 'dropdown', editable: true },
   { id: 'day_wk', title: 'DAY', width: 84, kind: 'day', editable: true },
-  { id: 'request', title: 'ЗАПРОС', width: 108, kind: 'text', editable: true },
-  { id: 'mol', title: 'МОЛ', width: 172, kind: 'mol', editable: true },
   { id: 'stat', title: 'STAT', width: 104, kind: 'dropdown', options: FLOW_STAT_DROPDOWN, editable: true },
   { id: 'pct', title: '%', width: 52, kind: 'percent' },
   { id: 'q', title: 'Q', width: 38, kind: 'text' },
-  // УР — уровень дробления поставки (0=пусто — основная; 1..3 — отдельные поставки
-  // внутри связки отправитель+получатель). Скрипт создания поставок гонит SAP
-  // МНОГОУРОВНЕВО: сначала база, затем уровень 1, 2, 3 — заказ дробится на разные
-  // поставки под разные машины. Группировка плана: fr+to+уровень (flow_plan_form).
-  { id: 'split_level', title: 'УР', width: 44, kind: 'dropdown',
-    options: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], editable: true },
-  { id: 'history', title: 'ИСТОРИЯ', width: 64, kind: 'history' },
   { id: 'no_num', title: 'NO. №', width: 86, kind: 'text' },
   { id: 'mat', title: 'MAT', width: 210, kind: 'mat' },
   { id: 'uom', title: 'UoM', width: 50, kind: 'text' },
   { id: 'qty', title: 'QTY', width: 80, kind: 'number' },
   { id: 'kg', title: 'KG', width: 80, kind: 'number' },
   { id: 'v', title: 'V', width: 70, kind: 'number' },
-  { id: 'note', title: 'NOTE', width: 150, kind: 'text', editable: true },
-  // НАШИ колонки (модель сайта → Поток, юзер 2026-07-12). Приоритет кормит Балл (EPS);
-  // Балл — клик даёт окно-обоснование (EPS + OR-Tools). Точка/Доставка/Выгрузка — след. кусками.
-  { id: 'point', title: 'ТОЧКА', width: 156, kind: 'dropdown', editable: true },
-  { id: 'delivery', title: 'ДОСТАВКА', width: 118, kind: 'window', editable: true },
   { id: 'priority', title: 'ПРИОР.', width: 92, kind: 'dropdown', options: [...PRIORITY_OPTIONS], editable: true },
-  { id: 'score', title: 'БАЛЛ', width: 60, kind: 'score' },
-  { id: 'load_info', title: 'ПОГРУЗКА', width: 150, kind: 'loadinfo' },
-  { id: 'unload_equip', title: 'ВЫГРУЗКА', width: 132, kind: 'dropdown',
-    options: ['Кран', 'Кран-балка', 'Авто-кран', 'Штабелер', 'Погрузчик', 'Ручное'], editable: true },
-  // §15 (юзер 2026-07-03): «Согл.» — галочка + даты отправки на согласование (кнопка
-  // «Согласование» дописывает текущую дату выделенным строкам). Read-only показ.
+  { id: 'note', title: 'NOTE', width: 150, kind: 'text', editable: true },
+  { id: 'delivery', title: 'ОКНО', width: 118, kind: 'window', editable: true },
+  { id: 'mol', title: 'МОЛ', width: 172, kind: 'mol', editable: true },
   { id: 'approved_dates', title: 'СОГЛ.', width: 132, kind: 'text' },
 ];
 
@@ -192,9 +178,8 @@ export interface FlowInfoColumnSpec extends FlowColumnSpec {
   anchorAfter: keyof FlowSandboxRow;
 }
 export const FLOW_INFO_COLUMNS: readonly FlowInfoColumnSpec[] = [
-  { id: 'time_at', title: 'DAY выг.', width: 128, kind: 'text', anchorAfter: 'stat' },
-  { id: 'load_dt', title: 'Дата ORD', width: 92, kind: 'text', anchorAfter: 'stat' },
-  { id: 'created_by', title: 'ORD созд.', width: 132, kind: 'text', anchorAfter: 'stat' },
+  { id: 'time_at', title: 'Выгружен', width: 128, kind: 'text', anchorAfter: 'day_wk' },
+  { id: 'ord_info', title: 'ORD name, date', width: 180, kind: 'info', anchorAfter: 'day_wk' },
   { id: 'mat_full', title: 'TECH NAME', width: 220, kind: 'text', anchorAfter: 'mat' },
 ];
 /** id всех инфо-колонок — для быстрых проверок «это инфо-колонка». */
@@ -242,6 +227,15 @@ export function formatUploadDay(timeAt: string | undefined): string {
   return [p.date, p.time].filter(Boolean).join(' ');
 }
 
+/** Заголовок колонки материала в Плане/Отчёте (§3): «Июль 6, 2026г. Материал». */
+export function planMatTitle(dateIso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
+  if (!m) return 'Материал';
+  const mon = MONTHS_NOM_RU[parseInt(m[2] ?? '1', 10) - 1] ?? '';
+  const cap = mon ? `${mon.charAt(0).toUpperCase()}${mon.slice(1)}` : '';
+  return `${cap} ${parseInt(m[3] ?? '1', 10)}, ${m[1]}г. Материал`;
+}
+
 /**
  * Размер шрифта ЗНАЧЕНИЙ по колонкам (px при 100%; зум домножает). Юзер: кластер —
  * самый мелкий; день/статус/КГ/объём/МОЛ/запрос — компактные; остальное стандарт.
@@ -277,6 +271,56 @@ export function compactFio(fio: string): string {
   if (toks.length <= 2) return toks.join(' ');
   const initials = toks.slice(2).map((t) => `${(t[0] ?? '').toUpperCase()}.`).join(' ');
   return `${toks[0]} ${toks[1]} ${initials}`;
+}
+
+/** Ключ сопоставления МОЛ — «ФАМИЛИЯ ИМЯ» (первые 2 токена, верхний регистр). */
+export function molPersonKey(fio: string): string {
+  return fio.trim().toUpperCase().split(/\s+/).filter(Boolean).slice(0, 2).join(' ');
+}
+
+type MolKeyRecord = { readonly fio: string };
+
+/** Сырое значение МОЛ (копия/вставка/выбор) → каноническое ФИО из живой базы. */
+export function canonicalMolFio(
+  raw: string,
+  molByKey?: ReadonlyMap<string, MolKeyRecord>,
+): string {
+  const trimmed = String(raw ?? '').trim();
+  if (!trimmed || /нет\s*мол/i.test(trimmed)) return trimmed;
+  const parsed = parseMol(trimmed);
+  let fio = (parsed?.fio ?? trimmed).trim();
+  // Суффикс склада мог попасть при копировании видимого текста ячейки.
+  fio = fio.replace(/\s*(склада нет в SAP|склад удалён).*$/i, '').trim();
+  if (molByKey) {
+    const hit = molByKey.get(molPersonKey(fio));
+    if (hit) return hit.fio;
+    const normIn = fio.toUpperCase().replace(/\./g, '').replace(/\s+/g, ' ');
+    for (const [, rec] of molByKey) {
+      const ini = molInitials(rec.fio).toUpperCase().replace(/\./g, '').replace(/\s+/g, ' ');
+      const cmp = compactFio(rec.fio).toUpperCase().replace(/\./g, '').replace(/\s+/g, ' ');
+      if (
+        ini === normIn ||
+        cmp === normIn ||
+        rec.fio === fio ||
+        compactFio(rec.fio) === fio ||
+        molInitials(rec.fio) === fio
+      ) {
+        return rec.fio;
+      }
+    }
+  }
+  return fio;
+}
+
+/** Найти МОЛ склада по сырому значению (копия/вставка/компактное ФИО). */
+export function findMolOptionForWh<T extends { fio: string }>(
+  raw: string,
+  opts: readonly T[],
+  molByKey?: ReadonlyMap<string, MolKeyRecord>,
+): T | undefined {
+  const fio = canonicalMolFio(raw, molByKey);
+  const key = molPersonKey(fio);
+  return opts.find((o) => molPersonKey(o.fio) === key);
 }
 
 /** «Фамилия Имя Отчество» → «Фамилия И.О.» (фамилия + инициалы остальных). Для
@@ -610,6 +654,10 @@ export function formatApprovedDates(csv: string | undefined): string {
 export function flowFilterText(spec: FlowColumnSpec, row: FlowSandboxRow): string {
   if (spec.id === 'approved_dates') return formatApprovedDates(row.approved_dates);
   if (spec.id === 'time_at') return formatUploadDay(row.time_at); // §4 инфо: как в показе
+  if (spec.kind === 'info') {
+    const { primary, secondary } = flowComposed(spec, row);
+    return [primary, secondary].filter(Boolean).join(' ').trim();
+  }
   switch (spec.kind) {
     case 'day':
       return dayState(row).label;

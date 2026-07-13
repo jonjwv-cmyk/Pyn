@@ -24,7 +24,7 @@ import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowScoreRenderer, type FlowScoreCell } from './flow-score-cell';
 import { flowWindowRenderer, type FlowWindowCell } from './flow-window-cell';
-import { planRowEps, EPS_LEVEL_LABEL } from './flow-eps';
+import { planRowEps, EPS_LEVEL_LABEL, priorityDisplay } from './flow-eps';
 import { flowTwoToneRenderer, type FlowTwoCell } from './flow-composed-cells';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
@@ -35,6 +35,7 @@ import { flowToRenderer, type FlowToCell, type FlowToOption } from './flow-to-ce
 import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
 import { FlowAnchorHistoryCard, type FlowAnchorHistoryTarget } from './FlowAnchorHistoryCard';
 import { FlowHeaderMenu, type FlowHeaderMenuAnchor } from './FlowHeaderMenu';
+import { FlowColumnsMenu } from './FlowColumnsMenu';
 import { FlowMatFilterMenu, type FlowMatSubState } from './FlowMatFilterMenu';
 import { FlowOrdFilterMenu, type FlowOrdEntry } from './FlowOrdFilterMenu';
 import { useBlockingModal, blockingDialogContentProps } from '@/lib/modal-guard';
@@ -76,6 +77,7 @@ import { initMap } from '@/lib/map-repo';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
 import { FlowMonthPicker } from './FlowMonthPicker';
 import { FlowViewSwitch } from './FlowViewSwitch';
+import { useFlowColLayout } from './use-flow-col-layout';
 import {
   serializeFlowView,
   deserializeFlowView,
@@ -122,6 +124,9 @@ import {
   isBoldCol,
   compactFio,
   molInitials,
+  canonicalMolFio,
+  findMolOptionForWh,
+  molPersonKey,
   formatUntilDate,
   flowFilterText,
   formatApprovedDates,
@@ -143,6 +148,11 @@ import {
   type FlowSandboxRow,
   type FlowMatSubId,
 } from './flow-sandbox.fixtures';
+import {
+  transferMatPrefix,
+  planWasMatPrefix,
+  parseTransferTargetDate,
+} from './flow-transfer';
 
 /** Объём тестового набора — проверяем грид на «рабочем» масштабе (база). */
 /** Кастомные рендереры ячеек (своя выпадашка в стиле меню колонки). */
@@ -527,7 +537,18 @@ const RETURN_Q_REASONS = new Set(['приемка', 'приёмка', 'вход�
   // Сверка выяснила, что поставку удалили из SAP (В3): позиция снова доступна — внимание.
   'поставка удалена в sap']);
 
-function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; factQty: number | null; claimed: boolean; proved: boolean; returnQuestion: boolean; posted: boolean; delivered: boolean; occupies: boolean; reserved: boolean; real: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean; transferNoDay: boolean; transferDate: string } {
+type DlvInfo = {
+  a: string; qty: number; uom: string; factQty: number | null; claimed: boolean; proved: boolean;
+  returnQuestion: boolean; posted: boolean; delivered: boolean; occupies: boolean; reserved: boolean;
+  real: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean; transferNoDay: boolean;
+  /** Дата висящего переноса «перенос на другой день: YYYY-MM-DD» ('' — нет). */
+  transferDate: string;
+  /** День Отчёта-источника переноса (plan_date эпизода). */
+  transferSourceDate: string;
+  planDate: string;
+};
+
+function dlvInfoOf(d: FlowDeliveryRow): DlvInfo {
   // РЕЗЕРВ (удалена/снята) держим в карте — но ТОЛЬКО ради значка истории (anchorsWithHistory):
   // все «рабочие» флаги гасим, чтобы резерв не занимал позицию и не считался доставленным.
   const reserved = Number(d.reserved) === 1;
@@ -567,16 +588,17 @@ function dlvInfoOf(d: FlowDeliveryRow): { a: string; qty: number; uom: string; f
     String(d.fail_reason ?? '').trim() === 'перенос на другой день';
   // Висящий ПЕРЕНОС с датой (В1, юзер 2026-07-02): «перенос на другой день: YYYY-MM-DD».
   // Позиция показывается в Формировании на эту дату (даже если якорь ушёл в OFF).
-  const trm = !reserved && done === 'не увезли'
-    ? /^перенос на другой день: (\d{4}-\d{2}-\d{2})/.exec(String(d.fail_reason ?? '').trim())
-    : null;
+  const fail = String(d.fail_reason ?? '').trim();
+  const transferDate = !reserved && done === 'не увезли' ? parseTransferTargetDate(fail) : '';
+  const planDate = (d.plan_date || '').slice(0, 10);
+  const transferSourceDate = transferDate ? planDate : '';
   return {
     a: `${d.ord}|${d.it}`, qty: d.qty == null ? 0 : Number(d.qty), uom: String(d.uom ?? ''),
     factQty: d.fact_qty == null ? null : Number(d.fact_qty), claimed, proved, returnQuestion,
     posted, delivered, occupies, reserved, real,
     sedStatus: String(d.sed_status ?? ''), sedHolder: String(d.sed_holder ?? ''),
     sapOpen: Number(d.sap_open) === 1, transferNoDay,
-    transferDate: trm ? trm[1] ?? '' : '',
+    transferDate, transferSourceDate, planDate,
   };
 }
 
@@ -970,7 +992,13 @@ export function FlowSandboxGrid(): JSX.Element {
       return next;
     });
   }, []);
-  const activeColumns = useMemo(() => buildActiveColumns(visibleInfo), [visibleInfo]);
+  const baseActiveColumns = useMemo(() => buildActiveColumns(visibleInfo), [visibleInfo]);
+  const {
+    customOn: colReorderOn,
+    toggleCustom: toggleColReorder,
+    displayColumns: activeColumns,
+    onColumnMoved,
+  } = useFlowColLayout('formation', baseActiveColumns);
   const activeColsRef = useRef(activeColumns);
   activeColsRef.current = activeColumns;
   // «Замороженный» порядок показа: правка строки (смена склада/даты/статуса) НЕ
@@ -1442,13 +1470,6 @@ export function FlowSandboxGrid(): JSX.Element {
   // id поставки → { якорь ord|it, кол-во, проведена ли (отгружена/факт) }. Проведённая
   // поставка УЖЕ отражена в уменьшенном кол-ве выгрузки (SAP списал), потому в «доступный
   // остаток» НЕ вычитается; незакрытая (черновик/план без факта) — вычитается (юзер 2026-06-14).
-  type DlvInfo = {
-    a: string; qty: number; uom: string; factQty: number | null; claimed: boolean; proved: boolean;
-    returnQuestion: boolean; posted: boolean; delivered: boolean; occupies: boolean; reserved: boolean;
-    real: boolean; sedStatus: string; sedHolder: string; sapOpen: boolean; transferNoDay: boolean;
-    /** Дата висящего переноса «перенос на другой день: YYYY-MM-DD» ('' — нет). */
-    transferDate: string;
-  };
   const [dlvInfoById, setDlvInfoById] = useState<Map<number, DlvInfo>>(() => flowDlvInfoCache ?? new Map());
   // СЭД по якорю — статус движения документа + на ком (с активной поставки позиции). Для колонки СЭД
   // в Формировании (казусы: возили, а 2 дня не подписано / кто отклонил). Незакрытая = sapOpen.
@@ -1505,11 +1526,13 @@ export function FlowSandboxGrid(): JSX.Element {
   // Формировании на дату переноса, даже если якорь ушёл в OFF (заказ не в выгрузке).
   // Последний эпизод (максимальный id поставки) побеждает.
   const transferPendingByAnchor = useMemo(() => {
-    const m = new Map<string, { id: number; date: string }>();
+    const m = new Map<string, { id: number; date: string; sourceDate: string }>();
     for (const [id, v] of dlvInfoById) {
       if (!v.transferDate) continue;
       const cur = m.get(v.a);
-      if (!cur || Number(id) > cur.id) m.set(v.a, { id: Number(id), date: v.transferDate });
+      if (!cur || Number(id) > cur.id) {
+        m.set(v.a, { id: Number(id), date: v.transferDate, sourceDate: v.transferSourceDate });
+      }
     }
     return m;
   }, [dlvInfoById]);
@@ -1537,6 +1560,28 @@ export function FlowSandboxGrid(): JSX.Element {
     },
     [claimedAnchors, provedAnchors],
   );
+  // T4: «Было в плане на …» — ТОЛЬКО обманка «выполнено» (тот же якорь снова в выгрузке).
+  // Перенос → «Перенос с …» (transferPendingByAnchor), не смешиваем.
+  const planWasByAnchor = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of rows) {
+      const key = `${r.ord}|${r.it}`;
+      if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
+      if (!isCheatRow(r)) continue;
+      if (transferPendingByAnchor.has(key)) continue;
+      let bestId = 0;
+      let srcDate = '';
+      for (const [id, v] of dlvInfoById) {
+        if (v.a !== key || !v.claimed || !v.planDate) continue;
+        if (Number(id) > bestId) {
+          bestId = Number(id);
+          srcDate = v.planDate;
+        }
+      }
+      if (srcDate) m.set(key, srcDate);
+    }
+    return m;
+  }, [rows, dlvInfoById, isCheatRow, transferPendingByAnchor]);
 
   // Якоря с РЕАЛЬНОЙ историей движения (поставка с номером / статус отчёта / факт / фиксация —
   // включая снятые после этого): только им значок ИСТОРИЯ (юзер: «значок если история есть»). Резерв
@@ -1730,7 +1775,7 @@ export function FlowSandboxGrid(): JSX.Element {
       // (флаги гасим) — позиция освобождается, но значок истории остаётся.
       for (const id of Array.isArray(e.deleted) ? e.deleted : []) {
         const cur = next.get(Number(id));
-        if (cur) next.set(Number(id), { ...cur, reserved: true, occupies: false, delivered: false, posted: false, claimed: false, proved: false, returnQuestion: false, transferNoDay: false, transferDate: '' });
+        if (cur) next.set(Number(id), { ...cur, reserved: true, occupies: false, delivered: false, posted: false, claimed: false, proved: false, returnQuestion: false, transferNoDay: false, transferDate: '', transferSourceDate: '', planDate: '' });
       }
       for (const r of Array.isArray(e.rows) ? e.rows : []) {
         next.set(Number(r.id), dlvInfoOf(r as unknown as FlowDeliveryRow));
@@ -2230,9 +2275,7 @@ export function FlowSandboxGrid(): JSX.Element {
         };
       }
       if (FLOW_INFO_IDS.has(spec.id)) {
-        // §4 инфо-колонки (read-only): DAY выг. — дата ЖИРНЫМ + время обычным (юзер
-        // 2026-07-04, составная ячейка); Дата ORD/ORD созд./TECH NAME — сырое поле
-        // строки. В печать/xlsx не идут.
+        // §3/T5 инфо-колонки (read-only): Выгружен / ORD name+date / TECH NAME.
         if (spec.id === 'time_at') {
           const p = formatUploadDayParts(rowData.time_at);
           return {
@@ -2242,17 +2285,24 @@ export function FlowSandboxGrid(): JSX.Element {
             data: { kind: 'flow-two', primary: p.date, secondary: p.time, bold: true },
           } satisfies FlowTwoCell;
         }
-        // Дата создания заказа — «июнь 6, 2026» (месяц день, год целиком; юзер 2026-07-04).
-        const txt = spec.id === 'load_dt' && rowData.load_dt
-          ? flowDate(rowData.load_dt, { year: true })
-          : String(raw ?? '');
+        if (spec.kind === 'info') {
+          const parts = flowComposed(spec, rowData);
+          return {
+            kind: GridCellKind.Custom,
+            allowOverlay: false,
+            copyData: flowDisplayText(spec, rowData),
+            data: { kind: 'flow-two', ...parts },
+            themeOverride: { textDark: '#8C8983' },
+          } satisfies FlowTwoCell;
+        }
+        const txt = String(raw ?? '');
         return {
           kind: GridCellKind.Text,
           data: txt,
           displayData: txt,
           allowOverlay: false,
           allowWrapping: spec.id === 'mat_full',
-          themeOverride: { textDark: '#8C8983' }, // приглушённый — служебная инфа
+          themeOverride: { textDark: '#8C8983' },
         };
       }
       if (spec.kind === 'number') {
@@ -2305,7 +2355,7 @@ export function FlowSandboxGrid(): JSX.Element {
           allowOverlay: true,
           // Копирование в обычную ячейку — компактно «Фамилия И.О.». В ЯЧЕЙКЕ показываем
           // «Фамилия Имя О.», полное ФИО — в выпадашке-списке.
-          copyData: molInitials(fullFio),
+          copyData: fullFio,
           data: { kind: 'flow-mol', value: rawMol, fio: compactFio(fullFio), color, options: opts, suffix },
         } satisfies FlowMolCell;
       }
@@ -2331,6 +2381,14 @@ export function FlowSandboxGrid(): JSX.Element {
       if (spec.kind === 'mat') {
         // MAT — «свои данные» (Создал/Выгружен/Удалён/Вывезено) в read-only оверлее (FlowMatEditor),
         // как было. Карточка ИЗМЕНЕНИЯ материала открывается двойным кликом на НОМЕНКЛАТУРЕ (NO.№), не тут.
+        const anchorKey = `${rowData.ord}|${rowData.it}`;
+        const tr = transferPendingByAnchor.get(anchorKey);
+        const planWas = planWasByAnchor.get(anchorKey);
+        const matPrefix = tr?.sourceDate
+          ? transferMatPrefix(tr.sourceDate, planYear)
+          : planWas
+            ? planWasMatPrefix(planWas, planYear)
+            : '';
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
@@ -2339,6 +2397,7 @@ export function FlowSandboxGrid(): JSX.Element {
             kind: 'flow-mat',
             name: rowData.mat ?? '',
             warn: needsWarn(rowData),
+            prefix: matPrefix || undefined,
             lines: flowCard(spec, rowData) ?? [],
           },
         } satisfies FlowMatCell;
@@ -2456,7 +2515,9 @@ export function FlowSandboxGrid(): JSX.Element {
             ? names.join('\n')
             : spec.id === 'unload_equip'
               ? derivedUnload
-              : String(raw ?? '');
+              : spec.id === 'priority'
+                ? priorityDisplay(String(raw ?? ''))
+                : String(raw ?? '');
         // STAT — пункты ПО СТРОКЕ (statOptionsForRow): авто-ярлык не предлагаем руками.
         const options = spec.id === 'stat'
           ? statOptionsForRow(rowData)
@@ -2508,7 +2569,7 @@ export function FlowSandboxGrid(): JSX.Element {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor, mapPoints],
+    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor, mapPoints, transferPendingByAnchor, planWasByAnchor],
   );
 
   // Шрифт ЗНАЧЕНИЯ per-колонке (clst 7 / day·stat·kg·v·mol·request 8 / прочее 10) +
@@ -2661,7 +2722,10 @@ export function FlowSandboxGrid(): JSX.Element {
         if (only) changes.set(r.id, { mol: only.fio });
         continue;
       }
-      if (trimmed.toUpperCase().includes('НЕТ МОЛ')) continue;
+      if (trimmed.toUpperCase().includes('НЕТ МОЛ')) {
+        if (only) changes.set(r.id, { mol: only.fio });
+        continue;
+      }
       const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
       if (!sel || molUntilStatus(sel.until) !== 'expired') continue;
       if (only) changes.set(r.id, { mol: only.fio });
@@ -2766,8 +2830,8 @@ export function FlowSandboxGrid(): JSX.Element {
       // `until` (дата окончания договора, DD.MM.YYYY) — чтобы показать «истёк — май 12 2026».
       let contractErr: { kind: 'expired' | 'not-covered'; fio: string; until?: string } | null = null;
       const molUntilFor = (toWh: string, molRaw: string): string | undefined => {
-        const key = molKey(parseMol(molRaw)?.fio ?? molRaw);
-        return (whMapGet(molByWarehouse, toWh) ?? []).find((o) => molKey(o.fio) === key)?.until;
+        const key = molPersonKey(canonicalMolFio(molRaw, molByKey));
+        return (whMapGet(molByWarehouse, toWh) ?? []).find((o) => molPersonKey(o.fio) === key)?.until;
       };
       // Срок договора МОЛ vs дата доставки: 'expired' (истёк) / 'not-covered' (дата позже
       // конца договора) / null (срока нет, даты нет, либо дата покрывается — дедлайн включителен).
@@ -2840,6 +2904,12 @@ export function FlowSandboxGrid(): JSX.Element {
             const picked = v.split('\n').map((item) => item.trim()).filter(Boolean);
             if (picked.some((item) => !EQUIP_LABELS.includes(item))) continue;
             newVal = picked.join('\n');
+          } else if (spec.id === 'priority') {
+            const canon = priorityDisplay(v);
+            if (v !== '' && !(spec.options ?? []).includes(v)) {
+              if (!(spec.options ?? []).includes(canon)) continue;
+              newVal = canon;
+            }
           } else if (v !== '' && !(spec.options ?? []).includes(v)) {
             continue;
           }
@@ -2847,8 +2917,9 @@ export function FlowSandboxGrid(): JSX.Element {
           const v = String(newVal ?? '');
           // «new» ставить нельзя (авто-состояние) — допустимо только пусто / OFF / дата.
           if (v !== '' && v !== 'OFF' && !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
-          // Дата доставки должна укладываться в срок договора выбранного МОЛ строки.
-          if (/^\d{4}-\d{2}-\d{2}/.test(v) && viewRow.mol) {
+          // Дата доставки vs договор МОЛ — только если на складе ЕСТЬ валидный МОЛ (T3:
+          // «Нет МОЛа» не блокирует день; доукомплектуем МОЛ позже, когда выгрузят).
+          if (/^\d{4}-\d{2}-\d{2}/.test(v) && viewRow.mol && !molIsGone(viewRow, molByWarehouse)) {
             const until = molUntilFor(viewRow.to_wh, viewRow.mol);
             const ce = checkContract(until, v);
             if (ce) {
@@ -2861,9 +2932,8 @@ export function FlowSandboxGrid(): JSX.Element {
         if (spec.id === 'mol') {
           const fioStr = String(newVal ?? '').trim();
           if (fioStr) {
-            const wantKey = molKey(parseMol(fioStr)?.fio ?? fioStr);
             const opts = whMapGet(molByWarehouse, viewRow.to_wh) ?? [];
-            const opt = opts.find((o) => molKey(o.fio) === wantKey);
+            const opt = findMolOptionForWh(fioStr, opts, molByKey);
             if (!opt) {
               molRejects.push({
                 fio: resolveMolFull(fioStr, molByKey),
@@ -2874,9 +2944,10 @@ export function FlowSandboxGrid(): JSX.Element {
             // Договор этого МОЛ: истёк → нельзя назначить; не покрывает дату строки → нельзя.
             const ce = checkContract(opt.until, String(viewRow.day_wk ?? ''));
             if (ce) {
-              if (!contractErr) contractErr = { kind: ce, fio: resolveMolFull(fioStr, molByKey), until: opt.until };
+              if (!contractErr) contractErr = { kind: ce, fio: opt.fio, until: opt.until };
               continue;
             }
+            newVal = opt.fio;
           }
         }
         after.set(viewRow.id, { ...(after.get(viewRow.id) ?? {}), [spec.id]: newVal });
@@ -2930,9 +3001,14 @@ export function FlowSandboxGrid(): JSX.Element {
       const r = viewRows[row];
       if (!spec || !r) return;
       if (spec.id === 'no_num') openVghCard(r);
-      else if (spec.kind === 'history') openHistoryCard(r);
+      else if (
+        (spec.id === 'pct' || spec.kind === 'history') &&
+        anchorsWithHistory.has(`${r.ord}|${r.it}`)
+      ) {
+        openHistoryCard(r);
+      }
     },
-    [viewRows, openVghCard, openHistoryCard],
+    [viewRows, openVghCard, openHistoryCard, anchorsWithHistory],
   );
 
   const onCellEdited = useCallback(
@@ -3601,7 +3677,13 @@ export function FlowSandboxGrid(): JSX.Element {
       // repeat_done (повторяшка → радуга), signed_open (СЭД подписан, OBD открыта → кислотный
       // пурпур), sed_pending (СЭД не подписан/отклонён → приглушённый красный). Сигнал поставки/
       // СЭД важнее стадии строки; нет сигнала → обычный sweep по типу строки (OFF/нет/new/вопрос).
-      const sig = r && r.day_wk !== 'OFF' ? flowSignalKind(isCheatRow(r), sedByAnchor.get(`${r.ord}|${r.it}`), transferNoDayByAnchor.has(`${r.ord}|${r.it}`)) : null;
+      const sig = r && r.day_wk !== 'OFF'
+        ? flowSignalKind(
+            isCheatRow(r),
+            sedByAnchor.get(`${r.ord}|${r.it}`),
+            transferNoDayByAnchor.has(`${r.ord}|${r.it}`),
+          )
+        : null;
       const rainbow = sig === 'repeat_done';
       const sigSweep = sig === 'signed_open' || sig === 'sed_pending' || sig === 'transfer_no_day' ? SIGNAL_SWEEP[sig] : null;
       const sweep = rainbow || sigSweep
@@ -3921,7 +4003,7 @@ export function FlowSandboxGrid(): JSX.Element {
     <div className="flex min-h-0 flex-1 flex-col bg-[#FDFDFB]">
       {/* Тонкий тулбар на светлом листе: отмена/повтор → масштаб; справа (контекстно) —
           удаление выбранных строк. Описательный текст убран (минимализм). */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-black/[0.06] px-4 py-1.5">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-black/[0.06] px-4 py-1.5">
         {/* Отмена / повтор. */}
         <div className="flex items-center rounded-md border border-black/10">
           <button
@@ -4048,29 +4130,15 @@ export function FlowSandboxGrid(): JSX.Element {
             {offCount > 0 && <span className="tabular-nums opacity-70">{offCount}</span>}
           </button>
         )}
-        {/* §4 (юзер 2026-07-03): тумблеры служебных инфо-колонок — кнопка = название
-            колонки; нажал — показал, ещё раз — скрыл. Несколько сразу. В печать не идут. */}
-        <div className="h-5 w-px bg-black/[0.08]" />
-        <div className="flex items-center gap-1">
-          {FLOW_INFO_COLUMNS.map((c) => {
-            const on = visibleInfo.has(c.id);
-            return (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => toggleInfoCol(c.id)}
-                title={on ? `Скрыть колонку «${c.title}»` : `Показать колонку «${c.title}»`}
-                className={`flex h-6 items-center rounded-md border px-1.5 text-[11px] transition-colors ${
-                  on
-                    ? 'border-accent-clay/70 text-[#0A0A0A]'
-                    : 'border-black/10 text-[#6B6862] hover:text-[#0A0A0A]'
-                }`}
-              >
-                {c.title}
-              </button>
-            );
-          })}
-        </div>
+        {/* §4 + T6 (юзер 2026-07-13): один поповер «Колонки» вместо россыпи кнопок —
+            тумблеры служебных инфо-колонок + «Перестановка» (свой порядок). В печать не идут. */}
+        <FlowColumnsMenu
+          columns={FLOW_INFO_COLUMNS}
+          visible={visibleInfo}
+          onToggle={toggleInfoCol}
+          reorderOn={colReorderOn}
+          onToggleReorder={toggleColReorder}
+        />
         {selectedRowCount > 0 && (
           <div className="ml-auto flex items-center gap-2 text-[12px] text-[#6B6862]">
             <span className="tabular-nums text-[#2A2925]">Выбрано строк: {selectedRowCount}</span>
@@ -4135,6 +4203,7 @@ export function FlowSandboxGrid(): JSX.Element {
             onItemHovered={handleItemHovered}
             onKeyDown={handleKeyDown}
             onVisibleRegionChanged={handleVisibleRegionChanged}
+            onColumnMoved={onColumnMoved}
             highlightRegions={gridHighlights}
             getRowThemeOverride={getRowThemeOverride}
             customRenderers={FLOW_RENDERERS}

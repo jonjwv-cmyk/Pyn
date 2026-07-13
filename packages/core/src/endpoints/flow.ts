@@ -216,6 +216,27 @@ export async function flowTransportViewSet(client: ApiClient, value: string): Pr
   return wireToFlowView(wire);
 }
 
+export type FlowColLayoutGrid = 'formation' | 'plan' | 'report';
+
+/** Per-user порядок колонок (T6). Пустой `value` — не задан. */
+export async function flowColLayoutGet(
+  client: ApiClient,
+  grid: FlowColLayoutGrid,
+): Promise<{ value: string }> {
+  const wire = await client.call<{ ok?: boolean; value?: string }>('flow_col_layout_get', { grid });
+  return { value: typeof wire.value === 'string' ? wire.value : '' };
+}
+
+/** Сохранить per-user layout колонок (JSON-строка или '' = сброс). */
+export async function flowColLayoutSet(
+  client: ApiClient,
+  grid: FlowColLayoutGrid,
+  value: string,
+): Promise<{ value: string }> {
+  const wire = await client.call<{ ok?: boolean; value?: string }>('flow_col_layout_set', { grid, value });
+  return { value: typeof wire.value === 'string' ? wire.value : value };
+}
+
 /**
  * Приём выгрузки заказов: приложение запускает VBS «Выгрузка заказов» (SAP→TSV),
  * парсит TSV (`parseOrdersTsv`) и шлёт строки сюда СВОИМ E2E-каналом (через

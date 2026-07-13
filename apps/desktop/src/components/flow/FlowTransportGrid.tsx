@@ -463,6 +463,16 @@ export function FlowTransportGrid(): JSX.Element {
   // Контейнер грида — нужен и для замера размера, и чтобы понять, ВИДИМА ли вкладка
   // Транспорт (экран display-toggle, компонент остаётся монтирован) для ⌘Z-хоткея.
   const measureRef = useRef<HTMLDivElement | null>(null);
+  // T8: developer/superadmin — без замка 7 дней и с правкой всех редактируемых колонок.
+  const [isDev, setIsDev] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void sessionStore.load().then((s) => {
+      const role = String(s?.role ?? '').toLowerCase();
+      if (alive) setIsDev(role === 'developer' || role === 'superadmin');
+    }).catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -803,7 +813,14 @@ export function FlowTransportGrid(): JSX.Element {
   const getRowHeight = useCallback((): number => 36, []);
 
   const cutoff = editCutoff();
-  const rowLocked = useCallback((r: FlowTransportRow) => r.tdate < cutoff, [cutoff]);
+  const rowLocked = useCallback(
+    (r: FlowTransportRow) => !isDev && r.tdate < cutoff,
+    [cutoff, isDev],
+  );
+  const colEditable = useCallback(
+    (spec: TrColSpec, locked: boolean) => (isDev || !!spec.editable) && !locked,
+    [isDev],
+  );
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
@@ -927,7 +944,7 @@ export function FlowTransportGrid(): JSX.Element {
           readonly: true,
         };
       }
-      const editable = !!spec.editable && !locked;
+      const editable = colEditable(spec, locked);
       if (spec.id === 'time') {
         // ВРЕМЯ: 24 часа без ведущих нулей.
         return {
@@ -951,7 +968,7 @@ export function FlowTransportGrid(): JSX.Element {
         themeOverride: fontOverride,
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked, driverOptions, driverByFio, cols, tripKeys],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked, colEditable, driverOptions, driverByFio, cols, tripKeys],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -1537,7 +1554,7 @@ export function FlowTransportGrid(): JSX.Element {
               className="z-50 w-[248px] rounded-lg border border-border-subtle bg-bg-surface p-3 shadow-lg"
             >
               <div className="flex flex-col gap-2">
-                <FlowMiniCalendar value={addDate} minDate={cutoff} onChange={setAddDate} />
+                <FlowMiniCalendar value={addDate} minDate={isDev ? '2000-01-01' : cutoff} onChange={setAddDate} />
                 <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wide text-text-muted/70">
                   Гаражный №
                   <input
