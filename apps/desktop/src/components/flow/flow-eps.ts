@@ -33,12 +33,28 @@ export const EPS_LEVEL_LABEL: Record<EpsLevel, string> = {
   high: 'высокий',
   critical: 'критический',
 };
+// Пользовательский приоритет (юзер 2026-07-13): переименован в Срочный/Повышенный/Обычный.
+// Внутренние ключи high/mid/low НЕ меняются — веса EPS и сортировка завязаны на них.
 export const USER_PRIORITY_LABEL: Record<UserPriority, string> = {
-  high: 'высокий',
-  mid: 'средний',
-  low: 'низкий',
+  high: 'Срочный',
+  mid: 'Повышенный',
+  low: 'Обычный',
 };
 export const USER_PRIORITY_ORDER: readonly UserPriority[] = ['high', 'mid', 'low'];
+
+/** Канонический список опций выпадашки приоритета (по убыванию срочности).
+ *  ЕДИНСТВЕННЫЙ источник — гриды/фикстуры импортируют его, не хардкодят слова. */
+export const PRIORITY_OPTIONS: readonly string[] = [
+  USER_PRIORITY_LABEL.high,
+  USER_PRIORITY_LABEL.mid,
+  USER_PRIORITY_LABEL.low,
+];
+
+/** Любое сохранённое значение → каноническая метка. Старое «Высокий»/SAP-мусор/пусто
+ *  показываем НОВЫМ словом, чтобы вид не был смешанным (миграции данных не требуется). */
+export function priorityDisplay(raw: string | null | undefined): string {
+  return USER_PRIORITY_LABEL[normPriority(raw)];
+}
 
 /** Системный уровень по баллу (для цвета бейджа). НЕ путать с пользовательским. */
 export function levelFor(eps: number): EpsLevel {
@@ -48,12 +64,14 @@ export function levelFor(eps: number): EpsLevel {
   return 'low';
 }
 
-/** Пользовательский приоритет из строки якоря (пусто/мусор → низкий). */
+/** Пользовательский приоритет из строки якоря (пусто/мусор → обычный).
+ *  Понимает и НОВЫЕ слова (Срочный/Повышенный/Обычный), и СТАРЫЕ (высокий/средний/низкий)
+ *  для обратной совместимости со всеми ранее сохранёнными якорями/слепками. */
 export function normPriority(v: string | null | undefined): UserPriority {
   const s = String(v || '').trim().toLowerCase();
-  if (s === 'high' || s.startsWith('выс')) return 'high';
-  if (s === 'mid' || s.startsWith('сред')) return 'mid';
-  return 'low';
+  if (s === 'high' || s.startsWith('выс') || s.startsWith('сроч')) return 'high';
+  if (s === 'mid' || s.startsWith('сред') || s.startsWith('повыш')) return 'mid';
+  return 'low'; // «Обычный»/«низкий»/пусто/мусор
 }
 
 const clamp100 = (x: number) => Math.max(0, Math.min(100, x));

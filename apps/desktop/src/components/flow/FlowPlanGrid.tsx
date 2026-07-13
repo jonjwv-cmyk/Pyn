@@ -17,7 +17,7 @@ import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cel
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { flowWindowRenderer, type FlowWindowCell } from './flow-window-cell';
 import { flowScoreRenderer, type FlowScoreCell } from './flow-score-cell';
-import { deliveryRowEps, EPS_LEVEL_LABEL, parseDeliveryWindow } from './flow-eps';
+import { deliveryRowEps, EPS_LEVEL_LABEL, parseDeliveryWindow, PRIORITY_OPTIONS, priorityDisplay } from './flow-eps';
 import { planEtalonCompare } from './flow-plan-sort';
 import { garageRowColor, garageFillArgb, softenRowFill, FLOW_FILL_PALETTE } from './flow-garage-color';
 import {
@@ -1303,7 +1303,7 @@ export function FlowPlanGrid({
         case 'delivery':
           return snapDelivery(r, anchor);
         case 'priority':
-          return snapPriority(r, anchor) || 'Низкий';
+          return priorityDisplay(snapPriority(r, anchor));
         case 'score':
           return String(deliveryRowEps(r, snapEpsAnchor(r, anchor)).eps);
         case 'load_info': {
@@ -1718,13 +1718,13 @@ export function FlowPlanGrid({
       }
       if (spec.id === 'priority') {
         const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
-        const value = snapPriority(r, anchor) || 'Низкий';
+        const value = priorityDisplay(snapPriority(r, anchor));
         return {
           kind: GridCellKind.Custom,
           allowOverlay: Boolean(spec.editable) && !locked && Boolean(anchor),
           copyData: value,
           themeOverride: planCellTheme(spec.id),
-          data: { kind: 'flow-dropdown', value, options: ['Высокий', 'Средний', 'Низкий'] },
+          data: { kind: 'flow-dropdown', value, options: [...PRIORITY_OPTIONS] },
         } satisfies FlowDropdownCell;
       }
       if (spec.id === 'score') {
@@ -2292,7 +2292,7 @@ export function FlowPlanGrid({
             value = selected.join('\n');
             applyAnchorFields(anchor, { point: value, unload_equip: '' });
           } else if (spec.id === 'priority') {
-            if (!['Высокий', 'Средний', 'Низкий'].includes(value)) return;
+            if (!PRIORITY_OPTIONS.includes(value)) return;
             applyAnchorFields(anchor, { priority: value });
           } else if (spec.id === 'unload_equip') {
             const selected = value.split('\n').map((item) => item.trim()).filter(Boolean);

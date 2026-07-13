@@ -8,6 +8,7 @@
  */
 import sampleRows from './flow-workflow.sample.json';
 import { fmtVolume } from '../vgh/vgh-staging.fixtures';
+import { PRIORITY_OPTIONS } from './flow-eps';
 
 /** Тип ячейки колонки: простые + СОСТАВНЫЕ (несколько полей в одной колонке). */
 export type FlowColumnKind =
@@ -170,7 +171,7 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   // Балл — клик даёт окно-обоснование (EPS + OR-Tools). Точка/Доставка/Выгрузка — след. кусками.
   { id: 'point', title: 'ТОЧКА', width: 156, kind: 'dropdown', editable: true },
   { id: 'delivery', title: 'ДОСТАВКА', width: 118, kind: 'window', editable: true },
-  { id: 'priority', title: 'ПРИОР.', width: 92, kind: 'dropdown', options: ['Высокий', 'Средний', 'Низкий'], editable: true },
+  { id: 'priority', title: 'ПРИОР.', width: 92, kind: 'dropdown', options: [...PRIORITY_OPTIONS], editable: true },
   { id: 'score', title: 'БАЛЛ', width: 60, kind: 'score' },
   { id: 'load_info', title: 'ПОГРУЗКА', width: 150, kind: 'loadinfo' },
   { id: 'unload_equip', title: 'ВЫГРУЗКА', width: 132, kind: 'dropdown',
