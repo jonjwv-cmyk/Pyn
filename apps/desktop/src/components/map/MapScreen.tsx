@@ -1,32 +1,44 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
-import { Check, CheckCheck, CloudRain, Crosshair, Eraser, Eye, EyeOff, Filter, MapPin, MousePointer2, Pause, Pentagon, Play, Route, Satellite, Settings2, TrainTrack, Trash2, Truck, Warehouse } from 'lucide-react';
+import { Ban, Building2, Check, CheckCheck, ChevronLeft, ChevronRight, CloudRain, Crosshair, Eraser, Eye, EyeOff, Filter, Footprints, Globe, MapPin, MousePointer2, Network, Pause, Pencil, Pentagon, Play, Redo2, Route, Ruler, Satellite, Scissors, SlidersHorizontal, TrainTrack, Trash2, Truck, Undo2, Warehouse, X } from 'lucide-react';
 import { getWarehouseState } from '@pyn/core';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { cn } from '@/lib/cn';
-import { useMapStore } from '@/lib/map-store';
+import { useMapStore, type RoadOverlapMergeSummary } from '@/lib/map-store';
 import { initMap } from '@/lib/map-repo';
 import {
-  AREA_COLORS,
   EMPTY_POINT_EQUIPMENT,
   NTMK_CENTER,
   NTMK_ZOOM,
   POINT_CATEGORY_META,
-  ROAD_PAINT_OPTIONS,
+  POINT_VEHICLE_TYPES,
+  ROAD_ACCESS_KIND_META,
   VEHICLE_TYPES,
+  WORK_AREA_COLOR,
+  allVehiclesByPurpose,
   categoryFromWarehouseState,
-  roadPaintOption,
   vehicleColor,
+  type BuildingOutline,
+  type CrossingCandidate,
+  type ExternalRailway,
+  type FootwayLine,
   type LatLng,
+  type MapRoad,
   type MapTool,
   type PointCategory,
-  type RoadPaintMode,
+  type RoadAccess,
+  type RoadAccessKind,
   type VehicleType,
 } from './map-types';
 import { MapCanvas, type MapSelection, type OptimizeOverlay } from './MapCanvas';
+import { buildRoadSnapIndex, snapGlonassHistorySegments, snapGlonassPosition, snapGlonassReplayPoints, snapGlonassTrackSegments, snapToRoadIndex, type RoadSnapIndex } from './glonass-snap';
+import { materializeConvergenceWelds, mergeOverlappingRoads, normalizeRoadTopology, polylineIntersections, type RoadMergeReport, type RoadNormalizationReport } from './road-network';
+import { inspectRoadNetwork, roadNetworkIssues, type RoadNetworkQuality } from './road-quality';
+import { distanceMeters } from './geo';
 import { MapDetailPanel } from './MapDetailPanel';
 import { MapWarehouseOverlay } from './MapWarehouseOverlay';
+import { VehiclePurposeAccessGrid } from './VehiclePurposeAccessGrid';
 import { GlonassPanel } from './GlonassPanel';
 import {
   PLAYBACK_SPEEDS,
@@ -35,7 +47,10 @@ import {
   formatGlonassSpeed,
   useGlonassStore,
   vehicleStatus,
+  GLONASS_PRO_COLOR,
+  GLONASS_RAW_COLOR,
   type GlonassHistoryPoint,
+  type GlonassHistoryLayer,
   type GlonassMarker,
   type GlonassPosition,
   type GlonassReplayMarker,
@@ -43,6 +58,7 @@ import {
 import { optimize, totalCost, type DemandPoint } from './optimize';
 import { computeFastestRoute, type RouteResult } from './route-network';
 import { loadNtmkOsmRoadSuggestions } from './road-suggestions';
+import { initRefLayers, subscribeRefLayers, type MapRefLayers } from './map-ref-layers';
 
 interface WeatherHour {
   time: string;
@@ -96,6 +112,145 @@ interface MapScreenProps {
   canEdit: boolean;
 }
 
+/** Убранные вручную места ж/д-кандидатов (localStorage) — чтобы не возвращались. */
+const DISMISSED_CROSSINGS_KEY = 'pyn:map:dismissed-crossings:v1';
+const GLONASS_LIVE_DELAY_MS = 30_000;
+/** ⚠ «Нет сигнала» — только после 30 с реального стояния координат при статусе «в работе». */
+const GLONASS_BAD_SIGNAL_AFTER_MS = 30_000;
+
+function loadDismissedCrossingSpots(): LatLng[] {
+  try {
+    const raw = window.localStorage?.getItem(DISMISSED_CROSSINGS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((p): p is LatLng => !!p && typeof (p as LatLng).lat === 'number' && typeof (p as LatLng).lng === 'number')
+      .slice(-500);
+  } catch {
+    return [];
+  }
+}
+
+function saveDismissedCrossingSpots(spots: LatLng[]): void {
+  try {
+    window.localStorage?.setItem(DISMISSED_CROSSINGS_KEY, JSON.stringify(spots.slice(-500)));
+  } catch { /* localStorage best-effort */ }
+}
+
+/** Хвост трека последних `meters` метров (след за машиной ~100 м), порядок сохранён. */
+function trimTrackToMeters<T extends { lat: number; lng: number }>(track: T[], meters: number): T[] {
+  if (track.length <= 2) return track;
+  const out: T[] = [];
+  let acc = 0;
+  for (let i = track.length - 1; i >= 0; i -= 1) {
+    out.push(track[i]!);
+    if (i < track.length - 1) acc += distanceMeters(track[i]!, track[i + 1]!);
+    if (acc >= meters) break;
+  }
+  return out.reverse();
+}
+
+/** Трек пригоден для отложенного «живого» пути: ≥2 точек и свежий (<3 мин). */
+function liveTrackUsable(track: GlonassPosition[]): boolean {
+  if (track.length < 2) return false;
+  const last = track[track.length - 1]!;
+  const ms = last.time ? Date.parse(last.time) : NaN;
+  return Number.isFinite(ms) && Date.now() - ms < 3 * 60_000;
+}
+
+function delayedLiveRoadTrack(
+  track: GlonassPosition[],
+  index: RoadSnapIndex,
+  roads: MapRoad[],
+  delayMs: number,
+): { point: GlonassHistoryPoint; path: LatLng[]; timed: GlonassHistoryPoint[] } | null {
+  const timed = track
+    .filter((p) => p.time && Number.isFinite(Date.parse(p.time)))
+    .map((p): GlonassHistoryPoint => ({ lat: p.lat, lng: p.lng, speed: p.speed, time: p.time! }));
+  if (timed.length < 2) return null;
+
+  const firstMs = Date.parse(timed[0]!.time);
+  const lastMs = Date.parse(timed[timed.length - 1]!.time);
+  if (!Number.isFinite(firstMs) || !Number.isFinite(lastMs) || lastMs - firstMs < Math.min(12_000, delayMs * 0.4)) return null;
+
+  const snapped = snapGlonassReplayPoints(timed, index, roads).map((p) => {
+    // Live is intentionally stricter than historical analysis: while a road is
+    // within the capture radius, both the marker and its green tail must sit on
+    // the visible yellow geometry. Raw GLONASS points remain untouched.
+    const road = snapToRoadIndex(index, p);
+    return road ? { ...p, lat: road.point.lat, lng: road.point.lng } : p;
+  });
+  if (snapped.length < 2) return null;
+
+  const targetMs = Math.min(lastMs, Math.max(firstMs, Date.now() - delayMs));
+  const interpolated = interpolateTimedPoint(snapped, targetMs);
+  if (!interpolated) return null;
+  const pointRoad = snapToRoadIndex(index, interpolated);
+  const point = pointRoad
+    ? { ...interpolated, lat: pointRoad.point.lat, lng: pointRoad.point.lng }
+    : interpolated;
+
+  // След — только хвост ПОСЛЕ последнего разрыва (где пути по дороге нет):
+  // иначе линия соединила бы берега разрыва диагональю.
+  const visible = [...snapped.filter((p) => Date.parse(p.time) <= targetMs), point];
+  let tailFrom = 0;
+  for (let i = 1; i < visible.length; i += 1) {
+    if (visible[i]!.gapBefore) tailFrom = i;
+  }
+  const path = trimTrackToMeters(visible.slice(tailFrom), 115)
+    .map((p) => ({ lat: p.lat, lng: p.lng }));
+  return { point, path: path.length >= 2 ? path : [{ lat: point.lat, lng: point.lng }], timed: snapped };
+}
+
+function roadRouteForPaint(trace: LatLng[], roads: MapRoad[]): LatLng[] {
+  if (trace.length < 2 || roads.length === 0) return trace;
+  const out: LatLng[] = [trace[0]!];
+  for (let i = 0; i < trace.length - 1; i += 1) {
+    const a = trace[i]!;
+    const b = trace[i + 1]!;
+    const direct = distanceMeters(a, b);
+    const route = direct >= 1 ? computeFastestRoute(roads, a, b) : null;
+    const path = route && route.path.length >= 2 && route.distanceMeters <= Math.max(24, direct * 2.35 + 18)
+      ? route.path
+      : [a, b];
+    for (const p of path.slice(1)) {
+      const prev = out[out.length - 1]!;
+      if (distanceMeters(prev, p) > 0.35) out.push(p);
+    }
+  }
+  return out.length >= 2 ? out : trace;
+}
+
+function interpolateTimedPoint(points: GlonassHistoryPoint[], targetMs: number): GlonassHistoryPoint | null {
+  if (points.length === 0) return null;
+  const first = points[0]!;
+  const last = points[points.length - 1]!;
+  const firstMs = Date.parse(first.time);
+  const lastMs = Date.parse(last.time);
+  if (!Number.isFinite(targetMs)) return last;
+  if (!Number.isFinite(firstMs) || targetMs <= firstMs) return first;
+  if (!Number.isFinite(lastMs) || targetMs >= lastMs) return last;
+
+  const idx = Math.min(points.length - 1, Math.max(1, findHistoryIndexAt(points, targetMs) + 1));
+  const a = points[idx - 1]!;
+  const b = points[idx]!;
+  const aMs = Date.parse(a.time);
+  const bMs = Date.parse(b.time);
+  if (!Number.isFinite(aMs) || !Number.isFinite(bMs) || bMs <= aMs) return a;
+  // Через разрыв не интерполируем: машина стоит на берегу до момента следующей
+  // точки, затем телепорт — а не «полёт» по диагонали, где дороги нет.
+  if (b.gapBefore) return { ...a, time: new Date(targetMs).toISOString() };
+  const t = Math.min(1, Math.max(0, (targetMs - aMs) / (bMs - aMs)));
+  return {
+    ...b,
+    lat: a.lat + (b.lat - a.lat) * t,
+    lng: a.lng + (b.lng - a.lng) * t,
+    speed: a.speed != null && b.speed != null ? a.speed + (b.speed - a.speed) * t : (t < 0.5 ? a.speed : b.speed),
+    time: new Date(targetMs).toISOString(),
+  };
+}
+
 /**
  * Раздел «Карта» — живая спутниковая карта Google через VPS-релей + наши точки
  * складов, области цехов, нарисованные дороги и логистическая оптимизация.
@@ -112,23 +267,36 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const addRoad = useMapStore((s) => s.addRoad);
   const eraseRoadTrace = useMapStore((s) => s.eraseRoadTrace);
   const confirmRoadTrace = useMapStore((s) => s.confirmRoadTrace);
-  const addRoadAccess = useMapStore((s) => s.addRoadAccess);
+  const addRoadRestriction = useMapStore((s) => s.addRoadRestriction);
   const eraseRoadAccessTrace = useMapStore((s) => s.eraseRoadAccessTrace);
+  const eraseSuggestionTrace = useMapStore((s) => s.eraseSuggestionTrace);
+  const beginBrushEdit = useMapStore((s) => s.beginBrushEdit);
+  const commitBrushEdit = useMapStore((s) => s.commitBrushEdit);
+  const undoBrushEdit = useMapStore((s) => s.undoBrushEdit);
+  const redoBrushEdit = useMapStore((s) => s.redoBrushEdit);
+  const canUndoBrush = useMapStore((s) => s.canUndoBrush);
+  const canRedoBrush = useMapStore((s) => s.canRedoBrush);
   const addCrossing = useMapStore((s) => s.addCrossing);
+  const addClearance = useMapStore((s) => s.addClearance);
   const addRailway = useMapStore((s) => s.addRailway);
   const addRoadSuggestions = useMapStore((s) => s.addRoadSuggestions);
   const clearRoadSuggestions = useMapStore((s) => s.clearRoadSuggestions);
+  const normalizeRoads = useMapStore((s) => s.normalizeRoads);
+  const mergeRoadOverlaps = useMapStore((s) => s.mergeRoadOverlaps);
   const focusWarehouseId = useMapStore((s) => s.focusWarehouseId);
   const focusPointId = useMapStore((s) => s.focusPointId);
   const clearFocusWarehouse = useMapStore((s) => s.clearFocusWarehouse);
   const warehouses = useWarehousesStore((s) => s.byId);
 
   const [tool, setTool] = useState<MapTool>('select');
+  const [roadQualityOpen, setRoadQualityOpen] = useState(false);
+  const [lastNormalization, setLastNormalization] = useState<RoadNormalizationReport | null>(null);
+  const [lastMerge, setLastMerge] = useState<RoadOverlapMergeSummary | null>(null);
   const [selection, setSelection] = useState<MapSelection | null>(null);
   const [activeWarehouses, setActiveWarehouses] = useState<Set<string> | null>(null); // null = все
   const [activeCategories, setActiveCategories] = useState<Set<PointCategory> | null>(null); // null = все
   const [activeVehicle, setActiveVehicle] = useState<VehicleType | null>(null);
-  const [showWeather, setShowWeather] = useState(false);
+  const [showWeather, setShowWeather] = useState(true);
   const [weatherNonce, setWeatherNonce] = useState(0);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [weatherField, setWeatherField] = useState<WeatherFieldPoint[]>([]);
@@ -140,9 +308,27 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const [focus, setFocus] = useState<{ latlng: LatLng; nonce: number; zoom?: number } | null>(null);
   const [openedOnDefaultPoint, setOpenedOnDefaultPoint] = useState(false);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [editorToolsOpen, setEditorToolsOpen] = useState(false);
   const [showRoadSuggestions, setShowRoadSuggestions] = useState(true);
   const [showRoadAccess, setShowRoadAccess] = useState(true);
-  const [roadPaintMode, setRoadPaintMode] = useState<RoadPaintMode>('gazelle');
+  // «Высота проезда» — по умолчанию СКРЫТО (ТЗ 2026-07-11), включается в «Виде».
+  const [showClearances, setShowClearances] = useState(false);
+  // Гугл-слой (подписи/дороги/ориентиры) — включаемый справочный оверлей.
+  const [showGoogleLabels, setShowGoogleLabels] = useState(false);
+  // Справочные слои (ж/д / здания / пешеходки) — грузятся СРАЗУ из кэша,
+  // фоновое обновление раз в 12 часов (map-ref-layers). Тумблеры — показ/скрытие.
+  const [refLayers, setRefLayers] = useState<MapRefLayers>({ at: 0, railways: [], buildings: [], footways: [] });
+  const [showBuildings, setShowBuildings] = useState(true);
+  const [showExtRails, setShowExtRails] = useState(true);
+  const [showFootways, setShowFootways] = useState(false);
+  // Показ НАШИХ ручных областей/площадок (полигоны) — своя кнопка, как у зданий.
+  const [showAreas, setShowAreas] = useState(false);
+  // Убранные вручную кандидаты переездов — храним ПО МЕСТУ (не по id, он плавает
+  // от округления/смены id внешней ж/д) и в localStorage, чтобы после удаления
+  // они НЕ возвращались при перезагрузке/смене вида.
+  const [dismissedSpots, setDismissedSpots] = useState<LatLng[]>(() => loadDismissedCrossingSpots());
+  // «Ограничение дороги»: выделенный участок ждёт настройки в компактном окне.
+  const [restrictDraft, setRestrictDraft] = useState<LatLng[][] | null>(null);
   const [moveByMapPointId, setMoveByMapPointId] = useState<string | null>(null);
   const [routeSourcePointId, setRouteSourcePointId] = useState<string | null>(null);
   const [viewBounds, setViewBounds] = useState<{ south: number; west: number; north: number; east: number } | null>(null);
@@ -151,6 +337,12 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
     : NTMK_CENTER, [viewBounds]);
 
   useEffect(() => { void initMap(); }, []);
+
+  // Справочные слои: кэш мгновенно, устарели (12ч) → обновление фоном.
+  useEffect(() => {
+    void initRefLayers();
+    return subscribeRefLayers(setRefLayers);
+  }, []);
 
   // Не-разработчик не может держать инструмент рисования: всегда «Выбор».
   useEffect(() => {
@@ -267,14 +459,20 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
       equipment: { ...EMPTY_POINT_EQUIPMENT },
       rearUnload: false,
       allowedVehicles: [],
+      // Назначение — ЯВНЫЙ признак (ТЗ 2026-07-09): новая точка = «Иное»,
+      // «Технология»/«Экспедиция» проставляются в редакторе осознанно.
+      purposes: ['other'],
+      vehiclesByPurpose: {},
+      rearByPurpose: {},
     });
     setTool('select');
     setSelection({ type: 'point', id });
   }, [addPoint]);
 
   const handleCreateArea = useCallback((vertices: LatLng[]) => {
-    const color = AREA_COLORS[Math.floor(Math.random() * AREA_COLORS.length)] ?? AREA_COLORS[0]!;
-    const id = addArea({ name: '', color, vertices, shopName: null });
+    // Свои области — светло-жёлтые рабочие площадки (погрузка/выгрузка/иное);
+    // тип и цвет правятся в карточке (области цехов остаются как были).
+    const id = addArea({ name: '', color: WORK_AREA_COLOR, vertices, shopName: null, kind: 'work', comment: '' });
     setTool('select');
     setSelection({ type: 'area', id });
   }, [addArea]);
@@ -285,17 +483,56 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
     setSelection(null);
   }, [addRoad]);
 
-  const handleEraseRoadTrace = useCallback((vertices: LatLng[]) => {
-    eraseRoadTrace(vertices);
+  // Кисти-ластики работают ЖИВЬЁМ по сегментам зажатой ЛКМ — из инструмента не
+  // выходим (можно стирать несколько штрихов подряд, выход — Esc/повторный клик).
+  const handleEraseRoadTrace = useCallback((vertices: LatLng[], radiusMeters: number) => {
+    eraseRoadTrace(vertices, radiusMeters);
+  }, [eraseRoadTrace]);
+
+  const handleEraseSuggestionTrace = useCallback((vertices: LatLng[], radiusMeters: number) => {
+    eraseSuggestionTrace(vertices, radiusMeters);
+  }, [eraseSuggestionTrace]);
+
+  const handleEraseRoadAccessTrace = useCallback((vertices: LatLng[], radiusMeters: number) => {
+    eraseRoadAccessTrace(vertices, radiusMeters);
+  }, [eraseRoadAccessTrace]);
+
+  // «Ограничение дороги»: Enter по выделению → компактное окно настройки участка.
+  const handleCreateRestriction = useCallback((parts: LatLng[][]) => {
+    const routed = parts
+      .map((vertices) => roadRouteForPaint(vertices, doc.roads))
+      .filter((vertices) => vertices.length >= 2);
+    if (routed.length > 0) setRestrictDraft(routed);
+  }, [doc.roads]);
+
+  const saveRestriction = useCallback((fields: Partial<RoadAccess>) => {
+    if (!restrictDraft || restrictDraft.length === 0) return;
+    let id: string | null = null;
+    for (const vertices of restrictDraft) id = addRoadRestriction(vertices, fields);
+    setRestrictDraft(null);
+    setTool('select');
+    if (id) setSelection({ type: 'roadAccess', id });
+  }, [restrictDraft, addRoadRestriction]);
+
+  const cancelRestriction = useCallback(() => {
+    setRestrictDraft(null);
     setTool('select');
     setSelection(null);
-  }, [eraseRoadTrace]);
+  }, []);
 
   const handleCreateCrossing = useCallback((latlng: LatLng) => {
     const id = addCrossing(latlng);
     setTool('select');
     setSelection({ type: 'crossing', id });
   }, [addCrossing]);
+
+  const handleCreateClearance = useCallback((latlng: LatLng) => {
+    const id = addClearance(latlng);
+    // Поставил отметку — слой включается, чтобы её было видно и можно править.
+    setShowClearances(true);
+    setTool('select');
+    setSelection({ type: 'clearance', id });
+  }, [addClearance]);
 
   const handleCreateRailway = useCallback((vertices: LatLng[]) => {
     const id = addRailway(vertices);
@@ -309,23 +546,27 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
     setSelection(null);
   }, [confirmRoadTrace]);
 
-  const handleCreateRoadAccess = useCallback((vertices: LatLng[]) => {
-    if (roadPaintMode === 'erase') {
-      eraseRoadAccessTrace(vertices);
-      setTool('select');
-      setSelection(null);
-      return;
-    }
-    const id = addRoadAccess(vertices, roadPaintMode);
-    setTool('select');
-    setSelection({ type: 'roadAccess', id });
-  }, [addRoadAccess, eraseRoadAccessTrace, roadPaintMode]);
-
-  // Esc в режиме инструмента → вернуться в «Выбор» (курсор перестаёт «носить» инструмент).
+  // Esc в режиме инструмента → вернуться в «Выбор» (курсор перестаёт «носить»
+  // инструмент); заодно закрывает окно настройки участка, если оно открыто.
   const handleCancelTool = useCallback(() => {
     setTool('select');
     setSelection(null);
+    setRestrictDraft(null);
   }, []);
+
+  useEffect(() => {
+    if (!canEdit) return;
+    const onUndoKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'z') return;
+      event.preventDefault();
+      if (event.shiftKey) redoBrushEdit();
+      else undoBrushEdit();
+    };
+    window.addEventListener('keydown', onUndoKey);
+    return () => window.removeEventListener('keydown', onUndoKey);
+  }, [canEdit, redoBrushEdit, undoBrushEdit]);
 
   const handleLoadRoadSuggestions = useCallback(async () => {
     if (suggestionsLoading) return;
@@ -341,6 +582,54 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
       setSuggestionsLoading(false);
     }
   }, [addRoadSuggestions, suggestionsLoading, viewBounds]);
+
+  // Видимые справочные слои (данные всегда в кэше, тумблеры — только показ).
+  const buildings = useMemo<BuildingOutline[]>(
+    () => (showBuildings ? refLayers.buildings : []),
+    [showBuildings, refLayers.buildings],
+  );
+  const extRailways = useMemo<ExternalRailway[]>(
+    () => (showExtRails ? refLayers.railways : []),
+    [showExtRails, refLayers.railways],
+  );
+  const footways = useMemo<FootwayLine[]>(
+    () => (showFootways ? refLayers.footways : []),
+    [showFootways, refLayers.footways],
+  );
+
+  // Кандидаты на ж/д переезд: геометрические пересечения внешних ж/д с нашими
+  // дорогами. НЕ каждый крест = реальный переезд: рядом с существующим переездом
+  // (≤30 м) не предлагаем, убранные вручную не возвращаем, дубли схлопываем.
+  const crossingCandidates = useMemo<CrossingCandidate[]>(() => {
+    if (extRailways.length === 0 || doc.roads.length === 0) return [];
+    const out: CrossingCandidate[] = [];
+    const existing = doc.crossings ?? [];
+    for (const rail of extRailways) {
+      for (const road of doc.roads) {
+        for (const hit of polylineIntersections(rail.vertices, road.vertices)) {
+          const id = `${rail.id}|${road.id}|${hit.lat.toFixed(5)},${hit.lng.toFixed(5)}`;
+          if (dismissedSpots.some((s) => distanceMeters(s, hit) <= 22)) continue;
+          if (existing.some((c) => distanceMeters(c, hit) <= 30)) continue;
+          if (out.some((c) => distanceMeters(c, hit) <= 25)) continue;
+          out.push({ id, roadId: road.id, railwayId: rail.id, lat: hit.lat, lng: hit.lng });
+        }
+      }
+    }
+    return out.slice(0, 200);
+  }, [extRailways, doc.roads, doc.crossings, dismissedSpots]);
+
+  const handleConfirmCandidate = useCallback((candidate: CrossingCandidate) => {
+    addCrossing({ lat: candidate.lat, lng: candidate.lng });
+    // Кандидат исчезнет сам: рядом теперь есть настоящий переезд (фильтр ≤30 м).
+  }, [addCrossing]);
+
+  const handleDismissCandidate = useCallback((candidate: CrossingCandidate) => {
+    setDismissedSpots((prev) => {
+      const next = [...prev, { lat: candidate.lat, lng: candidate.lng }];
+      saveDismissedCrossingSpots(next);
+      return next;
+    });
+  }, []);
 
   // ── Оптимизация ──
   // Источник = выбранная точка (в режиме «Оптимум»). Спрос = все прочие точки с весом.
@@ -382,6 +671,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
     return computeFastestRoute(doc.roads, routeSourcePoint, selectedPoint, {
       roadAccess: doc.roadAccess,
       vehicle: activeVehicle,
+      purpose: selectedPoint.purposes?.[0] ?? null,
     });
   }, [doc.roads, doc.roadAccess, routeSourcePoint, selectedPoint, activeVehicle]);
 
@@ -408,10 +698,49 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const glonassSelected = useGlonassStore((s) => s.selected);
   const glonassPositions = useGlonassStore((s) => s.positions);
   const glonassTracks = useGlonassStore((s) => s.tracks);
+  const glonassStale = useGlonassStore((s) => s.staleSince);
+  const glonassFollowId = useGlonassStore((s) => s.followId);
   const glonassHistoryLayers = useGlonassStore((s) => s.historyLayers);
   const activeHistoryLayerId = useGlonassStore((s) => s.activeHistoryLayerId);
   const playbackIndex = useGlonassStore((s) => s.playbackIndex);
+  const playbackSpeed = useGlonassStore((s) => s.playbackSpeed);
+  const showGlonassPro = useGlonassStore((s) => s.showPro);
+  const showGlonassRaw = useGlonassStore((s) => s.showRaw);
   const refreshGlonass = useGlonassStore((s) => s.refreshPositions);
+
+  // ГЛОНАСС-фиксы кривые (проходят «сквозь здания») → прикрепляем выравниванием:
+  // позиция липнет к точке-пину (стоит у точки) или к дороге; треки — к дорогам.
+  // Выравнивание только на отображении, сырые данные не трогаем (ТЗ 2026-07-09).
+  const roadSnapIndex = useMemo(() => buildRoadSnapIndex(doc.roads), [doc.roads]);
+  const roadQuality = useMemo(() => inspectRoadNetwork(doc.roads, doc.points), [doc.roads, doc.points]);
+  const roadNormalizationPreview = useMemo(() => (
+    roadQualityOpen ? normalizeRoadTopology(doc.roads).report : null
+  ), [doc.roads, roadQualityOpen]);
+  const roadIssues = useMemo(() => (
+    roadQualityOpen ? roadNetworkIssues(doc.roads) : []
+  ), [doc.roads, roadQualityOpen]);
+
+  const handleNormalizeRoadNetwork = useCallback(() => {
+    beginBrushEdit();
+    const report = normalizeRoads();
+    commitBrushEdit();
+    setLastNormalization(report);
+  }, [beginBrushEdit, commitBrushEdit, normalizeRoads]);
+
+  // Слияние «палка-на-палку»: dry-run для предпросмотра (только при открытой панели).
+  const roadMergePreview = useMemo(() => {
+    if (!roadQualityOpen) return null;
+    const merged = mergeOverlappingRoads(doc.roads);
+    const welded = materializeConvergenceWelds(merged.roads);
+    return { merge: merged.report, welds: welded.welds };
+  }, [doc.roads, roadQualityOpen]);
+
+  const handleMergeRoadOverlaps = useCallback(() => {
+    beginBrushEdit();
+    const summary = mergeRoadOverlaps();
+    commitBrushEdit();
+    setLastMerge(summary);
+  }, [beginBrushEdit, commitBrushEdit, mergeRoadOverlaps]);
 
   // Точки выбранных машин (только тех, у кого есть позиция) — на карту.
   const glonassMarkers = useMemo<GlonassMarker[]>(() => {
@@ -421,62 +750,126 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
       const pos = glonassPositions.get(id);
       if (!pos) continue;
       const v = byId.get(id);
+      const status = vehicleStatus(pos);
+      const track = glonassTracks.get(id) ?? [];
+      // По СВЕЖЕСТИ трека, не по статусу: короткая остановка не должна
+      // телепортировать маркер на сырую позицию — машина доезжает по дороге.
+      const delayed = liveTrackUsable(track)
+        ? delayedLiveRoadTrack(track, roadSnapIndex, doc.roads, GLONASS_LIVE_DELAY_MS)
+        : null;
+      const matchedSegments = !delayed && liveTrackUsable(track)
+        ? snapGlonassTrackSegments(track, roadSnapIndex, doc.roads)
+        : [];
+      const matched = lastTrackPoint(matchedSegments);
+      const rawPosition = { lat: pos.lat, lng: pos.lng };
+      // A newly selected moving vehicle has only one fix and no timed path yet.
+      // Put it on the road immediately; point-pin standoff is for a stopped
+      // vehicle at a destination and made the second selected vehicle appear
+      // parallel to the road until the next poll.
+      const immediateRoad = status === 'moving' ? snapToRoadIndex(roadSnapIndex, rawPosition) : null;
+      const snapped = delayed?.point ?? matched ?? immediateRoad?.point ?? snapGlonassPosition(rawPosition, roadSnapIndex, doc.points);
+      // «Нет сигнала» пишем только когда машина «в работе», а координаты РЕАЛЬНО
+      // стоят дольше 30 секунд. Короткие паузы между GPS-фиксами — норма, не ⚠.
+      const stale = glonassStale.get(id) ?? null;
       out.push({
         id, garage: v?.garage ?? '', gos: v?.gos ?? '',
-        lat: pos.lat, lng: pos.lng, course: pos.course, speed: pos.speed,
-        status: vehicleStatus(pos),
+        lat: snapped.lat, lng: snapped.lng, course: pos.course, speed: pos.speed,
+        path: delayed?.path ?? lastTrackSegment(matchedSegments) ?? undefined,
+        timedPath: delayed && delayed.timed.length >= 2 ? delayed.timed : undefined,
+        delayMs: GLONASS_LIVE_DELAY_MS,
+        time: pos.time,
+        status,
+        badSince: status === 'moving' && stale != null && Date.now() - stale >= GLONASS_BAD_SIGNAL_AFTER_MS ? stale : null,
       });
     }
     return out;
-  }, [glonassFleet, glonassSelected, glonassPositions]);
+  }, [glonassFleet, glonassSelected, glonassPositions, glonassTracks, glonassStale, roadSnapIndex, doc.points, doc.roads]);
+
+  // Слежение: камера едет за выбранной машиной по её ОТОБРАЖАЕМОЙ позиции.
+  // Для живого движения (timedPath) камеру ведёт анимационный цикл MapCanvas —
+  // здесь null, чтобы два механизма не дёргали карту одновременно.
+  const glonassFollowTarget = useMemo<LatLng | null>(() => {
+    if (glonassFollowId == null) return null;
+    const m = glonassMarkers.find((x) => x.id === glonassFollowId);
+    if (!m) return null;
+    if ((m.timedPath?.length ?? 0) >= 2) return null;
+    return { lat: m.lat, lng: m.lng };
+  }, [glonassFollowId, glonassMarkers]);
 
   const glonassTrackLines = useMemo(() => {
-    const out: Array<{ id: number; color: string; points: LatLng[] }> = [];
+    const out: Array<{ id: string; color: string; segments: LatLng[][]; mode: 'pro' | 'raw' }> = [];
     for (const id of glonassSelected) {
       const track = glonassTracks.get(id);
       if (!track || track.length < 2) continue;
       const pos = glonassPositions.get(id) ?? track[track.length - 1];
-      out.push({
-        id,
-        color: STATUS_COLOR[vehicleStatus(pos)],
-        points: track.map((p) => ({ lat: p.lat, lng: p.lng })),
-      });
+      // Живой след (timedPath) рисует MapCanvas строго ЗА едущим маркером —
+      // здесь только статичный фоллбэк, когда живого пути ещё нет.
+      // След за машиной — ХВОСТ ~100 м (не весь путь за сессию): «откуда едет».
+      const tail = trimTrackToMeters(track, 100);
+      if (tail.length < 2) continue;
+      if (showGlonassRaw) {
+        out.push({ id: `${id}:raw`, color: GLONASS_RAW_COLOR, segments: [tail], mode: 'raw' });
+      }
+      const delayed = liveTrackUsable(track)
+        ? delayedLiveRoadTrack(track, roadSnapIndex, doc.roads, GLONASS_LIVE_DELAY_MS)
+        : null;
+      if (showGlonassPro && !(delayed && delayed.timed.length >= 2)) {
+        out.push({
+          id: `${id}:pro`,
+          color: STATUS_COLOR[vehicleStatus(pos)],
+          segments: snapGlonassTrackSegments(tail, roadSnapIndex, doc.roads),
+          mode: 'pro',
+        });
+      }
     }
     return out;
-  }, [glonassSelected, glonassTracks, glonassPositions]);
+  }, [glonassSelected, glonassTracks, glonassPositions, roadSnapIndex, doc.roads, showGlonassPro, showGlonassRaw]);
 
   const activeHistoryLayer = useMemo(() => (
     glonassHistoryLayers.find((layer) => layer.id === activeHistoryLayerId) ?? null
   ), [glonassHistoryLayers, activeHistoryLayerId]);
 
   const glonassHistoryLines = useMemo(() => {
-    const out: Array<{ id: string; color: string; points: LatLng[]; opacity: number }> = [];
+    const out: Array<{ id: string; color: string; segments: LatLng[][]; opacity: number; mode: 'pro' | 'raw' }> = [];
     for (const layer of glonassHistoryLayers) {
       if (!layer.visible) continue;
       const opacity = layer.kind === 'yearRoads' ? 0.62 : 0.86;
       for (const segment of layer.segments) {
         if (segment.points.length < 2) continue;
-        out.push({
-          id: segment.id,
-          color: layer.color,
-          opacity,
-          points: segment.points.map((p) => ({ lat: p.lat, lng: p.lng })),
-        });
+        if (layer.kind === 'yearRoads') {
+          out.push({ id: segment.id, color: layer.color, opacity, segments: [segment.points], mode: 'raw' });
+          continue;
+        }
+        if (showGlonassRaw) {
+          out.push({ id: `${segment.id}:raw`, color: GLONASS_RAW_COLOR, opacity: 0.72, segments: [segment.points], mode: 'raw' });
+        }
+        if (showGlonassPro) {
+          out.push({
+            id: `${segment.id}:pro`,
+            color: GLONASS_PRO_COLOR,
+            opacity,
+            // Линия истории и replay-маркер используют один timed-конвейер.
+            segments: snapGlonassHistorySegments(segment.points, roadSnapIndex, doc.roads),
+            mode: 'pro',
+          });
+        }
       }
     }
     return out;
-  }, [glonassHistoryLayers]);
+  }, [glonassHistoryLayers, roadSnapIndex, doc.roads, showGlonassPro, showGlonassRaw]);
 
   const activeReplayPoints = useMemo(() => {
     if (!activeHistoryLayer || activeHistoryLayer.kind !== 'replay') return [];
-    return flattenHistoryLayer(activeHistoryLayer);
-  }, [activeHistoryLayer]);
+    return snapGlonassReplayPoints(flattenHistoryLayer(activeHistoryLayer), roadSnapIndex, doc.roads);
+  }, [activeHistoryLayer, roadSnapIndex, doc.roads]);
 
   const glonassReplayMarker = useMemo<GlonassReplayMarker | null>(() => {
     if (!activeHistoryLayer?.visible || activeHistoryLayer.kind !== 'replay' || activeReplayPoints.length === 0) return null;
     const pointIndex = Math.min(Math.max(0, playbackIndex), activeReplayPoints.length - 1);
     const point = activeReplayPoints[pointIndex];
     if (!point) return null;
+    const prevPoint = activeReplayPoints[Math.max(0, pointIndex - 1)] ?? null;
+    const gapMs = prevPoint ? Math.abs(Date.parse(point.time) - Date.parse(prevPoint.time)) : 0;
     const vehicle = activeHistoryLayer.vehicleId != null ? glonassFleet.find((v) => v.id === activeHistoryLayer.vehicleId) : undefined;
     return {
       id: `${activeHistoryLayer.id}-replay`,
@@ -488,16 +881,32 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
       speed: point.speed,
       color: activeHistoryLayer.color,
       time: point.time,
+      animationMs: replayAnimationMs(gapMs, playbackSpeed),
     };
-  }, [activeHistoryLayer, activeReplayPoints, playbackIndex, glonassFleet]);
+  }, [activeHistoryLayer, activeReplayPoints, playbackIndex, playbackSpeed, glonassFleet]);
 
   const handleFocusGlonassVehicle = useCallback((pos: GlonassPosition) => {
+    // Наводимся на ОТОБРАЖАЕМУЮ позицию (задержанный маркер на карте), а не на
+    // сырую «прямо сейчас» с сайта — иначе камера уезжает туда, где машины ещё нет.
+    const marker = glonassMarkers.find((m) => m.id === pos.id);
+    const snapped = marker
+      ? { lat: marker.lat, lng: marker.lng }
+      : snapGlonassPosition({ lat: pos.lat, lng: pos.lng }, roadSnapIndex, doc.points);
     setFocus({
-      latlng: { lat: pos.lat, lng: pos.lng },
+      latlng: snapped,
       nonce: Date.now(),
       zoom: Math.max(NTMK_ZOOM, 18),
     });
-  }, []);
+  }, [glonassMarkers, roadSnapIndex, doc.points]);
+
+  const handleFocusHistoryPoint = useCallback((point: GlonassHistoryPoint) => {
+    const snapped = snapGlonassPosition({ lat: point.lat, lng: point.lng }, roadSnapIndex, doc.points);
+    setFocus({
+      latlng: snapped,
+      nonce: Date.now(),
+      zoom: Math.max(NTMK_ZOOM, 18),
+    });
+  }, [roadSnapIndex, doc.points]);
 
   useEffect(() => {
     if (!activeHistoryLayer) return;
@@ -527,8 +936,19 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
           {t('sidebar.nav_map', 'Карта')}
         </span>
         <div className="no-drag-region ml-auto flex items-center gap-1.5">
-          <LayerToggle icon={CheckCheck} label="Особ." on={showRoadAccess} onClick={() => setShowRoadAccess((v) => !v)} title="Особенности дорог (закраска по машинам)" />
-          <LayerToggle icon={CloudRain} label="Погода" on={showWeather} onClick={() => setShowWeather((v) => !v)} title="Радар осадков — где идёт дождь/снег" />
+          <ViewMenu
+            items={[
+              { icon: Ban, label: 'Участки', on: showRoadAccess, onClick: () => setShowRoadAccess((v) => !v), title: 'Ограничения участков дорог' },
+              { icon: Route, label: 'Возможные дороги', on: showRoadSuggestions, onClick: () => setShowRoadSuggestions((v) => !v), title: 'Красный пунктир — возможные дороги (помощник)' },
+              { icon: Globe, label: 'Гугл-слой', on: showGoogleLabels, onClick: () => setShowGoogleLabels((v) => !v), title: 'Подписи, дороги и ориентиры поверх снимка' },
+              { icon: Building2, label: 'Здания', on: showBuildings, onClick: () => setShowBuildings((v) => !v), title: 'Контуры зданий и сооружений' },
+              { icon: TrainTrack, label: 'Ж/д пути', on: showExtRails, onClick: () => setShowExtRails((v) => !v), title: 'Ж/д пути и кандидаты на переезды' },
+              { icon: Ruler, label: 'Высота проезда', on: showClearances, onClick: () => setShowClearances((v) => !v), title: 'Отметки ограничения высоты (тоннели, трубы над дорогой)' },
+              { icon: Footprints, label: 'Пешеходки', on: showFootways, onClick: () => setShowFootways((v) => !v), title: 'Пешеходные дорожки и переходы' },
+              { icon: Pentagon, label: 'Области', on: showAreas, onClick: () => setShowAreas((v) => !v), title: 'Наши области и площадки' },
+              { icon: CloudRain, label: 'Погода', on: showWeather, onClick: () => setShowWeather((v) => !v), title: 'Радар осадков' },
+            ]}
+          />
           <LayerToggle icon={Satellite} label="Глонасс" on={glonassOpen} onClick={() => setGlonassOpen(!glonassOpen)} title="Спутниковый мониторинг транспорта — поиск/слежение машин" />
           <VehicleFilter active={activeVehicle} onChange={setActiveVehicle} />
           <PointsFilter
@@ -538,30 +958,15 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
             filterActive={filterActive}
             onWarehousesChange={setActiveWarehouses}
             onCategoriesChange={setActiveCategories}
+            crossings={doc.crossings ?? []}
+            onPickCrossing={(id) => {
+              const c = (doc.crossings ?? []).find((x) => x.id === id);
+              if (!c) return;
+              setTool('select');
+              setSelection({ type: 'crossing', id });
+              setFocus({ latlng: { lat: c.lat, lng: c.lng }, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) });
+            }}
           />
-          {canEdit && (
-            <ToolMenu
-              tool={tool}
-              roadSuggestionCount={doc.roadSuggestions.length}
-              suggestionsLoading={suggestionsLoading}
-              showRoadSuggestions={showRoadSuggestions}
-              showRoadAccess={showRoadAccess}
-              roadPaintMode={roadPaintMode}
-              onToggleRoadSuggestions={() => setShowRoadSuggestions((v) => !v)}
-              onToggleRoadAccess={() => setShowRoadAccess((v) => !v)}
-              onRoadPaintModeChange={setRoadPaintMode}
-              onLoadRoadSuggestions={handleLoadRoadSuggestions}
-              onClearRoadSuggestions={() => {
-                clearRoadSuggestions();
-                if (selection?.type === 'roadSuggestion') setSelection(null);
-              }}
-              onChange={(next) => {
-                // Повторный клик по активному инструменту → выходим в «Выбор».
-                setTool((cur) => (cur === next ? 'select' : next));
-                if (next !== 'select') setSelection(null);
-              }}
-            />
-          )}
         </div>
       </div>
 
@@ -577,18 +982,35 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               selection={selection}
               showRoadSuggestions={showRoadSuggestions}
               showRoadAccess={showRoadAccess}
+              roadIssues={roadIssues}
+              showAreas={showAreas}
               routePath={routeResult?.path ?? null}
               routeBlocked={routeResult?.passesBlocked ?? false}
               showWeather={showWeather}
               weatherNonce={weatherNonce}
               weatherField={weatherField}
               weatherNow={weather}
-              roadPaintMode={roadPaintMode}
               movingPointId={moveByMapPointId}
               activeVehicle={activeVehicle}
+              showGoogleLabels={showGoogleLabels}
+              buildings={buildings}
+              extRailways={extRailways}
+              footways={footways}
+              crossingCandidates={crossingCandidates}
+              onConfirmCandidate={handleConfirmCandidate}
+              onDismissCandidate={handleDismissCandidate}
+              onCreateRestriction={handleCreateRestriction}
+              onEraseSuggestionTrace={handleEraseSuggestionTrace}
+              onEraseRoadAccessTrace={handleEraseRoadAccessTrace}
+              onBeginBrushEdit={beginBrushEdit}
+              onCommitBrushEdit={commitBrushEdit}
               glonassMarkers={glonassMarkers}
+              glonassRoadSnapIndex={roadSnapIndex}
+              glonassFollowTarget={glonassFollowTarget}
+              glonassFollowId={glonassFollowId}
               glonassTracks={glonassTrackLines}
               glonassHistoryTracks={glonassHistoryLines}
+              showGlonassPro={showGlonassPro}
               glonassReplayMarker={glonassReplayMarker}
               onSelect={setSelection}
               onSelectedPointScreen={setPointScreen}
@@ -619,8 +1041,9 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               onCreateRoad={handleCreateRoad}
               onEraseRoadTrace={handleEraseRoadTrace}
               onConfirmRoadTrace={handleConfirmRoadTrace}
-              onCreateRoadAccess={handleCreateRoadAccess}
               onCreateCrossing={handleCreateCrossing}
+              onCreateClearance={handleCreateClearance}
+              showClearances={showClearances}
               onCreateRailway={handleCreateRailway}
               onCancelTool={handleCancelTool}
               optimizeOverlay={overlay}
@@ -631,6 +1054,83 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               focusNonce={focus?.nonce ?? 0}
             />
           )}
+
+          {/* Редактор карты: карандаш всегда виден, инструменты раскрываются
+              СТОЛБЦОМ вниз под ним (вертикальная панель справа). */}
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => {
+                const next = !editorToolsOpen;
+                setEditorToolsOpen(next);
+                if (!next) setTool('select');
+              }}
+              title="Редактор карты"
+              className={cn(
+                'absolute right-3 top-3 z-[453] flex h-9 w-9 items-center justify-center rounded-xl border shadow-[0_10px_28px_rgba(0,0,0,0.42)] outline-none transition-colors',
+                editorToolsOpen
+                  ? 'border-accent-clay/60 bg-accent-clay/15 text-accent-clay'
+                  : 'border-border-default bg-bg-elevated text-text-muted hover:border-accent-clay/50 hover:bg-bg-hover hover:text-text-strong',
+              )}
+            >
+              <Pencil size={16} strokeWidth={1.8} />
+            </button>
+          )}
+          {canEdit && editorToolsOpen && (
+            <MapToolStrip
+              tool={tool}
+              suggestionsLoading={suggestionsLoading}
+              roadSuggestionCount={doc.roadSuggestions.length}
+              canUndo={canUndoBrush}
+              canRedo={canRedoBrush}
+              onUndo={undoBrushEdit}
+              onRedo={redoBrushEdit}
+              onOpenRoadQuality={() => setRoadQualityOpen(true)}
+              onClose={() => {
+                setEditorToolsOpen(false);
+                setTool('select');
+              }}
+              onLoadRoadSuggestions={() => void handleLoadRoadSuggestions()}
+              onClearRoadSuggestions={() => {
+                clearRoadSuggestions();
+                if (selection?.type === 'roadSuggestion') setSelection(null);
+              }}
+              onChange={(next) => {
+                // Повторный клик по активному инструменту → выходим в «Выбор».
+                setTool((cur) => (cur === next ? 'select' : next));
+                if (next !== 'select') setSelection(null);
+              }}
+            />
+          )}
+
+          {canEdit && roadQualityOpen && (
+            <RoadQualityPanel
+              quality={roadQuality}
+              preview={roadNormalizationPreview}
+              mergePreview={roadMergePreview}
+              lastNormalization={lastNormalization}
+              lastMerge={lastMerge}
+              onNormalize={handleNormalizeRoadNetwork}
+              onMergeOverlaps={handleMergeRoadOverlaps}
+              onClose={() => setRoadQualityOpen(false)}
+            />
+          )}
+
+          {/* Компактное окно настройки участка «Ограничение дороги» */}
+          {restrictDraft && (
+            <RestrictionDialog onSave={saveRestriction} onCancel={cancelRestriction} />
+          )}
+
+          {/* Легенда дорог (низ-право): Машины / Ж-д / пешеходы / красный черновик */}
+          <MapLegend
+            showRails={showExtRails || (doc.railways ?? []).length > 0}
+            showFootways={showFootways}
+            showSuggestions={showRoadSuggestions && doc.roadSuggestions.length > 0}
+            showBuildings={showBuildings}
+            restrictions={showRoadAccess
+              ? ROAD_ACCESS_KIND_META.filter((m) => doc.roadAccess.some((a) => a.kind === m.id))
+              : []}
+          />
 
           {/* Панель оптимизации поверх карты */}
           {tool === 'optimize' && (
@@ -644,20 +1144,15 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
             />
           )}
 
-          {/* Чип сводки погоды (когда слой включён) */}
-          {showWeather && <WeatherChip weather={weather} />}
+          {/* Чип сводки погоды (когда слой включён). При открытом Глонассе
+              уезжает вправо, чтобы не перекрывать панель мониторинга слева. */}
+          {showWeather && <WeatherChip weather={weather} shifted={glonassOpen} />}
 
           {/* Панель «Глонасс» (поиск/выбор машин) */}
           <GlonassPanel onFocusVehicle={handleFocusGlonassVehicle} />
 
           <GlonassHistoryChips />
-          <GlonassHistoryPlayer
-            onFocus={(point) => setFocus({
-              latlng: { lat: point.lat, lng: point.lng },
-              nonce: Date.now(),
-              zoom: Math.max(NTMK_ZOOM, 18),
-            })}
-          />
+          <GlonassHistoryPlayer onFocus={handleFocusHistoryPoint} pointsOverride={activeReplayPoints} />
 
           {/* Поповер-карточка у пина (краткая) + кнопка «Подробно» */}
           {showPinPopover && selectedPoint && pointScreen && (
@@ -678,18 +1173,13 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
 
           {/* Полная карточка-плитка деталей — поверх карты в правом верхнем углу */}
           {showFullCard && selection && (
-            <div className="absolute right-3 top-3 z-[460] flex max-h-[calc(100%-1.5rem)] w-[358px] max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-xl border border-border-default bg-bg-deep/92 shadow-[0_8px_40px_rgba(0,0,0,0.5)] backdrop-blur-md">
+            <div className="absolute right-3 top-3 z-[460] flex max-h-[calc(100%-1.5rem)] w-[358px] max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-xl border border-border-default bg-bg-deep shadow-[0_8px_40px_rgba(0,0,0,0.5)]">
               <MapDetailPanel
                 selection={selection}
                 canEdit={canEdit}
                 onClose={() => setSelection(null)}
                 onSelect={setSelection}
                 onFocus={(latlng) => setFocus({ latlng, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) })}
-                routeSourcePointId={routeSourcePointId}
-                routeResult={selection.type === 'point' ? routeResult : null}
-                routeVehicle={activeVehicle}
-                onSetRouteFromPoint={setRouteSourcePointId}
-                onClearRoute={() => setRouteSourcePointId(null)}
                 onMovePointByMap={(id) => {
                   const pt = doc.points.find((p) => p.id === id);
                   if (pt) setFocus({ latlng: { lat: pt.lat, lng: pt.lng }, nonce: Date.now(), zoom: Math.max(NTMK_ZOOM, 17.4) });
@@ -735,30 +1225,30 @@ function GlonassHistoryChips() {
   if (layers.length === 0) return null;
 
   return (
-    <div className="pointer-events-none absolute left-[374px] right-3 top-3 z-[7] flex flex-wrap justify-end gap-1.5">
+    <div className="pointer-events-none absolute left-[374px] right-14 top-3 z-[7] flex flex-wrap justify-end gap-1.5">
       {layers.map((layer) => (
         <div
           key={layer.id}
           className={cn(
-            'pointer-events-auto flex h-8 max-w-[260px] items-center gap-1 overflow-hidden rounded-lg border bg-[#080b11]/88 px-1.5 text-[11px] text-white/82 shadow-lg backdrop-blur-md',
-            activeId === layer.id ? 'border-white/45' : 'border-white/14',
+            'pointer-events-auto flex h-8 max-w-[260px] items-center gap-1 overflow-hidden rounded-lg border bg-bg-surface px-1.5 text-[11px] text-text-secondary shadow-[0_10px_28px_rgba(0,0,0,0.34)]',
+            activeId === layer.id ? 'border-accent-clay/55 text-text-strong' : 'border-border-subtle',
           )}
         >
           <button
             type="button"
             onClick={() => setActive(layer.id)}
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left outline-none hover:bg-white/10"
+            className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left outline-none transition-colors hover:bg-bg-hover"
             title={layer.subtitle}
           >
             <span className="h-2.5 w-5 shrink-0 rounded-full" style={{ backgroundColor: layer.color }} />
             <span className="min-w-0 truncate font-semibold">{layer.title}</span>
-            {layer.pointCount > 0 && <span className="shrink-0 font-mono text-[10px] text-white/48">{layer.pointCount}</span>}
+            {layer.pointCount > 0 && <span className="shrink-0 font-mono text-[10px] text-text-muted">{layer.pointCount}</span>}
           </button>
           <button
             type="button"
             title={layer.visible ? 'Скрыть слой' : 'Показать слой'}
             onClick={() => toggleVisible(layer.id)}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-white/55 outline-none hover:bg-white/10 hover:text-white"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
           >
             {layer.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
           </button>
@@ -766,7 +1256,7 @@ function GlonassHistoryChips() {
             type="button"
             title="Удалить слой"
             onClick={() => removeLayer(layer.id)}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-white/45 outline-none hover:bg-rose-500/18 hover:text-rose-200"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-rose-500/18 hover:text-rose-200"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
@@ -776,7 +1266,13 @@ function GlonassHistoryChips() {
   );
 }
 
-function GlonassHistoryPlayer({ onFocus }: { onFocus: (point: GlonassHistoryPoint) => void }) {
+function GlonassHistoryPlayer({
+  onFocus,
+  pointsOverride,
+}: {
+  onFocus: (point: GlonassHistoryPoint) => void;
+  pointsOverride?: GlonassHistoryPoint[];
+}) {
   const layers = useGlonassStore((s) => s.historyLayers);
   const activeId = useGlonassStore((s) => s.activeHistoryLayerId);
   const playbackIndex = useGlonassStore((s) => s.playbackIndex);
@@ -785,19 +1281,39 @@ function GlonassHistoryPlayer({ onFocus }: { onFocus: (point: GlonassHistoryPoin
   const setPlaybackIndex = useGlonassStore((s) => s.setPlaybackIndex);
   const setPlaybackPlaying = useGlonassStore((s) => s.setPlaybackPlaying);
   const setPlaybackSpeed = useGlonassStore((s) => s.setPlaybackSpeed);
+  const [followPlayback, setFollowPlayback] = useState(false);
+  const [playbackDirection, setPlaybackDirection] = useState<1 | -1>(1);
 
   const layer = useMemo(() => (
     layers.find((item) => item.id === activeId && item.kind === 'replay') ?? null
   ), [layers, activeId]);
-  const points = useMemo(() => flattenHistoryLayer(layer), [layer]);
+  const points = useMemo(() => pointsOverride ?? flattenHistoryLayer(layer), [layer, pointsOverride]);
   const maxIndex = Math.max(0, points.length - 1);
   const index = Math.min(Math.max(0, playbackIndex), maxIndex);
   const point = points[index] ?? null;
+  const window = useMemo(() => historyTimelineWindow(layer, points), [layer, points]);
+  const pointTimeMs = point ? Date.parse(point.time) : NaN;
+  const timelineMs = Number.isFinite(pointTimeMs)
+    ? Math.min(window.endMs, Math.max(window.startMs, pointTimeMs))
+    : window.startMs;
   const virtualTimeRef = useRef<number>(point ? Date.parse(point.time) : NaN);
+  const speedIndex = Math.max(0, PLAYBACK_SPEEDS.findIndex((speed) => speed === playbackSpeed));
 
   useEffect(() => {
     if (!playbackPlaying) virtualTimeRef.current = point ? Date.parse(point.time) : NaN;
   }, [point?.time, playbackPlaying, layer?.id]);
+
+  useEffect(() => {
+    setFollowPlayback(false);
+  }, [layer?.id]);
+
+  useEffect(() => {
+    if (!PLAYBACK_SPEEDS.some((speed) => speed === playbackSpeed)) setPlaybackSpeed(1);
+  }, [playbackSpeed, setPlaybackSpeed]);
+
+  useEffect(() => {
+    if (followPlayback && point) onFocus(point);
+  }, [followPlayback, point?.lat, point?.lng, point?.time, onFocus]);
 
   useEffect(() => {
     if (!playbackPlaying || points.length < 2) return;
@@ -809,11 +1325,11 @@ function GlonassHistoryPlayer({ onFocus }: { onFocus: (point: GlonassHistoryPoin
       const current = Number.isFinite(virtualTimeRef.current)
         ? virtualTimeRef.current
         : Date.parse(points[Math.min(index, points.length - 1)]?.time ?? '');
-      const nextTime = current + elapsed * playbackSpeed;
+      const nextTime = current + elapsed * playbackSpeed * playbackDirection;
       virtualTimeRef.current = nextTime;
       const nextIndex = findHistoryIndexAt(points, nextTime);
       setPlaybackIndex(nextIndex);
-      if (nextIndex >= points.length - 1) {
+      if ((playbackDirection > 0 && nextIndex >= points.length - 1) || (playbackDirection < 0 && nextTime <= window.startMs)) {
         setPlaybackPlaying(false);
         return;
       }
@@ -821,7 +1337,7 @@ function GlonassHistoryPlayer({ onFocus }: { onFocus: (point: GlonassHistoryPoin
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playbackPlaying, playbackSpeed, points, index, setPlaybackIndex, setPlaybackPlaying]);
+  }, [playbackPlaying, playbackSpeed, playbackDirection, points, index, window.startMs, setPlaybackIndex, setPlaybackPlaying]);
 
   useEffect(() => {
     if (playbackIndex !== index) setPlaybackIndex(index);
@@ -830,65 +1346,106 @@ function GlonassHistoryPlayer({ onFocus }: { onFocus: (point: GlonassHistoryPoin
   if (!layer || points.length < 2 || !point) return null;
 
   return (
-    <div className="absolute bottom-3 left-[82px] right-[190px] z-[7] overflow-hidden rounded-xl border border-white/14 bg-[#080b11]/90 text-white shadow-[0_10px_34px_rgba(0,0,0,0.46)] backdrop-blur-md">
-      <div className="grid grid-cols-[minmax(170px,230px)_minmax(220px,1fr)_auto] items-center gap-3 px-3 py-2">
+    <div className="absolute bottom-3 left-[64px] right-[92px] z-[7] overflow-hidden rounded-2xl border border-border-default bg-bg-surface text-text-primary shadow-[0_18px_58px_rgba(0,0,0,0.46)]">
+      <div className="grid grid-cols-[minmax(170px,240px)_minmax(420px,1fr)_144px] items-center gap-2.5 px-3 py-2">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-5 shrink-0 rounded-full" style={{ backgroundColor: layer.color }} />
-            <span className="min-w-0 truncate text-[12px] font-semibold">{layer.title}</span>
+            <span className="min-w-0 truncate text-[12px] font-semibold text-text-strong">{layer.title}</span>
           </div>
-          <div className="mt-0.5 truncate text-[10.5px] text-white/55">
+          <div className="mt-0.5 truncate text-[10.5px] text-text-muted">
             {formatHistoryPointTime(point.time)} · {formatGlonassSpeed(point.speed)}
           </div>
         </div>
 
-        <div className="min-w-0">
-          <HistorySpeedChart points={points} index={index} color={layer.color} />
-          <input
-            type="range"
-            min={0}
-            max={maxIndex}
-            value={index}
-            onChange={(e) => {
-              setPlaybackPlaying(false);
-              setPlaybackIndex(Number(e.target.value));
-            }}
-            className="mt-1 h-4 w-full accent-sky-300"
-            aria-label="Тайминг движения"
-          />
-        </div>
+        <DayTimeline
+          points={points}
+          index={index}
+          color={layer.color}
+          startMs={window.startMs}
+          endMs={window.endMs}
+          onPick={(targetMs) => {
+            setPlaybackPlaying(false);
+            virtualTimeRef.current = targetMs;
+            setPlaybackIndex(findHistoryIndexAt(points, targetMs));
+          }}
+        />
 
-        <div className="flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
-            title={playbackPlaying ? 'Пауза' : 'Проиграть'}
-            onClick={() => setPlaybackPlaying(!playbackPlaying)}
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-sky-300/45 bg-sky-400/12 text-sky-100 outline-none hover:bg-sky-400/20"
-          >
-            {playbackPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 translate-x-px" />}
-          </button>
-          <button
-            type="button"
-            title="Показать текущую точку"
-            onClick={() => onFocus(point)}
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/14 bg-white/6 text-white/70 outline-none hover:bg-white/12 hover:text-white"
-          >
-            <Crosshair className="h-4 w-4" />
-          </button>
-          <div className="ml-1 flex items-center gap-0.5">
-            {PLAYBACK_SPEEDS.map((speed) => (
-              <button
-                key={speed}
-                type="button"
-                onClick={() => setPlaybackSpeed(speed)}
-                className={cn(
-                  'h-6 rounded px-1.5 text-[10px] font-semibold tabular-nums outline-none transition-colors',
-                  playbackSpeed === speed ? 'bg-white text-[#080b11]' : 'text-white/55 hover:bg-white/10 hover:text-white',
-                )}
-              >
-                {speed}x
-              </button>
-            ))}
+        <div className="grid shrink-0 grid-rows-2 gap-1">
+          <div className="grid h-8 grid-cols-4 overflow-hidden rounded-lg border border-border-subtle bg-bg-elevated">
+            <button
+              type="button"
+              title="Назад по истории"
+              onClick={() => {
+                setPlaybackDirection(-1);
+                setPlaybackPlaying(true);
+              }}
+              className="flex h-8 items-center justify-center text-text-secondary outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title={playbackPlaying ? 'Пауза' : 'Проиграть вперёд'}
+              onClick={() => {
+                if (!playbackPlaying) setPlaybackDirection(1);
+                setPlaybackPlaying(!playbackPlaying);
+              }}
+              className="flex h-8 items-center justify-center border-x border-sky-400/35 bg-sky-500/12 text-sky-200 outline-none transition-colors hover:bg-sky-500/20 hover:text-sky-100"
+            >
+              {playbackPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 translate-x-px" />}
+            </button>
+            <button
+              type="button"
+              title="Вперёд по истории"
+              onClick={() => {
+                setPlaybackDirection(1);
+                setPlaybackPlaying(true);
+              }}
+              className="flex h-8 items-center justify-center text-text-secondary outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title={followPlayback ? 'Отключить слежение за машиной' : 'Следить за машиной'}
+              onClick={() => {
+                const next = !followPlayback;
+                setFollowPlayback(next);
+                if (next) onFocus(point);
+              }}
+              className={cn(
+                'flex h-8 items-center justify-center border-l border-border-subtle outline-none transition-colors',
+                followPlayback
+                  ? 'bg-accent-clay-bg text-accent-clay shadow-[inset_0_0_0_1px_rgba(217,119,87,0.35)]'
+                  : 'text-text-muted hover:bg-bg-hover hover:text-text-strong',
+              )}
+            >
+              <Crosshair className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="grid h-8 grid-cols-[36px_minmax(0,1fr)_36px] overflow-hidden rounded-lg border border-border-subtle bg-bg-elevated">
+            <button
+              type="button"
+              title="Медленнее"
+              disabled={speedIndex <= 0}
+              onClick={() => setPlaybackSpeed(PLAYBACK_SPEEDS[Math.max(0, speedIndex - 1)]!)}
+              className="flex h-8 items-center justify-center text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="flex min-w-0 items-center justify-center border-x border-border-subtle px-2 text-center text-[11px] font-semibold tabular-nums text-text-strong">
+              {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
+            </span>
+            <button
+              type="button"
+              title="Быстрее"
+              disabled={speedIndex >= PLAYBACK_SPEEDS.length - 1}
+              onClick={() => setPlaybackSpeed(PLAYBACK_SPEEDS[Math.min(PLAYBACK_SPEEDS.length - 1, speedIndex + 1)]!)}
+              className="flex h-8 items-center justify-center text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
         </div>
       </div>
@@ -896,16 +1453,99 @@ function GlonassHistoryPlayer({ onFocus }: { onFocus: (point: GlonassHistoryPoin
   );
 }
 
-function HistorySpeedChart({ points, index, color }: { points: GlonassHistoryPoint[]; index: number; color: string }) {
-  const chart = useMemo(() => buildSpeedChart(points, index), [points, index]);
-  if (!chart) return <div className="h-10 rounded-md bg-white/5" />;
+function DayTimeline({
+  points,
+  index,
+  color,
+  startMs,
+  endMs,
+  onPick,
+}: {
+  points: GlonassHistoryPoint[];
+  index: number;
+  color: string;
+  startMs: number;
+  endMs: number;
+  onPick: (timeMs: number) => void;
+}) {
+  const chart = useMemo(() => buildSpeedChart(points, index, startMs, endMs), [points, index, startMs, endMs]);
+  const pick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width)));
+    const rawMs = startMs + ratio * (endMs - startMs);
+    const halfHourMs = 30 * 60 * 1000;
+    const snapped = Math.round((rawMs - startMs) / halfHourMs) * halfHourMs + startMs;
+    onPick(Math.min(endMs - 1000, Math.max(startMs, snapped)));
+  };
+  if (!chart) {
+    return (
+      <div className="min-w-0">
+        <div onClick={pick} className="h-14 cursor-crosshair rounded-lg border border-border-subtle bg-bg-elevated" />
+        <DayTimelineTicks />
+      </div>
+    );
+  }
   return (
-    <svg viewBox="0 0 100 34" preserveAspectRatio="none" className="h-10 w-full rounded-md bg-white/[0.055]">
-      <path d="M0 8H100M0 17H100M0 26H100" stroke="rgba(255,255,255,.08)" strokeWidth="0.4" vectorEffect="non-scaling-stroke" />
-      <polyline points={chart.points} fill="none" stroke={color} strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      <line x1={chart.cursorX} x2={chart.cursorX} y1="2" y2="32" stroke="white" strokeWidth="0.75" vectorEffect="non-scaling-stroke" />
-      <circle cx={chart.cursorX} cy={chart.cursorY} r="1.1" fill="white" vectorEffect="non-scaling-stroke" />
-    </svg>
+    <div className="min-w-0">
+      <div
+        role="slider"
+        tabIndex={0}
+        aria-label="Шкала дня"
+        aria-valuetext={formatTimeOfDay(startMs + (chart.cursorX / 100) * (endMs - startMs))}
+        onClick={pick}
+        className="relative h-14 cursor-crosshair overflow-hidden rounded-lg border border-border-subtle bg-bg-elevated outline-none transition-colors hover:border-sky-300/40"
+      >
+        <svg viewBox="0 0 100 46" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
+          <path d="M0 10H100M0 22H100M0 34H100" stroke="rgba(255,255,255,.1)" strokeWidth="0.35" vectorEffect="non-scaling-stroke" />
+          <polyline points={chart.points} fill="none" stroke={color} strokeWidth="1.45" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+          <line x1={chart.cursorX} x2={chart.cursorX} y1="1" y2="45" stroke="rgba(255,255,255,.9)" strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
+          <circle cx={chart.cursorX} cy={chart.cursorY} r="1.1" fill="rgba(255,255,255,.96)" vectorEffect="non-scaling-stroke" />
+        </svg>
+        {Array.from({ length: 49 }, (_, tick) => {
+          const major = tick % 2 === 0;
+          return (
+            <span
+              key={tick}
+              className={cn(
+                'pointer-events-none absolute bottom-0 w-px -translate-x-1/2',
+                major ? 'h-4 bg-white/30' : 'h-2.5 bg-white/14',
+              )}
+              style={{ left: `${(tick / 48) * 100}%` }}
+            />
+          );
+        })}
+      </div>
+      <DayTimelineTicks />
+    </div>
+  );
+}
+
+function DayTimelineTicks() {
+  return (
+    <div className="mt-0.5">
+      <div className="relative h-3">
+        {Array.from({ length: 49 }, (_, index) => {
+          const major = index % 2 === 0;
+          return (
+            <span
+              key={index}
+              className={major ? 'absolute top-0 h-3 w-px bg-text-muted/35' : 'absolute top-1 h-2 w-px bg-text-muted/18'}
+              style={{ left: `${(index / 48) * 100}%` }}
+            />
+          );
+        })}
+      </div>
+      <div
+        className="grid text-[8px] font-mono tabular-nums leading-none text-text-muted/75"
+        style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}
+      >
+        {Array.from({ length: 24 }, (_, hour) => (
+          <span key={hour} className={cn(hour === 0 ? 'text-left' : hour === 23 ? 'text-right' : 'text-center')}>
+            {hour.toString().padStart(2, '0')}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -922,16 +1562,19 @@ function findHistoryIndexAt(points: GlonassHistoryPoint[], timeMs: number): numb
   return Math.max(0, Math.min(points.length - 1, lo));
 }
 
-function buildSpeedChart(points: GlonassHistoryPoint[], index: number): { points: string; cursorX: number; cursorY: number } | null {
+function buildSpeedChart(
+  points: GlonassHistoryPoint[],
+  index: number,
+  startMs: number,
+  endMs: number,
+): { points: string; cursorX: number; cursorY: number } | null {
   if (points.length < 2) return null;
-  const firstMs = Date.parse(points[0]?.time ?? '');
-  const lastMs = Date.parse(points[points.length - 1]?.time ?? '');
-  if (!Number.isFinite(firstMs) || !Number.isFinite(lastMs) || lastMs <= firstMs) return null;
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
   const maxSpeed = Math.max(1, ...points.map((p) => p.speed ?? 0));
   const sample = sampleHistoryPoints(points, 180);
   const xy = (p: GlonassHistoryPoint) => {
     const t = Date.parse(p.time);
-    const x = ((t - firstMs) / (lastMs - firstMs)) * 100;
+    const x = Math.min(100, Math.max(0, ((t - startMs) / (endMs - startMs)) * 100));
     const y = 30 - Math.min(1, Math.max(0, (p.speed ?? 0) / maxSpeed)) * 25;
     return { x, y };
   };
@@ -967,6 +1610,27 @@ function formatHistoryPointTime(value: string): string {
   }).format(date);
 }
 
+function formatTimeOfDay(value: number): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(date);
+}
+
+function historyTimelineWindow(layer: GlonassHistoryLayer | null, points: GlonassHistoryPoint[]): { startMs: number; endMs: number } {
+  const fromMs = Date.parse(layer?.from ?? '');
+  const toMs = Date.parse(layer?.to ?? '');
+  if (Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs) return { startMs: fromMs, endMs: toMs };
+  const firstMs = Date.parse(points[0]?.time ?? '');
+  if (Number.isFinite(firstMs)) {
+    const d = new Date(firstMs);
+    const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
+    return { startMs: start, endMs: start + 24 * 60 * 60 * 1000 };
+  }
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+  return { startMs: start, endMs: start + 24 * 60 * 60 * 1000 };
+}
+
 function courseAt(points: GlonassHistoryPoint[], index: number): number | null {
   const current = points[index];
   if (!current) return null;
@@ -996,150 +1660,501 @@ function distanceBetweenHistoryPoints(a: GlonassHistoryPoint, b: GlonassHistoryP
   return 2 * r * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-// ─── Меню карты ──────────────────────────────────────────────────────────────
+function replayAnimationMs(pointGapMs: number, speed: number): number {
+  if (!Number.isFinite(pointGapMs) || pointGapMs <= 0 || !Number.isFinite(speed) || speed <= 0) return 1400;
+  return Math.max(180, Math.min(15_000, pointGapMs / speed));
+}
+
+function lastTrackPoint(segments: LatLng[][]): LatLng | null {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const segment = segments[i]!;
+    const point = segment[segment.length - 1];
+    if (point) return point;
+  }
+  return null;
+}
+
+function lastTrackSegment(segments: LatLng[][]): LatLng[] | null {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const segment = segments[i]!;
+    if (segment.length >= 2) return segment;
+  }
+  return null;
+}
+
+// ─── Панель инструментов карты ────────────────────────────────────────────────
 
 const TOOL_OPTIONS: Array<{ id: MapTool; label: string; icon: typeof MapPin }> = [
   { id: 'select', label: 'Выбор', icon: MousePointer2 },
-  { id: 'point', label: 'Пин', icon: MapPin },
-  { id: 'crossing', label: 'Ж/Д', icon: TrainTrack },
-  { id: 'area', label: 'Область', icon: Pentagon },
-  { id: 'road', label: 'Дорога', icon: Route },
-  { id: 'eraseRoad', label: 'Ластик', icon: Eraser },
-  { id: 'confirmRoad', label: 'Подтвердить дорогу', icon: CheckCheck },
+  { id: 'point', label: 'Точка (пин)', icon: MapPin },
+  { id: 'area', label: 'Площадка / область (полигон)', icon: Pentagon },
+  { id: 'road', label: 'Дорога (рисовать)', icon: Route },
+  { id: 'eraseRoad', label: 'Ластик дорог — зажмите ЛКМ и ведите', icon: Eraser },
+  { id: 'confirmRoad', label: 'Подтвердить красную дорогу', icon: CheckCheck },
+  { id: 'eraseSuggestion', label: 'Ластик красных — зажмите ЛКМ и ведите', icon: Scissors },
+  { id: 'restrict', label: 'Ограничение дороги — проведите по дороге, затем Enter', icon: Ban },
+  { id: 'eraseAccess', label: 'Ластик ограничений — зажмите ЛКМ и ведите', icon: Eraser },
+  { id: 'crossing', label: 'Ж/д переезд (поставить вручную)', icon: TrainTrack },
+  { id: 'clearance', label: 'Высота проезда — клик по дороге (тоннель/труба)', icon: Ruler },
   { id: 'optimize', label: 'Оптимум', icon: Crosshair },
 ];
 
-function ToolMenu({
+function RoadQualityPanel({
+  quality,
+  preview,
+  mergePreview,
+  lastNormalization,
+  lastMerge,
+  onNormalize,
+  onMergeOverlaps,
+  onClose,
+}: {
+  quality: RoadNetworkQuality;
+  preview: RoadNormalizationReport | null;
+  mergePreview: { merge: RoadMergeReport; welds: number } | null;
+  lastNormalization: RoadNormalizationReport | null;
+  lastMerge: RoadOverlapMergeSummary | null;
+  onNormalize: () => void;
+  onMergeOverlaps: () => void;
+  onClose: () => void;
+}) {
+  const mergeWork = mergePreview
+    ? mergePreview.merge.roadsAbsorbed + mergePreview.merge.roadsTrimmed + mergePreview.welds
+    : 0;
+  const virtualEdges = quality.virtualTouchEdges + quality.virtualOverlapEdges + quality.virtualWeldEdges;
+  return (
+    <div className="absolute right-16 top-14 z-[454] w-[320px] rounded-xl border border-border-default bg-bg-elevated p-3 shadow-[0_18px_54px_rgba(0,0,0,0.52)]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[13px] font-semibold text-text-strong">Дорожная сеть</div>
+          <div className="mt-0.5 text-[10.5px] text-text-muted">Проверка перед маршрутизацией</div>
+        </div>
+        <button type="button" onClick={onClose} className="rounded-md p-1 text-text-muted hover:bg-bg-hover hover:text-text-secondary" title="Закрыть">
+          <X size={14} />
+        </button>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+        <QualityRow label="Жёлтых линий" value={String(quality.roads)} />
+        <QualityRow label="Длина" value={`${quality.totalLengthKm.toFixed(1)} км`} />
+        <QualityRow label="Строгих частей" value={String(quality.strictComponents)} warn={quality.strictComponents > 1} />
+        <QualityRow label="Скрытых мостов" value={String(virtualEdges)} warn={virtualEdges > 0} />
+        <QualityRow label="Огрызков < 3 м" value={String(quality.shortRoadsUnder3m)} warn={quality.shortRoadsUnder3m > 0} />
+        <QualityRow label="Точек > 30 м" value={String(quality.pointsOver30m)} warn={quality.pointsOver30m > 0} />
+      </div>
+
+      <div className={cn(
+        'mt-3 rounded-lg border px-2.5 py-2 text-[11px] leading-[16px]',
+        quality.routingReady
+          ? 'border-emerald-400/25 bg-emerald-400/8 text-emerald-200'
+          : 'border-amber-400/25 bg-amber-400/8 text-amber-100',
+      )}>
+        {quality.routingReady
+          ? `Все ${quality.points} рабочих точек лежат в одной строгой части сети.`
+          : `Рабочие точки используют ${quality.operationalComponents} несвязанные части сети.`}
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-text-muted">
+        <span className="flex items-center gap-1"><i className="h-0.5 w-4 bg-rose-400" /> близкий стык</span>
+        <span className="flex items-center gap-1"><i className="h-0.5 w-4 bg-purple-400" /> параллельное место</span>
+        <span>Это подсказки, не дороги.</span>
+      </div>
+
+      {preview && (
+        <div className="mt-3 rounded-lg border border-border-subtle bg-bg-surface px-2.5 py-2 text-[10.5px] leading-[16px] text-text-secondary">
+          Безопасный прогон: добавить {preview.addedConnectorRoads} явных соединения, изменить форму старых линий на 0 м,
+          частей станет {preview.strictComponentsAfter}. Неоднозначные параллельные места останутся на ручную проверку.
+        </div>
+      )}
+
+      {lastNormalization && (
+        <div className="mt-2 text-[10.5px] text-emerald-300">
+          Выполнено. Можно отменить кнопкой ↶ в редакторе.
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={onNormalize}
+        disabled={!preview || (preview.addedConnectorRoads === 0 && preview.changedRoads === 0)}
+        className="mt-3 flex h-8 w-full items-center justify-center rounded-lg border border-accent-clay/45 bg-accent-clay/12 text-[11px] font-medium text-accent-clay transition-colors hover:bg-accent-clay/20 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Нормализовать безопасно
+      </button>
+
+      {mergePreview && (
+        <div className="mt-3 rounded-lg border border-border-subtle bg-bg-surface px-2.5 py-2 text-[10.5px] leading-[16px] text-text-secondary">
+          Палка-на-палку: поглотить {mergePreview.merge.roadsAbsorbed} двойников, пришить {mergePreview.merge.roadsTrimmed} хвостов
+          (−{Math.round(mergePreview.merge.metersRemoved)} м наложений), впаять {mergePreview.welds} швов-развилок.
+        </div>
+      )}
+
+      {lastMerge && (
+        <div className="mt-2 text-[10.5px] text-emerald-300">
+          Слито. Частей сети: {lastMerge.norm.strictComponentsAfter}. Отмена — кнопкой ↶ в редакторе.
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={onMergeOverlaps}
+        disabled={mergeWork === 0}
+        className="mt-2 flex h-8 w-full items-center justify-center rounded-lg border border-purple-400/45 bg-purple-400/12 text-[11px] font-medium text-purple-300 transition-colors hover:bg-purple-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Слить наложения (палка-на-палку)
+      </button>
+    </div>
+  );
+}
+
+function QualityRow({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <div className="contents">
+      <span className="text-text-muted">{label}</span>
+      <span className={cn('text-right font-medium', warn ? 'text-amber-300' : 'text-text-secondary')}>{value}</span>
+    </div>
+  );
+}
+
+/**
+ * Вертикальная панель инструментов поверх карты: активная кнопка ПОДСВЕЧЕНА
+ * (ТЗ 2026-07-09). Внизу — загрузка красного пунктира по видимой области и
+ * его полная очистка («подгрузил, отрисовал и убрал как помощника»).
+ */
+function MapToolStrip({
   tool,
-  roadSuggestionCount,
   suggestionsLoading,
-  showRoadSuggestions,
-  showRoadAccess,
-  roadPaintMode,
+  roadSuggestionCount,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onOpenRoadQuality,
   onChange,
-  onToggleRoadSuggestions,
-  onToggleRoadAccess,
-  onRoadPaintModeChange,
+  onClose,
   onLoadRoadSuggestions,
   onClearRoadSuggestions,
 }: {
   tool: MapTool;
-  roadSuggestionCount: number;
   suggestionsLoading: boolean;
-  showRoadSuggestions: boolean;
-  showRoadAccess: boolean;
-  roadPaintMode: RoadPaintMode;
+  roadSuggestionCount: number;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  onOpenRoadQuality: () => void;
   onChange: (tool: MapTool) => void;
-  onToggleRoadSuggestions: () => void;
-  onToggleRoadAccess: () => void;
-  onRoadPaintModeChange: (mode: RoadPaintMode) => void;
+  onClose: () => void;
   onLoadRoadSuggestions: () => void;
   onClearRoadSuggestions: () => void;
 }) {
-  const active = TOOL_OPTIONS.find((item) => item.id === tool) ?? TOOL_OPTIONS[0]!;
-  const paint = roadPaintOption(roadPaintMode);
+  return (
+    <div className="absolute right-3 top-14 z-[452] flex flex-col items-center gap-0.5 rounded-xl border border-border-default bg-bg-elevated p-1 shadow-[0_16px_44px_rgba(0,0,0,0.44)]">
+      {TOOL_OPTIONS.map((item) => {
+        const active = item.id === tool;
+        const Icon = item.icon;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onChange(item.id)}
+            title={item.label}
+            className={cn(
+              'flex h-8 w-8 items-center justify-center rounded-lg outline-none transition-colors',
+              active
+                ? 'bg-accent-clay text-white shadow-[0_0_0_1px_rgba(232,131,107,0.55),0_0_12px_rgba(232,131,107,0.35)]'
+                : 'text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+            )}
+          >
+            <Icon size={15} strokeWidth={1.8} />
+          </button>
+        );
+      })}
+      <div className="my-0.5 h-px w-full bg-border-subtle" />
+      <button
+        type="button"
+        onClick={onOpenRoadQuality}
+        title="Проверить качество дорожной сети"
+        className="flex h-8 w-8 items-center justify-center rounded-lg text-amber-300/90 outline-none transition-colors hover:bg-amber-400/10 hover:text-amber-200"
+      >
+        <Network size={15} strokeWidth={1.8} />
+      </button>
+      <div className="my-0.5 h-px w-full bg-border-subtle" />
+      <button
+        type="button"
+        onClick={onUndo}
+        disabled={!canUndo}
+        title="Отменить последнее изменение карты"
+        className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        <Undo2 size={15} strokeWidth={1.8} />
+      </button>
+      <button
+        type="button"
+        onClick={onRedo}
+        disabled={!canRedo}
+        title="Повторить последний штрих ластика"
+        className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        <Redo2 size={15} strokeWidth={1.8} />
+      </button>
+      <div className="my-0.5 h-px w-full bg-border-subtle" />
+      <button
+        type="button"
+        onClick={onLoadRoadSuggestions}
+        disabled={suggestionsLoading}
+        title="Загрузить возможные дороги (красный пунктир) по видимой области"
+        className={cn(
+          'flex h-8 w-8 items-center justify-center rounded-lg text-red-300/80 outline-none transition-colors hover:bg-red-400/10 hover:text-red-300',
+          suggestionsLoading && 'animate-pulse cursor-wait',
+        )}
+      >
+        <Route size={15} strokeWidth={1.8} />
+      </button>
+      {roadSuggestionCount > 0 && (
+        <button
+          type="button"
+          onClick={onClearRoadSuggestions}
+          title={`Убрать весь красный пунктир (${roadSuggestionCount})`}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-red-400/10 hover:text-red-300"
+        >
+          <Trash2 size={15} strokeWidth={1.8} />
+        </button>
+      )}
+      <div className="my-0.5 h-px w-full bg-border-subtle" />
+      <button
+        type="button"
+        onClick={onClose}
+        title="Скрыть редактор"
+        className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
+      >
+        <X size={15} strokeWidth={1.8} />
+      </button>
+    </div>
+  );
+}
+
+/** Легенда дорог (компактная, низ-право): что каким цветом нарисовано. */
+function MapLegend({ showRails, showFootways, showSuggestions, showBuildings, restrictions }: {
+  showRails: boolean;
+  showFootways: boolean;
+  showSuggestions: boolean;
+  showBuildings: boolean;
+  restrictions: Array<{ color: string; label: string }>;
+}) {
+  return (
+    <div className="pointer-events-none absolute bottom-3 right-3 z-[448] rounded-lg border border-border-subtle bg-bg-surface px-2.5 py-1.5 text-[10.5px] leading-[17px] text-text-secondary shadow-lg">
+      <div className="flex items-center gap-1.5">
+        <span className="inline-block h-[3px] w-6 rounded-full bg-[#FFC83D]" /> Машины (наши дороги)
+      </div>
+      {showRails && (
+        <div className="flex items-center gap-1.5">
+          <span className="inline-block h-[3px] w-6 rounded-full" style={{ background: 'repeating-linear-gradient(90deg,#111827 0 3px,#D1D5DB 3px 6px)' }} /> Ж/д путь
+        </div>
+      )}
+      {showFootways && (
+        <div className="flex items-center gap-1.5">
+          <span className="inline-block h-[2px] w-6 rounded-full bg-[#38BDF8]" /> Пешеходная дорожка
+        </div>
+      )}
+      {showFootways && (
+        <div className="flex items-center gap-1.5">
+          <span className="inline-block h-[4px] w-6 rounded-sm" style={{ background: 'repeating-linear-gradient(90deg,#38BDF8 0 3px,transparent 3px 5px)' }} /> Пешеходный переход
+        </div>
+      )}
+      {showSuggestions && (
+        <div className="flex items-center gap-1.5">
+          <span className="inline-block h-[3px] w-6 rounded-full" style={{ background: 'repeating-linear-gradient(90deg,#EF4444 0 4px,transparent 4px 7px)' }} /> Возможные дороги
+        </div>
+      )}
+      {showBuildings && (
+        <div className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-6 rounded-sm border border-[#C4B5FD]/60 bg-[#A78BFA]/25" /> Здания (справочно)
+        </div>
+      )}
+      {restrictions.map((r) => (
+        <div key={r.label} className="flex items-center gap-1.5">
+          <span className="inline-block h-[3px] w-6 rounded-full" style={{ backgroundColor: r.color }} /> {r.label}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Компактное окно настройки участка «Ограничение дороги»: свободна / ограничена
+ * (типы ТС разрешены или запрещены) / закрыта / временно закрыта (+даты).
+ * Одна дорожная линия хранит правила участка — отдельные дороги не рисуются.
+ */
+function RestrictionDialog({ onSave, onCancel }: {
+  onSave: (fields: Partial<RoadAccess>) => void;
+  onCancel: () => void;
+}) {
+  const [kind, setKind] = useState<RoadAccessKind>('limited');
+  const [vehiclesByPurpose, setVehiclesByPurpose] = useState(allVehiclesByPurpose);
+  const [closedFrom, setClosedFrom] = useState(() => new Date().toISOString().slice(0, 10));
+  const [closedTo, setClosedTo] = useState('');
+  const [note, setNote] = useState('');
+
+  const save = () => {
+    onSave({
+      kind,
+      vehicles: [],
+      vehiclesMode: 'allow',
+      vehiclesByPurpose: kind === 'limited' ? vehiclesByPurpose : {},
+      note,
+      closedFrom: kind === 'closed' || kind === 'temp_closed' ? closedFrom : '',
+      closedTo: kind === 'temp_closed' ? closedTo : '',
+    });
+  };
+
+  return (
+    <div className="absolute inset-0 z-[478] flex items-center justify-center bg-black/25" onClick={onCancel}>
+      <div
+        className="w-[340px] max-w-[calc(100%-2rem)] rounded-xl border border-border-default bg-bg-deep/97 p-3 shadow-[0_12px_44px_rgba(0,0,0,0.6)] backdrop-blur-md"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-[13px] font-semibold text-text-strong">Участок дороги</p>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex h-6 w-6 items-center justify-center rounded text-text-muted outline-none hover:bg-bg-hover hover:text-text-strong"
+          ><X size={14} strokeWidth={1.75} /></button>
+        </div>
+
+        <div className="space-y-1">
+          {ROAD_ACCESS_KIND_META.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setKind(m.id)}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-[12.5px] outline-none transition-colors',
+                kind === m.id ? 'border-white/30 bg-white/10 text-text-strong' : 'border-border-subtle text-text-secondary hover:bg-bg-hover',
+              )}
+            >
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: m.color }} />
+              <span className="flex-1">{m.label}</span>
+              {kind === m.id && <Check size={13} strokeWidth={2} />}
+            </button>
+          ))}
+        </div>
+
+        {kind === 'limited' && (
+          <div className="mt-2">
+            <p className="mb-1 text-[10.5px] leading-snug text-text-muted">
+              Галочка разрешает типу ТС этот участок для выбранного назначения. Заголовок столбца включает или снимает все типы.
+            </p>
+            <div className="max-h-52 overflow-y-auto pr-0.5">
+              <VehiclePurposeAccessGrid value={vehiclesByPurpose} onChange={setVehiclesByPurpose} />
+            </div>
+          </div>
+        )}
+
+        {(kind === 'closed' || kind === 'temp_closed') && (
+          <div className="mt-2 grid grid-cols-2 gap-1.5">
+            <label className="block">
+              <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">Закрыто с</span>
+              <input
+                type="date"
+                value={closedFrom}
+                onChange={(e) => setClosedFrom(e.target.value)}
+                className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12px] text-text-primary outline-none focus:border-accent-clay/40"
+              />
+            </label>
+            {kind === 'temp_closed' && (
+              <label className="block">
+                <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">По (открытие)</span>
+                <input
+                  type="date"
+                  value={closedTo}
+                  onChange={(e) => setClosedTo(e.target.value)}
+                  className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12px] text-text-primary outline-none focus:border-accent-clay/40"
+                />
+              </label>
+            )}
+          </div>
+        )}
+
+        <textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={2}
+          placeholder="Заметка: особенности проезда (необязательно)"
+          className="mt-2 w-full resize-none rounded border border-border-default bg-bg-surface px-2 py-1 text-[12px] text-text-primary outline-none focus:border-accent-clay/40"
+        />
+
+        <div className="mt-2 flex items-center justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="h-7 rounded border border-border-subtle px-3 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+          >Отмена</button>
+          <button
+            type="button"
+            onClick={save}
+            className="h-7 rounded border border-accent-clay/60 bg-accent-clay-bg px-3 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/15"
+          >Сохранить участок</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Меню «Вид»: все справочные/визуальные слои в одном компактном месте. */
+function ViewMenu({ items }: {
+  items: Array<{ icon: typeof MapPin; label: string; on: boolean; onClick: () => void; title: string }>;
+}) {
+  const activeCount = items.filter((item) => item.on).length;
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="flex h-6 items-center gap-1 rounded-md border border-border-subtle px-2 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
-          title="Инструменты карты"
+          title="Слои карты"
+          className="flex h-6 items-center gap-1 rounded-md border border-border-subtle px-2 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary data-[state=open]:border-accent-clay/55 data-[state=open]:bg-accent-clay-bg data-[state=open]:text-accent-clay"
         >
-          <Settings2 size={13} strokeWidth={1.75} />
-          {active.label}
+          <SlidersHorizontal size={13} strokeWidth={1.75} />
+          Вид
+          <span className="ml-0.5 rounded bg-bg-hover px-1 text-[10px] tabular-nums text-text-muted">{activeCount}</span>
         </button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
+          side="bottom"
           align="end"
           sideOffset={6}
-          className="z-50 max-h-[70vh] w-64 overflow-y-auto rounded-lg border border-border-default bg-bg-elevated p-1.5 shadow-2xl outline-none"
+          className="z-[700] w-56 rounded-lg border border-border-default bg-bg-elevated p-1.5 shadow-[0_16px_44px_rgba(0,0,0,0.44)] outline-none"
         >
-          {TOOL_OPTIONS.map((item) => (
-            <ToolMenuItem
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={item.id === tool}
-              onClick={() => onChange(item.id)}
-            />
-          ))}
-          <div className="my-1.5 h-px bg-border-subtle" />
-          <div className="px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-            Закраска дороги
-          </div>
-          <div className="mb-1 grid grid-cols-2 gap-1 px-1">
-            {ROAD_PAINT_OPTIONS.map((option) => (
+          {items.map((item) => {
+            const Icon = item.icon;
+            return (
               <button
-                key={option.id}
+                key={item.label}
                 type="button"
-                onClick={() => {
-                  onRoadPaintModeChange(option.id);
-                  if (tool !== 'vehicles') onChange('vehicles');
-                }}
+                onClick={item.onClick}
+                title={item.title}
                 className={cn(
-                  'flex min-h-7 items-center gap-1.5 rounded-md border px-1.5 text-left text-[11px] outline-none transition-colors',
-                  roadPaintMode === option.id
-                    ? 'border-white/30 bg-white/10 text-text-strong'
-                    : 'border-border-subtle text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+                  'flex h-7 w-full items-center gap-2 rounded-md border px-2 text-left text-[12px] outline-none transition-colors',
+                  item.on
+                    ? 'border-accent-clay/45 bg-accent-clay-bg text-accent-clay'
+                    : 'border-transparent text-text-muted hover:bg-bg-hover hover:text-text-secondary',
                 )}
-                title={option.label}
               >
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: option.color }} />
-                <span className="truncate">{option.label}</span>
+                <Icon size={13} strokeWidth={1.75} />
+                <span className="flex-1 truncate">{item.label}</span>
+                {item.on ? <Eye size={13} strokeWidth={1.75} /> : <EyeOff size={13} strokeWidth={1.75} />}
               </button>
-            ))}
-          </div>
-          <p className="px-2 pb-1 text-[11px] text-text-muted">
-            Активно: <span className="font-semibold text-text-secondary">{paint.label}</span>
-          </p>
-          <button
-            type="button"
-            onClick={onToggleRoadAccess}
-            className="mb-1 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
-          >
-            <span className={cn('h-2.5 w-2.5 rounded-full', showRoadAccess ? 'bg-[#22D3EE]' : 'bg-text-muted')} />
-            <span className="flex-1 truncate">{showRoadAccess ? 'Скрыть закраску дорог' : 'Показать закраску дорог'}</span>
-          </button>
-          <div className="my-1.5 h-px bg-border-subtle" />
-          <button
-            type="button"
-            onClick={onLoadRoadSuggestions}
-            disabled={suggestionsLoading}
-            className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary disabled:cursor-wait disabled:opacity-60"
-          >
-            <Route size={13} strokeWidth={1.75} />
-            <span className="flex-1 truncate">{suggestionsLoading ? 'Загружаю дороги...' : 'Возможны дороги'}</span>
-          </button>
+            );
+          })}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
   );
 }
 
-function ToolMenuItem({ icon: Icon, label, active, onClick }: {
-  icon: typeof MapPin; label: string; active: boolean; onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] outline-none transition-colors',
-        active
-          ? 'bg-accent-clay-bg text-accent-clay'
-          : 'text-text-muted hover:bg-bg-hover hover:text-text-secondary',
-      )}
-    >
-      <Icon size={13} strokeWidth={1.75} />
-      <span className="flex-1 truncate">{label}</span>
-      {active && <Check size={13} strokeWidth={1.75} />}
-    </button>
-  );
-}
-
-/** Маленький тумблер слоя в шапке (особенности/погода/рельеф). */
+/** Маленький тумблер слоя в шапке (Глонасс оставляем быстрым действием). */
 function LayerToggle({ icon: Icon, label, on, onClick, title }: {
   icon: typeof MapPin; label: string; on: boolean; onClick: () => void; title: string;
 }) {
@@ -1158,22 +2173,33 @@ function LayerToggle({ icon: Icon, label, on, onClick, title }: {
   );
 }
 
-/** Фильтр точек: категория (отгрузка/выгрузка/вне графика) + конкретные склады. */
-function PointsFilter({ warehouses, activeWarehouses, activeCategories, filterActive, onWarehousesChange, onCategoriesChange }: {
+/** Фильтр точек: категория + склады + отдельный поиск по № ж/д пути (переезды). */
+function PointsFilter({ warehouses, activeWarehouses, activeCategories, filterActive, onWarehousesChange, onCategoriesChange, crossings, onPickCrossing }: {
   warehouses: string[];
   activeWarehouses: Set<string> | null;
   activeCategories: Set<PointCategory> | null;
   filterActive: boolean;
   onWarehousesChange: (s: Set<string> | null) => void;
   onCategoriesChange: (s: Set<PointCategory> | null) => void;
+  crossings: Array<{ id: string; name: string }>;
+  onPickCrossing: (id: string) => void;
 }) {
   const [q, setQ] = useState('');
+  const [qRail, setQRail] = useState('');
   // Длинный список складов не вываливаем — показываем совпадения ТОЛЬКО при вводе.
   const matches = useMemo(() => {
     const lc = q.trim().toLowerCase();
     if (!lc) return [];
     return warehouses.filter((w) => w.toLowerCase().includes(lc)).slice(0, 8);
   }, [q, warehouses]);
+  // Переезды по № ж/д пути — отдельная строка поиска, со складами не мешается.
+  const railMatches = useMemo(() => {
+    const lc = qRail.trim().toLowerCase();
+    if (!lc) return [];
+    return crossings
+      .filter((c) => c.name.trim() && c.name.trim().toLowerCase().includes(lc))
+      .slice(0, 8);
+  }, [qRail, crossings]);
   const selected = activeWarehouses ? Array.from(activeWarehouses) : [];
   const toggleWh = (w: string) => {
     const base = activeWarehouses ? new Set(activeWarehouses) : new Set<string>();
@@ -1260,6 +2286,26 @@ function PointsFilter({ warehouses, activeWarehouses, activeCategories, filterAc
               ))}
             </div>
           )}
+          <div className="my-1 h-px bg-border-subtle" />
+          <div className="px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Ж/д путь (№)</div>
+          <input
+            value={qRail}
+            onChange={(e) => setQRail(e.target.value)}
+            placeholder="Найти переезд по № пути…"
+            className="mb-1 w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12px] text-text-primary outline-none focus:border-accent-clay/40"
+          />
+          {qRail.trim() !== '' && railMatches.length === 0 && <p className="px-2 py-1 text-[11.5px] text-text-muted">Переезд с таким № пути не найден</p>}
+          {railMatches.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => onPickCrossing(c.id)}
+              className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px] outline-none hover:bg-bg-hover"
+            >
+              <TrainTrack size={12} strokeWidth={1.75} className="shrink-0 text-amber-300" />
+              <span className="truncate font-mono tabular-nums text-text-secondary">{c.name}</span>
+            </button>
+          ))}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
@@ -1326,7 +2372,7 @@ function VehicleFilter({ active, onChange }: { active: VehicleType | null; onCha
 }
 
 /** Чип сводки погоды по площадке: клик открывает ближайшие часы. */
-function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
+function WeatherChip({ weather, shifted = false }: { weather: WeatherSummary | null; shifted?: boolean }) {
   const rows = weather?.hourly.slice(0, 16) ?? [];
   const display = buildWeatherDisplay(weather, rows);
   const grid = 'grid grid-cols-[56px_minmax(74px,1fr)_64px_58px_54px_60px] items-center gap-1.5';
@@ -1335,7 +2381,10 @@ function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="absolute left-3 top-3 z-[450] flex min-h-10 min-w-[238px] max-w-[320px] items-center gap-2 rounded-xl border border-accent-clay/30 bg-bg-deep/95 px-3 py-2 text-left text-[11.5px] text-text-secondary shadow-[0_10px_34px_rgba(0,0,0,0.58)] outline-none backdrop-blur-md transition-all duration-150 hover:border-accent-clay/50 hover:bg-bg-elevated hover:text-text-strong"
+          className={cn(
+            'absolute top-3 z-[450] flex min-h-10 min-w-[238px] max-w-[320px] items-center gap-2 rounded-xl border border-accent-clay/30 bg-bg-elevated px-3 py-2 text-left text-[11.5px] text-text-secondary shadow-[0_10px_34px_rgba(0,0,0,0.58)] outline-none transition-all duration-150 hover:border-accent-clay/50 hover:bg-bg-hover hover:text-text-strong',
+            shifted ? 'left-[398px]' : 'left-3',
+          )}
           title="Погода по часам"
         >
           <CloudRain size={16} strokeWidth={1.8} className={display.isPrecip ? 'shrink-0 text-sky-300' : 'shrink-0 text-text-muted'} />
@@ -1361,7 +2410,7 @@ function WeatherChip({ weather }: { weather: WeatherSummary | null }) {
         <Popover.Content
           align="start"
           sideOffset={8}
-          className="z-[700] w-[462px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-border-default bg-bg-deep/96 shadow-[0_12px_42px_rgba(0,0,0,0.58)] outline-none backdrop-blur-md transition-all duration-150"
+          className="z-[700] w-[462px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-border-default bg-bg-elevated shadow-[0_12px_42px_rgba(0,0,0,0.58)] outline-none transition-all duration-150"
         >
           <div className="flex items-center justify-between border-b border-border-subtle/70 px-3 py-2">
             <div>

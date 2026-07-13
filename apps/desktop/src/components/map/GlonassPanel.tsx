@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Clock, Loader2, RotateCw, Route, Satellite, Search, Square, X } from 'lucide-react';
+import * as Popover from '@radix-ui/react-popover';
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Crosshair, Loader2, RotateCw, Route, Satellite, Search, Square, X } from 'lucide-react';
 import {
   useGlonassStore,
   vehicleStatus,
   STATUS_LABEL,
   STATUS_COLOR,
   formatGlonassSpeed,
+  GLONASS_PRO_COLOR,
+  GLONASS_RAW_COLOR,
   type GlonassPosition,
   type GlonassVehicle,
 } from './glonass-store';
@@ -23,6 +26,8 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const selected = useGlonassStore((s) => s.selected);
   const positions = useGlonassStore((s) => s.positions);
   const offline = useGlonassStore((s) => s.offline);
+  const followId = useGlonassStore((s) => s.followId);
+  const setFollow = useGlonassStore((s) => s.setFollow);
   const historyLoading = useGlonassStore((s) => s.historyLoading);
   const setOpen = useGlonassStore((s) => s.setOpen);
   const toggleSelect = useGlonassStore((s) => s.toggleSelect);
@@ -31,11 +36,14 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const createHistoryLayer = useGlonassStore((s) => s.createHistoryLayer);
   const createYearRoadLayer = useGlonassStore((s) => s.createYearRoadLayer);
   const cancelHistoryLoading = useGlonassStore((s) => s.cancelHistoryLoading);
+  const showPro = useGlonassStore((s) => s.showPro);
+  const showRaw = useGlonassStore((s) => s.showRaw);
+  const setShowPro = useGlonassStore((s) => s.setShowPro);
+  const setShowRaw = useGlonassStore((s) => s.setShowRaw);
 
   const [query, setQuery] = useState('');
   const [historyVehicleId, setHistoryVehicleId] = useState<number | ''>('');
-  const [historyFrom, setHistoryFrom] = useState(() => toLocalInputValue(new Date(Date.now() - 2 * 60 * 60 * 1000)));
-  const [historyTo, setHistoryTo] = useState(() => toLocalInputValue(new Date()));
+  const [historyDay, setHistoryDay] = useState(() => toLocalDateValue(new Date()));
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -62,9 +70,10 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     setHistoryVehicleId((cur) => (cur && fleet.some((v) => v.id === cur) ? cur : fallback));
   }, [firstSelectedId, fleet]);
 
-  const createPeriodHistory = () => {
+  const createDayHistory = () => {
     if (!historyVehicleId) return;
-    void createHistoryLayer(Number(historyVehicleId), localInputToIso(historyFrom), localInputToIso(historyTo));
+    const [from, to] = localDayRangeToIso(historyDay);
+    void createHistoryLayer(Number(historyVehicleId), from, to);
   };
 
   const createSelectedYearHistory = () => {
@@ -79,13 +88,13 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   if (!open) return null;
 
   return (
-    <div className="absolute left-3 top-3 z-[6] flex max-h-[calc(100%-1.5rem)] w-[356px] flex-col overflow-hidden rounded-xl border border-border-subtle bg-bg-deep/92 shadow-[0_8px_30px_rgba(0,0,0,0.45)] backdrop-blur-md">
+    <div className="absolute left-3 top-3 z-[6] flex max-h-[calc(100%-1.5rem)] w-[382px] flex-col overflow-hidden rounded-2xl border border-border-default bg-bg-surface shadow-[0_18px_58px_rgba(0,0,0,0.46)]">
       {/* Шапка */}
-      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border-subtle/70 px-3">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
         <Satellite className="h-3.5 w-3.5 text-emerald-400" />
-        <span className="text-[12.5px] font-semibold text-text-strong">Глонасс</span>
+        <span className="text-[13px] font-semibold text-text-strong">Глонасс</span>
         {selected.size > 0 && (
-          <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">
+          <span className="rounded-full border border-emerald-400/30 bg-emerald-500/12 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
             {selected.size}
           </span>
         )}
@@ -94,7 +103,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             type="button"
             title="Обновить парк"
             onClick={() => loadFleet()}
-            className="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
           >
             <RotateCw className="h-3.5 w-3.5" />
           </button>
@@ -102,7 +111,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             type="button"
             title="Закрыть"
             onClick={() => setOpen(false)}
-            className="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -110,8 +119,8 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       </div>
 
       {/* Поиск */}
-      <div className="shrink-0 px-2.5 pb-1.5 pt-2">
-        <div className="flex items-center gap-1.5 rounded-md border border-border-subtle bg-bg-surface px-2 py-1">
+      <div className="shrink-0 px-3 pb-2 pt-3">
+        <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border-subtle bg-bg-elevated px-2">
           <Search className="h-3.5 w-3.5 text-text-muted" />
           <input
             value={query}
@@ -139,51 +148,52 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
         </div>
       )}
 
-      <div className="shrink-0 border-y border-border-subtle/65 bg-bg-surface/45 px-2.5 py-2">
+      <div className="shrink-0 border-y border-border-subtle bg-bg-elevated px-3 py-2.5">
         <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
           <Clock className="h-3.5 w-3.5" />
           История движения
         </div>
         <div className="grid gap-1.5">
+          <div className="grid grid-cols-2 gap-1.5" aria-label="Отображение маршрута">
+            <HistoryModeToggle
+              label="PRO"
+              color={GLONASS_PRO_COLOR}
+              on={showPro}
+              onClick={() => setShowPro(!showPro)}
+            />
+            <HistoryModeToggle
+              label="ГЛОНАСС"
+              color={GLONASS_RAW_COLOR}
+              on={showRaw}
+              onClick={() => setShowRaw(!showRaw)}
+            />
+          </div>
           <select
             value={historyVehicleId}
             onChange={(e) => setHistoryVehicleId(Number(e.target.value) || '')}
-            className="h-7 min-w-0 rounded-md border border-border-subtle bg-bg-deep px-2 text-[11.5px] text-text-strong outline-none"
+            className="h-8 min-w-0 rounded-lg border border-border-subtle bg-bg-surface px-2 text-[11.5px] text-text-strong outline-none focus:border-accent-clay/50"
           >
             <option value="">Выберите машину</option>
             {fleet.map((v) => (
               <option key={v.id} value={v.id}>{v.garage ? `${v.garage} · ` : ''}{v.gos || v.name}</option>
             ))}
           </select>
-          <div className="grid grid-cols-2 gap-1.5">
-            <input
-              type="datetime-local"
-              value={historyFrom}
-              onChange={(e) => setHistoryFrom(e.target.value)}
-              className="h-7 min-w-0 rounded-md border border-border-subtle bg-bg-deep px-2 text-[11px] text-text-secondary outline-none"
-            />
-            <input
-              type="datetime-local"
-              value={historyTo}
-              onChange={(e) => setHistoryTo(e.target.value)}
-              className="h-7 min-w-0 rounded-md border border-border-subtle bg-bg-deep px-2 text-[11px] text-text-secondary outline-none"
-            />
-          </div>
+          <HistoryDateField value={historyDay} onChange={setHistoryDay} />
           <div className="grid grid-cols-[1fr_1fr_1fr] gap-1.5">
             <button
               type="button"
               disabled={!historyVehicleId || !!historyLoading}
-              onClick={createPeriodHistory}
-              className="flex h-7 items-center justify-center gap-1.5 rounded-md border border-sky-400/35 bg-sky-500/12 px-2 text-[11px] font-semibold text-sky-200 outline-none transition-colors hover:bg-sky-500/18 disabled:cursor-not-allowed disabled:opacity-45"
+              onClick={createDayHistory}
+              className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-sky-400/35 bg-sky-500/12 px-2 text-[11px] font-semibold text-sky-200 outline-none transition-colors hover:bg-sky-500/18 disabled:cursor-not-allowed disabled:opacity-45"
             >
               <Route className="h-3.5 w-3.5" />
-              Маршрут
+              День
             </button>
             <button
               type="button"
               disabled={(!historyVehicleId && selected.size === 0) || !!historyLoading}
               onClick={createSelectedYearHistory}
-              className="flex h-7 items-center justify-center gap-1.5 rounded-md border border-pink-400/35 bg-pink-500/12 px-2 text-[11px] font-semibold text-pink-200 outline-none transition-colors hover:bg-pink-500/18 disabled:cursor-not-allowed disabled:opacity-45"
+              className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-pink-400/35 bg-pink-500/12 px-2 text-[11px] font-semibold text-pink-200 outline-none transition-colors hover:bg-pink-500/18 disabled:cursor-not-allowed disabled:opacity-45"
             >
               <span className="h-2.5 w-4 rounded-full bg-[#F472D0]" />
               Выбран.
@@ -192,14 +202,14 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
               type="button"
               disabled={fleet.length === 0 || !!historyLoading}
               onClick={createFleetYearHistory}
-              className="flex h-7 items-center justify-center gap-1 rounded-md border border-pink-400/35 bg-pink-500/12 px-2 text-[11px] font-semibold text-pink-200 outline-none transition-colors hover:bg-pink-500/18 disabled:cursor-not-allowed disabled:opacity-45"
+              className="flex h-8 items-center justify-center gap-1 rounded-lg border border-pink-400/35 bg-pink-500/12 px-2 text-[11px] font-semibold text-pink-200 outline-none transition-colors hover:bg-pink-500/18 disabled:cursor-not-allowed disabled:opacity-45"
               title="Розовые следы с 01.01.2026 по всему парку"
             >
               Весь парк
             </button>
           </div>
           {historyLoading && (
-            <div className="rounded-md border border-border-subtle bg-bg-deep/80 px-2 py-1.5">
+            <div className="rounded-lg border border-border-subtle bg-bg-surface px-2 py-1.5">
               <div className="flex items-center gap-2 text-[10.5px] text-text-muted">
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-pink-300" />
                 <span className="min-w-0 flex-1 truncate">{historyLoading.label}</span>
@@ -230,7 +240,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       </div>
 
       {/* Список парка */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 pt-1.5">
         {loading && fleet.length === 0 && (
           <div className="flex items-center justify-center gap-2 py-6 text-[12px] text-text-muted">
             <Loader2 className="h-4 w-4 animate-spin" /> Загрузка парка…
@@ -243,10 +253,11 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           <div className="px-2 py-3 text-[11.5px] text-text-muted">Ничего не найдено</div>
         )}
         {ordered.length > 0 && (
-          <div className="grid grid-cols-[54px_minmax(0,1fr)_98px] items-center gap-2 px-2 pb-1 pt-0.5 text-[9.5px] uppercase tracking-wide text-text-muted/75">
+          <div className="grid grid-cols-[54px_minmax(0,1fr)_84px_24px] items-center gap-2 px-2 pb-1 pt-0.5 text-[9.5px] uppercase tracking-wide text-text-muted/75">
             <span>Гар.</span>
             <span>Машина</span>
             <span>Статус</span>
+            <span />
           </div>
         )}
         {ordered.map((v) => (
@@ -254,9 +265,11 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             key={v.id}
             v={v}
             checked={selected.has(v.id)}
+            following={followId === v.id}
             position={positions.get(v.id)}
             onToggle={() => toggleSelect(v.id)}
             onFocus={onFocusVehicle}
+            onFollow={() => setFollow(followId === v.id ? null : v.id)}
           />
         ))}
       </div>
@@ -264,14 +277,167 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   );
 }
 
-function toLocalInputValue(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+function HistoryModeToggle({ label, color, on, onClick }: {
+  label: string;
+  color: string;
+  on: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={on}
+      onClick={onClick}
+      className={[
+        'flex h-8 items-center gap-2 rounded-lg border px-2 text-[11.5px] font-semibold outline-none transition-colors',
+        on ? 'border-white/25 bg-white/10 text-text-strong' : 'border-border-subtle bg-bg-surface text-text-muted hover:bg-bg-hover',
+      ].join(' ')}
+    >
+      <span className="h-[3px] w-7 shrink-0 rounded-full" style={{ backgroundColor: color, opacity: on ? 1 : 0.38 }} />
+      <span className="min-w-0 flex-1 text-left">{label}</span>
+      <span
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border text-[10px]"
+        style={on ? { borderColor: color, backgroundColor: `${color}24`, color } : undefined}
+      >{on ? '✓' : ''}</span>
+    </button>
+  );
 }
 
-function localInputToIso(value: string): string {
-  const date = value ? new Date(value) : new Date();
-  return Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString();
+function HistoryDateField({ value, onChange }: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const selected = useMemo(() => parseLocalDate(value), [value]);
+  const [view, setView] = useState(() => ({ year: selected.year, month: selected.month }));
+  const days = useMemo(() => buildMonthDays(view.year, view.month), [view.year, view.month]);
+  const monthTitle = useMemo(() => (
+    new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(new Date(view.year, view.month - 1, 1))
+  ), [view.year, view.month]);
+
+  useEffect(() => {
+    setView({ year: selected.year, month: selected.month });
+  }, [selected.year, selected.month]);
+
+  const setDate = (year: number, month: number, day: number) => {
+    onChange(formatLocalDate({ year, month, day }));
+  };
+  const moveMonth = (delta: number) => {
+    const next = new Date(view.year, view.month - 1 + delta, 1);
+    setView({ year: next.getFullYear(), month: next.getMonth() + 1 });
+  };
+
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className="flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-border-subtle bg-bg-surface px-2 text-left text-[11px] text-text-secondary outline-none transition-colors hover:border-accent-clay/45 hover:bg-bg-hover data-[state=open]:border-accent-clay/55 data-[state=open]:text-text-strong"
+        >
+          <CalendarDays className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+          <span className="shrink-0 font-semibold text-text-muted">День</span>
+          <span className="min-w-0 truncate font-mono tabular-nums text-text-strong">{formatDateButton(selected)}</span>
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          sideOffset={6}
+          className="z-[760] w-[292px] rounded-2xl border border-border-default bg-bg-elevated p-3 text-text-primary shadow-[0_18px_58px_rgba(0,0,0,0.5)] outline-none"
+        >
+          <div className="flex h-7 items-center justify-between">
+            <button
+              type="button"
+              onClick={() => moveMonth(-1)}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <div className="text-[12px] font-semibold text-text-strong first-letter:uppercase">{monthTitle}</div>
+            <button
+              type="button"
+              onClick={() => moveMonth(1)}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="mt-2 grid grid-cols-7 gap-1 text-center text-[9.5px] font-semibold uppercase tracking-wide text-text-muted">
+            {['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map((d) => <span key={d}>{d}</span>)}
+          </div>
+          <div className="mt-1 grid grid-cols-7 gap-1">
+            {days.map((day, index) => {
+              const selectedDay = day && day.year === selected.year && day.month === selected.month && day.day === selected.day;
+              return day ? (
+                <button
+                  key={`${day.year}-${day.month}-${day.day}`}
+                  type="button"
+                  onClick={() => setDate(day.year, day.month, day.day)}
+                  className={[
+                    'h-7 rounded-lg text-[11.5px] tabular-nums outline-none transition-colors',
+                    selectedDay
+                      ? 'bg-accent-clay-bg font-semibold text-accent-clay ring-1 ring-inset ring-accent-clay/45'
+                      : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+                  ].join(' ')}
+                >
+                  {day.day}
+                </button>
+              ) : <span key={`blank-${index}`} />;
+            })}
+          </div>
+          <Popover.Arrow className="fill-bg-elevated" />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function toLocalDateValue(date: Date): string {
+  return formatLocalDate({ year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() });
+}
+
+function localDayRangeToIso(value: string): [string, string] {
+  const d = parseLocalDate(value);
+  const from = new Date(d.year, d.month - 1, d.day, 0, 0, 0, 0);
+  const to = new Date(d.year, d.month - 1, d.day + 1, 0, 0, 0, 0);
+  return [from.toISOString(), to.toISOString()];
+}
+
+function parseLocalDate(value: string): { year: number; month: number; day: number } {
+  const parts = value.split('-').map((part) => Number(part));
+  const yearRaw = parts[0];
+  const monthRaw = parts[1];
+  const dayRaw = parts[2];
+  const valid = typeof yearRaw === 'number' && typeof monthRaw === 'number' && typeof dayRaw === 'number'
+    && Number.isFinite(yearRaw) && Number.isFinite(monthRaw) && Number.isFinite(dayRaw);
+  const date = valid
+    ? new Date(yearRaw, monthRaw - 1, dayRaw)
+    : new Date();
+  const safe = Number.isFinite(date.getTime()) ? date : new Date();
+  return { year: safe.getFullYear(), month: safe.getMonth() + 1, day: safe.getDate() };
+}
+
+function formatLocalDate(parts: { year: number; month: number; day: number }): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
+}
+
+function formatDateButton(parts: { year: number; month: number; day: number }): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(parts.day)}.${pad(parts.month)}.${parts.year}`;
+}
+
+function buildMonthDays(year: number, month: number): Array<{ year: number; month: number; day: number } | null> {
+  const first = new Date(year, month - 1, 1);
+  const firstWeekday = (first.getDay() + 6) % 7; // Monday first.
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const out: Array<{ year: number; month: number; day: number } | null> = [];
+  for (let i = 0; i < firstWeekday; i++) out.push(null);
+  for (let day = 1; day <= daysInMonth; day++) out.push({ year, month, day });
+  while (out.length % 7 !== 0) out.push(null);
+  return out;
 }
 
 function yearStartIso(): string {
@@ -279,12 +445,14 @@ function yearStartIso(): string {
   return new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0).toISOString();
 }
 
-function VehicleRow({ v, checked, position, onToggle, onFocus }: {
+function VehicleRow({ v, checked, following, position, onToggle, onFocus, onFollow }: {
   v: GlonassVehicle;
   checked: boolean;
+  following: boolean;
   position: GlonassPosition | undefined;
   onToggle: () => void;
   onFocus: (pos: GlonassPosition) => void;
+  onFollow: () => void;
 }) {
   const status = vehicleStatus(position);
   const statusColor = STATUS_COLOR[status];
@@ -293,8 +461,8 @@ function VehicleRow({ v, checked, position, onToggle, onFocus }: {
   return (
     <div
       className={
-        'grid w-full grid-cols-[54px_minmax(0,1fr)_98px] items-center gap-2 rounded-md px-2 py-1.5 transition-colors ' +
-        (checked ? 'bg-emerald-500/12' : 'hover:bg-bg-hover')
+        'grid w-full grid-cols-[54px_minmax(0,1fr)_84px_24px] items-center gap-2 rounded-xl border px-2 py-1.5 transition-colors ' +
+        (checked ? 'border-emerald-400/35 bg-emerald-500/12' : 'border-transparent hover:border-border-subtle hover:bg-bg-elevated')
       }
     >
       <button
@@ -303,10 +471,10 @@ function VehicleRow({ v, checked, position, onToggle, onFocus }: {
         aria-pressed={checked}
         onClick={onToggle}
         className={
-          'flex h-7 w-full items-center justify-center gap-1 rounded-md border px-1 text-[11px] font-semibold tabular-nums transition-colors ' +
+          'flex h-8 w-full items-center justify-center gap-1 rounded-lg border px-1 text-[11px] font-semibold tabular-nums transition-colors ' +
           (checked
             ? 'border-emerald-400 bg-emerald-500/25 text-emerald-100'
-            : 'border-white/15 bg-bg-surface text-text-muted hover:border-emerald-400/70 hover:text-text-strong')
+            : 'border-border-subtle bg-bg-surface text-text-muted hover:border-emerald-400/70 hover:text-text-strong')
         }
       >
         <span>{v.garage || '—'}</span>
@@ -318,7 +486,7 @@ function VehicleRow({ v, checked, position, onToggle, onFocus }: {
         title={title}
         disabled={!position}
         onClick={() => { if (position) onFocus(position); }}
-        className="min-w-0 rounded px-1 py-0.5 text-left outline-none transition-colors hover:bg-white/[0.04] disabled:cursor-default disabled:hover:bg-transparent"
+        className="min-w-0 rounded-lg px-1 py-0.5 text-left outline-none transition-colors hover:bg-bg-hover disabled:cursor-default disabled:hover:bg-transparent"
       >
         <span className="block whitespace-normal break-words text-[12px] font-medium leading-[1.18] text-text-strong">
           {v.gos || v.name}
@@ -330,7 +498,7 @@ function VehicleRow({ v, checked, position, onToggle, onFocus }: {
         title={title}
         disabled={!position}
         onClick={() => { if (position) onFocus(position); }}
-        className="grid min-w-0 grid-cols-[11px_minmax(0,1fr)] items-center gap-1.5 rounded px-1 py-0.5 text-left text-[10.5px] leading-[1.1] text-text-muted outline-none transition-colors hover:bg-white/[0.04] disabled:cursor-default disabled:hover:bg-transparent"
+        className="grid min-w-0 grid-cols-[11px_minmax(0,1fr)] items-center gap-1.5 rounded-lg px-1 py-0.5 text-left text-[10.5px] leading-[1.1] text-text-muted outline-none transition-colors hover:bg-bg-hover disabled:cursor-default disabled:hover:bg-transparent"
       >
         <span className="h-2.5 w-2.5 rounded-full shadow-[0_0_0_2px_rgba(255,255,255,0.08)]" style={{ backgroundColor: statusColor }} />
         <span className="min-w-0">
@@ -339,6 +507,23 @@ function VehicleRow({ v, checked, position, onToggle, onFocus }: {
             {formatGlonassSpeed(position?.speed)}
           </span>
         </span>
+      </button>
+
+      <button
+        type="button"
+        aria-label={following ? 'Перестать следить' : 'Следить за машиной'}
+        aria-pressed={following}
+        title={position ? (following ? 'Слежу — камера едет за машиной' : 'Следить: камера едет за машиной') : 'Координат пока нет'}
+        disabled={!position}
+        onClick={onFollow}
+        className={
+          'flex h-7 w-7 items-center justify-center rounded-lg border outline-none transition-colors disabled:cursor-default disabled:opacity-35 ' +
+          (following
+            ? 'border-accent-clay/60 bg-accent-clay/18 text-accent-clay'
+            : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-bg-hover hover:text-text-strong')
+        }
+      >
+        <Crosshair className="h-3.5 w-3.5" />
       </button>
     </div>
   );

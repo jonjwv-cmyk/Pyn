@@ -15,6 +15,20 @@ export interface LatLng {
   lng: number;
 }
 
+/**
+ * Назначение точки — МНОЖЕСТВЕННЫЕ независимые признаки (ТЗ 2026-07-09).
+ * `tech` — ЯВНЫЙ источник истины для технологического потока сайта: есть признак
+ * → точка участвует в потоке; нет — по названию/складу/комментарию НЕ угадываем.
+ * `exped` — то же для экспедиционного потока. `other` — прочие точки.
+ */
+export type PointPurpose = 'tech' | 'exped' | 'other';
+
+export const POINT_PURPOSE_META: ReadonlyArray<{ id: PointPurpose; label: string; color: string }> = [
+  { id: 'tech', label: 'Технология', color: '#6FBF8E' },
+  { id: 'exped', label: 'Экспедиция', color: '#5BA3D0' },
+  { id: 'other', label: 'Иное', color: '#9AA0A6' },
+];
+
 /** Точка на карте. Склад может иметь несколько точек (несколько `MapPoint` с
  *  одним `warehouseId`) — «склад может быть в нескольких точках». */
 export interface MapPoint extends LatLng {
@@ -32,13 +46,30 @@ export interface MapPoint extends LatLng {
   weight: number;
   /** Оснастка на месте выгрузки. Если всё false — считаем, что погрузка ручная. */
   equipment: PointEquipment;
-  /** Нюанс точки: ТМЦ ставить/забирать сзади. */
+  /** Совместимость со старым общим флагом. Источник правды теперь `rearByPurpose`. */
   rearUnload: boolean;
   /**
-   * Какие машины могут заехать именно в эту точку. Пустой массив = без
-   * ограничения, заехать можно всем.
+   * Какие машины могут заехать именно в эту точку (ОБЩИЙ список). Пустой массив =
+   * без ограничения, заехать можно всем.
    */
   allowedVehicles: VehicleType[];
+  /**
+   * Назначения точки (может быть несколько сразу). Миграция старых документов:
+   * точка со складом → ['tech'] (сайт и так строил техточки из точек склада —
+   * поведение сохраняется), свободная точка → ['other'].
+   */
+  purposes: PointPurpose[];
+  /**
+   * Допустимые типы ТС ПО НАЗНАЧЕНИЮ: у «Технологии» могут быть одни типы,
+   * у «Экспедиции» другие. Нет ключа / пустой массив → берётся общий
+   * `allowedVehicles` (пустой общий = можно всем).
+   */
+  vehiclesByPurpose: Partial<Record<PointPurpose, VehicleType[]>>;
+  /**
+   * Ручная галочка «ТМЦ сзади» ПО НАЗНАЧЕНИЮ И ТИПУ ТС:
+   * `tech + bort`, `exped + pullman9` и т.д. Отдельной общей кнопки нет.
+   */
+  rearByPurpose: Partial<Record<PointPurpose, VehicleType[]>>;
 }
 
 export interface PointEquipment {
@@ -95,6 +126,23 @@ export function categoryFromWarehouseState(state: string | undefined | null): Po
   return 'offSchedule';
 }
 
+/**
+ * Тип области: `shop` — область цеха (прежние области, мигрируются как есть);
+ * `loading`/`unloading`/`work` — НАШИ рабочие площадки (светло-жёлтые полигоны:
+ * погрузка / выгрузка / иная рабочая область). Во 2-й фазе участвуют в расчётах.
+ */
+export type AreaKind = 'shop' | 'loading' | 'unloading' | 'work';
+
+export const AREA_KIND_META: ReadonlyArray<{ id: AreaKind; label: string }> = [
+  { id: 'shop', label: 'Область цеха' },
+  { id: 'loading', label: 'Площадка погрузки' },
+  { id: 'unloading', label: 'Площадка выгрузки' },
+  { id: 'work', label: 'Рабочая область' },
+];
+
+/** Светло-жёлтый цвет рабочих площадок (ТЗ 2026-07-09). */
+export const WORK_AREA_COLOR = '#E8D26B';
+
 /** Область (полигон) — «выделяем область, пишем: это конвертерный». */
 export interface MapArea {
   id: string;
@@ -104,6 +152,10 @@ export interface MapArea {
   vertices: LatLng[];
   /** Необязательная привязка к цеху (Warehouse.shop_name) — для фильтра. */
   shopName: string | null;
+  /** Тип области. Старые документы без поля → 'shop'. */
+  kind: AreaKind;
+  /** Комментарий к площадке. */
+  comment: string;
 }
 
 /** Дорога (ломаная) — «прорисовать самим», основа для маршрутов. */
@@ -131,6 +183,7 @@ export interface MapRailway {
  */
 export type VehicleType =
   | 'pullman9'
+  | 'pullman10'
   | 'pullman12'
   | 'bort'
   | 'bortovik'
@@ -147,6 +200,7 @@ export type VehicleType =
   | 'samosval_bez_bort'
   | 'belaz'
   | 'atlas_bucket'
+  | 'atlas'
   | 'shit_car'
   | 'furgon';
 
@@ -155,6 +209,7 @@ const BODY_TYPE_TO_VEHICLE: Record<BodyType, VehicleType> = {
   'Фургон КХП': 'furgon_khp',
   'Борт': 'bort',
   'Пульман 9м': 'pullman9',
+  'Пульман 10м': 'pullman10',
   'Пульман 12м': 'pullman12',
   'Газель': 'gazelle',
   'Масловоз': 'maslovoz',
@@ -167,7 +222,8 @@ const BODY_TYPE_TO_VEHICLE: Record<BodyType, VehicleType> = {
   'Самосвал борт': 'samosval_bort',
   'Самосвал без борт': 'samosval_bez_bort',
   'БЕЛАЗ': 'belaz',
-  'Погр. ковш. ATLAS': 'atlas_bucket',
+  'Погр. ковш.': 'atlas_bucket',
+  'ATLAS': 'atlas',
   'Shit машина': 'shit_car',
   'Фургон': 'furgon',
 };
@@ -177,6 +233,7 @@ const VEHICLE_SHORT: Record<VehicleType, string> = {
   bort: 'БОРТ',
   bortovik: 'БОРТ',
   pullman9: 'П9',
+  pullman10: 'П10',
   pullman12: 'П12',
   gazelle: 'ГАЗ',
   maslovoz: 'МАСЛ',
@@ -189,10 +246,14 @@ const VEHICLE_SHORT: Record<VehicleType, string> = {
   samosval_bort: 'САМБ',
   samosval_bez_bort: 'САМ',
   belaz: 'БЕЛАЗ',
-  atlas_bucket: 'ATLAS',
+  atlas_bucket: 'КОВШ',
+  atlas: 'ATLAS',
   shit_car: 'SHIT',
   furgon: 'ФУРГ',
 };
+
+/** Старые id из сохранённых карт → актуальные (БОРТОВИК переименован в Борт). */
+const LEGACY_VEHICLE_IDS: Partial<Record<string, VehicleType>> = { bortovik: 'bort' };
 
 export const VEHICLE_TYPES: ReadonlyArray<{ id: VehicleType; label: string; short: string }> =
   BODY_TYPES.map((label) => ({
@@ -205,16 +266,14 @@ export const VEHICLE_TYPES: ReadonlyArray<{ id: VehicleType; label: string; shor
  *  уже стоят П9/П12/БОРТ и т.д.), НОВЫЕ 5 добавляем следом. */
 export const POINT_VEHICLE_TYPES: ReadonlyArray<{ id: VehicleType; label: string; short: string }> =
   ([
-    'furgon_khp', 'bort', 'pullman9', 'pullman12', 'gazelle', 'maslovoz',
-    'benzovoz', 'furgon', 'samosval_bort', 'samosval_bez_bort', 'belaz',
+    'furgon_khp', 'bort', 'pullman9', 'pullman10', 'pullman12', 'gazelle', 'maslovoz',
+    'tral', 'benzovoz', 'samosval_bort', 'samosval_bez_bort', 'belaz',
+    'atlas_bucket', 'atlas', 'furgon',
   ] as VehicleType[]).map((id) => ({
     id,
     label: vehicleLabelFromId(id),
     short: VEHICLE_SHORT[id],
   }));
-
-/** Старые id из сохранённых карт → актуальные (БОРТОВИК переименован в Борт). */
-const LEGACY_VEHICLE_IDS: Partial<Record<string, VehicleType>> = { bortovik: 'bort' };
 
 /** Значение из сохранённого документа карты → актуальный id (null = мусор). */
 export function normalizeVehicleId(v: unknown): VehicleType | null {
@@ -244,16 +303,85 @@ export function vehicleColor(id: VehicleType): string {
 export const ROAD_ACCESS_FALLBACK_COLOR = '#22D3EE';
 
 /**
- * «Особенность» участка дороги — обведённый кусок (лежит на дорогах) + какие
- * машины там могут ехать. По плану даёт понимание проходимости. `vertices`
- * привязаны к существующим дорогам (трасса инструмента «Особенности»).
+ * ОГРАНИЧЕНИЕ участка дороги (эволюция прежних «особенностей» — то же поле
+ * `doc.roadAccess`, старые записи мигрируются как есть). Обведённый кусок,
+ * лежащий на существующей дороге + правила проезда. Одна дорожная линия хранит
+ * правила участка — отдельные дороги под каждый тип ТС НЕ рисуются (ТЗ 2026-07-09).
  */
+export type RoadAccessKind = 'free' | 'limited' | 'closed' | 'temp_closed';
+
+export const ROAD_ACCESS_KIND_META: ReadonlyArray<{ id: RoadAccessKind; label: string; color: string }> = [
+  { id: 'free', label: 'Дорога свободна', color: '#6FBF8E' },
+  { id: 'limited', label: 'Ограничена (по типам ТС)', color: '#22D3EE' },
+  { id: 'closed', label: 'Закрыта', color: '#EF4444' },
+  { id: 'temp_closed', label: 'Временно закрыта', color: '#F59E0B' },
+];
+
+export function roadAccessKindMeta(kind: RoadAccessKind) {
+  return ROAD_ACCESS_KIND_META.find((m) => m.id === kind) ?? ROAD_ACCESS_KIND_META[1]!;
+}
+
 export interface RoadAccess {
   id: string;
   vertices: LatLng[];
-  kind: 'limited' | 'closed';
+  kind: RoadAccessKind;
+  /** Для `limited`: список типов ТС + режим (разрешены/запрещены). */
   vehicles: VehicleType[];
+  /** allow — перечисленным проезд РАЗРЕШЁН (остальным нет); deny — перечисленным ЗАПРЕЩЁН. */
+  vehiclesMode: 'allow' | 'deny';
+  /** Разрешённые типы ТС по назначению рейса. Пустой столбец = никому нельзя. */
+  vehiclesByPurpose: Partial<Record<PointPurpose, VehicleType[]>>;
   note: string;
+  /** Дата начала закрытия (ISO YYYY-MM-DD) — для closed / temp_closed. */
+  closedFrom: string;
+  /** Дата окончания временного закрытия (ISO YYYY-MM-DD). */
+  closedTo: string;
+}
+
+/** Дата «7 июня 2026» для подсказки участка. */
+export function formatAccessDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || '').trim());
+  if (!m) return '';
+  const months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+  return `${Number(m[3])} ${months[Number(m[2]) - 1] ?? ''} ${m[1]}`;
+}
+
+/** Краткая подсказка по участку — для ховера и карточки. */
+export function roadAccessSummary(access: RoadAccess): string {
+  if (access.kind === 'closed') {
+    return access.closedFrom ? `Закрыто с ${formatAccessDate(access.closedFrom)}` : 'Закрыто';
+  }
+  if (access.kind === 'temp_closed') {
+    const from = access.closedFrom ? formatAccessDate(access.closedFrom) : '';
+    const to = access.closedTo ? formatAccessDate(access.closedTo) : '';
+    if (from && to) return `Временно закрыто: ${from} — ${to}`;
+    if (from) return `Временно закрыто с ${from}`;
+    return 'Временно закрыто';
+  }
+  if (access.kind === 'free') return 'Дорога свободна';
+  if (vehiclePurposeMatrixHasAny(access.vehiclesByPurpose)) {
+    const parts = POINT_PURPOSE_META.map((purpose) => {
+      const allowed = access.vehiclesByPurpose[purpose.id] ?? [];
+      if (allowed.length >= POINT_VEHICLE_TYPES.length) return `${purpose.label}: все ТС`;
+      if (allowed.length === 0) return `${purpose.label}: нет проезда`;
+      return `${purpose.label}: ${allowed.map(vehicleShort).join(', ')}`;
+    });
+    return parts.join('; ');
+  }
+  // `vehicles` = типы, которым проезд ЗАПРЕЩЁН (снятые). Пусто = разрешено всем.
+  if (access.vehicles.length === 0) return 'Проезд разрешён всем';
+  return `Запрещено: ${access.vehicles.map(vehicleShort).join(', ')}`;
+}
+
+export function allVehiclesByPurpose(): Partial<Record<PointPurpose, VehicleType[]>> {
+  const all = POINT_VEHICLE_TYPES.map((vehicle) => vehicle.id);
+  return { tech: [...all], exped: [...all], other: [...all] };
+}
+
+export function vehiclePurposeMatrixHasAny(
+  matrix: Partial<Record<PointPurpose, VehicleType[]>> | null | undefined,
+): boolean {
+  return Object.values(matrix ?? {}).some((vehicles) => Array.isArray(vehicles));
 }
 
 export type RoadPaintMode = 'closed' | VehicleType | 'erase';
@@ -291,6 +419,24 @@ export interface MapCrossing extends LatLng {
   note: string;
 }
 
+/**
+ * «Высота проезда» — ограничение по высоте на участке дороги: тоннель, труба над
+ * дорогой, ферма, провода. Точка на дороге + ТОЧНАЯ высота в миллиметрах; на
+ * карте — кружок-знак со значением в метрах («5,3»), точные мм и см — в карточке
+ * по клику. Слой в «Виде» по умолчанию скрыт.
+ */
+export interface MapClearance extends LatLng {
+  id: string;
+  /** Высота проезда в миллиметрах (точное значение). */
+  heightMm: number;
+  note: string;
+}
+
+/** «5,3» — метры с одним знаком после запятой (подпись кружка на карте). */
+export function formatClearanceMeters(heightMm: number): string {
+  return (Math.round(heightMm / 100) / 10).toFixed(1).replace('.', ',');
+}
+
 /** Черновая дорога из внешней/ИИ-подсказки. До подтверждения не участвует в маршрутах. */
 export interface MapRoadSuggestion {
   id: string;
@@ -311,6 +457,8 @@ export interface MapDoc {
   crossings: MapCrossing[];
   /** Ж/д пути (по желанию). Может отсутствовать в старых документах — `?? []`. */
   railways: MapRailway[];
+  /** Отметки «Высота проезда». Может отсутствовать в старых документах — `?? []`. */
+  clearances: MapClearance[];
 }
 
 /** Инструмент на тулбаре карты. */
@@ -320,11 +468,46 @@ export type MapTool =
   | 'area'
   | 'road'
   | 'eraseRoad'
+  /** Ластик окрашенных ограничений/особенностей участка — не трогает базовую дорогу. */
+  | 'eraseAccess'
+  /** Ластик красного пунктира (возможных дорог) — та же кисть с зажатой ЛКМ. */
+  | 'eraseSuggestion'
   | 'confirmRoad'
-  | 'vehicles'
+  /** «Ограничение дороги»: ведёшь по дороге с зажатой ЛКМ → Enter → окно правил. */
+  | 'restrict'
   | 'crossing'
+  /** «Высота проезда»: клик по дороге — кружок с высотой (тоннели/трубы). */
+  | 'clearance'
   | 'railway'
   | 'optimize';
+
+/** Внешний ж/д путь (OSM, по видимой области) — справочный слой, НЕ в документе. */
+export interface ExternalRailway {
+  id: string;
+  name: string;
+  vertices: LatLng[];
+}
+
+/** Обезличенный контур здания (OSM) — лёгкий фиолетовый слой, НЕ в документе. */
+export interface BuildingOutline {
+  id: string;
+  vertices: LatLng[];
+}
+
+/** Пешеходная линия (OSM): обычная дорожка или ПЕРЕХОД через дорогу (зебра). */
+export interface FootwayLine {
+  id: string;
+  vertices: LatLng[];
+  /** true — пешеходный переход (footway=crossing), рисуется зеброй. */
+  crossing: boolean;
+}
+
+/** Кандидат на ж/д переезд: пересечение внешней ж/д линии с нашей дорогой. */
+export interface CrossingCandidate extends LatLng {
+  id: string;
+  roadId: string;
+  railwayId: string;
+}
 
 /** Палитра цветов для областей (Linear-приглушённые тона). */
 export const AREA_COLORS: string[] = [
@@ -346,7 +529,7 @@ export function makeId(): string {
 }
 
 export const EMPTY_MAP_DOC: MapDoc = {
-  version: 6,
+  version: 11,
   points: [],
   areas: [],
   roads: [],
@@ -354,4 +537,5 @@ export const EMPTY_MAP_DOC: MapDoc = {
   roadAccess: [],
   crossings: [],
   railways: [],
+  clearances: [],
 };

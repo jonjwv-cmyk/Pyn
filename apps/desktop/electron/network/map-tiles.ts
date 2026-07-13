@@ -97,9 +97,9 @@ export function refreshMapTileProxy(): void {
   console.log(`[pyn:tiles] proxy → ${ep ? `${ep.host}:${ep.port} (через мост)` : 'blocked until bridge'}`);
 }
 
-type Provider = 'google' | 'esri' | 'terrarium' | 'rain';
+type Provider = 'google' | 'glabels' | 'esri' | 'terrarium' | 'rain';
 
-/** Радар осадков и DEM — PNG; спутник — JPG. Радар на диск не кэшируем (живой). */
+/** Радар осадков, DEM и гугл-подписи (прозрачный оверлей) — PNG; спутник — JPG. */
 function tileExt(provider: Provider): string {
   return provider === 'google' || provider === 'esri' ? 'jpg' : 'png';
 }
@@ -156,6 +156,11 @@ function upstreamUrl(provider: Provider, z: string, x: string, y: string, rainCo
     return `${rainFrame.host}${rainFrame.path}/256/${z}/${x}/${y}/${scheme}/1_1.png`;
   }
   const srv = (Number(x) + Number(y)) % 4;
+  if (provider === 'glabels') {
+    // Гугл-слой подписей/дорог/ориентиров (lyrs=h — прозрачный PNG-оверлей поверх
+    // спутника). Включается тумблером «Гугл» на карте, справочный слой.
+    return `https://mt${srv}.google.com/vt/lyrs=h&hl=ru&x=${x}&y=${y}&z=${z}`;
+  }
   return `https://mt${srv}.google.com/vt/lyrs=s&x=${x}&y=${y}&z=${z}`;
 }
 
@@ -164,12 +169,12 @@ export function setupMapTiles(): void {
   refreshMapTileProxy();
 
   protocol.handle(SCHEME, async (request) => {
-    const m = /pyn-tile:\/\/(google|esri|sat|terrarium|rain)\/(\d+)\/(\d+)\/(\d+)/.exec(request.url);
+    const m = /pyn-tile:\/\/(google|glabels|esri|sat|terrarium|rain)\/(\d+)\/(\d+)\/(\d+)/.exec(request.url);
     if (!m) return new Response('bad tile request', { status: 400 });
     const [, providerRaw, z, x, y] = m as unknown as [string, Provider | 'sat', string, string, string];
     const provider: Provider = providerRaw === 'sat' ? 'google' : providerRaw;
-    // Прозрачным отвечаем для слоёв-наложений (рельеф/радар/спутник) при любой беде.
-    const overlay = provider === 'terrarium' || provider === 'rain' || provider === 'google';
+    // Прозрачным отвечаем для слоёв-наложений (рельеф/радар/спутник/подписи) при любой беде.
+    const overlay = provider === 'terrarium' || provider === 'rain' || provider === 'google' || provider === 'glabels';
     const transparent = () => new Response(TRANSPARENT_TILE, { headers: { 'content-type': 'image/png' } });
 
     const key = cacheKey(provider, z, x, y);

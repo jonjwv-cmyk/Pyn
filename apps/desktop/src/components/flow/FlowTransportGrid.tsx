@@ -55,7 +55,7 @@ import { useFlowColumnFilters } from './flow-column-filter';
 import { VehicleCard } from './VehicleCard';
 import { FlowTransportPrint } from './FlowTransportPrint';
 import { FlowViewSwitch } from './FlowViewSwitch';
-import { BODY_TYPES } from './flow-body-types';
+import { BODY_TYPES, adjustedBodyTypeCapacityKg } from './flow-body-types';
 import type { FlowViewMode } from './flow-view';
 import {
   EMPTY_TRANSPORT_VIEW,
@@ -120,7 +120,7 @@ const TR_COLS: readonly TrColSpec[] = [
 ];
 
 /** Порядок статусов в выпадашке — по слову юзера; «(пусто)» НЕТ (снять = Delete). */
-const STATUS_ORDER = ['Размещен', 'Отклонен', 'Отмена', 'Не приехал', 'Новый', 'Открыт'] as const;
+const STATUS_ORDER = ['Размещен', 'Дополнение', 'Отклонен', 'Отмена', 'Не приехал', 'Новый', 'Открыт'] as const;
 const OUT_STATUS_ORDER = ['ДА', 'НЕТ'] as const;
 const FORCE_REASONS = ['ожидание выгрузки', 'поломка ТС'] as const;
 
@@ -1118,6 +1118,39 @@ export function FlowTransportGrid(): JSX.Element {
     [viewRows, applyFields, pushHistory, rowLocked, cols],
   );
 
+  // Del/Backspace: ФАКТ НАЧ/ФАКТ КОН — readonly-ячейки (правятся поповером), штатное
+  // глайдовское стирание их не берёт. Чистим руками в пусто: пустой факт = этой работы
+  // у гаражного не было (юзер 2026-07-09). Правки одной строки — ОДНИМ запросом
+  // (гонка row_version — грабли 2026-07-05). Остальные ячейки стирает сам глайд (true).
+  const onGridDelete = useCallback(
+    (sel: GridSelection): boolean => {
+      const ranges = sel.current ? [sel.current.range, ...sel.current.rangeStack] : [];
+      const byRow = new Map<number, { before: Record<string, string>; after: Record<string, string> }>();
+      for (const range of ranges) {
+        for (let c = range.x; c < range.x + range.width; c++) {
+          const spec = cols[c];
+          if (!spec || (spec.id !== 'fact_start' && spec.id !== 'fact_end')) continue;
+          for (let ri = range.y; ri < range.y + range.height; ri++) {
+            const r = viewRows[ri];
+            if (!r || rowLocked(r)) continue;
+            const before = String((r as unknown as Record<string, unknown>)[spec.id] ?? '');
+            if (!before) continue;
+            const acc = byRow.get(r.id) ?? { before: {}, after: {} };
+            acc.before[spec.id] = before;
+            acc.after[spec.id] = '';
+            byRow.set(r.id, acc);
+          }
+        }
+      }
+      for (const [id, e] of byRow) {
+        applyFields(id, e.after);
+        pushHistory({ id, before: e.before, after: e.after });
+      }
+      return true;
+    },
+    [cols, viewRows, rowLocked, applyFields, pushHistory],
+  );
+
   // Двойной клик/Enter: ИСТОРИЯ → поповер истории (план+факт из отчёта); №·ГОС → карточка
   // характеристик машины (тип/доп.тн/тн/Д/Ш/В — как карточка MAT в формировании).
   const onCellActivated = useCallback(
@@ -1160,7 +1193,7 @@ export function FlowTransportGrid(): JSX.Element {
     (row: number): Partial<Theme> | undefined => {
       const r = viewRows[row];
       if (!r) return undefined;
-      if (r.status === 'Размещен') return { bgCell: '#EAF5EA' };
+      if (r.status === 'Размещен' || r.status === 'Дополнение') return { bgCell: '#EAF5EA' };
       if (r.status === 'Отклонен' || r.status === 'Отмена' || r.status === 'Не приехал') return { bgCell: '#FBE7E4', textDark: '#7A2A1D' };
       if (rowLocked(r)) return { textDark: '#8C8983' };
       return undefined;
@@ -1738,6 +1771,7 @@ export function FlowTransportGrid(): JSX.Element {
               getCellContent={getCellContent}
               onCellEdited={onCellEdited}
               onCellActivated={onCellActivated}
+              onDelete={onGridDelete}
               gridSelection={selection}
               onGridSelectionChange={(sel) => setSelection(colZeroRowSelection(sel) ?? sel)}
               getRowThemeOverride={getRowThemeOverride}
@@ -2471,10 +2505,16 @@ function VehicleSpecCard({
   onGarageChange: (garage: string) => void;
 }): JSX.Element {
   const [nextGarage, setNextGarage] = useState(row.garage_no || garage);
-  const Row = ({ label, value }: { label: string; value: string }): JSX.Element => (
+  const ourCapacityKg = adjustedBodyTypeCapacityKg(row.vehicle_type || '', {
+    capacityKg: veh?.capacity_kg ?? null,
+    maxMassKg: veh?.max_mass_kg ?? null,
+  });
+  const Row = ({ label, value, strong = false, muted = false }: { label: string; value: string; strong?: boolean; muted?: boolean }): JSX.Element => (
     <div className="flex items-baseline justify-between gap-3">
       <span className="text-[10px] uppercase tracking-wide text-text-muted/60">{label}</span>
-      <span className="tabular-nums text-text-secondary">{value || '—'}</span>
+      <span className={cn('tabular-nums', strong ? 'font-semibold text-text-strong' : muted ? 'text-text-muted/80' : 'text-text-secondary')}>
+        {value || '—'}
+      </span>
     </div>
   );
   return (
@@ -2505,10 +2545,12 @@ function VehicleSpecCard({
           <div className="mt-2 text-[12px] text-text-muted">Машины {garage} нет в базе.</div>
         ) : (
           <div className="mt-2 flex flex-col gap-1.5">
-            <Row label="Тип" value={veh.vtype ?? ''} />
+            <Row label="Тип ТС" value={row.vehicle_type ?? ''} />
+            <Row label="Категория 1С" value={veh.vtype ?? ''} muted />
             {veh.model && <Row label="Модель" value={veh.model} />}
-            <Row label="Доп. тн" value={veh.max_mass_kg != null ? `${tons(veh.max_mass_kg)} т` : ''} />
-            <Row label="Тн (грузоп.)" value={veh.capacity_kg != null ? `${tons(veh.capacity_kg)} т` : ''} />
+            <Row label="Грузоподъёмность" value={ourCapacityKg != null ? `${tons(ourCapacityKg)} т` : ''} strong />
+            <Row label="Тн (грузоп.)" value={veh.capacity_kg != null ? `${tons(veh.capacity_kg)} т` : ''} muted />
+            <Row label="Доп. тн" value={veh.max_mass_kg != null ? `${tons(veh.max_mass_kg)} т` : ''} muted />
             <Row label="Длина" value={veh.len_mm != null ? `${meters(veh.len_mm)} м` : ''} />
             <Row label="Ширина" value={veh.wid_mm != null ? `${meters(veh.wid_mm)} м` : ''} />
             <Row label="Высота от площадки" value={veh.hei_mm != null ? `${meters(veh.hei_mm)} м` : ''} />

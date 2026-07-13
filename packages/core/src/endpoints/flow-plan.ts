@@ -77,6 +77,13 @@ export interface FlowDeliveryRow {
   snap_mol: string;
   snap_note: string;
   snap_approved: string;
+  /** SNAPSHOT наших полей якоря при фиксации (План=слепок, юзер 2026-07-12):
+   *  точка(и) / окно доставки / приоритет / оснастка-выгрузка на момент «Зафиксировать».
+   *  Зафикс. строка читает их; черновик — живьём с якоря. Пусто у старых фиксаций. */
+  snap_point?: string;
+  snap_delivery?: string;
+  snap_priority?: string;
+  snap_unload?: string;
   /** SNAPSHOT «склад до» (Был/прежний склад-получатель) — заморожен при фиксации (п.1). */
   snap_pr: string;
   /** SNAPSHOT машины/экспедиторов/гаражного/заливки на момент фиксации (юзер 2026-07-05:

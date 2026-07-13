@@ -1,24 +1,31 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Copy, LocateFixed, MapPinned, Navigation, TrainTrack, Trash2, Warehouse, X } from 'lucide-react';
+import { Copy, LocateFixed, MapPinned, Ruler, TrainTrack, Trash2, Warehouse, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { useMapStore } from '@/lib/map-store';
 import {
   AREA_COLORS,
+  AREA_KIND_META,
   EMPTY_POINT_EQUIPMENT,
   EQUIPMENT_META,
+  POINT_PURPOSE_META,
   POINT_VEHICLE_TYPES,
-  VEHICLE_TYPES,
-  roadPaintOption,
-  vehicleLabel,
+	  ROAD_ACCESS_KIND_META,
+	  WORK_AREA_COLOR,
+	  allVehiclesByPurpose,
+	  formatClearanceMeters,
+	  roadAccessSummary,
+	  vehicleLabel,
+	  type AreaKind,
   type LatLng,
   type MapPoint,
   type MapRoadSuggestion,
+  type PointPurpose,
+  type RoadAccessKind,
   type VehicleType,
 } from './map-types';
 import type { MapSelection } from './MapCanvas';
-import { formatDistanceMeters } from './geo';
-import type { RouteResult } from './route-network';
+import { VehiclePurposeAccessGrid } from './VehiclePurposeAccessGrid';
 
 interface Props {
   selection: MapSelection;
@@ -30,12 +37,6 @@ interface Props {
   onMovePointByMap: (id: string) => void;
   /** Создана копия точки — родитель наводится на неё и включает «перемещение». */
   onDuplicatedPoint: (id: string) => void;
-  routeSourcePointId: string | null;
-  routeResult: RouteResult | null;
-  /** Машина, по которой считается маршрут (для подписи/предупреждения). */
-  routeVehicle: VehicleType | null;
-  onSetRouteFromPoint: (id: string) => void;
-  onClearRoute: () => void;
   /** Открыть оверлей «карточка склада + МОЛы» поверх карты. */
   onShowWarehouseCard: (warehouseId: string) => void;
 }
@@ -49,11 +50,6 @@ export function MapDetailPanel({
   onFocus,
   onMovePointByMap,
   onDuplicatedPoint,
-  routeSourcePointId,
-  routeResult,
-  routeVehicle,
-  onSetRouteFromPoint,
-  onClearRoute,
   onShowWarehouseCard,
 }: Props) {
   return (
@@ -66,13 +62,15 @@ export function MapDetailPanel({
               ? 'Область'
               : selection.type === 'crossing'
                 ? 'Ж/д переезд'
-                : selection.type === 'railway'
-                  ? 'Ж/д путь'
-                  : selection.type === 'roadSuggestion'
-                    ? 'Черновик дороги'
-                    : selection.type === 'roadAccess'
-                      ? 'Особенности дороги'
-                      : 'Дорога'}
+                : selection.type === 'clearance'
+                  ? 'Высота проезда'
+                  : selection.type === 'railway'
+                    ? 'Ж/д путь'
+                    : selection.type === 'roadSuggestion'
+                      ? 'Черновик дороги'
+                      : selection.type === 'roadAccess'
+                        ? 'Ограничение участка'
+                        : 'Дорога'}
           {!canEdit && <span className="rounded bg-bg-hover px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-wide text-text-muted">просмотр</span>}
         </span>
         <button
@@ -93,17 +91,13 @@ export function MapDetailPanel({
             onFocus={onFocus}
             onMoveByMap={onMovePointByMap}
             onDuplicated={onDuplicatedPoint}
-            routeSourcePointId={routeSourcePointId}
-            routeResult={routeResult}
-            routeVehicle={routeVehicle}
-            onSetRouteFromPoint={onSetRouteFromPoint}
-            onClearRoute={onClearRoute}
             onShowWarehouseCard={onShowWarehouseCard}
           />
         )}
         {selection.type === 'area' && <AreaEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
         {selection.type === 'road' && <RoadEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
         {selection.type === 'crossing' && <CrossingEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
+        {selection.type === 'clearance' && <ClearanceEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
         {selection.type === 'railway' && <RailwayEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
         {selection.type === 'roadSuggestion' && <RoadSuggestionEditor id={selection.id} canEdit={canEdit} onDone={onClose} />}
         {selection.type === 'roadAccess' && <RoadAccessEditor id={selection.id} canEdit={canEdit} onDeleted={onClose} />}
@@ -114,6 +108,41 @@ export function MapDetailPanel({
 
 // ─── Точка ──────────────────────────────────────────────────────────────────
 
+const POINT_PURPOSE_IDS: PointPurpose[] = ['tech', 'exped', 'other'];
+
+function vehicleMatrixHasAny(matrix: Partial<Record<PointPurpose, VehicleType[]>> | undefined): boolean {
+  return Object.values(matrix ?? {}).some((list) => Array.isArray(list) && list.length > 0);
+}
+
+function pruneRearByPurpose(
+  rearByPurpose: Partial<Record<PointPurpose, VehicleType[]>>,
+  vehiclesByPurpose: Partial<Record<PointPurpose, VehicleType[]>>,
+): Partial<Record<PointPurpose, VehicleType[]>> {
+  const out: Partial<Record<PointPurpose, VehicleType[]>> = {};
+  for (const purpose of POINT_PURPOSE_IDS) {
+    const selected = new Set(vehiclesByPurpose[purpose] ?? []);
+    const list = (rearByPurpose[purpose] ?? []).filter((vehicle) => selected.has(vehicle));
+    if (list.length > 0) out[purpose] = list;
+  }
+  return out;
+}
+
+function pointHasRearLoad(point: MapPoint): boolean {
+  return vehicleMatrixHasAny(point.rearByPurpose) || point.rearUnload;
+}
+
+function rearSummaryText(point: MapPoint): string {
+  const rearByPurpose = point.rearByPurpose ?? {};
+  const parts = POINT_PURPOSE_META
+    .map((purpose) => {
+      const list = rearByPurpose[purpose.id] ?? [];
+      if (list.length === 0) return '';
+      return `${purpose.label}: ${list.map(vehicleLabel).join(', ')}`;
+    })
+    .filter(Boolean);
+  return parts.join('; ');
+}
+
 function PointEditor({
   id,
   canEdit,
@@ -122,11 +151,6 @@ function PointEditor({
   onFocus,
   onMoveByMap,
   onDuplicated,
-  routeSourcePointId,
-  routeResult,
-  routeVehicle,
-  onSetRouteFromPoint,
-  onClearRoute,
   onShowWarehouseCard,
 }: {
   id: string;
@@ -136,11 +160,6 @@ function PointEditor({
   onFocus: (latlng: LatLng) => void;
   onMoveByMap: (id: string) => void;
   onDuplicated: (id: string) => void;
-  routeSourcePointId: string | null;
-  routeResult: RouteResult | null;
-  routeVehicle: VehicleType | null;
-  onSetRouteFromPoint: (id: string) => void;
-  onClearRoute: () => void;
   onShowWarehouseCard: (warehouseId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -156,7 +175,6 @@ function PointEditor({
 
   if (!point) return null;
   const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
-  const allowedVehicles = point.allowedVehicles ?? [];
   const siblingPointCount = point.warehouseId
     ? allPoints.filter((p) => p.warehouseId === point.warehouseId).length
     : 0;
@@ -164,14 +182,6 @@ function PointEditor({
   return (
     <div className="space-y-2.5">
       <PointSummary point={point} />
-      <RoutePointBlock
-        point={point}
-        routeSourcePointId={routeSourcePointId}
-        routeResult={routeResult}
-        routeVehicle={routeVehicle}
-        onSetRouteFromPoint={onSetRouteFromPoint}
-        onClearRoute={onClearRoute}
-      />
 
       {canEdit && (
         <button
@@ -184,6 +194,9 @@ function PointEditor({
         </button>
       )}
 
+      {canEdit && editing && (
+        <SectionTitle label="Основное" />
+      )}
       {canEdit && editing && (
         <WarehousePicker
           value={point.warehouseId}
@@ -217,33 +230,13 @@ function PointEditor({
 
       {canEdit && editing && (
         <>
-          {/* Поля точки */}
+          {/* ── Основное ── */}
           <Field label="Подпись на карте">
             <input
               value={point.label}
               onChange={(e) => updatePoint(id, { label: e.target.value })}
               placeholder={point.warehouseId ?? 'Точка'}
               className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
-            />
-          </Field>
-
-          <Field label="Что выгружаем / место выгрузки">
-            <textarea
-              value={point.comment}
-              onChange={(e) => updatePoint(id, { comment: e.target.value })}
-              rows={2}
-              className="w-full resize-none rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
-            />
-          </Field>
-
-          <Field label="Объём отгрузок (вес для оптимизации)">
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={point.weight}
-              onChange={(e) => updatePoint(id, { weight: Math.max(0, Number(e.target.value) || 0) })}
-              className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 font-mono text-[12.5px] tabular-nums text-text-primary outline-none focus:border-accent-clay/40"
             />
           </Field>
 
@@ -265,62 +258,42 @@ function PointEditor({
             )}
           </Field>
 
-          <Field label="Какая машина заедет в точку">
-            <div className="space-y-1">
-              <button
-                type="button"
-                onClick={() => updatePoint(id, { allowedVehicles: [] })}
-                className={cn(
-                  'flex h-7 w-full items-center justify-between rounded border px-2 text-[12px] outline-none transition-colors',
-                  allowedVehicles.length === 0
-                    ? 'border-emerald-400/45 bg-emerald-400/10 text-emerald-200'
-                    : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
-                )}
-              >
-                <span>Все машины</span>
-                <span>{allowedVehicles.length === 0 ? '✓' : ''}</span>
-              </button>
-              <div className="grid grid-cols-2 gap-1">
-                {POINT_VEHICLE_TYPES.map((vehicle) => {
-                  const active = allowedVehicles.includes(vehicle.id);
-                  return (
-                    <button
-                      key={vehicle.id}
-                      type="button"
-                      onClick={() => {
-                        const next = active
-                          ? allowedVehicles.filter((id) => id !== vehicle.id)
-                          : [...allowedVehicles, vehicle.id];
-                        updatePoint(id, { allowedVehicles: next });
-                      }}
-                      className={cn(
-                        'min-h-7 rounded-md border px-1.5 text-[11.5px] outline-none transition-colors',
-                        active
-                          ? 'border-[#22D3EE]/50 bg-[#22D3EE]/12 text-text-strong'
-                          : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
-                      )}
-                    >
-                      {vehicle.short}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+          {/* ── Транспорт по назначениям ── */}
+          <SectionTitle label="Транспорт" />
+          <Field label="Типы ТС по назначениям (галочка = машина едет в эту точку, Сз = ТМЦ сзади)">
+            <VehiclePurposeMatrix
+              value={point.vehiclesByPurpose ?? {}}
+              rearValue={point.rearByPurpose ?? {}}
+              onChange={(vbp, rearByPurposeRaw) => {
+                const rearByPurpose = pruneRearByPurpose(rearByPurposeRaw, vbp);
+                const activePurposes = POINT_PURPOSE_IDS
+                  .filter((p) => (vbp[p]?.length ?? 0) > 0);
+                const union = [...new Set(Object.values(vbp).flat() as VehicleType[])];
+                updatePoint(id, {
+                  vehiclesByPurpose: vbp,
+                  rearByPurpose,
+                  rearUnload: vehicleMatrixHasAny(rearByPurpose),
+                  purposes: activePurposes,
+                  // Общий «заезд» для карты/сайдбара/сводки: покрыты все типы = пусто (= все).
+                  allowedVehicles: union.length >= POINT_VEHICLE_TYPES.length ? [] : union,
+                });
+              }}
+            />
           </Field>
 
-          <button
-            type="button"
-            onClick={() => updatePoint(id, { rearUnload: !point.rearUnload })}
-            className={cn(
-              'flex h-7 w-full items-center justify-between rounded border px-2 text-[12px] outline-none transition-colors',
-              point.rearUnload
-                ? 'border-emerald-400/45 bg-emerald-400/10 text-emerald-200'
-                : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
-            )}
-          >
-            <span>ТМЦ сзади</span>
-            <span>{point.rearUnload ? 'да' : 'нет'}</span>
-          </button>
+          {/* ── Комментарий ── */}
+          <SectionTitle label="Комментарий" />
+          <Field label="Что выгружаем / место выгрузки">
+            <textarea
+              value={point.comment}
+              onChange={(e) => updatePoint(id, { comment: e.target.value })}
+              rows={2}
+              className="w-full resize-none rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
+            />
+          </Field>
+
+	          {/* ── Координаты ── */}
+          <SectionTitle label="Координаты" />
         </>
       )}
 
@@ -386,6 +359,8 @@ function PointSummary({ point }: { point: MapPoint }) {
   const vehicles = allowedVehicles.length === 0
     ? 'Все машины'
     : allowedVehicles.map(vehicleLabel).join(', ');
+  const purposes: PointPurpose[] = point.purposes?.length ? point.purposes : (point.warehouseId ? ['tech'] : ['other']);
+  const rearSummary = rearSummaryText(point);
 
   return (
     <section className="rounded-lg border border-border-subtle bg-bg-elevated/35 px-3 py-2.5">
@@ -398,76 +373,21 @@ function PointSummary({ point }: { point: MapPoint }) {
         </div>
       </div>
 
+      {/* Назначения точки — явные признаки (Технология / Экспедиция / Иное) */}
+      <div className="mt-2 flex flex-wrap gap-1">
+        {POINT_PURPOSE_META.filter((m) => purposes.includes(m.id)).map((m) => (
+          <span
+            key={m.id}
+            className="rounded px-1.5 py-0.5 text-[10.5px] font-medium"
+            style={{ backgroundColor: `${m.color}22`, color: m.color }}
+          >{m.label}</span>
+        ))}
+      </div>
+
       <div className="mt-2 grid grid-cols-2 gap-1.5 text-[11.5px]">
         <InfoPill label="Заезд" value={vehicles} />
         <InfoPill label="Оснастка" value={equipmentList.length > 0 ? equipmentList.join(', ') : 'не указано'} />
-        {point.rearUnload && <InfoPill label="Нюанс" value="ТМЦ сзади" />}
-        {point.weight > 1 && <InfoPill label="Вес" value={String(point.weight)} />}
-      </div>
-    </section>
-  );
-}
-
-function RoutePointBlock({
-  point,
-  routeSourcePointId,
-  routeResult,
-  routeVehicle,
-  onSetRouteFromPoint,
-  onClearRoute,
-}: {
-  point: MapPoint;
-  routeSourcePointId: string | null;
-  routeResult: RouteResult | null;
-  routeVehicle: VehicleType | null;
-  onSetRouteFromPoint: (id: string) => void;
-  onClearRoute: () => void;
-}) {
-  const isSource = routeSourcePointId === point.id;
-  const hasSource = routeSourcePointId !== null;
-  return (
-    <section className="rounded-lg border border-sky-400/25 bg-sky-400/[0.08] px-3 py-2.5 text-[12px]">
-      <div className="flex items-start gap-2">
-        <Navigation className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" strokeWidth={1.75} />
-        <div className="min-w-0 flex-1">
-          <p className="font-semibold text-text-strong">
-            Маршрут по дорогам
-            {routeVehicle && <span className="ml-1 font-normal text-text-muted">· {vehicleLabel(routeVehicle)}</span>}
-          </p>
-          {!hasSource && <p className="mt-0.5 text-text-muted">Выберите эту точку стартом, затем кликните точку назначения.</p>}
-          {isSource && <p className="mt-0.5 text-sky-200">Эта точка выбрана стартом маршрута.</p>}
-          {hasSource && !isSource && routeResult && (
-            <>
-              <p className="mt-0.5 font-mono tabular-nums text-sky-200">
-                {formatDistanceMeters(routeResult.distanceMeters)} · узлов {routeResult.nodes}
-              </p>
-              {routeResult.passesBlocked && (
-                <p className="mt-0.5 text-amber-200">⚠ Кратчайший путь идёт через запрещённый для этой машины участок.</p>
-              )}
-            </>
-          )}
-          {hasSource && !isSource && !routeResult && (
-            <p className="mt-0.5 text-amber-200">Маршрут не найден: рядом нет сшитой дорожной сети.</p>
-          )}
-        </div>
-      </div>
-      <div className="mt-2 flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={() => onSetRouteFromPoint(point.id)}
-          className="h-7 flex-1 rounded border border-sky-400/35 px-2 text-[12px] font-medium text-sky-200 outline-none transition-colors hover:bg-sky-400/10"
-        >
-          {isSource ? 'Старт выбран' : 'Маршрут отсюда'}
-        </button>
-        {hasSource && (
-          <button
-            type="button"
-            onClick={onClearRoute}
-            className="h-7 rounded border border-border-subtle px-2 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
-          >
-            Сбросить
-          </button>
-        )}
+        {pointHasRearLoad(point) && <InfoPill label="Сзади" value={rearSummary || 'ТМЦ сзади'} />}
       </div>
     </section>
   );
@@ -515,83 +435,55 @@ function CoordsBlock({ point }: { point: MapPoint }) {
   );
 }
 
-/** '57,919494' → 57.919494; пусто/мусор → null (Number('') даёт 0 — отсекаем). */
-function parseCoord(raw: string): number | null {
-  const t = raw.trim().replace(',', '.');
-  if (!t) return null;
-  const v = Number(t);
-  return Number.isFinite(v) ? v : null;
+/**
+ * Разбор координат из Google Карт. Google копирует пару одной строкой
+ * «57.919494, 60.028350» (иногда с N/E, °, лишними пробелами/переносами) —
+ * берём первые два числа как широту/долготу. Одиночное число — только широта.
+ */
+function parseLatLng(raw: string): { lat: number; lng: number } | null {
+  const nums = String(raw).replace(',', ' ').match(/-?\d+(?:\.\d+)?/g);
+  if (!nums || nums.length < 2) return null;
+  const lat = Number(nums[0]);
+  const lng = Number(nums[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
 }
 
 /**
- * Правка координат точки руками (юзер 2026-07-05). Ввод широты/долготы,
- * понимает вставку пары «57.919494, 60.028350» в поле широты. Коммит —
- * Enter или потеря фокуса; после коммита карта наводится на новое место.
+ * Правка координат точки одним полем: вставляем координаты из Google Карт
+ * (пара идёт сплошной строкой) — точка встаёт на место. Коммит по Enter или
+ * потере фокуса; после коммита карта наводится на новое место.
  */
 function CoordsEditBlock({ point, onCommit }: { point: MapPoint; onCommit: (latlng: LatLng) => void }) {
-  const [lat, setLat] = useState(point.lat.toFixed(6));
-  const [lng, setLng] = useState(point.lng.toFixed(6));
+  const [text, setText] = useState(`${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`);
 
-  // Точку переместили мышью/выбрали другую — обновляем поля.
+  // Точку переместили мышью/выбрали другую — обновляем поле.
   useEffect(() => {
-    setLat(point.lat.toFixed(6));
-    setLng(point.lng.toFixed(6));
+    setText(`${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`);
   }, [point.id, point.lat, point.lng]);
 
-  const latVal = parseCoord(lat);
-  const lngVal = parseCoord(lng);
-  const valid = latVal !== null && lngVal !== null
-    && Math.abs(latVal) <= 90 && Math.abs(lngVal) <= 180;
-  const changed = valid && (latVal !== point.lat || lngVal !== point.lng);
+  const parsed = parseLatLng(text);
+  const valid = parsed !== null;
+  const changed = valid && (parsed!.lat !== point.lat || parsed!.lng !== point.lng);
 
   const commit = () => {
-    if (changed && latVal !== null && lngVal !== null) onCommit({ lat: latVal, lng: lngVal });
+    if (changed && parsed) onCommit(parsed);
   };
-
-  // Вставили «lat, lng» одной строкой — раскладываем по полям.
-  const onLatChange = (raw: string) => {
-    const pair = /^\s*(-?\d+(?:[.,]\d+)?)\s*[,;]\s*(-?\d+(?:[.,]\d+)?)\s*$/.exec(raw);
-    if (pair) {
-      setLat(pair[1]!.replace(',', '.'));
-      setLng(pair[2]!.replace(',', '.'));
-    } else {
-      setLat(raw);
-    }
-  };
-
-  const inputCls = cn(
-    'w-full rounded border bg-bg-surface px-2 py-1 font-mono text-[12.5px] tabular-nums text-text-primary outline-none focus:border-accent-clay/40',
-    valid ? 'border-border-default' : 'border-danger/45',
-  );
 
   return (
-    <Field label="Координаты места выгрузки (широта / долгота)">
-      <div className="grid grid-cols-2 gap-1.5">
-        <input
-          value={lat}
-          onChange={(e) => onLatChange(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
-          placeholder="57.919494"
-          className={inputCls}
-        />
-        <input
-          value={lng}
-          onChange={(e) => setLng(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
-          placeholder="60.028350"
-          className={inputCls}
-        />
-      </div>
-      {!valid && (
-        <p className="mt-1 text-[10.5px] text-danger">
-          Нужны числа: широта −90…90, долгота −180…180.
-        </p>
-      )}
-      <p className="mt-1 text-[10.5px] text-text-muted">
-        Можно вставить пару «57.919494, 60.028350» в поле широты. Enter — применить.
-      </p>
+    <Field label="Координаты (вставьте из Google Карт)">
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }}
+        placeholder="57.919494, 60.028350"
+        className={cn(
+          'w-full rounded border bg-bg-surface px-2 py-1 font-mono text-[12.5px] tabular-nums text-text-primary outline-none focus:border-accent-clay/40',
+          valid ? 'border-border-default' : 'border-danger/45',
+        )}
+      />
     </Field>
   );
 }
@@ -637,7 +529,7 @@ function WarehousePointsBlock({
             >
               <MapPinned className="h-3.5 w-3.5 shrink-0 text-emerald-300" strokeWidth={1.75} />
               <span className="min-w-0 flex-1 truncate">{title}</span>
-              {p.rearUnload && <span className="shrink-0 rounded bg-emerald-400/15 px-1 text-[10px] text-emerald-200">сзади</span>}
+              {pointHasRearLoad(p) && <span className="shrink-0 rounded bg-emerald-400/15 px-1 text-[10px] text-emerald-200">сзади</span>}
             </button>
           );
         })}
@@ -722,13 +614,46 @@ function AreaEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boolean; 
         <input
           value={area.name}
           onChange={(e) => updateArea(id, { name: e.target.value })}
-          placeholder="напр. Конвертерный"
+          placeholder="напр. Конвертерный / Площадка погрузки №2"
           className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
+        />
+      </Field>
+      <Field label="Тип области">
+        <div className="grid grid-cols-2 gap-1">
+          {AREA_KIND_META.map((m) => {
+            const on = (area.kind ?? 'shop') === m.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => updateArea(id, {
+                  kind: m.id as AreaKind,
+                  // Рабочие площадки — светло-жёлтые (цвет можно сменить ниже).
+                  ...(m.id !== 'shop' && (area.kind ?? 'shop') === 'shop' ? { color: WORK_AREA_COLOR } : {}),
+                })}
+                className={cn(
+                  'min-h-7 rounded-md border px-1.5 text-[11.5px] outline-none transition-colors',
+                  on ? 'border-amber-300/55 bg-amber-300/12 text-text-strong' : 'border-border-default text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+                )}
+              >
+                {m.label}
+              </button>
+            );
+          })}
+        </div>
+      </Field>
+      <Field label="Комментарий">
+        <textarea
+          value={area.comment ?? ''}
+          onChange={(e) => updateArea(id, { comment: e.target.value })}
+          rows={2}
+          placeholder="напр. площадка под кран, погрузка с 8:00"
+          className="w-full resize-none rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
         />
       </Field>
       <Field label="Цвет">
         <div className="flex flex-wrap gap-1.5">
-          {AREA_COLORS.map((c) => (
+          {[WORK_AREA_COLOR, ...AREA_COLORS].map((c) => (
             <button
               key={c}
               type="button"
@@ -875,13 +800,17 @@ function CrossingEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boole
         <ReadonlyLine label="Координаты" value={`${crossing.lat.toFixed(6)}, ${crossing.lng.toFixed(6)}`} />
       ) : (
         <>
-          <Field label="Название / привязка">
+          <Field label="№ ж/д пути">
             <input
               value={crossing.name}
               onChange={(e) => updateCrossing(id, { name: e.target.value })}
-              placeholder="напр. Переезд у домны №6"
-              className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
+              placeholder="271"
+              className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 font-mono text-[12.5px] tabular-nums text-text-primary outline-none focus:border-accent-clay/40"
             />
+            <p className="mt-1 text-[10.5px] text-text-muted">
+              Чистый номер пути (напр. «271») — показывается при наведении на переезд
+              и ищется через поиск «Ж/д путь (№)».
+            </p>
           </Field>
           <Field label="Заметка (необязательно)">
             <textarea
@@ -899,7 +828,78 @@ function CrossingEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boole
   );
 }
 
-// ─── Особенности дороги (какие машины проедут) ───────────────────────────────
+// ─── «Высота проезда» (тоннель / труба над дорогой) ──────────────────────────
+
+function ClearanceEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boolean; onDeleted: () => void }) {
+  const clearance = useMapStore((s) => (s.doc.clearances ?? []).find((c) => c.id === id));
+  const updateClearance = useMapStore((s) => s.updateClearance);
+  const removeClearance = useMapStore((s) => s.removeClearance);
+  // Поле мм редактируется как текст (можно стереть до пустого), в документ
+  // уходит только валидное число.
+  const [mmText, setMmText] = useState(() => (clearance ? String(clearance.heightMm) : ''));
+  useEffect(() => {
+    if (clearance) setMmText(String(clearance.heightMm));
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!clearance) return null;
+
+  const commitMm = (raw: string) => {
+    const mm = Math.round(Number(raw.replace(',', '.').replace(/\s+/g, '')));
+    if (Number.isFinite(mm) && mm > 0 && mm !== clearance.heightMm) updateClearance(id, { heightMm: mm });
+  };
+  const cm = clearance.heightMm / 10;
+  const meters = formatClearanceMeters(clearance.heightMm);
+
+  return (
+    <div className="space-y-3">
+      <section className="flex items-start gap-2 rounded-lg border border-red-400/25 bg-red-400/[0.07] px-3 py-2.5">
+        <Ruler className="mt-0.5 h-4 w-4 shrink-0 text-red-300" strokeWidth={1.75} />
+        <div className="min-w-0 flex-1 text-[12px]">
+          <p className="font-semibold text-text-strong">Высота проезда {meters} м</p>
+          <p className="mt-0.5 font-mono tabular-nums text-text-secondary">
+            Точно: {clearance.heightMm.toLocaleString('ru-RU')} мм · {cm.toLocaleString('ru-RU')} см
+          </p>
+          <p className="mt-0.5 text-text-muted">Тоннель / труба / ферма над дорогой — выше не проехать.</p>
+          {clearance.note.trim() && <p className="mt-1 text-text-secondary">{clearance.note}</p>}
+        </div>
+      </section>
+
+      {!canEdit ? (
+        <ReadonlyLine label="Координаты" value={`${clearance.lat.toFixed(6)}, ${clearance.lng.toFixed(6)}`} />
+      ) : (
+        <>
+          <Field label="Высота, мм (точное значение)">
+            <input
+              value={mmText}
+              onChange={(e) => {
+                setMmText(e.target.value);
+                commitMm(e.target.value);
+              }}
+              onBlur={() => setMmText(String(clearance.heightMm))}
+              placeholder="5300"
+              inputMode="numeric"
+              className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 font-mono text-[12.5px] tabular-nums text-text-primary outline-none focus:border-accent-clay/40"
+            />
+            <p className="mt-1 text-[10.5px] text-text-muted">
+              На карте кружок показывает метры («{meters}»), здесь — точные мм и см.
+            </p>
+          </Field>
+          <Field label="Заметка (необязательно)">
+            <textarea
+              value={clearance.note}
+              onChange={(e) => updateClearance(id, { note: e.target.value })}
+              rows={2}
+              placeholder="напр. труба у ЦВС, габарит по центру проезда"
+              className="w-full resize-none rounded border border-border-default bg-bg-surface px-2 py-1 text-[12.5px] text-text-primary outline-none focus:border-accent-clay/40"
+            />
+          </Field>
+          <DeleteBtn label="Удалить отметку" onClick={() => { removeClearance(id); onDeleted(); }} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Ограничение участка дороги ───────────────────────────────────────────────
 
 function RoadAccessEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boolean; onDeleted: () => void }) {
   const access = useMapStore((s) => s.doc.roadAccess.find((a) => a.id === id));
@@ -908,73 +908,90 @@ function RoadAccessEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boo
   if (!access) return null;
 
   if (!canEdit) {
-    const summary = access.kind === 'closed'
-      ? 'Нет проезда'
-      : access.vehicles.length === 0
-        ? 'Без ограничений'
-        : access.vehicles.map(vehicleLabel).join(', ');
     return (
       <div className="space-y-2">
-        <ReadonlyLine label="Участок" value={summary} />
+        <ReadonlyLine label="Участок" value={roadAccessSummary(access)} />
         {access.note.trim() && <ReadonlyLine label="Заметка" value={access.note} />}
       </div>
     );
   }
 
-  const toggle = (v: VehicleType) => {
-    const has = access.vehicles.includes(v);
-    updateRoadAccess(id, {
-      kind: 'limited',
-      vehicles: has ? access.vehicles.filter((x) => x !== v) : [...access.vehicles, v],
-    });
-  };
-  const closed = access.kind === 'closed';
+  const limited = access.kind === 'limited';
+  const closedLike = access.kind === 'closed' || access.kind === 'temp_closed';
 
   return (
     <div className="space-y-3">
       <p className="rounded-md border border-[#22D3EE]/30 bg-[#22D3EE]/10 px-2.5 py-2 text-[11.5px] text-text-secondary">
-        Окрашенный участок дороги. Если ограничений нет — участок не красим: он считается проездным для всех.
+        {roadAccessSummary(access)}
       </p>
 
       <Field label="Режим участка">
-        <button
-          type="button"
-          onClick={() => updateRoadAccess(id, { kind: 'closed', vehicles: [] })}
-          className={cn(
-            'mb-1 flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-[12.5px] outline-none transition-colors',
-            closed
-              ? 'border-red-400/55 bg-red-400/12 text-red-200'
-              : 'border-border-default text-text-secondary hover:bg-bg-hover',
-          )}
-        >
-          <span className="h-3 w-3 rounded-full" style={{ backgroundColor: roadPaintOption('closed').color }} />
-          <span className="flex-1">{roadPaintOption('closed').label}</span>
-        </button>
         <div className="space-y-1">
-          {VEHICLE_TYPES.map((v) => {
-            const on = !closed && access.vehicles.includes(v.id);
+          {ROAD_ACCESS_KIND_META.map((m) => {
+            const on = access.kind === m.id;
             return (
               <button
-                key={v.id}
+                key={m.id}
                 type="button"
-                onClick={() => toggle(v.id)}
+                onClick={() => updateRoadAccess(id, {
+                  kind: m.id as RoadAccessKind,
+                  ...(m.id === 'closed' || m.id === 'temp_closed'
+                    ? { closedFrom: access.closedFrom || new Date().toISOString().slice(0, 10) }
+                    : {}),
+                })}
                 className={cn(
                   'flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-[12.5px] outline-none transition-colors',
-                  on
-                    ? 'border-[#22D3EE]/50 bg-[#22D3EE]/12 text-text-strong'
-                    : 'border-border-default text-text-secondary hover:bg-bg-hover',
+                  on ? 'border-white/30 bg-white/10 text-text-strong' : 'border-border-default text-text-secondary hover:bg-bg-hover',
                 )}
-                >
-                <span className={cn('flex h-4 w-4 items-center justify-center rounded-[3px] border text-[10px]', on ? 'border-[#22D3EE] bg-[#22D3EE] text-bg-deep' : 'border-border-default')}>
-                  {on && '✓'}
-                </span>
-                <span className="flex-1">{vehicleLabel(v.id)}</span>
-                <span className="font-mono text-[10.5px] text-text-muted">{v.short}</span>
+              >
+                <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: m.color }} />
+                <span className="flex-1">{m.label}</span>
+                {on && '✓'}
               </button>
             );
           })}
         </div>
       </Field>
+
+      {closedLike && (
+        <div className="grid grid-cols-2 gap-1.5">
+          <Field label="Закрыто с">
+            <input
+              type="date"
+              value={access.closedFrom || ''}
+              onChange={(e) => updateRoadAccess(id, { closedFrom: e.target.value })}
+              className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12px] text-text-primary outline-none focus:border-accent-clay/40"
+            />
+          </Field>
+          {access.kind === 'temp_closed' && (
+            <Field label="По (открытие)">
+              <input
+                type="date"
+                value={access.closedTo || ''}
+                onChange={(e) => updateRoadAccess(id, { closedTo: e.target.value })}
+                className="w-full rounded border border-border-default bg-bg-surface px-2 py-1 text-[12px] text-text-primary outline-none focus:border-accent-clay/40"
+              />
+            </Field>
+          )}
+        </div>
+      )}
+
+      {limited && (
+        <Field label="Типы ТС на участке">
+          <p className="mb-1 text-[10.5px] leading-snug text-text-muted">
+            Галочка разрешает проезд для связки «назначение × тип ТС».
+          </p>
+          <VehiclePurposeAccessGrid
+            value={access.vehiclesByPurpose ?? allVehiclesByPurpose()}
+            onChange={(vehiclesByPurpose) => updateRoadAccess(id, {
+              kind: 'limited',
+              vehicles: [],
+              vehiclesMode: 'allow',
+              vehiclesByPurpose,
+            })}
+          />
+        </Field>
+      )}
 
       <Field label="Заметка (необязательно)">
         <textarea
@@ -988,12 +1005,140 @@ function RoadAccessEditor({ id, canEdit, onDeleted }: { id: string; canEdit: boo
 
       <p className="text-[11px] text-text-muted">Точек трассы: {access.vertices.length}</p>
 
-      <DeleteBtn label="Удалить особенность" onClick={() => { removeRoadAccess(id); onDeleted(); }} />
+      <DeleteBtn label="Удалить ограничение" onClick={() => { removeRoadAccess(id); onDeleted(); }} />
     </div>
   );
 }
 
 // ─── мелочи ──────────────────────────────────────────────────────────────────
+
+/** Заголовок секции редактора точки: Основное / Назначение / Транспорт / … */
+function SectionTitle({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 pt-1">
+      <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-accent-clay/90">{label}</span>
+      <span className="h-px flex-1 bg-border-subtle" />
+    </div>
+  );
+}
+
+/**
+ * Матрица «тип ТС × назначение»: строки — типы ТС; у каждого назначения две
+ * галочки — заезд и «Сз» (ТМЦ сзади) именно для этой связки.
+ * Клик по ЗАГОЛОВКУ колонки — включить/снять ВСЕ машины столбца («все машины
+ * для назначения» в один клик). Пустой столбец = назначение точке не задано.
+ */
+function VehiclePurposeMatrix({ value, rearValue, onChange }: {
+  value: Partial<Record<PointPurpose, VehicleType[]>>;
+  rearValue: Partial<Record<PointPurpose, VehicleType[]>>;
+  onChange: (
+    next: Partial<Record<PointPurpose, VehicleType[]>>,
+    nextRear: Partial<Record<PointPurpose, VehicleType[]>>,
+  ) => void;
+}) {
+  const cols: Array<{ id: PointPurpose; short: string }> = [
+    { id: 'tech', short: 'Тех.' },
+    { id: 'exped', short: 'Эксп.' },
+    { id: 'other', short: 'Иное' },
+  ];
+  const allIds = POINT_VEHICLE_TYPES.map((v) => v.id);
+  const colColor = (id: PointPurpose) => POINT_PURPOSE_META.find((m) => m.id === id)!.color;
+  const colLabel = (id: PointPurpose) => POINT_PURPOSE_META.find((m) => m.id === id)!.label;
+  const toggleCell = (vehicle: VehicleType, purpose: PointPurpose) => {
+    const cur = value[purpose] ?? [];
+    const nextVehicles = cur.includes(vehicle) ? cur.filter((x) => x !== vehicle) : [...cur, vehicle];
+    const nextValue = { ...value, [purpose]: nextVehicles };
+    const nextRear = cur.includes(vehicle)
+      ? { ...rearValue, [purpose]: (rearValue[purpose] ?? []).filter((x) => x !== vehicle) }
+      : rearValue;
+    onChange(nextValue, nextRear);
+  };
+  const toggleRearCell = (vehicle: VehicleType, purpose: PointPurpose) => {
+    const vehicles = value[purpose] ?? [];
+    const rear = rearValue[purpose] ?? [];
+    const rearOn = rear.includes(vehicle);
+    const nextValue = vehicles.includes(vehicle) ? value : { ...value, [purpose]: [...vehicles, vehicle] };
+    const nextRear = {
+      ...rearValue,
+      [purpose]: rearOn ? rear.filter((x) => x !== vehicle) : [...rear, vehicle],
+    };
+    onChange(nextValue, nextRear);
+  };
+  const toggleColumn = (purpose: PointPurpose) => {
+    const cur = value[purpose] ?? [];
+    const clear = cur.length >= allIds.length;
+    onChange(
+      { ...value, [purpose]: clear ? [] : [...allIds] },
+      clear ? { ...rearValue, [purpose]: [] } : rearValue,
+    );
+  };
+  return (
+    <div className="overflow-hidden rounded-md border border-border-subtle">
+      <div className="grid grid-cols-[minmax(5.5rem,1fr)_repeat(6,1.65rem)] items-center border-b border-border-subtle bg-bg-deep/40 px-2 py-1">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Тип ТС</span>
+        {cols.map((c) => (
+          <div key={c.id} className="contents">
+            <button
+              type="button"
+              onClick={() => toggleColumn(c.id)}
+              className="text-center text-[10px] font-semibold outline-none transition-opacity hover:opacity-75"
+              style={{ color: colColor(c.id) }}
+              title={`${colLabel(c.id)} — включить/снять все типы ТС`}
+            >{c.short}</button>
+            <span
+              className="text-center text-[9px] font-semibold text-emerald-300/80"
+              title={`${colLabel(c.id)}: ТМЦ сзади для выбранного типа ТС`}
+            >Сз</span>
+          </div>
+        ))}
+      </div>
+      {POINT_VEHICLE_TYPES.map((vehicle) => (
+        <div
+          key={vehicle.id}
+          className="grid grid-cols-[minmax(5.5rem,1fr)_repeat(6,1.65rem)] items-center border-b border-border-subtle/40 px-2 py-[3px] last:border-b-0"
+        >
+          <span className="truncate text-[11.5px] text-text-secondary" title={vehicle.label}>{vehicle.label}</span>
+          {cols.map((c) => {
+            const on = (value[c.id] ?? []).includes(vehicle.id);
+            const rearOn = (rearValue[c.id] ?? []).includes(vehicle.id);
+            return (
+              <div key={c.id} className="contents">
+                <button
+                  type="button"
+                  onClick={() => toggleCell(vehicle.id, c.id)}
+                  className={cn(
+                    'mx-auto flex h-[17px] w-[17px] items-center justify-center rounded-[4px] border text-[10px] leading-none outline-none transition-colors',
+                    !on && 'border-border-default text-transparent hover:bg-bg-hover',
+                  )}
+                  style={on ? { borderColor: colColor(c.id), backgroundColor: `${colColor(c.id)}2a`, color: colColor(c.id) } : undefined}
+                  aria-label={`${vehicle.label} · ${colLabel(c.id)}`}
+                  title={`${vehicle.label}: ${colLabel(c.id)}`}
+                >
+                  {on ? '✓' : ''}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleRearCell(vehicle.id, c.id)}
+                  className={cn(
+                    'mx-auto flex h-[17px] w-[17px] items-center justify-center rounded-[4px] border text-[10px] leading-none outline-none transition-colors',
+                    rearOn
+                      ? 'border-emerald-400/50 bg-emerald-400/15 text-emerald-200'
+                      : 'border-border-default text-transparent hover:bg-bg-hover',
+                    !on && !rearOn && 'opacity-60',
+                  )}
+                  aria-label={`${vehicle.label} · ${colLabel(c.id)} · ТМЦ сзади`}
+                  title={`${vehicle.label}: ${colLabel(c.id)} · ТМЦ сзади`}
+                >
+                  {rearOn ? '✓' : ''}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function ReadonlyLine({ label, value }: { label: string; value: string }) {
   return (

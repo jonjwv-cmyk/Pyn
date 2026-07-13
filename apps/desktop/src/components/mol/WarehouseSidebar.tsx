@@ -276,7 +276,8 @@ function WarehouseMapPoints({ warehouseId, points }: { warehouseId: string; poin
 function pointBadges(point: MapPoint): string[] {
   const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
   const badges: string[] = [];
-  if (point.rearUnload) badges.push('ТМЦ сзади');
+  const hasRear = point.rearUnload || Object.values(point.rearByPurpose ?? {}).some((list) => Array.isArray(list) && list.length > 0);
+  if (hasRear) badges.push('ТМЦ сзади');
   for (const m of EQUIPMENT_META) {
     if (equipment[m.key]) badges.push(m.label.toLowerCase());
   }

@@ -1,4 +1,5 @@
 import { createZustandStore as create } from '@pyn/core';
+import type { LatLng } from './map-types';
 
 /**
  * Состояние раздела «Глонасс» (спутниковый мониторинг транспорта на карте).
@@ -33,6 +34,9 @@ export type GlonassHistoryPoint = {
   lng: number;
   speed: number | null;
   time: string;
+  /** Перед точкой нет пути по дороге (разрыв сети/сигнала): след рвём, маркер
+   *  телепортируется — проигрыватель не рисует диагональ. Ставится снапом. */
+  gapBefore?: boolean;
 };
 
 export type GlonassHistorySegment = {
@@ -69,6 +73,16 @@ export type GlonassHistoryLoading = {
   failed?: number;
 };
 
+/** Точка живого пути машины: снапнутая к дороге позиция + время фикса. */
+export type GlonassTimedPathPoint = {
+  lat: number;
+  lng: number;
+  time: string;
+  speed?: number | null;
+  /** Перед точкой нет пути по дороге — след рвётся, маркер телепортируется. */
+  gapBefore?: boolean;
+};
+
 /** Готовая к отрисовке точка машины на карте (позиция + подпись + статус). */
 export type GlonassMarker = {
   id: number;
@@ -76,9 +90,19 @@ export type GlonassMarker = {
   gos: string;
   lat: number;
   lng: number;
+  path?: LatLng[];
+  /** Живое движение: снапнутый к дорогам путь с таймингом. MapCanvas ведёт маркер
+   *  по нему НЕПРЕРЫВНО (rAF, время = сейчас − delayMs) — машина едет по дороге
+   *  плавно, след рисуется строго ЗА ней, не обгоняя. */
+  timedPath?: GlonassTimedPathPoint[];
+  delayMs?: number;
   course: number | null;
   speed: number | null;
+  time: string | null;
   status: GlonassStatus;
+  /** Момент (ms), когда начался «плохой сигнал»: статус «движется», а машина
+   *  стоит на месте. null — сигнал нормальный. Для ⚠ и таймера над машиной. */
+  badSince?: number | null;
 };
 
 export type GlonassReplayMarker = {
@@ -87,17 +111,21 @@ export type GlonassReplayMarker = {
   gos: string;
   lat: number;
   lng: number;
+  path?: LatLng[];
   course: number | null;
   speed: number | null;
   color: string;
   time: string;
+  animationMs?: number;
 };
 
 export type GlonassStatus = 'moving' | 'stop' | 'parking' | 'disabled';
 
 export const HISTORY_REPLAY_COLOR = '#38BDF8';
+export const GLONASS_PRO_COLOR = '#38BDF8';
+export const GLONASS_RAW_COLOR = '#FB7185';
 export const HISTORY_YEAR_COLOR = '#F472D0';
-export const PLAYBACK_SPEEDS = [1, 15, 60, 300, 600] as const;
+export const PLAYBACK_SPEEDS = Array.from({ length: 24 }, (_, index) => (index + 1) * 0.5);
 const YEAR_CHUNK_MS = 3 * 24 * 60 * 60 * 1000;
 
 let historyJobToken = 0;
@@ -146,6 +174,8 @@ type GlonassState = {
   positions: Map<number, GlonassPosition>;
   /** Накопленный live-след выбранных машин за текущую сессию. */
   tracks: Map<number, GlonassPosition[]>;
+  /** Плохой сигнал: id → момент (ms) начала «движется, но стоит». */
+  staleSince: Map<number, number>;
   /** Исторические слои: маршруты за период + розовые годовые следы. */
   historyLayers: GlonassHistoryLayer[];
   activeHistoryLayerId: string | null;
@@ -153,14 +183,20 @@ type GlonassState = {
   playbackIndex: number;
   playbackPlaying: boolean;
   playbackSpeed: number;
+  /** Независимые слои сравнения: обработанный PRO и исходные точки провайдера. */
+  showPro: boolean;
+  showRaw: boolean;
   /** true — последний опрос вернул «парк офлайн» (нет онлайн-данных). */
   offline: boolean;
   lastPollAt: number;
+  /** Слежение: id машины, за которой камера едет (null — не следим). */
+  followId: number | null;
 
   setOpen: (open: boolean) => void;
   loadFleet: () => Promise<void>;
   toggleSelect: (id: number) => void;
   clearSelected: () => void;
+  setFollow: (id: number | null) => void;
   refreshPositions: () => Promise<void>;
   createHistoryLayer: (vehicleId: number, from: string, to: string) => Promise<void>;
   createYearRoadLayer: (vehicleIds: number[], from: string, to: string) => Promise<void>;
@@ -170,6 +206,8 @@ type GlonassState = {
   setPlaybackIndex: (index: number) => void;
   setPlaybackPlaying: (playing: boolean) => void;
   setPlaybackSpeed: (speed: number) => void;
+  setShowPro: (show: boolean) => void;
+  setShowRaw: (show: boolean) => void;
   cancelHistoryLoading: () => void;
 };
 
@@ -182,14 +220,18 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
   selected: new Set(),
   positions: new Map(),
   tracks: new Map(),
+  staleSince: new Map(),
   historyLayers: [],
   activeHistoryLayerId: null,
   historyLoading: null,
   playbackIndex: 0,
   playbackPlaying: false,
-  playbackSpeed: 60,
+  playbackSpeed: 1,
+  showPro: true,
+  showRaw: false,
   offline: false,
   lastPollAt: 0,
+  followId: null,
 
   setOpen: (open) => {
     set({ open });
@@ -222,11 +264,15 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
     for (const key of tracks.keys()) {
       if (!next.has(key)) tracks.delete(key);
     }
-    set({ selected: next, tracks });
+    // Сняли машину с карты — перестаём за ней следить.
+    const followId = next.has(get().followId ?? -1) ? get().followId : null;
+    set({ selected: next, tracks, followId });
     void get().refreshPositions();
   },
 
-  clearSelected: () => set({ selected: new Set(), positions: new Map(), tracks: new Map() }),
+  clearSelected: () => set({ selected: new Set(), positions: new Map(), tracks: new Map(), staleSince: new Map(), followId: null }),
+
+  setFollow: (id) => set({ followId: id }),
 
   refreshPositions: async () => {
     const api = window.pyn?.glonass;
@@ -240,19 +286,37 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
         const selected = current.selected;
         const map = new Map(current.positions);
         const tracks = new Map(current.tracks);
+        const staleSince = new Map(current.staleSince);
+        const now = Date.now();
+        for (const p of res.positions) {
+          if (!selected.has(p.id)) continue;
+          const prev = current.positions.get(p.id);
+          // «Движется» (скорость>3), но координата не сдвинулась (<3 м) → плохой/
+          // зависший сигнал: врёт зелёным. Запоминаем момент начала для таймера.
+          const frozen = vehicleStatus(p) === 'moving' && prev != null && distanceMeters(prev, p) < 3;
+          if (frozen) {
+            if (!staleSince.has(p.id)) staleSince.set(p.id, now);
+          } else {
+            staleSince.delete(p.id);
+          }
+        }
         for (const p of res.positions) map.set(p.id, p);
         for (const p of res.positions) {
           if (!selected.has(p.id)) continue;
-          if (vehicleStatus(p) !== 'moving') {
-            tracks.delete(p.id);
-            continue;
-          }
+          // Трек НЕ стираем на остановке: короткая пауза (светофор/дрогнувший
+          // сигнал) стирала накопленный путь — отложенный маркер терял дорогу и
+          // «летал» между сырой позицией и −30с (ТЗ 2026-07-12, мультивыбор).
+          // Дедуп самой точки и рестарт после долгого разрыва (>2 мин / >240 м)
+          // уже делает appendTrackPoint.
           tracks.set(p.id, appendTrackPoint(tracks.get(p.id) ?? [], p));
         }
         for (const key of tracks.keys()) {
           if (!selected.has(key)) tracks.delete(key);
         }
-        set({ positions: map, tracks, offline: !!res.offline, lastPollAt: Date.now() });
+        for (const key of [...staleSince.keys()]) {
+          if (!selected.has(key)) staleSince.delete(key);
+        }
+        set({ positions: map, tracks, staleSince, offline: !!res.offline, lastPollAt: Date.now() });
       }
     } catch {
       /* временный сбой опроса — оставляем прошлые позиции */
@@ -281,7 +345,7 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
         return;
       }
       const layerId = makeLayerId('history');
-      const segments = splitAndSimplifyHistory(res.points, 2.5).map((points, index) => ({
+      const segments = splitAndSimplifyHistory(res.points, 7).map((points, index) => ({
         id: `${layerId}-${index}`,
         vehicleId,
         vehicleLabel: vehicleLabel(vehicle),
@@ -453,6 +517,8 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
   setPlaybackIndex: (index) => set({ playbackIndex: Math.max(0, index) }),
   setPlaybackPlaying: (playing) => set({ playbackPlaying: playing }),
   setPlaybackSpeed: (speed) => set({ playbackSpeed: speed }),
+  setShowPro: (showPro) => set({ showPro }),
+  setShowRaw: (showRaw) => set({ showRaw }),
   cancelHistoryLoading: () => {
     historyJobToken += 1;
     set({ historyLoading: null });
@@ -508,13 +574,36 @@ function splitAndSimplifyHistory(points: GlonassHistoryPoint[], minMeters: numbe
     current.push(last);
   }
   pushSegment(segments, current);
-  return segments;
+  return segments
+    .map(trimStationaryHistoryTail)
+    .filter((segment): segment is GlonassHistoryPoint[] => segment !== null);
+}
+
+function trimStationaryHistoryTail(segment: GlonassHistoryPoint[]): GlonassHistoryPoint[] | null {
+  const measured = segment.filter((point) => point.speed != null && Number.isFinite(point.speed));
+  if (measured.length < 2) return segment;
+  const movingIndexes = segment
+    .map((point, index) => ((point.speed ?? 0) > 3 ? index : -1))
+    .filter((index) => index >= 0);
+  if (movingIndexes.length < 2 || (movingIndexes.length < 3 && movingIndexes.length / measured.length < 0.5)) return null;
+  const first = movingIndexes[0]!;
+  const last = movingIndexes[movingIndexes.length - 1]!;
+  const trimmed = segment.slice(first, last + 1);
+  let meters = 0;
+  for (let i = 1; i < trimmed.length; i += 1) meters += distanceMeters(trimmed[i - 1]!, trimmed[i]!);
+  return meters >= 12 ? trimmed : null;
 }
 
 function shouldSplitHistorySegment(a: GlonassHistoryPoint, b: GlonassHistoryPoint): boolean {
   const gapMs = Math.abs(Date.parse(b.time) - Date.parse(a.time));
   const dist = distanceMeters(a, b);
-  return (gapMs > 10 * 60 * 1000 && dist > 350) || dist > 2500;
+  // Разрыв — только «машина ПЕРЕМЕСТИЛАСЬ без данных» (неизвестный путь). Пауза
+  // НА МЕСТЕ — это стоянка: терминал на стоянке шлёт фикс раз в 1.5–10 минут
+  // (живой трек 09.07: медиана шага 4–9 с в движении, до 600 с на месте), и
+  // резка «gap > 90 с» рвала линию на КАЖДОЙ разгрузке — сайт ГЛОНАСС рисует
+  // тот же участок непрерывным кольцом. Стоянка не рвёт ни линию, ни HMM-прогон:
+  // манёвра у развилки из неё не возникает, точки геометрически на месте.
+  return dist > 2500 || (gapMs > 90 * 1000 && dist > 300);
 }
 
 function pushSegment(out: GlonassHistoryPoint[][], segment: GlonassHistoryPoint[]): void {

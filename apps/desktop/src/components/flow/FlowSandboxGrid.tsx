@@ -22,6 +22,9 @@ import * as Popover from '@radix-ui/react-popover';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
+import { flowScoreRenderer, type FlowScoreCell } from './flow-score-cell';
+import { flowWindowRenderer, type FlowWindowCell } from './flow-window-cell';
+import { planRowEps, EPS_LEVEL_LABEL } from './flow-eps';
 import { flowTwoToneRenderer, type FlowTwoCell } from './flow-composed-cells';
 import { flowMolRenderer, type FlowMolCell, type FlowMolOption } from './flow-mol-cell';
 import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
@@ -68,6 +71,8 @@ import { FlowSearchPanel, type FlowSearchGroup } from './FlowSearchPanel';
 import { ContactActionDialog, type ContactActionRequest } from '@/components/mol/ContactActionDialog';
 import { useMolStore } from '@/lib/stores';
 import { useWarehousesStore } from '@/lib/warehouses-store';
+import { useMapStore } from '@/lib/map-store';
+import { initMap } from '@/lib/map-repo';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
 import { FlowMonthPicker } from './FlowMonthPicker';
 import { FlowViewSwitch } from './FlowViewSwitch';
@@ -88,6 +93,13 @@ import {
   type FlowViewState,
 } from './flow-view';
 import { sessionStore } from '@/lib/token-store';
+import {
+  effectivePointNames,
+  pointNamesForWarehouse,
+  unloadDisplay,
+  vehicleInfoForNames,
+  EQUIP_LABELS,
+} from './flow-map-points';
 import {
   canUseLiveWarehouseScheduleForMonth,
   useScheduleMonthsMeta,
@@ -136,6 +148,8 @@ import {
 /** Кастомные рендереры ячеек (своя выпадашка в стиле меню колонки). */
 const FLOW_RENDERERS = [
   flowDropdownRenderer,
+  flowScoreRenderer,
+  flowWindowRenderer,
   flowTwoToneRenderer,
   flowMolRenderer,
   flowDayRenderer,
@@ -603,7 +617,8 @@ function extractValue(
       data.kind === 'flow-dropdown' ||
       data.kind === 'flow-mol' ||
       data.kind === 'flow-day' ||
-      data.kind === 'flow-to'
+      data.kind === 'flow-to' ||
+      data.kind === 'flow-window'
     )
       return data.value ?? '';
     return fallback;
@@ -813,6 +828,12 @@ export function FlowSandboxGrid(): JSX.Element {
     return () => {
       alive = false;
     };
+  }, []);
+  // Flow uses the explicit "Expedition" column of the point matrix. The site
+  // uses "Technology"; sharing the map document does not mean sharing purpose.
+  const mapPoints = useMapStore((state) => state.doc.points);
+  useEffect(() => {
+    void initMap();
   }, []);
   // Молы по складу-получателю (TO) из РЕАЛЬНОЙ базы МОЛ (useMolStore) — для выпадашки.
   const molRecords = useMolStore((s) => s.records);
@@ -2375,11 +2396,75 @@ export function FlowSandboxGrid(): JSX.Element {
           data: { kind: 'flow-history' },
         } satisfies FlowHistoryCell;
       }
+      if (spec.kind === 'window') {
+        // Доставка — наше окно времени (пикер 08:30–19:30 с правилами обеда).
+        const value = String(rowData.delivery ?? '');
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: spec.editable === true,
+          copyData: value,
+          data: { kind: 'flow-window', value },
+        } satisfies FlowWindowCell;
+      }
+      if (spec.kind === 'score') {
+        // Балл (EPS) — считается на клиенте из приоритета+окна доставки+остатка (наш
+        // движок flow-eps, 1:1 с сайтом). Формирование: остаток = полное кол-во.
+        const r = planRowEps({
+          priority: rowData.priority,
+          delivery: rowData.delivery,
+          currentQty: rowData.qty,
+          deliveredQty: 0,
+          wholePosition: true,
+        });
+        const names = effectivePointNames(rowData.point, mapPoints, rowData.to_wh, 'exped');
+        const vehicleInfo = vehicleInfoForNames(mapPoints, rowData.to_wh, names, 'exped');
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: true,
+          copyData: r.eps == null ? '' : String(r.eps),
+          data: {
+            kind: 'flow-score',
+            eps: r.eps,
+            levelLabel: EPS_LEVEL_LABEL[r.level],
+            whyHigh: r.whyHigh,
+            whyLow: r.whyLow,
+            routeNote: vehicleInfo.warning,
+          },
+        } satisfies FlowScoreCell;
+      }
+      if (spec.kind === 'loadinfo') {
+        const names = effectivePointNames(rowData.point, mapPoints, rowData.to_wh, 'exped');
+        const info = vehicleInfoForNames(mapPoints, rowData.to_wh, names, 'exped');
+        const value = info.lines.join('\n');
+        const display = `${info.incomplete ? '⚠ ' : ''}${value || '—'}`;
+        return {
+          kind: GridCellKind.Text,
+          data: display,
+          displayData: display,
+          allowOverlay: false,
+          allowWrapping: true,
+          themeOverride: info.incomplete ? { textDark: '#B7791F' } : undefined,
+        };
+      }
       if (spec.kind === 'dropdown') {
         // УР: 0 — основная поставка, показываем ПУСТО (выбрать «0» нельзя — это дефолт).
-        const value = spec.id === 'split_level' ? (Number(raw) > 0 ? String(raw) : '') : String(raw ?? '');
+        const names = effectivePointNames(rowData.point, mapPoints, rowData.to_wh, 'exped');
+        const derivedUnload = unloadDisplay(rowData.unload_equip, mapPoints, rowData.to_wh, names, 'exped');
+        const value = spec.id === 'split_level'
+          ? (Number(raw) > 0 ? String(raw) : '')
+          : spec.id === 'point'
+            ? names.join('\n')
+            : spec.id === 'unload_equip'
+              ? derivedUnload
+              : String(raw ?? '');
         // STAT — пункты ПО СТРОКЕ (statOptionsForRow): авто-ярлык не предлагаем руками.
-        const options = spec.id === 'stat' ? statOptionsForRow(rowData) : (spec.options ?? []);
+        const options = spec.id === 'stat'
+          ? statOptionsForRow(rowData)
+          : spec.id === 'point'
+            ? pointNamesForWarehouse(mapPoints, rowData.to_wh, 'exped')
+            : spec.id === 'unload_equip'
+              ? EQUIP_LABELS
+              : (spec.options ?? []);
         // УР: в списке «уровень N», в ячейке — чистая цифра; пустого пункта нет
         // (снять уровень = Delete по ячейке → 0).
         const labels = spec.id === 'split_level' ? options.map((o) => `уровень ${o}`) : undefined;
@@ -2387,7 +2472,14 @@ export function FlowSandboxGrid(): JSX.Element {
           kind: GridCellKind.Custom,
           allowOverlay: spec.editable === true,
           copyData: value,
-          data: { kind: 'flow-dropdown', value, options, labels },
+          data: {
+            kind: 'flow-dropdown',
+            value,
+            options,
+            labels,
+            multi: spec.id === 'point' || spec.id === 'unload_equip',
+            maxSelected: spec.id === 'point' ? 3 : EQUIP_LABELS.length,
+          },
         } satisfies FlowDropdownCell;
       }
       if (
@@ -2416,7 +2508,7 @@ export function FlowSandboxGrid(): JSX.Element {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor],
+    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor, mapPoints],
   );
 
   // Шрифт ЗНАЧЕНИЯ per-колонке (clst 7 / day·stat·kg·v·mol·request 8 / прочее 10) +
@@ -2526,6 +2618,27 @@ export function FlowSandboxGrid(): JSX.Element {
     },
     [applyServerRows],
   );
+
+  // Point automation: one Expedition point for TO is selected automatically;
+  // several points require an explicit choice. A point from another warehouse
+  // is cleared after TO changes. The same write path persists it for Plan/Report.
+  useEffect(() => {
+    if (mapPoints.length === 0) return;
+    const changes = new Map<number, FlowRowPatch>();
+    for (const row of rowsRef.current) {
+      if (String(row.day_wk ?? '').toUpperCase() === 'OFF') continue;
+      const available = pointNamesForWarehouse(mapPoints, row.to_wh, 'exped');
+      const selected = String(row.point || '').split('\n').map((item) => item.trim()).filter(Boolean);
+      const valid = selected.length > 0 && selected.every((item) => available.includes(item));
+      const next = valid ? selected.join('\n') : available.length === 1 ? available[0]! : '';
+      if (next !== String(row.point || '')) {
+        changes.set(row.id, { point: next, unload_equip: '' });
+      }
+    }
+    if (changes.size === 0) return;
+    writeCells(changes);
+    syncEdits(changes);
+  }, [mapPoints, rows, writeCells, syncEdits]);
 
   // Авто-обработка МОЛ по живой базе (P1, юзер 2026-06-14). Относительно сегодня:
   //  • пустой МОЛ + ровно ОДИН валидный на складе → подставляем его (авто-выбор);
@@ -2718,6 +2831,15 @@ export function FlowSandboxGrid(): JSX.Element {
             if (!Number.isInteger(n) || n < 0 || n > 10) continue;
             newVal = n;
             if (newVal === (Number(viewRow.split_level) || 0)) continue;
+          } else if (spec.id === 'point') {
+            const picked = v.split('\n').map((item) => item.trim()).filter(Boolean);
+            const allowed = pointNamesForWarehouse(mapPoints, viewRow.to_wh, 'exped');
+            if (picked.length > 3 || picked.some((item) => !allowed.includes(item))) continue;
+            newVal = picked.join('\n');
+          } else if (spec.id === 'unload_equip') {
+            const picked = v.split('\n').map((item) => item.trim()).filter(Boolean);
+            if (picked.some((item) => !EQUIP_LABELS.includes(item))) continue;
+            newVal = picked.join('\n');
           } else if (v !== '' && !(spec.options ?? []).includes(v)) {
             continue;
           }
@@ -2778,6 +2900,13 @@ export function FlowSandboxGrid(): JSX.Element {
             if (!('pr' in pb)) before.set(viewRow.id, { ...pb, pr: curPr });
           }
         }
+        if (spec.id === 'point' && String(viewRow.unload_equip || '') !== '') {
+          after.set(viewRow.id, { ...(after.get(viewRow.id) ?? {}), unload_equip: '' });
+          const pb = before.get(viewRow.id) ?? {};
+          if (!('unload_equip' in pb)) {
+            before.set(viewRow.id, { ...pb, unload_equip: viewRow.unload_equip || '' });
+          }
+        }
       }
       if (molRejects.length > 0) {
         setMolError({ body: <span className="whitespace-pre-line">{buildMolErrorMessage(molRejects)}</span> });
@@ -2789,7 +2918,7 @@ export function FlowSandboxGrid(): JSX.Element {
       pushHistory({ kind: 'cells', before, after });
       syncEdits(after); // → сервер + реалтайм всем
     },
-    [viewRows, writeCells, pushHistory, syncEdits, molByWarehouse, molByKey, openVghCard, statMetaById, statOptionsForRow],
+    [viewRows, writeCells, pushHistory, syncEdits, molByWarehouse, molByKey, openVghCard, statMetaById, statOptionsForRow, mapPoints],
   );
 
   // Двойной клик (Enter) по НОМЕНКЛАТУРЕ (NO.№) → карточка изменения материала (без плашки).

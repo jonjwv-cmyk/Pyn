@@ -274,9 +274,17 @@ export {
   mapGet,
   mapSet,
   mapRoadSuggestionsGet,
+  mapRailwaysGet,
+  mapBuildingsGet,
+  mapFootwaysGet,
+  mapRefGet,
   type MapBBox,
   type MapDocResult,
   type MapRoadSuggestionWire,
+  type MapRailwayWire,
+  type MapBuildingWire,
+  type MapFootwayWire,
+  type MapRefWire,
 } from './map';
 
 export {
@@ -336,3 +344,13 @@ export {
   type VghStagingRow,
   type VghEdit,
 } from './flow-vgh';
+
+export {
+  optimizationStart,
+  optimizationStatus,
+  optimizationConfirm,
+  type OptimizationPayload,
+  type OptimizationPositionInput,
+  type OptimizationVehicleInput,
+  type OptimizationJob,
+} from './optimization';

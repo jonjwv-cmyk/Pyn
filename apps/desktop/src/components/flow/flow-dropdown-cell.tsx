@@ -20,6 +20,8 @@ import { useFlipUpIfClipped } from './flow-cell-flip';
 export interface FlowDropdownData {
   readonly kind: 'flow-dropdown';
   readonly value: string;
+  /** Canvas-only text; editor still receives the full `value`. */
+  readonly displayValue?: string;
   readonly options: readonly string[];
   /** Подписи пунктов (параллельно options): в списке «уровень 1», в ячейке «1».
    *  Не задано — показываем сами значения. */
@@ -160,7 +162,7 @@ export const flowDropdownRenderer: CustomRenderer<FlowDropdownCell> = {
   draw: (args, cell) => {
     // Без стрелки — раскрытие двойным кликом (как в Google Sheets). В multi-режиме
     // (тип ТС) КАЖДОЕ значение — СО СВОЕЙ СТРОКИ (юзер 2026-07-05), как экспедиторы.
-    const v = cell.data.value ?? '';
+    const v = cell.data.displayValue ?? cell.data.value ?? '';
     if (!cell.data.multi || !v.includes('\n')) {
       drawTextCell(args, v, cell.contentAlign);
       return true;

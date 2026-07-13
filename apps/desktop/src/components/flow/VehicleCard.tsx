@@ -118,8 +118,8 @@ export function VehicleCard({
             <Field label="Цвет кузова" value={color} onChange={setColor} placeholder="Светло-серый" />
             <Field label="Тип" value={vtype} onChange={setVtype} placeholder="Грузовые седельные тягачи" />
             <Field label="Модель" value={model} onChange={setModel} placeholder="КамАЗ 54115N" />
-            <Field label="Грузопод., кг" value={capacity} onChange={setCapacity} placeholder="12 225" />
-            <Field label="Max. доп. масса, кг" value={maxMass} onChange={setMaxMass} placeholder="19 305" />
+            <Field label="ТН (ГРУЗОП.), кг" value={capacity} onChange={setCapacity} placeholder="12 225" />
+            <Field label="ДОП. ТН, кг" value={maxMass} onChange={setMaxMass} placeholder="19 305" />
             <div className="col-span-2 grid grid-cols-3 gap-2">
               <Field label="Д кузова, мм" value={lenMm} onChange={setLenMm} placeholder="11 900" />
               <Field label="Ш, мм" value={widMm} onChange={setWidMm} placeholder="2 060" />

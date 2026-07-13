@@ -23,7 +23,10 @@ export type FlowColumnKind =
   | 'day' // new / OFF / дата доставки (поповер); объединяет ST + день недели
   | 'mat' // материал: ⚠ ручной заказ + название; карточка-оверлей по двойному клику
   | 'history' // ИСТОРИЯ движения позиции (иконка-часы; карточка-таймлайн по клику)
-  | 'to'; // склад-получатель: выпадашка складов того же цеха
+  | 'to' // склад-получатель: выпадашка складов того же цеха
+  | 'score' // Балл (EPS) — бейдж на canvas + попап-обоснование по клику
+  | 'window' // Доставка — окно времени 08:30–19:30 (наш пикер, правила обеда)
+  | 'loadinfo'; // Погрузка/Выгрузка — производное от точки (типы ТС / оснастка с карты)
 
 /** Строка листа WORKFLOW (снимок 1:1). Коды складов — текст (ведущий ноль важен). */
 export interface FlowSandboxRow {
@@ -63,6 +66,13 @@ export interface FlowSandboxRow {
   off_schedule?: number; // доставка вне графика (0/1)
   split_level?: number; // уровень дробления поставки (0=основная; 1..3 — отдельные внутри fr+to)
   row_version?: number; // версия строки (оптимистичная блокировка, реалтайм)
+  // НАШИ поля якоря (модель сайта в Поток, юзер 2026-07-12) — течут спредом из FlowRow:
+  point?: string; // точка(и) выгрузки с карты (\n — до 3 для мульти-точки)
+  delivery?: string; // окно доставки «HH:MM–HH:MM» (08:30–19:30)
+  priority?: string; // приоритет high|mid|low (дефолт пусто→низкий); кормит Балл (EPS)
+  unload_equip?: string; // override оснастки выгрузки (метки через \n); пусто = из точки
+  score?: undefined; // БАЛЛ — синтетическая колонка (EPS считается на клиенте; ключ спеки)
+  load_info?: undefined; // ПОГРУЗКА — синтетическая (типы ТС точки + сзади, из карты)
 }
 
 /** Спецификация колонки грида. */
@@ -156,6 +166,15 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'kg', title: 'KG', width: 80, kind: 'number' },
   { id: 'v', title: 'V', width: 70, kind: 'number' },
   { id: 'note', title: 'NOTE', width: 150, kind: 'text', editable: true },
+  // НАШИ колонки (модель сайта → Поток, юзер 2026-07-12). Приоритет кормит Балл (EPS);
+  // Балл — клик даёт окно-обоснование (EPS + OR-Tools). Точка/Доставка/Выгрузка — след. кусками.
+  { id: 'point', title: 'ТОЧКА', width: 156, kind: 'dropdown', editable: true },
+  { id: 'delivery', title: 'ДОСТАВКА', width: 118, kind: 'window', editable: true },
+  { id: 'priority', title: 'ПРИОР.', width: 92, kind: 'dropdown', options: ['Высокий', 'Средний', 'Низкий'], editable: true },
+  { id: 'score', title: 'БАЛЛ', width: 60, kind: 'score' },
+  { id: 'load_info', title: 'ПОГРУЗКА', width: 150, kind: 'loadinfo' },
+  { id: 'unload_equip', title: 'ВЫГРУЗКА', width: 132, kind: 'dropdown',
+    options: ['Кран', 'Кран-балка', 'Авто-кран', 'Штабелер', 'Погрузчик', 'Ручное'], editable: true },
   // §15 (юзер 2026-07-03): «Согл.» — галочка + даты отправки на согласование (кнопка
   // «Согласование» дописывает текущую дату выделенным строкам). Read-only показ.
   { id: 'approved_dates', title: 'СОГЛ.', width: 132, kind: 'text' },

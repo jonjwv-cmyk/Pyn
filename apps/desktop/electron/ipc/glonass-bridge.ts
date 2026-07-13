@@ -1,5 +1,21 @@
 import { ipcMain } from 'electron';
+import { writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { bridgeFetch } from '../network/map-tiles';
+
+// ⚠ ВРЕМЕННЫЙ ДИАГНОСТИЧЕСКИЙ ДАМП (тюнинг map-matching, 2026-07-11): сырой трек
+// истории пишем на Рабочий стол, чтобы Claude тюнил снап к дороге по РЕАЛЬНЫМ
+// координатам (машина 401, 9 июля), а не вслепую. Убрать после настройки.
+function dumpHistoryTrack(vid: number, from: unknown, to: unknown, points: GlonassHistoryPoint[]): void {
+  try {
+    const file = path.join(os.homedir(), 'Desktop', `pyn-glonass-track-${vid}.json`);
+    writeFileSync(file, JSON.stringify({ vehicleId: vid, from, to, count: points.length, points }));
+    console.log(`[track-dump] ${points.length} pts → ${file}`);
+  } catch (e) {
+    try { console.error('[track-dump] failed:', e); } catch (_) { /* */ }
+  }
+}
 
 /**
  * Мост к спутниковому мониторингу ГЛОНАСС (hosting.glonasssoft.ru) — раздел
@@ -319,7 +335,9 @@ export function setupGlonassBridge(): void {
     });
     const res = await apiGet(`/history/points?${params.toString()}`);
     if (!res.ok) return { ok: false, points: [] as GlonassHistoryPoint[], error: describe(res) };
-    return { ok: true, points: normalizeHistoryPoints(res.data) };
+    const points = normalizeHistoryPoints(res.data);
+    dumpHistoryTrack(vid, from, to, points); // ⚠ временный дамп для тюнинга снапа
+    return { ok: true, points };
   });
 
   // Пробег/моточасы за период (статистика).

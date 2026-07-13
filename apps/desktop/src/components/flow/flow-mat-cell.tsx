@@ -11,6 +11,8 @@ export interface FlowMatData {
   readonly kind: 'flow-mat';
   readonly name: string;
   readonly warn: boolean;
+  /** Red first line used by Plan/Report: `Перенос с: <date>`. */
+  readonly prefix?: string;
   readonly lines: readonly FlowCardLine[];
 }
 export type FlowMatCell = CustomCell<FlowMatData>;
@@ -42,7 +44,7 @@ export const flowMatRenderer: CustomRenderer<FlowMatCell> = {
     (c.data as { kind?: unknown }).kind === 'flow-mat',
   draw: (args, cell) => {
     const { ctx, rect, theme } = args;
-    const { name, warn } = cell.data;
+    const { name, warn, prefix } = cell.data;
     const padX = theme.cellHorizontalPadding;
     const cy = rect.y + rect.height / 2;
     ctx.save();
@@ -74,8 +76,17 @@ export const flowMatRenderer: CustomRenderer<FlowMatCell> = {
       ctx.stroke();
       x += stemW + 7;
     }
-    ctx.fillStyle = theme.textDark;
-    ctx.fillText(name, x, cy);
+    if (prefix) {
+      ctx.font = `700 ${theme.baseFontStyle} ${theme.fontFamily}`;
+      ctx.fillStyle = '#C43D35';
+      ctx.fillText(prefix, x, rect.y + Math.min(10, rect.height / 3));
+      ctx.font = `${theme.baseFontStyle} ${theme.fontFamily}`;
+      ctx.fillStyle = theme.textDark;
+      ctx.fillText(name, x, rect.y + Math.max(23, rect.height * 0.68));
+    } else {
+      ctx.fillStyle = theme.textDark;
+      ctx.fillText(name, x, cy);
+    }
     ctx.restore();
     return true;
   },

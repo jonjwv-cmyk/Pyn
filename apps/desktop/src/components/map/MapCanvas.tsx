@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from 'react';
 import maplibregl, { type Map as MapLibreMap, type Marker } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Copy, LocateFixed } from 'lucide-react';
@@ -9,11 +9,17 @@ import {
   NTMK_CENTER,
   NTMK_ZOOM,
   ROAD_ACCESS_FALLBACK_COLOR,
-  ROAD_PAINT_OPTIONS,
-  roadPaintOption,
+  formatClearanceMeters,
+  roadAccessKindMeta,
+  roadAccessSummary,
   vehicleColor,
+  type BuildingOutline,
+  type CrossingCandidate,
+  type ExternalRailway,
+  type FootwayLine,
   type LatLng,
   type MapArea,
+  type MapClearance,
   type MapCrossing,
   type MapDoc,
   type MapPoint,
@@ -22,12 +28,14 @@ import {
   type MapRoadSuggestion,
   type MapTool,
   type RoadAccess,
-  type RoadPaintMode,
   type VehicleType,
 } from './map-types';
 import type { OptimizeResult } from './optimize';
-import { STATUS_COLOR, STATUS_LABEL, formatGlonassSpeed, type GlonassMarker, type GlonassReplayMarker } from './glonass-store';
+import { STATUS_COLOR, STATUS_LABEL, formatGlonassSpeed, type GlonassMarker, type GlonassReplayMarker, type GlonassTimedPathPoint } from './glonass-store';
+import { computeFastestRoute, isAccessBlocking } from './route-network';
 import { distanceMeters, nearestPointOnPolyline } from './geo';
+import type { RoadNetworkIssue } from './road-quality';
+import { snapToRoadIndex, type RoadSnapIndex } from './glonass-snap';
 
 /** Текущее положение оптимума + «призрак» (что-если), что рисуем поверх карты. */
 export interface OptimizeOverlay {
@@ -59,7 +67,7 @@ export interface WeatherNow {
 }
 
 export interface MapSelection {
-  type: 'point' | 'area' | 'road' | 'roadSuggestion' | 'roadAccess' | 'crossing' | 'railway';
+  type: 'point' | 'area' | 'road' | 'roadSuggestion' | 'roadAccess' | 'crossing' | 'railway' | 'clearance';
   id: string;
 }
 
@@ -73,6 +81,10 @@ interface MapCanvasProps {
   selection: MapSelection | null;
   showRoadSuggestions: boolean;
   showRoadAccess: boolean;
+  /** Кандидаты скрытых связей — видимы только при открытой проверке сети. */
+  roadIssues: RoadNetworkIssue[];
+  /** Показ НАШИХ областей/площадок (полигоны + подписи). */
+  showAreas: boolean;
   routePath: LatLng[] | null;
   /** Маршрут задевает запрещённый для машины участок — рисуем его тревожно. */
   routeBlocked: boolean;
@@ -84,16 +96,43 @@ interface MapCanvasProps {
   weatherField: WeatherFieldPoint[];
   /** Текущая сводка по центру/площадке — для мягкой погодной вуали. */
   weatherNow: WeatherNow | null;
-  roadPaintMode: RoadPaintMode;
   movingPointId: string | null;
   /** Выбранная машина «куда проедет» — подсвечиваем доступные точки, гасим прочие. */
   activeVehicle: VehicleType | null;
+  /** Гугл-слой (подписи/дороги/ориентиры lyrs=h) — справочный, тумблером. */
+  showGoogleLabels: boolean;
+  /** Контуры зданий (OSM) — лёгкий фиолетовый слой, эфемерный (не в документе). */
+  buildings: BuildingOutline[];
+  /** Внешние ж/д пути (OSM) — справочный слой для кандидатов на переезд. */
+  extRailways: ExternalRailway[];
+  /** Пешеходные дорожки и переходы (OSM) — справочный слой. */
+  footways: FootwayLine[];
+  /** Кандидаты на ж/д переезд (пересечения внешних ж/д с нашими дорогами). */
+  crossingCandidates: CrossingCandidate[];
+  onConfirmCandidate: (candidate: CrossingCandidate) => void;
+  onDismissCandidate: (candidate: CrossingCandidate) => void;
+  /** «Ограничение дороги»: Enter по выделенному участку → окно правил (в MapScreen). */
+  onCreateRestriction: (parts: LatLng[][]) => void;
+  /** Ластик красного пунктира: сегмент кисти → срезать возможные дороги. */
+  onEraseSuggestionTrace: (vertices: LatLng[], radiusMeters: number) => void;
+  /** Ластик окрашенных ограничений/особенностей участка. */
+  onEraseRoadAccessTrace: (vertices: LatLng[], radiusMeters: number) => void;
+  onBeginBrushEdit: () => void;
+  onCommitBrushEdit: () => void;
   /** Машины ГЛОНАСС (выбранные для слежения) с позицией — рисуем поверх карты. */
   glonassMarkers: GlonassMarker[];
+  /** Общий неизменяемый индекс жёлтой сети для финальной live-проекции. */
+  glonassRoadSnapIndex: RoadSnapIndex;
+  /** id машины под слежением: живой цикл ведёт камеру за её едущим маркером. */
+  glonassFollowId?: number | null;
+  /** Слежение: камера едет за этой точкой (позиция машины), сохраняя зум. */
+  glonassFollowTarget: LatLng | null;
   /** Live-следы выбранных машин, накопленные из realtime-опроса. */
-  glonassTracks: Array<{ id: number; color: string; points: LatLng[] }>;
+  glonassTracks: Array<{ id: string; color: string; points?: LatLng[]; segments?: LatLng[][]; mode: 'pro' | 'raw' }>;
   /** Исторические маршруты/годовые следы ГЛОНАСС. */
-  glonassHistoryTracks: Array<{ id: string; color: string; points: LatLng[]; opacity: number }>;
+  glonassHistoryTracks: Array<{ id: string; color: string; points?: LatLng[]; segments?: LatLng[][]; opacity: number; mode: 'pro' | 'raw' }>;
+  /** Управляет только линией PRO; маркер всегда продолжает движение по PRO-пути. */
+  showGlonassPro: boolean;
   /** Текущая машина исторического проигрывателя. */
   glonassReplayMarker: GlonassReplayMarker | null;
   onSelect: (sel: MapSelection | null) => void;
@@ -101,10 +140,13 @@ interface MapCanvasProps {
   onMovePoint: (id: string, latlng: LatLng) => void;
   onCreateArea: (vertices: LatLng[]) => void;
   onCreateRoad: (vertices: LatLng[]) => void;
-  onEraseRoadTrace: (vertices: LatLng[]) => void;
+  onEraseRoadTrace: (vertices: LatLng[], radiusMeters: number) => void;
   onConfirmRoadTrace: (vertices: LatLng[]) => void;
-  onCreateRoadAccess: (vertices: LatLng[]) => void;
   onCreateCrossing: (latlng: LatLng) => void;
+  /** «Высота проезда»: клик по дороге (точка прилипает к линии) → карточка. */
+  onCreateClearance: (latlng: LatLng) => void;
+  /** Показ отметок «Высота проезда» (слой в «Виде», по умолчанию скрыт). */
+  showClearances: boolean;
   onCreateRailway: (vertices: LatLng[]) => void;
   onStartMovePointByMap: (id: string) => void;
   onFinishMovePointByMap: (id: string, latlng: LatLng) => void;
@@ -150,8 +192,19 @@ const EMPTY_FEATURES: FeatureCollection = { type: 'FeatureCollection', features:
 const CONFIRM_TRACE_SNAP_METERS = 12;
 const CONFIRM_TRACE_MIN_GAP_METERS = 2.4;
 const FREEHAND_ROAD_MIN_GAP_METERS = 2.2;
-const VEHICLE_TRACE_SNAP_METERS = 16; // обводим «особенности» — липнем к нарисованным дорогам
-const VEHICLE_TRACE_MIN_GAP_METERS = 2.4;
+const ROAD_DRAW_SNAP_METERS = 6;
+const VEHICLE_TRACE_SNAP_METERS = 24; // кисть «указание дороги» — прощаем неточность, липнем к дороге
+const VEHICLE_TRACE_MIN_GAP_METERS = 1.8;
+const VEHICLE_TRACE_ROUTE_FACTOR = 2.1;
+const VEHICLE_TRACE_ROUTE_EXTRA_METERS = 12;
+/** Далёкий несвязный штрих ограничения — начинаем НОВОЕ выделение (без диагонали). */
+const VEHICLE_TRACE_RESTART_METERS = 30;
+/** Ховер-подсветка «Ограничения»: полдлины отрезка дороги под курсором. */
+const RESTRICT_HOVER_HALF_METERS = 9;
+const ROAD_RENDER_CORNER_RADIUS_METERS = 0;
+const ROUTE_RENDER_CORNER_RADIUS_METERS = 6;
+const ACCESS_RENDER_CORNER_RADIUS_METERS = 6;
+const TRACK_RENDER_CORNER_RADIUS_METERS = 0;
 const WEATHER_PARTICLES = Array.from({ length: 46 }, (_, index) => ({
   id: index,
   left: (index * 19 + 7) % 101,
@@ -170,6 +223,17 @@ interface WeatherFlowState {
   windToDeg: number;
 }
 
+type GlonassMarkerEntry = {
+  marker: Marker;
+  frame: number | null;
+  targetAt: number | null;
+};
+
+type GlonassReplayMarkerEntry = GlonassMarkerEntry & { id: string };
+
+const GLONASS_MARKER_ANIMATION_MS = 12_000;
+const GLONASS_MARKER_JUMP_METERS = 900;
+
 export function MapCanvas({
   doc,
   tool,
@@ -178,18 +242,35 @@ export function MapCanvas({
   selection,
   showRoadSuggestions,
   showRoadAccess,
+  roadIssues,
+  showAreas,
   routePath,
   routeBlocked,
   showWeather,
   weatherNonce,
   weatherField,
   weatherNow,
-  roadPaintMode,
   movingPointId,
   activeVehicle,
+  showGoogleLabels,
+  buildings,
+  extRailways,
+  footways,
+  crossingCandidates,
+  onConfirmCandidate,
+  onDismissCandidate,
+  onCreateRestriction,
+  onEraseSuggestionTrace,
+  onEraseRoadAccessTrace,
+  onBeginBrushEdit,
+  onCommitBrushEdit,
   glonassMarkers,
+  glonassRoadSnapIndex,
+  glonassFollowId,
+  glonassFollowTarget,
   glonassTracks,
   glonassHistoryTracks,
+  showGlonassPro,
   glonassReplayMarker,
   onSelect,
   onCreatePoint,
@@ -198,8 +279,9 @@ export function MapCanvas({
   onCreateRoad,
   onEraseRoadTrace,
   onConfirmRoadTrace,
-  onCreateRoadAccess,
   onCreateCrossing,
+  onCreateClearance,
+  showClearances,
   onCreateRailway,
   onStartMovePointByMap,
   onFinishMovePointByMap,
@@ -218,25 +300,39 @@ export function MapCanvas({
   const elRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRefs = useRef<Marker[]>([]);
-  const glonassRefs = useRef<Marker[]>([]);
-  const glonassReplayRefs = useRef<Marker[]>([]);
+  const glonassMarkerRefs = useRef<Map<number, GlonassMarkerEntry>>(new Map());
+  const glonassReplayRef = useRef<GlonassReplayMarkerEntry | null>(null);
   const draftRef = useRef<LatLng[]>([]);
+  const restrictPartsRef = useRef<LatLng[][]>([]);
+  const roadsRef = useRef(doc.roads);
+  const roadSuggestionsRef = useRef(doc.roadSuggestions);
+  const showRoadSuggestionsRef = useRef(showRoadSuggestions);
   const prevToolRef = useRef<MapTool>(tool);
   const skipAutoCommitRef = useRef(false);
   const roadDrawingRef = useRef(false);
   const eraseDrawingRef = useRef(false);
+  const accessEraseDrawingRef = useRef(false);
+  const suggestionEraseDrawingRef = useRef(false);
+  const restrictDrawingRef = useRef(false);
   const railwayDrawingRef = useRef(false);
   const shiftRef = useRef(false); // зажат Shift — линия идёт ПРЯМО к курсору
   const confirmDrawingRef = useRef(false);
-  const vehicleDrawingRef = useRef(false);
+  /** Предыдущая точка кисти ластика — стираем ЖИВЬЁМ по сегментам, пока ведём. */
+  const erasePrevRef = useRef<LatLng | null>(null);
   const [draft, setDraft] = useState<LatLng[]>([]);
+  const [restrictParts, setRestrictParts] = useState<LatLng[][]>([]);
   const [cursor, setCursor] = useState<LatLng | null>(null);
+  /** Ховер по участку-ограничению: подсветка вдоль линии + краткая подсказка. */
+  const [hoverAccess, setHoverAccess] = useState<{ id: string; x: number; y: number } | null>(null);
   const [styleReady, setStyleReady] = useState(false);
   const [viewMetrics, setViewMetrics] = useState<ViewMetrics | null>(null);
   const [pointMenu, setPointMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const onBoundsChangeRef = useRef(onBoundsChange);
   onBoundsChangeRef.current = onBoundsChange;
   const movingPoint = movingPointId ? doc.points.find((p) => p.id === movingPointId) ?? null : null;
+  roadsRef.current = doc.roads;
+  roadSuggestionsRef.current = doc.roadSuggestions;
+  showRoadSuggestionsRef.current = showRoadSuggestions;
 
   useEffect(() => {
     const el = elRef.current;
@@ -291,10 +387,8 @@ export function MapCanvas({
     map.on('zoomend', reportBounds);
 
     return () => {
-      clearMarkers(glonassReplayRefs.current);
-      glonassReplayRefs.current = [];
-      clearMarkers(glonassRefs.current);
-      glonassRefs.current = [];
+      clearGlonassReplayEntry(glonassReplayRef);
+      clearGlonassMarkerEntries(glonassMarkerRefs.current);
       clearMarkers(markerRefs.current);
       markerRefs.current = [];
       setStyleReady(false);
@@ -313,17 +407,21 @@ export function MapCanvas({
     draftRef.current = draft;
   }, [draft]);
 
+  useEffect(() => {
+    restrictPartsRef.current = restrictParts;
+  }, [restrictParts]);
+
   const appendConfirmTracePoint = useCallback((raw: LatLng) => {
     // Режим подтверждения: НИЧЕГО нового не рисуем — берём только точки, лежащие
     // на красной линии. Курсор вне красной — пропускаем (отдельно от «своей дороги»).
-    const snapped = snapToRoadSuggestions(raw, showRoadSuggestions ? doc.roadSuggestions : [], CONFIRM_TRACE_SNAP_METERS);
+    const snapped = snapToRoadSuggestions(raw, showRoadSuggestionsRef.current ? roadSuggestionsRef.current : [], CONFIRM_TRACE_SNAP_METERS);
     if (!snapped) return;
     setDraft((points) => {
       const prev = points[points.length - 1];
       if (prev && distanceMeters(prev, snapped) < CONFIRM_TRACE_MIN_GAP_METERS) return points;
       return [...points, snapped];
     });
-  }, [doc.roadSuggestions, showRoadSuggestions]);
+  }, []);
 
   const appendFreehandRoadPoint = useCallback((p: LatLng) => {
     setDraft((points) => {
@@ -334,15 +432,51 @@ export function MapCanvas({
   }, []);
 
   const appendVehicleTracePoint = useCallback((raw: LatLng) => {
-    // «Особенности» обводят кусок СУЩЕСТВУЮЩЕЙ дороги — берём только точки на дороге.
-    const snapped = snapToRoads(raw, doc.roads, VEHICLE_TRACE_SNAP_METERS);
+    // «Особенности»/«Ограничение» обводят кусок СУЩЕСТВУЮЩЕЙ дороги — берём
+    // только точки на дороге (выделение идёт именно вдоль линии).
+    const roads = roadsRef.current;
+    const snapped = snapToRoads(raw, roads, VEHICLE_TRACE_SNAP_METERS);
     if (!snapped) return;
     setDraft((points) => {
       const prev = points[points.length - 1];
-      if (prev && distanceMeters(prev, snapped) < VEHICLE_TRACE_MIN_GAP_METERS) return points;
-      return [...points, snapped];
+      if (!prev) return [snapped];
+      const direct = distanceMeters(prev, snapped);
+      if (direct < VEHICLE_TRACE_MIN_GAP_METERS) return points;
+      const route = computeFastestRoute(roads, prev, snapped);
+      const routeOk = route
+        && route.path.length >= 2
+        && route.distanceMeters <= Math.max(
+          VEHICLE_TRACE_ROUTE_EXTRA_METERS + 8,
+          direct * VEHICLE_TRACE_ROUTE_FACTOR + VEHICLE_TRACE_ROUTE_EXTRA_METERS,
+        );
+      // Штрихи копятся до Enter; но далёкий несвязный тычок — это НОВОЕ выделение,
+      // а не диагональ через полкарты к прежнему.
+      if (!routeOk && direct > VEHICLE_TRACE_RESTART_METERS) return [snapped];
+      const segment = routeOk ? route.path.slice(1) : [snapped];
+      const next = [...points];
+      for (const p of segment) {
+        const last = next[next.length - 1]!;
+        if (distanceMeters(last, p) > 0.35) next.push(p);
+      }
+      return next;
     });
-  }, [doc.roads]);
+  }, []);
+
+  /** Живой ластик: пока ведём с зажатой ЛКМ — стираем сегмент за сегментом.
+   *  Радиус реза = видимый кружок кисти на ТЕКУЩЕМ зуме («что видишь — то и
+   *  стираешь», как в Paint): приблизился — режешь тоньше и точнее. */
+  const eraseLive = useCallback((raw: LatLng, mode: 'road' | 'access' | 'suggestion') => {
+    const map = mapRef.current;
+    const radius = map ? eraseBrushRadiusMeters(map) : 6;
+    const prev = erasePrevRef.current;
+    erasePrevRef.current = raw;
+    const segment = prev ? [prev, raw] : [raw];
+    if (mode === 'road') onEraseRoadTrace(segment, radius);
+    else if (mode === 'access') onEraseRoadAccessTrace(segment, radius);
+    else onEraseSuggestionTrace(segment, radius);
+    // Короткий хвост-след для наглядности кисти (не копим всю трассу).
+    setDraft((points) => [...points.slice(-7), raw]);
+  }, [onEraseRoadTrace, onEraseRoadAccessTrace, onEraseSuggestionTrace]);
 
   const finishDraft = useCallback((mode: MapTool = tool, vertices: LatLng[] = draftRef.current) => {
     if (mode === 'area' && vertices.length >= 3) {
@@ -353,10 +487,6 @@ export function MapCanvas({
       skipAutoCommitRef.current = true;
       onCreateRoad(vertices);
     }
-    if (mode === 'eraseRoad' && vertices.length >= 1) {
-      skipAutoCommitRef.current = true;
-      onEraseRoadTrace(vertices);
-    }
     if (mode === 'railway' && vertices.length >= 2) {
       skipAutoCommitRef.current = true;
       onCreateRailway(vertices);
@@ -365,18 +495,30 @@ export function MapCanvas({
       skipAutoCommitRef.current = true;
       onConfirmRoadTrace(vertices);
     }
-    if (mode === 'vehicles' && vertices.length >= 2) {
+    if (mode === 'restrict') {
+      const parts = [...restrictPartsRef.current];
+      if (vertices.length >= 2) parts.push(vertices);
+      if (parts.length === 0) return;
+      // Enter по выделенному участку → окно правил. Выделение НЕ сбрасываем —
+      // оно остаётся подсвеченным, пока настраивается участок (ТЗ 2026-07-09).
       skipAutoCommitRef.current = true;
-      onCreateRoadAccess(vertices);
+      restrictDrawingRef.current = false;
+      mapRef.current?.dragPan.enable();
+      onCreateRestriction(parts);
+      return;
     }
+    // Ластики стирают живьём по ходу кисти — тут только чистим след.
     roadDrawingRef.current = false;
     eraseDrawingRef.current = false;
+    accessEraseDrawingRef.current = false;
+    suggestionEraseDrawingRef.current = false;
+    restrictDrawingRef.current = false;
     railwayDrawingRef.current = false;
     confirmDrawingRef.current = false;
-    vehicleDrawingRef.current = false;
+    erasePrevRef.current = null;
     mapRef.current?.dragPan.enable();
     setDraft([]);
-  }, [tool, onCreateArea, onCreateRoad, onEraseRoadTrace, onCreateRailway, onConfirmRoadTrace, onCreateRoadAccess]);
+  }, [tool, onCreateArea, onCreateRoad, onCreateRailway, onConfirmRoadTrace, onCreateRestriction]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -387,6 +529,9 @@ export function MapCanvas({
         onCreatePoint(p);
       } else if (tool === 'crossing') {
         onCreateCrossing(p);
+      } else if (tool === 'clearance') {
+        // Отметка высоты живёт НА дороге: клик рядом прилипает к её линии.
+        onCreateClearance(snapToRoads(p, roadsRef.current, 15) ?? p);
       } else if (tool === 'area') {
         if ((e.originalEvent as MouseEvent).detail > 1) return;
         setDraft((d) => [...d, p]);
@@ -394,12 +539,10 @@ export function MapCanvas({
         if ((e.originalEvent as MouseEvent).detail > 1) return;
         roadDrawingRef.current = true;
         map.dragPan.disable();
-        appendFreehandRoadPoint(p);
-      } else if (tool === 'eraseRoad') {
-        if ((e.originalEvent as MouseEvent).detail > 1) return;
-        eraseDrawingRef.current = true;
-        map.dragPan.disable();
-        appendFreehandRoadPoint(p);
+        appendFreehandRoadPoint(snapToRoads(p, roadsRef.current, ROAD_DRAW_SNAP_METERS) ?? p);
+      } else if (tool === 'eraseRoad' || tool === 'eraseAccess' || tool === 'eraseSuggestion' || tool === 'restrict') {
+        // Кисти на зажатой ЛКМ — вся работа в mousedown/mousemove/mouseup.
+        return;
       } else if (tool === 'railway') {
         if ((e.originalEvent as MouseEvent).detail > 1) return;
         railwayDrawingRef.current = true;
@@ -410,11 +553,6 @@ export function MapCanvas({
         confirmDrawingRef.current = true;
         map.dragPan.disable();
         appendConfirmTracePoint(p);
-      } else if (tool === 'vehicles') {
-        if ((e.originalEvent as MouseEvent).detail > 1) return;
-        vehicleDrawingRef.current = true;
-        map.dragPan.disable();
-        appendVehicleTracePoint(p);
       } else if (tool === 'optimize') {
         onGhostMove(p);
       } else {
@@ -422,7 +560,7 @@ export function MapCanvas({
         // удалить) — дороги правятся только через меню «Управление». Кликом
         // выбираем точки/области/особенности/черновик/переезды.
         const hit = map.queryRenderedFeatures(e.point, {
-          layers: ['map-road-access-hit', 'map-railways-hit', 'map-road-suggestions-hit', 'map-areas-fill'],
+          layers: ['map-road-access-hit', 'map-railways-hit', 'map-road-suggestions-hit'],
         })[0];
         const id = hit?.properties?.id;
         const kind = hit?.properties?.kind;
@@ -432,67 +570,161 @@ export function MapCanvas({
           onSelect({ type: 'railway', id });
         } else if (kind === 'roadSuggestion' && typeof id === 'string') {
           onSelect({ type: 'roadSuggestion', id });
-        } else if (kind === 'area' && typeof id === 'string') {
-          onSelect({ type: 'area', id });
         } else {
+          // Область левым кликом НЕ выбирается — клик проходит «сквозь» неё к
+          // точкам/участкам под ней. Область правится ПРАВОЙ кнопкой (contextmenu).
           onSelect(null);
         }
       }
     };
     const onDblClick = (e: maplibregl.MapMouseEvent) => {
-      if (tool !== 'area' && tool !== 'road' && tool !== 'eraseRoad' && tool !== 'railway' && tool !== 'confirmRoad' && tool !== 'vehicles') return;
+      if (tool !== 'area' && tool !== 'road' && tool !== 'railway' && tool !== 'confirmRoad' && tool !== 'restrict') return;
       e.preventDefault();
       finishDraft();
     };
     const onMouseDown = (e: maplibregl.MapMouseEvent) => {
-      if ((tool !== 'confirmRoad' && tool !== 'vehicles') || (e.originalEvent as MouseEvent).button !== 0) return;
-      e.preventDefault();
-      map.dragPan.disable();
+      if ((e.originalEvent as MouseEvent).button !== 0) return;
+      if (tool === 'confirmRoad') {
+        e.preventDefault();
+        map.dragPan.disable();
+        return;
+      }
+      // Кисти на зажатой ЛКМ: ластик дорог / ластик ограничений / ластик красных / ограничение дороги.
+      if (tool === 'eraseRoad' || tool === 'eraseAccess' || tool === 'eraseSuggestion') {
+        e.preventDefault();
+        map.dragPan.disable();
+        onBeginBrushEdit();
+        const raw = toLatLng(e.lngLat);
+        erasePrevRef.current = null;
+        if (tool === 'eraseRoad') {
+          eraseDrawingRef.current = true;
+          eraseLive(raw, 'road');
+        } else if (tool === 'eraseAccess') {
+          accessEraseDrawingRef.current = true;
+          eraseLive(raw, 'access');
+        } else {
+          suggestionEraseDrawingRef.current = true;
+          eraseLive(raw, 'suggestion');
+        }
+        return;
+      }
+      if (tool === 'restrict') {
+        e.preventDefault();
+        map.dragPan.disable();
+        // Штрихи НАКАПЛИВАЮТСЯ до Enter (ТЗ 2026-07-11): нажал — закрасился
+        // подсвеченный отрезок, ведёшь — красится дальше, Enter — окно правил.
+        // Сброс — Esc или далёкий несвязный тычок (внутри appendVehicleTracePoint).
+        restrictDrawingRef.current = true;
+        const at = toLatLng(e.lngLat);
+        const stretch = roadStretchNear(at, roadsRef.current, RESTRICT_HOVER_HALF_METERS);
+        if (stretch && draftRef.current.length === 0) {
+          for (const p of stretch) appendVehicleTracePoint(p);
+        } else {
+          appendVehicleTracePoint(at);
+        }
+      }
     };
     const onMouseUp = () => {
       if (tool === 'confirmRoad' && !confirmDrawingRef.current) map.dragPan.enable();
-      if (tool === 'vehicles' && !vehicleDrawingRef.current) map.dragPan.enable();
+      // Кисти: отпустили ЛКМ → штрих завершён, остаёмся в инструменте.
+      if (tool === 'eraseRoad' || tool === 'eraseAccess' || tool === 'eraseSuggestion') {
+        eraseDrawingRef.current = false;
+        accessEraseDrawingRef.current = false;
+        suggestionEraseDrawingRef.current = false;
+        erasePrevRef.current = null;
+        setDraft([]);
+        onCommitBrushEdit();
+        map.dragPan.enable();
+      }
+      if (tool === 'restrict' && restrictDrawingRef.current) {
+        const stroke = draftRef.current;
+        if (stroke.length >= 2) {
+          const next = [...restrictPartsRef.current, stroke];
+          restrictPartsRef.current = next;
+          setRestrictParts(next);
+        }
+        setDraft([]);
+        restrictDrawingRef.current = false;
+        map.dragPan.enable();
+      }
     };
     const onMove = (e: maplibregl.MapMouseEvent) => {
       const raw = toLatLng(e.lngLat);
       const current = tool === 'confirmRoad'
-        ? snapToRoadSuggestions(raw, showRoadSuggestions ? doc.roadSuggestions : [], CONFIRM_TRACE_SNAP_METERS) ?? raw
-        : tool === 'vehicles'
-          ? snapToRoads(raw, doc.roads, VEHICLE_TRACE_SNAP_METERS) ?? raw
+        ? snapToRoadSuggestions(raw, showRoadSuggestionsRef.current ? roadSuggestionsRef.current : [], CONFIRM_TRACE_SNAP_METERS) ?? raw
+        : tool === 'road'
+          ? snapToRoads(raw, roadsRef.current, ROAD_DRAW_SNAP_METERS) ?? raw
+        : tool === 'restrict'
+          ? snapToRoads(raw, roadsRef.current, VEHICLE_TRACE_SNAP_METERS) ?? raw
           : raw;
       setCursor(current);
       // Зажат Shift → НЕ сыпем точки от руки: тянем прямую к курсору (вершину
       // добавит клик). Без Shift — обычная рисовка от руки.
       if (tool === 'road' && roadDrawingRef.current && !shiftRef.current) appendFreehandRoadPoint(raw);
-      if (tool === 'eraseRoad' && eraseDrawingRef.current) appendFreehandRoadPoint(raw);
+      if (tool === 'eraseRoad' && eraseDrawingRef.current) eraseLive(raw, 'road');
+      if (tool === 'eraseAccess' && accessEraseDrawingRef.current) eraseLive(raw, 'access');
+      if (tool === 'eraseSuggestion' && suggestionEraseDrawingRef.current) eraseLive(raw, 'suggestion');
       if (tool === 'railway' && railwayDrawingRef.current && !shiftRef.current) appendFreehandRoadPoint(raw);
       if (tool === 'confirmRoad' && confirmDrawingRef.current) appendConfirmTracePoint(raw);
-      if (tool === 'vehicles' && vehicleDrawingRef.current) appendVehicleTracePoint(raw);
+      if (tool === 'restrict' && restrictDrawingRef.current) appendVehicleTracePoint(raw);
+      // Ховер участка-ограничения (в «Выборе»): подсветка + краткая подсказка.
+      if (tool === 'select' && map.getLayer('map-road-access-hit')) {
+        const hit = map.queryRenderedFeatures(e.point, { layers: ['map-road-access-hit'] })[0];
+        const id = hit?.properties?.id;
+        if (typeof id === 'string') {
+          setHoverAccess({ id, x: e.point.x, y: e.point.y });
+        } else {
+          setHoverAccess((cur) => (cur ? null : cur));
+        }
+      } else {
+        setHoverAccess((cur) => (cur ? null : cur));
+      }
     };
     const onMouseOut = () => {
       setCursor(null);
+      setHoverAccess(null);
+    };
+    // Область правится ТОЛЬКО правой кнопкой (левый клик проходит сквозь неё).
+    // Области обычно скрыты — показываются по выбору слоя, тогда и редактируются.
+    const onContextMenu = (e: maplibregl.MapMouseEvent) => {
+      if (tool !== 'select' || !map.getLayer('map-areas-fill')) return;
+      const hit = map.queryRenderedFeatures(e.point, { layers: ['map-areas-fill'] })[0];
+      const id = hit?.properties?.id;
+      if (hit?.properties?.kind === 'area' && typeof id === 'string') {
+        e.preventDefault();
+        onSelect({ type: 'area', id });
+      }
     };
     map.on('click', onClick);
     map.on('dblclick', onDblClick);
     map.on('mousedown', onMouseDown);
     map.on('mouseup', onMouseUp);
+    window.addEventListener('mouseup', onMouseUp);
     map.on('mousemove', onMove);
     map.on('mouseout', onMouseOut);
+    map.on('contextmenu', onContextMenu);
     return () => {
       map.off('click', onClick);
       map.off('dblclick', onDblClick);
       map.off('mousedown', onMouseDown);
       map.off('mouseup', onMouseUp);
+      window.removeEventListener('mouseup', onMouseUp);
       map.off('mousemove', onMove);
       map.off('mouseout', onMouseOut);
+      map.off('contextmenu', onContextMenu);
+      const brushActive = eraseDrawingRef.current || accessEraseDrawingRef.current || suggestionEraseDrawingRef.current;
+      if (brushActive) onCommitBrushEdit();
       roadDrawingRef.current = false;
       eraseDrawingRef.current = false;
+      accessEraseDrawingRef.current = false;
+      suggestionEraseDrawingRef.current = false;
+      restrictDrawingRef.current = false;
       railwayDrawingRef.current = false;
       confirmDrawingRef.current = false;
-      vehicleDrawingRef.current = false;
+      erasePrevRef.current = null;
       map.dragPan.enable();
     };
-  }, [tool, doc.roadSuggestions, doc.roads, showRoadSuggestions, appendConfirmTracePoint, appendFreehandRoadPoint, appendVehicleTracePoint, finishDraft, onCreatePoint, onCreateCrossing, onGhostMove, onSelect]);
+  }, [tool, appendConfirmTracePoint, appendFreehandRoadPoint, appendVehicleTracePoint, eraseLive, finishDraft, onBeginBrushEdit, onCommitBrushEdit, onCreatePoint, onCreateCrossing, onCreateClearance, onGhostMove, onSelect]);
 
   useEffect(() => {
     const previousTool = prevToolRef.current;
@@ -503,28 +735,32 @@ export function MapCanvas({
 
     if (!skip) {
       if (previousTool === 'road' && vertices.length >= 2) onCreateRoad(vertices);
-      if (previousTool === 'eraseRoad' && vertices.length >= 1) onEraseRoadTrace(vertices);
       if (previousTool === 'railway' && vertices.length >= 2) onCreateRailway(vertices);
       if (previousTool === 'area' && vertices.length >= 3) onCreateArea(vertices);
       if (previousTool === 'confirmRoad' && vertices.length >= 2) onConfirmRoadTrace(vertices);
-      if (previousTool === 'vehicles' && vertices.length >= 2) onCreateRoadAccess(vertices);
+      // Ластики стирают живьём; restrict коммитится только через Enter+окно.
     }
 
     setDraft([]);
     draftRef.current = [];
+    setRestrictParts([]);
+    restrictPartsRef.current = [];
     roadDrawingRef.current = false;
     eraseDrawingRef.current = false;
+    accessEraseDrawingRef.current = false;
+    suggestionEraseDrawingRef.current = false;
+    restrictDrawingRef.current = false;
     railwayDrawingRef.current = false;
     confirmDrawingRef.current = false;
-    vehicleDrawingRef.current = false;
+    erasePrevRef.current = null;
     mapRef.current?.dragPan.enable();
     prevToolRef.current = tool;
-  }, [tool, onCreateArea, onCreateRoad, onEraseRoadTrace, onCreateRailway, onConfirmRoadTrace, onCreateRoadAccess]);
+  }, [tool, onCreateArea, onCreateRoad, onCreateRailway, onConfirmRoadTrace]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    if (tool === 'area' || tool === 'road' || tool === 'eraseRoad' || tool === 'railway' || tool === 'confirmRoad' || tool === 'vehicles') map.doubleClickZoom.disable();
+    if (tool === 'area' || tool === 'road' || tool === 'eraseRoad' || tool === 'eraseAccess' || tool === 'eraseSuggestion' || tool === 'restrict' || tool === 'railway' || tool === 'confirmRoad') map.doubleClickZoom.disable();
     else map.doubleClickZoom.enable();
   }, [tool]);
 
@@ -541,14 +777,20 @@ export function MapCanvas({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        const brushActive = eraseDrawingRef.current || accessEraseDrawingRef.current || suggestionEraseDrawingRef.current;
         roadDrawingRef.current = false;
         eraseDrawingRef.current = false;
+        accessEraseDrawingRef.current = false;
+        suggestionEraseDrawingRef.current = false;
+        restrictDrawingRef.current = false;
         railwayDrawingRef.current = false;
         confirmDrawingRef.current = false;
-        vehicleDrawingRef.current = false;
         skipAutoCommitRef.current = true; // не коммитить недорисованное при выходе
         mapRef.current?.dragPan.enable();
         setDraft([]);
+        setRestrictParts([]);
+        restrictPartsRef.current = [];
+        if (brushActive) onCommitBrushEdit();
         onCancelMovePointByMap();
         onCancelTool();
       }
@@ -561,7 +803,7 @@ export function MapCanvas({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finishDraft, movingPointId, onCancelMovePointByMap, onCancelTool, onFinishMovePointByMap]);
+  }, [finishDraft, movingPointId, onCancelMovePointByMap, onCancelTool, onCommitBrushEdit, onFinishMovePointByMap]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -611,26 +853,67 @@ export function MapCanvas({
     const map = mapRef.current;
     if (!map || !styleReady) return;
 
-    setSourceData(map, 'map-areas', buildAreasData(doc.areas, selection));
+    setSourceData(map, 'map-areas', showAreas ? buildAreasData(doc.areas, selection) : EMPTY_FEATURES);
     setSourceData(map, 'map-railways', buildRailwaysData(doc.railways ?? [], selection));
     setSourceData(map, 'map-roads', buildRoadsData(doc.roads, selection));
+    setSourceData(map, 'map-road-issues', buildRoadIssuesData(roadIssues));
     setSourceData(map, 'map-road-suggestions', showRoadSuggestions ? buildRoadSuggestionsData(doc.roadSuggestions, selection) : EMPTY_FEATURES);
-    setSourceData(map, 'map-road-access', showRoadAccess ? buildRoadAccessData(doc.roadAccess, selection) : EMPTY_FEATURES);
+    setSourceData(map, 'map-road-access', showRoadAccess ? buildRoadAccessData(doc.roadAccess, selection, hoverAccess?.id ?? null, activeVehicle) : EMPTY_FEATURES);
     setSourceData(map, 'map-route', buildRouteData(routePath, routeBlocked));
     setSourceData(map, 'map-opt-rays', buildOptimizeRaysData(optimizeOverlay));
-    setSourceData(map, 'map-draft', buildDraftData(tool, draft, cursor, roadPaintMode));
 
     clearMarkers(markerRefs.current);
     markerRefs.current = [];
 
-    for (const area of doc.areas) {
-      if (!area.name || area.vertices.length === 0) continue;
-      const label = createLabelElement(area.name, area.color);
+    // ⚠-треугольник на закрытых/временно закрытых участках (клик → карточка).
+    if (showRoadAccess) {
+      for (const access of doc.roadAccess) {
+        if (access.kind !== 'closed' && access.kind !== 'temp_closed') continue;
+        if (access.vertices.length < 2) continue;
+        const el = createAccessWarnElement(access);
+        el.addEventListener('click', (event) => {
+          event.stopPropagation();
+          onSelect({ type: 'roadAccess', id: access.id });
+        });
+        markerRefs.current.push(
+          new maplibregl.Marker({ element: el, anchor: 'bottom' })
+            .setLngLat(toCoord(midpointOfPolyline(access.vertices)))
+            .addTo(map),
+        );
+      }
+    }
+
+    // Кандидаты на ж/д переезд (пересечение внешней ж/д с нашей дорогой):
+    // видны на карте, подтверждаются ✓ или убираются × вручную.
+    for (const candidate of crossingCandidates) {
+      const el = createCandidateElement(canEdit);
+      if (canEdit) {
+        el.querySelector('[data-act="ok"]')?.addEventListener('click', (event) => {
+          event.stopPropagation();
+          onConfirmCandidate(candidate);
+        });
+        el.querySelector('[data-act="no"]')?.addEventListener('click', (event) => {
+          event.stopPropagation();
+          onDismissCandidate(candidate);
+        });
+      }
       markerRefs.current.push(
-        new maplibregl.Marker({ element: label, anchor: 'center' })
-          .setLngLat(toCoord(centroid(area.vertices)))
+        new maplibregl.Marker({ element: el, anchor: 'bottom' })
+          .setLngLat(toCoord(candidate))
           .addTo(map),
       );
+    }
+
+    if (showAreas) {
+      for (const area of doc.areas) {
+        if (!area.name || area.vertices.length === 0) continue;
+        const label = createLabelElement(area.name, area.color);
+        markerRefs.current.push(
+          new maplibregl.Marker({ element: label, anchor: 'center' })
+            .setLngLat(toCoord(centroid(area.vertices)))
+            .addTo(map),
+        );
+      }
     }
 
     addOptimizeMarkers(map, markerRefs.current, optimizeOverlay, onGhostMove);
@@ -647,6 +930,22 @@ export function MapCanvas({
       );
     }
 
+    // «Высота проезда» — кружки-знаки с высотой в метрах. Слой по умолчанию
+    // скрыт; при активном инструменте или выбранной отметке виден всегда.
+    if (showClearances || tool === 'clearance' || selection?.type === 'clearance') {
+      for (const clearance of doc.clearances ?? []) {
+        const selected = selection?.type === 'clearance' && selection.id === clearance.id;
+        const el = createClearanceElement(clearance, selected);
+        el.addEventListener('click', (event) => {
+          event.stopPropagation();
+          onSelect({ type: 'clearance', id: clearance.id });
+        });
+        markerRefs.current.push(
+          new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(toCoord(clearance)).addTo(map),
+        );
+      }
+    }
+
     for (const point of visiblePoints) {
       const warehouse = point.warehouseId ? warehouses.get(point.warehouseId) : undefined;
       const selected = selection?.type === 'point' && selection.id === point.id;
@@ -659,7 +958,9 @@ export function MapCanvas({
         warehouse,
         selected,
         dimmed: blockedForVehicle,
-        draggable: canEdit && tool === 'select' && movingPointId !== point.id,
+        // Случайный drag НЕ двигает точку: перенос только через «Переместить» /
+        // координаты в режиме правки (ТЗ 2026-07-09).
+        draggable: false,
         canEdit,
         hidden: movingPointId === point.id,
         onSelect,
@@ -675,11 +976,15 @@ export function MapCanvas({
     doc.areas,
     doc.railways,
     doc.roads,
+    roadIssues,
     doc.roadSuggestions,
     doc.roadAccess,
     doc.crossings,
+    doc.clearances,
     showRoadSuggestions,
     showRoadAccess,
+    showClearances,
+    showAreas,
     showWeather,
     weatherField,
     routePath,
@@ -690,37 +995,209 @@ export function MapCanvas({
     tool,
     canEdit,
     activeVehicle,
-    roadPaintMode,
     movingPointId,
-    draft,
-    cursor,
+    hoverAccess?.id,
+    crossingCandidates,
     optimizeOverlay,
     onSelect,
     onMovePoint,
     onStartMovePointByMap,
+    onConfirmCandidate,
+    onDismissCandidate,
     onGhostMove,
     styleReady,
   ]);
+
+  // «Ограничение дороги»: навёл — отрезок дороги под курсором сразу ПОДСВЕТИЛСЯ
+  // (видно, что именно закрасит клик), нажал — закрасился, Enter — окно правил.
+  const restrictHover = useMemo(() => {
+    if (tool !== 'restrict' || !cursor) return null;
+    return roadStretchNear(cursor, doc.roads, RESTRICT_HOVER_HALF_METERS);
+  }, [tool, cursor, doc.roads]);
+
+  // Черновик кисти/рисования (следует за курсором) — ОТДЕЛЬНЫЙ слой-эффект, чтобы
+  // движение мыши НЕ пересоздавало все маркеры (иначе ✓/× на кандидатах и клики
+  // по точкам «промахивались» — элемент пересоздавался прямо во время клика).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    setSourceData(map, 'map-draft', buildDraftData(tool, draft, cursor, restrictHover, restrictParts));
+  }, [tool, draft, cursor, restrictHover, restrictParts, styleReady]);
+
+  // Тикаем таймеры «плохого сигнала» раз в секунду прямо в DOM маркеров, чтобы
+  // не пересчитывать весь слой машин каждую секунду.
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now();
+      elRef.current?.querySelectorAll<HTMLElement>('[data-bad-since]').forEach((node) => {
+        const since = Number(node.getAttribute('data-bad-since'));
+        if (Number.isFinite(since)) {
+          node.textContent = formatBadTimer(Math.max(0, Math.round((now - since) / 1000)));
+        }
+      });
+    };
+    const iv = window.setInterval(tick, 1000);
+    return () => window.clearInterval(iv);
+  }, []);
+
+  // Гугл-слой (подписи/дороги/ориентиры) — включаемый справочный оверлей ПОД
+  // нашими рабочими слоями. Наши дороги/точки/ограничения он не трогает.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    if (map.getLayer('google-labels')) map.removeLayer('google-labels');
+    if (map.getSource('google-labels')) map.removeSource('google-labels');
+    if (showGoogleLabels) {
+      map.addSource('google-labels', {
+        type: 'raster',
+        tiles: ['pyn-tile://glabels/{z}/{x}/{y}'],
+        tileSize: 256,
+        maxzoom: 20,
+      } as never);
+      const beforeId = map.getLayer('map-buildings-fill') ? 'map-buildings-fill' : (map.getLayer('map-railways-bed') ? 'map-railways-bed' : undefined);
+      map.addLayer({
+        id: 'google-labels',
+        type: 'raster',
+        source: 'google-labels',
+        paint: { 'raster-opacity': 0.92, 'raster-fade-duration': 150 },
+      } as never, beforeId);
+    }
+  }, [showGoogleLabels, styleReady]);
+
+  // Контуры зданий (OSM) — лёгкий фиолетовый слой. Эфемерный: живёт только в
+  // текущей сессии, в общий документ карты не пишется.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    setSourceData(map, 'map-buildings', buildBuildingsData(buildings));
+  }, [buildings, styleReady]);
+
+  // Внешние ж/д пути (OSM) — справочный слой для кандидатов на переезд.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    setSourceData(map, 'map-ext-railways', buildExtRailwaysData(extRailways));
+  }, [extRailways, styleReady]);
+
+  // Пешеходные дорожки (тонкая белая линия) и переходы (зебра) — справочно.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    setSourceData(map, 'map-footways', buildFootwaysData(footways));
+  }, [footways, styleReady]);
 
   // Машины ГЛОНАСС — отдельный слой маркеров (не мигает при правках карты,
   // обновляется только при изменении позиций/выбора).
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady) return;
-    clearMarkers(glonassRefs.current);
-    glonassRefs.current = [];
+    const live = glonassMarkerRefs.current;
+    const ids = new Set(glonassMarkers.map((m) => m.id));
+    for (const [id, entry] of live) {
+      if (ids.has(id)) continue;
+      if (entry.frame != null) cancelAnimationFrame(entry.frame);
+      entry.marker.remove();
+      live.delete(id);
+    }
     for (const m of glonassMarkers) {
-      const el = createGlonassMarkerElement(m);
-      el.style.zIndex = '900';
-      glonassRefs.current.push(
-        // subpixelPositioning — маркер трекает карту субпиксельно (без округления
-        // до целых px), иначе «прыгает» на ~1px относительно плавно зумящейся карты.
-        new maplibregl.Marker({ element: el, anchor: 'bottom', subpixelPositioning: true })
-          .setLngLat([m.lng, m.lat])
-          .addTo(map),
-      );
+      const target = { lat: m.lat, lng: m.lng };
+      const entry = live.get(m.id);
+      if (!entry) {
+        const el = createGlonassMarkerElement(m);
+        el.style.zIndex = '900';
+        live.set(m.id, {
+          // subpixelPositioning — маркер трекает карту субпиксельно (без округления
+          // до целых px), иначе «прыгает» на ~1px относительно плавно зумящейся карты.
+          marker: new maplibregl.Marker({ element: el, anchor: 'bottom', subpixelPositioning: true })
+            .setLngLat([m.lng, m.lat])
+            .addTo(map),
+          frame: null,
+          targetAt: parseMarkerTimeMs(m.time),
+        });
+        continue;
+      }
+      updateGlonassMarkerElement(entry.marker.getElement() as HTMLDivElement, m);
+      // Живое движение (timedPath) ведёт rAF-цикл ниже — прыжковую анимацию не
+      // запускаем, иначе маркер режет углы мимо дороги и дёргается между опросами.
+      if ((m.timedPath?.length ?? 0) >= 2) {
+        if (entry.frame != null) {
+          cancelAnimationFrame(entry.frame);
+          entry.frame = null;
+        }
+        continue;
+      }
+      // Before a timed road path exists there is nothing trustworthy to
+      // interpolate. Set the already-snapped target directly; otherwise every
+      // poll restarts an animation from the previous raw position and the
+      // second selected vehicle appears beside the road. Once timedPath exists,
+      // the single rAF loop below owns movement for every selected vehicle.
+      if (entry.frame != null) cancelAnimationFrame(entry.frame);
+      entry.frame = null;
+      entry.targetAt = parseMarkerTimeMs(m.time);
+      entry.marker.setLngLat([target.lng, target.lat]);
     }
   }, [glonassMarkers, styleReady]);
+
+  // Живое движение: маркер НЕПРЕРЫВНО едет по снапнутому к дорогам пути с
+  // задержкой delayMs (время = сейчас − задержка), след рисуется строго ЗА ним
+  // (хвост ~100 м до текущей позиции), камера слежения ведётся тем же циклом.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    const liveMarkers = glonassMarkers.filter((m) => (m.timedPath?.length ?? 0) >= 2);
+    if (liveMarkers.length === 0) {
+      setSourceData(map, 'map-glonass-live-trail', EMPTY_FEATURES);
+      return;
+    }
+    let frame = 0;
+    let lastTrailAt = 0;
+    let lastFollowAt = 0;
+    const tick = (now: number) => {
+      const entries = glonassMarkerRefs.current;
+      const wantTrail = now - lastTrailAt > 220;
+      const features: FeatureCollection['features'] = [];
+      for (const m of liveMarkers) {
+        const entry = entries.get(m.id);
+        const timedPath = m.timedPath!;
+        if (!entry) continue;
+        const targetMs = Date.now() - (m.delayMs ?? 0);
+        const interpolated = pointAtTimedPath(timedPath, targetMs);
+        // Each marker is projected independently at the final rendering step.
+        // This prevents interpolation between duplicate/turn vertices from
+        // leaving the second selected vehicle beside the visible yellow road.
+        const pos = snapToRoadIndex(glonassRoadSnapIndex, interpolated)?.point ?? interpolated;
+        entry.marker.setLngLat([pos.lng, pos.lat]);
+        if (wantTrail && showGlonassPro) {
+          const trail = liveTrailBehind(timedPath, targetMs, pos, 100);
+          if (trail.length >= 2) {
+            features.push({
+              type: 'Feature',
+              geometry: { type: 'LineString', coordinates: trail.map((p) => [p.lng, p.lat]) },
+              properties: { color: STATUS_COLOR[m.status] },
+            });
+          }
+        }
+        if (glonassFollowId === m.id && now - lastFollowAt > 1200) {
+          lastFollowAt = now;
+          map.easeTo({ center: [pos.lng, pos.lat], duration: 1180, essential: true });
+        }
+      }
+      if (wantTrail) {
+        lastTrailAt = now;
+        setSourceData(map, 'map-glonass-live-trail', { type: 'FeatureCollection', features });
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [glonassMarkers, glonassFollowId, glonassRoadSnapIndex, showGlonassPro, styleReady]);
+
+  // Слежение за машиной: плавно ведём камеру за её позицией, СОХРАНЯЯ зум/наклон.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady || !glonassFollowTarget) return;
+    map.easeTo({ center: toCoord(glonassFollowTarget), duration: 900, essential: true });
+  }, [glonassFollowTarget?.lat, glonassFollowTarget?.lng, styleReady]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -737,17 +1214,29 @@ export function MapCanvas({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady) return;
-    clearMarkers(glonassReplayRefs.current);
-    glonassReplayRefs.current = [];
-    if (glonassReplayMarker) {
+    const current = glonassReplayRef.current;
+    if (!glonassReplayMarker) {
+      clearGlonassReplayEntry(glonassReplayRef);
+      return;
+    }
+    const target = { lat: glonassReplayMarker.lat, lng: glonassReplayMarker.lng };
+    if (!current || current.id !== glonassReplayMarker.id) {
+      clearGlonassReplayEntry(glonassReplayRef);
       const el = createGlonassReplayMarkerElement(glonassReplayMarker);
       el.style.zIndex = '910';
-      glonassReplayRefs.current.push(
-        new maplibregl.Marker({ element: el, anchor: 'bottom', subpixelPositioning: true })
+      glonassReplayRef.current = {
+        id: glonassReplayMarker.id,
+        marker: new maplibregl.Marker({ element: el, anchor: 'bottom', subpixelPositioning: true })
           .setLngLat([glonassReplayMarker.lng, glonassReplayMarker.lat])
           .addTo(map),
-      );
+        frame: null,
+        targetAt: parseMarkerTimeMs(glonassReplayMarker.time),
+      };
+      return;
     }
+    updateGlonassReplayMarkerElement(current.marker.getElement() as HTMLDivElement, glonassReplayMarker);
+    current.targetAt = parseMarkerTimeMs(glonassReplayMarker.time);
+    animateGlonassMarker(current, target, glonassReplayMarker.animationMs ?? 1400, glonassReplayMarker.path);
   }, [glonassReplayMarker, styleReady]);
 
   // Экранная позиция выбранной точки → поповер-карточка у пина (следит за картой).
@@ -821,6 +1310,25 @@ export function MapCanvas({
         onRotate={rotateBy}
       />
       <MapStatusBar metrics={viewMetrics} cursor={cursor} />
+      {/* Ховер участка-ограничения: краткая подсказка с особенностями проезда */}
+      {hoverAccess && (() => {
+        const access = doc.roadAccess.find((a) => a.id === hoverAccess.id);
+        if (!access) return null;
+        const meta = roadAccessKindMeta(access.kind);
+        return (
+          <div
+            className="pointer-events-none absolute z-[465] max-w-[260px] -translate-x-1/2 rounded-lg border border-border-default bg-bg-deep/94 px-2.5 py-1.5 text-[11.5px] shadow-[0_6px_24px_rgba(0,0,0,0.5)] backdrop-blur-sm"
+            style={{ left: hoverAccess.x, top: hoverAccess.y - 44 }}
+          >
+            <p className="flex items-center gap-1.5 font-semibold" style={{ color: meta.color }}>
+              {(access.kind === 'closed' || access.kind === 'temp_closed') && <span className="text-[12px] leading-none">⚠</span>}
+              {meta.label}
+            </p>
+            <p className="mt-0.5 text-text-secondary">{roadAccessSummary(access)}</p>
+            {access.note.trim() && <p className="mt-0.5 text-text-muted">{access.note}</p>}
+          </div>
+        );
+      })()}
       {pointMenu && (
         <>
           <div className="absolute inset-0 z-[470]" onClick={() => setPointMenu(null)} onContextMenu={(e) => { e.preventDefault(); setPointMenu(null); }} />
@@ -845,7 +1353,6 @@ export function MapCanvas({
           </div>
         </>
       )}
-      <RoadLegend visible={showRoadAccess} items={doc.roadAccess} />
       {movingPoint && (
         <MovePointOverlay
           point={movingPoint}
@@ -857,7 +1364,7 @@ export function MapCanvas({
           }}
         />
       )}
-      {(tool === 'area' || tool === 'road' || tool === 'eraseRoad' || tool === 'railway' || tool === 'confirmRoad' || tool === 'vehicles') && (
+      {(tool === 'area' || tool === 'road' || tool === 'eraseRoad' || tool === 'eraseAccess' || tool === 'railway' || tool === 'confirmRoad') && (
         <div className="pointer-events-none absolute left-1/2 top-3 z-[3] -translate-x-1/2">
           <div className="pointer-events-auto flex items-center gap-2 rounded-md bg-bg-deep/88 px-3 py-1 text-[11.5px] text-text-secondary shadow">
             <span>
@@ -867,15 +1374,13 @@ export function MapCanvas({
                   ? 'Своя дорога: кликните старт и ведите мышью'
                   : tool === 'eraseRoad'
                     ? 'Ластик дороги: проведите по куску дороги — он сотрётся (остальная сеть цела)'
-                    : tool === 'railway'
-                      ? 'Ж/д путь: кликните старт и ведите мышью'
-                      : tool === 'confirmRoad'
-                        ? 'Подтверждение: ведите курсором по красной линии (новая не рисуется)'
-                        : roadPaintMode === 'erase'
-                          ? 'Ластик: проведите по окрашенному участку дороги'
-                          : `Закраска: ${roadPaintOption(roadPaintMode).label}`} · Enter — сохранить · Esc — отмена
+                    : tool === 'eraseAccess'
+                      ? 'Ластик ограничений: проведите по окрашенному участку — правило срежется'
+                      : tool === 'railway'
+                        ? 'Ж/д путь: кликните старт и ведите мышью'
+                        : 'Подтверждение: ведите курсором по красной линии (новая не рисуется)'} · Enter — сохранить · Esc — отмена
             </span>
-            {((tool === 'road' && draft.length >= 2) || (tool === 'eraseRoad' && draft.length >= 1) || (tool === 'railway' && draft.length >= 2) || (tool === 'confirmRoad' && draft.length >= 2) || (tool === 'vehicles' && draft.length >= 2) || (tool === 'area' && draft.length >= 3)) && (
+            {((tool === 'road' && draft.length >= 2) || (tool === 'eraseRoad' && draft.length >= 1) || (tool === 'eraseAccess' && draft.length >= 1) || (tool === 'railway' && draft.length >= 2) || (tool === 'confirmRoad' && draft.length >= 2) || (tool === 'area' && draft.length >= 3)) && (
               <button
                 type="button"
                 onClick={(event) => {
@@ -884,7 +1389,7 @@ export function MapCanvas({
                 }}
                 className="h-6 rounded border border-border-subtle px-2 text-[11px] font-medium text-text-strong outline-none transition-colors hover:bg-bg-hover"
               >
-                {tool === 'area' ? 'Сохранить область' : tool === 'road' ? 'Сохранить дорогу' : tool === 'eraseRoad' ? 'Стереть кусок' : tool === 'railway' ? 'Сохранить путь' : tool === 'confirmRoad' ? 'Сохранить подтверждение' : 'Задать машины'}
+                {tool === 'area' ? 'Сохранить область' : tool === 'road' ? 'Сохранить дорогу' : tool === 'eraseRoad' ? 'Стереть кусок' : tool === 'eraseAccess' ? 'Готово' : tool === 'railway' ? 'Сохранить путь' : 'Сохранить подтверждение'}
               </button>
             )}
           </div>
@@ -1208,12 +1713,11 @@ function MovePointOverlay({
 }
 
 function MapStatusBar({ metrics, cursor }: { metrics: ViewMetrics | null; cursor: LatLng | null }) {
-  // Координаты, зум и масштаб — единым блоком СПРАВА внизу (слева внизу теперь
-  // блок управления). Низ-лево не занимаем. (Высоту н.у.м. убрали: площадка
-  // плоская, метрика почти не менялась, а тянулась запросом на каждый сдвиг.)
+  // Координаты, зум и масштаб — блоком ПО ЦЕНТРУ внизу: справа их перекрывала
+  // легенда/копирайт, слева стоит блок управления. Центр — чисто и видно.
   const loc = cursor ?? metrics?.center ?? null;
   return (
-    <div className="pointer-events-none absolute bottom-2 right-2 z-[3] flex items-center gap-1.5 rounded-md border border-white/10 bg-[#080b11]/80 px-2.5 py-1 text-[11px] text-white/80 shadow-lg backdrop-blur">
+    <div className="pointer-events-none absolute bottom-2 left-1/2 z-[3] flex -translate-x-1/2 items-center gap-1.5 rounded-md border border-white/10 bg-[#080b11]/88 px-2.5 py-1 text-[11px] text-white/85 shadow-lg backdrop-blur">
       <span className="font-mono tabular-nums">
         {loc ? `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}` : '—, —'}
       </span>
@@ -1221,30 +1725,6 @@ function MapStatusBar({ metrics, cursor }: { metrics: ViewMetrics | null; cursor
       <span className="font-mono tabular-nums">z {metrics ? metrics.zoom.toFixed(1) : '—'}</span>
       <span className="text-white/35">•</span>
       <span className="font-mono tabular-nums">{metrics ? `${metrics.metersPerPixel.toFixed(metrics.metersPerPixel < 10 ? 1 : 0)} м/px` : '— м/px'}</span>
-    </div>
-  );
-}
-
-function RoadLegend({ visible, items }: { visible: boolean; items: RoadAccess[] }) {
-  if (!visible || items.length === 0) return null;
-  const active = new Set<string>();
-  for (const item of items) {
-    if (item.kind === 'closed') active.add('closed');
-    for (const vehicle of item.vehicles) active.add(vehicle);
-  }
-  const rows = ROAD_PAINT_OPTIONS.filter((item) => item.id !== 'erase' && active.has(item.id));
-  if (rows.length === 0) return null;
-  return (
-    <div className="pointer-events-none absolute bottom-11 right-2 z-[3] rounded-lg border border-white/10 bg-[#080b11]/82 px-2.5 py-2 text-[11px] text-white/82 shadow-lg backdrop-blur">
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/45">Легенда дорог</div>
-      <div className="grid gap-1">
-        {rows.map((row) => (
-          <div key={row.id} className="flex items-center gap-1.5">
-            <span className="h-2.5 w-5 rounded-full" style={{ backgroundColor: row.color }} />
-            <span>{row.label}</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -1312,17 +1792,122 @@ function readViewMetrics(map: MapLibreMap): ViewMetrics {
   };
 }
 
+// Кисть-ластик на экране ~7 px радиуса: рез в метрах следует за зумом (крупный
+// план — тонкий точный рез, мелкий — широкий), с клампами от крайностей.
+const ERASE_BRUSH_PX = 7;
+
+function eraseBrushRadiusMeters(map: MapLibreMap): number {
+  const center = toLatLng(map.getCenter());
+  const p = map.project(toCoord(center));
+  const p2 = new maplibregl.Point(p.x + 40, p.y);
+  const cssMetersPerPixel = distanceMeters(center, toLatLng(map.unproject(p2))) / 40;
+  return Math.min(9, Math.max(1.2, cssMetersPerPixel * ERASE_BRUSH_PX));
+}
+
 function ensureOverlayLayers(map: MapLibreMap): void {
   addGeoJsonSource(map, 'map-areas');
   addGeoJsonSource(map, 'map-railways');
   addGeoJsonSource(map, 'map-roads');
+  addGeoJsonSource(map, 'map-road-issues');
   addGeoJsonSource(map, 'map-road-suggestions');
   addGeoJsonSource(map, 'map-road-access');
   addGeoJsonSource(map, 'map-route');
   addGeoJsonSource(map, 'map-glonass-history');
   addGeoJsonSource(map, 'map-glonass-tracks');
+  addGeoJsonSource(map, 'map-glonass-live-trail');
   addGeoJsonSource(map, 'map-opt-rays');
   addGeoJsonSource(map, 'map-draft');
+  addGeoJsonSource(map, 'map-buildings');
+  addGeoJsonSource(map, 'map-ext-railways');
+  addGeoJsonSource(map, 'map-footways');
+
+  // Контуры зданий (OSM) — контур ЖИРНЕЕ, заливка ЛЕГЧЕ (юзер 2026-07-09):
+  // читаемая геометрия на тёмном снимке, не мешает рабочим слоям.
+  addLayer(map, {
+    id: 'map-buildings-fill',
+    type: 'fill',
+    source: 'map-buildings',
+    paint: {
+      'fill-color': '#A78BFA',
+      'fill-opacity': 0.06,
+    },
+  });
+  addLayer(map, {
+    id: 'map-buildings-line',
+    type: 'line',
+    source: 'map-buildings',
+    paint: {
+      'line-color': '#C4B5FD',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 0.9, 16, 1.7, 20, 2.6],
+      'line-opacity': 0.72,
+    },
+  });
+
+  // Пешеходные ДОРОЖКИ (OSM, справочно) — тонкая белая линия (не зебра, чтобы
+  // не сливаться с ж/д). НЕ кликабельны, лежат под ж/д и дорогами.
+  addLayer(map, {
+    id: 'map-footways-path',
+    type: 'line',
+    source: 'map-footways',
+    filter: ['!=', ['get', 'crossing'], true],
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': '#38BDF8',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 0.9, 16, 1.6, 20, 2.6],
+      'line-opacity': 0.7,
+    },
+  });
+  // Пешеходный ПЕРЕХОД через дорогу — полосатая «зебра», как на Яндексе.
+  addLayer(map, {
+    id: 'map-footways-crossing-bed',
+    type: 'line',
+    source: 'map-footways',
+    filter: ['==', ['get', 'crossing'], true],
+    layout: { 'line-cap': 'butt', 'line-join': 'round' },
+    paint: {
+      'line-color': '#111827',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 2.6, 16, 4.2, 20, 6.5],
+      'line-opacity': 0.55,
+    },
+  });
+  addLayer(map, {
+    id: 'map-footways-crossing-zebra',
+    type: 'line',
+    source: 'map-footways',
+    filter: ['==', ['get', 'crossing'], true],
+    layout: { 'line-cap': 'butt', 'line-join': 'round' },
+    paint: {
+      'line-color': '#38BDF8',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 2.2, 16, 3.6, 20, 5.6],
+      'line-opacity': 0.95,
+      'line-dasharray': [0.7, 0.7],
+    },
+  });
+
+  // Внешние ж/д пути (OSM, справочно) — приглушённые «шпалы», НЕ кликабельны.
+  addLayer(map, {
+    id: 'map-ext-railways-bed',
+    type: 'line',
+    source: 'map-ext-railways',
+    layout: { 'line-cap': 'butt', 'line-join': 'round' },
+    paint: {
+      'line-color': '#111827',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.6, 16, 2.6, 20, 4.2],
+      'line-opacity': 0.62,
+    },
+  });
+  addLayer(map, {
+    id: 'map-ext-railways-ties',
+    type: 'line',
+    source: 'map-ext-railways',
+    layout: { 'line-cap': 'butt', 'line-join': 'round' },
+    paint: {
+      'line-color': '#D1D5DB',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.6, 16, 2.6, 20, 4.2],
+      'line-opacity': 0.55,
+      'line-dasharray': [0.4, 1.6],
+    },
+  });
 
   // Ж/д путь — тёмная линия + белые «шпалы» (частый пунктир поверх). Под дорогами.
   addLayer(map, {
@@ -1429,7 +2014,8 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     },
   });
   // Дороги (свои + подтверждённые) — тёмная обводка + яркая линия, чтобы
-  // чётко читались на спутнике. ПОВЕРХ красного черновика.
+  // чётко читались на спутнике. ПОВЕРХ красного черновика. Линия ТОНЬШЕ
+  // прежней (юзер 2026-07-09) — жёлтые дороги сохранены, просто аккуратнее.
   addLayer(map, {
     id: 'map-roads-casing',
     type: 'line',
@@ -1437,8 +2023,8 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
       'line-color': '#0A0D12',
-      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 3.4, 16, 5.6, 20, 8.5],
-      'line-opacity': 0.9,
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 2.4, 16, 4, 20, 6.2],
+      'line-opacity': 0.88,
     },
   });
   addLayer(map, {
@@ -1448,10 +2034,27 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
       'line-color': ['case', ['boolean', ['get', 'selected'], false], '#FFFFFF', '#FFC83D'],
-      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.8, 16, 3.4, 20, 5.4],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.2, 16, 2.3, 20, 3.8],
       'line-opacity': 1,
     },
   });
+  // Проверка сети: показывает то, что раньше было НЕВИДИМЫМ допуском графа.
+  // Красный = близкие концы/примыкания, фиолетовый = параллельное наложение.
+  // Эти линии диагностические и в маршрутах не участвуют.
+  addLayer(map, {
+    id: 'map-road-issues-line',
+    type: 'line',
+    source: 'map-road-issues',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': ['case', ['==', ['get', 'kind'], 'overlap'], '#C084FC', '#FB7185'],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 2, 16, 3.4, 20, 5.5],
+      'line-opacity': 0.95,
+      'line-dasharray': [1, 1.4],
+    },
+  });
+  // Дорога — ЕДИНАЯ непрерывная «паутина», рисуем только линиями. Жёлтые точки-
+  // узлы (sharedRoadNodes) убраны: они дробили сеть визуально («отлипшие куски»).
   addLayer(map, {
     id: 'map-roads-hit',
     type: 'line',
@@ -1459,28 +2062,52 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': '#ffffff', 'line-width': 16, 'line-opacity': 0.01 },
   });
-  // «Особенности» дорог — бирюзовый слой проходимости машин (поверх дорог).
+  // Ограничения участков дорог — линия вдоль дороги, в обычном режиме
+  // приглушённая (не перегружает карту), при ховере/выборе подсвечивается
+  // целиком. Наложения различаются смещением лент (offset в данных).
   addLayer(map, {
     id: 'map-road-access-line',
     type: 'line',
     source: 'map-road-access',
+    filter: ['==', '$type', 'LineString'],
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
       'line-color': ['get', 'color'],
-      // Несколько машин → параллельные ленты (offset задаётся в данных).
       'line-offset': ['coalesce', ['get', 'offset'], 0],
       'line-width': ['interpolate', ['linear'], ['zoom'],
-        12, ['case', ['boolean', ['get', 'selected'], false], 4, 3],
-        16, ['case', ['boolean', ['get', 'selected'], false], 6, 4.5],
-        20, ['case', ['boolean', ['get', 'selected'], false], 9, 7],
+        12, ['case', ['any', ['boolean', ['get', 'selected'], false], ['boolean', ['get', 'hovered'], false]], 4.5, 2.6],
+        16, ['case', ['any', ['boolean', ['get', 'selected'], false], ['boolean', ['get', 'hovered'], false]], 6.5, 3.8],
+        20, ['case', ['any', ['boolean', ['get', 'selected'], false], ['boolean', ['get', 'hovered'], false]], 9.5, 5.8],
       ],
-      'line-opacity': ['case', ['==', ['get', 'accessKind'], 'closed'], 0.82, 0.74],
+      // Обычный режим — линия почти прозрачна (остаются точки по краям);
+      // закрытые заметнее; ховер/выбор/совпадение с фильтром «Машина» — полная.
+      'line-opacity': [
+        'case',
+        ['any', ['boolean', ['get', 'selected'], false], ['boolean', ['get', 'hovered'], false]], 0.96,
+        ['any', ['==', ['get', 'accessKind'], 'closed'], ['==', ['get', 'accessKind'], 'temp_closed']], 0.78,
+        0.14,
+      ],
+    },
+  });
+  // Круглые маркеры начала/конца участка — небольшие, всегда видны.
+  addLayer(map, {
+    id: 'map-road-access-ends',
+    type: 'circle',
+    source: 'map-road-access',
+    filter: ['==', 'kind', 'accessEnd'],
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 2.6, 16, 3.6, 20, 5],
+      'circle-color': ['get', 'color'],
+      'circle-opacity': 0.92,
+      'circle-stroke-color': '#0A0D12',
+      'circle-stroke-width': 1.1,
     },
   });
   addLayer(map, {
     id: 'map-road-access-hit',
     type: 'line',
     source: 'map-road-access',
+    filter: ['==', '$type', 'LineString'],
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': '#ffffff', 'line-width': 18, 'line-opacity': 0.01 },
   });
@@ -1530,6 +2157,38 @@ function ensureOverlayLayers(map: MapLibreMap): void {
       'line-opacity': 0.86,
     },
   });
+  // Живой след ЗА едущим маркером — обновляется анимационным циклом (rAF),
+  // поэтому отдельный источник: не трогаем реактовский 'map-glonass-tracks'.
+  addLayer(map, {
+    id: 'map-glonass-live-trail-casing',
+    type: 'line',
+    source: 'map-glonass-live-trail',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': '#05070B',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 4.2, 16, 6.4, 20, 9],
+      'line-opacity': 0.72,
+    },
+  });
+  addLayer(map, {
+    id: 'map-glonass-live-trail-line',
+    type: 'line',
+    source: 'map-glonass-live-trail',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': ['get', 'color'],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 2, 16, 3.5, 20, 5.8],
+      'line-opacity': 0.86,
+    },
+  });
+  // История/живой след должны читаться поверх нашей дороги: линия уже посажена на
+  // дорожный граф, поэтому её не прячем под жёлтую линию.
+  moveLayerToTop(map, 'map-glonass-history-casing');
+  moveLayerToTop(map, 'map-glonass-history-line');
+  moveLayerToTop(map, 'map-glonass-tracks-casing');
+  moveLayerToTop(map, 'map-glonass-tracks-line');
+  moveLayerToTop(map, 'map-glonass-live-trail-casing');
+  moveLayerToTop(map, 'map-glonass-live-trail-line');
   addLayer(map, {
     id: 'map-draft-fill',
     type: 'fill',
@@ -1541,18 +2200,43 @@ function ensureOverlayLayers(map: MapLibreMap): void {
       'fill-outline-color': '#E8836B',
     },
   });
+  // Кисти «указание дороги» / ластик — красим СПЛОШНОЙ толстой линией прямо по
+  // дороге (принцип Paint: водишь мышью — участок красится сам, без точек-вершин).
+  addLayer(map, {
+    id: 'map-draft-brush',
+    type: 'line',
+    source: 'map-draft',
+    filter: ['all', ['==', '$type', 'LineString'], ['in', 'kind', 'restrict', 'restrictHover', 'eraseRoad', 'eraseAccess', 'eraseSuggestion']],
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': ['match', ['get', 'kind'], ['restrict', 'restrictHover'], '#22D3EE', '#F87171'],
+      // След ластика = диаметр его кружка (2×ERASE_BRUSH_PX) — след честно
+      // показывает, что именно стёрто; кисть ограничений — прежняя.
+      'line-width': ['interpolate', ['linear'], ['zoom'],
+        12, ['match', ['get', 'kind'], ['restrict', 'restrictHover'], 5, ERASE_BRUSH_PX * 2],
+        16, ['match', ['get', 'kind'], ['restrict', 'restrictHover'], 10, ERASE_BRUSH_PX * 2],
+        20, ['match', ['get', 'kind'], ['restrict', 'restrictHover'], 16, ERASE_BRUSH_PX * 2],
+      ],
+      // Ховер-подсветка «что закрасит клик» — заметно бледнее самой закраски.
+      'line-opacity': ['match', ['get', 'kind'], 'restrictHover', 0.3, 0.5],
+      'line-blur': 0.6,
+    },
+  });
   addLayer(map, {
     id: 'map-draft-line',
     type: 'line',
     source: 'map-draft',
-    filter: ['==', '$type', 'LineString'],
+    filter: ['all', ['==', '$type', 'LineString'], ['!in', 'kind', 'restrict', 'eraseRoad', 'eraseAccess', 'eraseSuggestion']],
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
       'line-color': [
         'case',
         ['==', ['get', 'kind'], 'confirmRoad'], '#6FBF8E',
         ['==', ['get', 'kind'], 'vehicles'], ['coalesce', ['get', 'color'], '#22D3EE'],
+        ['==', ['get', 'kind'], 'restrict'], '#22D3EE',
         ['==', ['get', 'kind'], 'eraseRoad'], '#F87171',
+        ['==', ['get', 'kind'], 'eraseAccess'], '#F87171',
+        ['==', ['get', 'kind'], 'eraseSuggestion'], '#F87171',
         ['==', ['get', 'kind'], 'railway'], '#E5E7EB',
         ['==', ['get', 'kind'], 'road'], '#F4D58D',
         '#E8836B',
@@ -1560,7 +2244,10 @@ function ensureOverlayLayers(map: MapLibreMap): void {
       'line-width': [
         'case',
         ['==', ['get', 'kind'], 'confirmRoad'], 2.6,
+        ['==', ['get', 'kind'], 'restrict'], 3.4,
         ['==', ['get', 'kind'], 'eraseRoad'], 3.2,
+        ['==', ['get', 'kind'], 'eraseAccess'], 3.2,
+        ['==', ['get', 'kind'], 'eraseSuggestion'], 3.2,
         ['==', ['get', 'kind'], 'road'], 2.4,
         2,
       ],
@@ -1579,12 +2266,18 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     source: 'map-draft',
     filter: ['==', 'kind', 'paintCursor'],
     paint: {
-      'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 11, 16, 18, 20, 28],
+      // Ластик — маленький чёткий кружок РОВНО с зону реза (ERASE_BRUSH_PX);
+      // «Ограничение» — прежняя мягкая рабочая область.
+      'circle-radius': ['interpolate', ['linear'], ['zoom'],
+        12, ['case', ['==', ['get', 'brush'], 'erase'], ERASE_BRUSH_PX, 11],
+        16, ['case', ['==', ['get', 'brush'], 'erase'], ERASE_BRUSH_PX, 18],
+        20, ['case', ['==', ['get', 'brush'], 'erase'], ERASE_BRUSH_PX, 28],
+      ],
       'circle-color': ['coalesce', ['get', 'color'], '#22D3EE'],
-      'circle-opacity': 0.22,
-      'circle-blur': 0.45,
+      'circle-opacity': ['case', ['==', ['get', 'brush'], 'erase'], 0.4, 0.22],
+      'circle-blur': ['case', ['==', ['get', 'brush'], 'erase'], 0.15, 0.45],
       'circle-stroke-color': ['coalesce', ['get', 'color'], '#22D3EE'],
-      'circle-stroke-opacity': 0.45,
+      'circle-stroke-opacity': ['case', ['==', ['get', 'brush'], 'erase'], 0.9, 0.45],
       'circle-stroke-width': 1.2,
     },
   });
@@ -1592,13 +2285,16 @@ function ensureOverlayLayers(map: MapLibreMap): void {
     id: 'map-draft-points',
     type: 'circle',
     source: 'map-draft',
-    filter: ['all', ['==', '$type', 'Point'], ['!=', 'kind', 'paintCursor']],
+    // Точки-вершины НЕ показываем для кистей (restrict/ластик) — там красим
+    // сплошным штрихом, а не «точками».
+    filter: ['all', ['==', '$type', 'Point'], ['!=', 'kind', 'paintCursor'], ['!in', 'kind', 'restrict', 'eraseRoad', 'eraseAccess', 'eraseSuggestion']],
     paint: {
       'circle-radius': 4,
       'circle-color': [
         'case',
         ['==', ['get', 'kind'], 'confirmRoad'], '#6FBF8E',
         ['==', ['get', 'kind'], 'vehicles'], ['coalesce', ['get', 'color'], '#22D3EE'],
+        ['==', ['get', 'kind'], 'restrict'], '#22D3EE',
         '#E8836B',
       ],
       'circle-stroke-color': '#ffffff',
@@ -1615,6 +2311,11 @@ function addGeoJsonSource(map: MapLibreMap, id: string): void {
 function addLayer(map: MapLibreMap, layer: maplibregl.LayerSpecification): void {
   if (map.getLayer(layer.id)) return;
   map.addLayer(layer);
+}
+
+function moveLayerToTop(map: MapLibreMap, id: string): void {
+  if (!map.getLayer(id)) return;
+  try { map.moveLayer(id); } catch { /* MapLibre может отказать во время смены style. */ }
 }
 
 function setSourceData(map: MapLibreMap, id: string, data: FeatureCollection): void {
@@ -1643,34 +2344,96 @@ function buildAreasData(areas: MapArea[], selection: MapSelection | null): Featu
   };
 }
 
-function buildRoadsData(roads: MapRoad[], selection: MapSelection | null): FeatureCollection {
+function smoothRenderPolyline(vertices: LatLng[], radiusMeters: number): LatLng[] {
+  if (vertices.length < 3 || radiusMeters <= 0) return vertices;
+  const out: LatLng[] = [vertices[0]!];
+
+  for (let i = 1; i < vertices.length - 1; i += 1) {
+    const prev = vertices[i - 1]!;
+    const vertex = vertices[i]!;
+    const next = vertices[i + 1]!;
+    const prevLen = distanceMeters(prev, vertex);
+    const nextLen = distanceMeters(vertex, next);
+    const angle = cornerAngleDegrees(prev, vertex, next);
+    const offset = Math.min(radiusMeters, prevLen * 0.42, nextLen * 0.42);
+
+    if (offset < 1.2 || angle > 168 || angle < 22) {
+      pushRenderPoint(out, vertex);
+      continue;
+    }
+
+    const before = pointToward(vertex, prev, offset);
+    const after = pointToward(vertex, next, offset);
+    pushRenderPoint(out, before);
+    for (let step = 1; step <= 4; step += 1) {
+      pushRenderPoint(out, quadraticPoint(before, vertex, after, step / 5));
+    }
+    pushRenderPoint(out, after);
+  }
+
+  pushRenderPoint(out, vertices[vertices.length - 1]!);
+  return out;
+}
+
+function cornerAngleDegrees(prev: LatLng, vertex: LatLng, next: LatLng): number {
+  const latRad = vertex.lat * Math.PI / 180;
+  const ax = (prev.lng - vertex.lng) * Math.cos(latRad);
+  const ay = prev.lat - vertex.lat;
+  const bx = (next.lng - vertex.lng) * Math.cos(latRad);
+  const by = next.lat - vertex.lat;
+  const la = Math.hypot(ax, ay);
+  const lb = Math.hypot(bx, by);
+  if (la <= 1e-12 || lb <= 1e-12) return 180;
+  const dot = Math.max(-1, Math.min(1, (ax * bx + ay * by) / (la * lb)));
+  return Math.acos(dot) * 180 / Math.PI;
+}
+
+function pointToward(from: LatLng, to: LatLng, meters: number): LatLng {
+  const total = distanceMeters(from, to);
+  if (total <= 0) return from;
+  const t = Math.min(1, Math.max(0, meters / total));
   return {
-    type: 'FeatureCollection',
-    features: roads
-      .filter((road) => road.vertices.length >= 2)
-      .map((road) => ({
-        type: 'Feature',
-        properties: {
-          id: road.id,
-          kind: 'road',
-          selected: selection?.type === 'road' && selection.id === road.id,
-        },
-        geometry: {
-          type: 'LineString',
-          coordinates: road.vertices.map(toCoord),
-        },
-      })),
+    lat: from.lat + (to.lat - from.lat) * t,
+    lng: from.lng + (to.lng - from.lng) * t,
   };
 }
 
-const ACCESS_RIBBON_STEP = 5; // px между параллельными «лентами» машин на одном участке
+function quadraticPoint(a: LatLng, b: LatLng, c: LatLng, t: number): LatLng {
+  const u = 1 - t;
+  return {
+    lat: u * u * a.lat + 2 * u * t * b.lat + t * t * c.lat,
+    lng: u * u * a.lng + 2 * u * t * b.lng + t * t * c.lng,
+  };
+}
 
-/**
- * Участок «особенности» дороги. Если ограничение по НЕСКОЛЬКИМ машинам — рисуем
- * их НЕ смешанным цветом, а РЯДОМ, параллельными цветными лентами (каждая лента =
- * своя машина своим цветом, со смещением `offset`). Так читается, что проедут
- * именно эти типы, а не «какой-то общий». «Нет проезда» — одна красная лента.
- */
+function pushRenderPoint(points: LatLng[], point: LatLng): void {
+  const prev = points[points.length - 1];
+  if (!prev || distanceMeters(prev, point) >= 0.35) points.push(point);
+}
+
+function buildRoadsData(roads: MapRoad[], selection: MapSelection | null): FeatureCollection {
+  const roadLines = roads
+    .filter((road) => road.vertices.length >= 2)
+    .map((road) => ({
+      type: 'Feature' as const,
+      properties: {
+        id: road.id,
+        kind: 'road',
+        selected: selection?.type === 'road' && selection.id === road.id,
+      },
+      geometry: {
+        type: 'LineString',
+        coordinates: smoothRenderPolyline(road.vertices, ROAD_RENDER_CORNER_RADIUS_METERS).map(toCoord),
+      },
+    }));
+  return {
+    type: 'FeatureCollection',
+    features: roadLines,
+  };
+}
+
+const ACCESS_RIBBON_STEP = 5; // px между параллельными лентами наложившихся участков
+
 function buildRailwaysData(railways: MapRailway[], selection: MapSelection | null): FeatureCollection {
   return {
     type: 'FeatureCollection',
@@ -1688,36 +2451,106 @@ function buildRailwaysData(railways: MapRailway[], selection: MapSelection | nul
   };
 }
 
-function buildRoadAccessData(items: RoadAccess[], selection: MapSelection | null): FeatureCollection {
+/**
+ * Ограничения участков: в ОБЫЧНОМ режиме карту не перегружают — видны только
+ * круглые точки по краям (и красные закрытые с ⚠); сама линия почти прозрачна.
+ * При наведении/выборе участок светится целиком. При выбранном типе ТС в
+ * фильтре «Машина» светятся участки, где этому типу проезда НЕТ — цветом машины
+ * (так участки с правилами по типу и ищутся). Наложения разводим offset-лентами.
+ */
+function buildRoadAccessData(
+  items: RoadAccess[],
+  selection: MapSelection | null,
+  hoveredId: string | null,
+  activeVehicle: VehicleType | null,
+): FeatureCollection {
   const features: FeatureCollection['features'] = [];
-  for (const access of items) {
-    if (access.vertices.length < 2) continue;
+  const valid = items.filter((a) => a.vertices.length >= 2);
+  // Полоса (lane) участка = сколько предыдущих участков пересекается с ним по bbox
+  // (с запасом ~12 м) — простое и стабильное разведение наложений.
+  const lanes = new Map<string, number>();
+  const boxes = valid.map((a) => ({ id: a.id, box: bboxOf(a.vertices, 0.00016) }));
+  for (let i = 0; i < boxes.length; i++) {
+    let lane = 0;
+    for (let j = 0; j < i; j++) {
+      if (bboxIntersect(boxes[i]!.box, boxes[j]!.box)) lane += 1;
+    }
+    lanes.set(boxes[i]!.id, Math.min(lane, 3));
+  }
+  for (const access of valid) {
     const selected = selection?.type === 'roadAccess' && selection.id === access.id;
-    const coordinates = access.vertices.map(toCoord);
-    const ribbons = accessRibbons(access);
-    ribbons.forEach((ribbon, index) => {
+    const hovered = hoveredId === access.id;
+    const lane = lanes.get(access.id) ?? 0;
+    // Фильтр «Машина»: участок, где выбранный тип НЕ проедет, светится его цветом.
+    const vehicleHit = activeVehicle != null && isAccessBlocking(access, activeVehicle);
+    const color = vehicleHit ? vehicleColor(activeVehicle!) : accessColor(access);
+    features.push({
+      type: 'Feature',
+      properties: {
+        id: access.id,
+        kind: 'roadAccess',
+        accessKind: access.kind,
+        color,
+        offset: lane * ACCESS_RIBBON_STEP,
+        selected,
+        hovered: hovered || vehicleHit,
+      },
+      geometry: { type: 'LineString', coordinates: smoothRenderPolyline(access.vertices, ACCESS_RENDER_CORNER_RADIUS_METERS).map(toCoord) },
+    });
+    // Круглые маркеры начала и конца участка (наложения — смещаем перпендикулярно).
+    const endShift = lane * 2.5; // метры
+    for (const end of [access.vertices[0]!, access.vertices[access.vertices.length - 1]!]) {
+      const shifted = endShift > 0 ? shiftPerpendicular(end, access.vertices, endShift) : end;
       features.push({
         type: 'Feature',
-        properties: {
-          id: access.id,
-          kind: 'roadAccess',
-          accessKind: access.kind,
-          color: ribbon.color,
-          offset: (index - (ribbons.length - 1) / 2) * ACCESS_RIBBON_STEP,
-          selected,
-        },
-        geometry: { type: 'LineString', coordinates },
+        properties: { id: access.id, kind: 'accessEnd', color },
+        geometry: { type: 'Point', coordinates: toCoord(shifted) },
       });
-    });
+    }
   }
   return { type: 'FeatureCollection', features };
 }
 
-/** Цвета лент участка: закрытый → красный; ограниченный → по машине; иначе — бирюзовый. */
-function accessRibbons(access: RoadAccess): Array<{ color: string }> {
-  if (access.kind === 'closed') return [{ color: roadPaintOption('closed').color }];
-  if (access.vehicles.length === 0) return [{ color: ROAD_ACCESS_FALLBACK_COLOR }];
-  return access.vehicles.map((vehicle) => ({ color: vehicleColor(vehicle) }));
+/** Цвет участка: по виду ограничения; «ограничено» одним типом — цвет машины. */
+function accessColor(access: RoadAccess): string {
+  if (access.kind === 'limited') {
+    if (access.vehiclesMode === 'allow' && access.vehicles.length === 1) return vehicleColor(access.vehicles[0]!);
+    return ROAD_ACCESS_FALLBACK_COLOR;
+  }
+  return roadAccessKindMeta(access.kind).color;
+}
+
+function bboxOf(vertices: LatLng[], pad: number): [number, number, number, number] {
+  let s = Infinity; let w = Infinity; let n = -Infinity; let e = -Infinity;
+  for (const v of vertices) {
+    if (v.lat < s) s = v.lat;
+    if (v.lat > n) n = v.lat;
+    if (v.lng < w) w = v.lng;
+    if (v.lng > e) e = v.lng;
+  }
+  return [s - pad, w - pad, n + pad, e + pad];
+}
+
+function bboxIntersect(a: [number, number, number, number], b: [number, number, number, number]): boolean {
+  return a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
+}
+
+/** Сдвиг точки перпендикулярно направлению ломаной в этом месте (метры). */
+function shiftPerpendicular(p: LatLng, vertices: LatLng[], meters: number): LatLng {
+  const a = vertices[0]!;
+  const b = vertices[vertices.length - 1]!;
+  const latRad = (p.lat * Math.PI) / 180;
+  const dx = (b.lng - a.lng) * Math.cos(latRad);
+  const dy = b.lat - a.lat;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return p;
+  // Перпендикуляр (−dy, dx), метры → градусы.
+  const mLat = meters / 111_320;
+  const mLng = meters / (111_320 * Math.cos(latRad));
+  return {
+    lat: p.lat + (dx / len) * mLat,
+    lng: p.lng - (dy / len) * mLng,
+  };
 }
 
 function buildRouteData(routePath: LatLng[] | null, blocked = false): FeatureCollection {
@@ -1729,41 +2562,64 @@ function buildRouteData(routePath: LatLng[] | null, blocked = false): FeatureCol
       properties: { id: 'active-route', kind: 'route', blocked },
       geometry: {
         type: 'LineString',
-        coordinates: routePath.map(toCoord),
+        coordinates: smoothRenderPolyline(routePath, ROUTE_RENDER_CORNER_RADIUS_METERS).map(toCoord),
       },
     }],
   };
 }
 
-function buildGlonassTracksData(tracks: Array<{ id: number; color: string; points: LatLng[] }>): FeatureCollection {
+function buildGlonassTracksData(tracks: Array<{ id: string; color: string; points?: LatLng[]; segments?: LatLng[][]; mode: 'pro' | 'raw' }>): FeatureCollection {
   return {
     type: 'FeatureCollection',
     features: tracks
-      .filter((track) => track.points.length >= 2)
+      .filter((track) => trackSegments(track).length > 0)
       .map((track) => ({
         type: 'Feature',
-        properties: { id: track.id, kind: 'glonassTrack', color: track.color },
+        properties: { id: track.id, kind: 'glonassTrack', color: track.color, mode: track.mode },
         geometry: {
-          type: 'LineString',
-          coordinates: track.points.map(toCoord),
+          type: 'MultiLineString',
+          coordinates: trackSegments(track).map((segment) => smoothRenderPolyline(segment, TRACK_RENDER_CORNER_RADIUS_METERS).map(toCoord)),
         },
       })),
   };
 }
 
-function buildGlonassHistoryData(tracks: Array<{ id: string; color: string; points: LatLng[]; opacity: number }>): FeatureCollection {
+function buildGlonassHistoryData(tracks: Array<{ id: string; color: string; points?: LatLng[]; segments?: LatLng[][]; opacity: number; mode: 'pro' | 'raw' }>): FeatureCollection {
   return {
     type: 'FeatureCollection',
     features: tracks
-      .filter((track) => track.points.length >= 2)
+      .filter((track) => trackSegments(track).length > 0)
       .map((track) => ({
         type: 'Feature',
-        properties: { id: track.id, kind: 'glonassHistory', color: track.color, opacity: track.opacity },
+        properties: { id: track.id, kind: 'glonassHistory', color: track.color, opacity: track.opacity, mode: track.mode },
         geometry: {
-          type: 'LineString',
-          coordinates: track.points.map(toCoord),
+          type: 'MultiLineString',
+          coordinates: trackSegments(track).map((segment) => smoothRenderPolyline(segment, TRACK_RENDER_CORNER_RADIUS_METERS).map(toCoord)),
         },
       })),
+  };
+}
+
+function trackSegments(track: { points?: LatLng[]; segments?: LatLng[][] }): LatLng[][] {
+  const segments = track.segments ?? (track.points ? [track.points] : []);
+  return segments.filter((segment) => segment.length >= 2);
+}
+
+function buildRoadIssuesData(issues: RoadNetworkIssue[]): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: issues.map((issue) => ({
+      type: 'Feature',
+      properties: {
+        id: issue.id,
+        kind: issue.kind,
+        meters: issue.meters,
+      },
+      geometry: {
+        type: 'LineString',
+        coordinates: [toCoord(issue.from), toCoord(issue.to)],
+      },
+    })),
   };
 }
 
@@ -1787,6 +2643,74 @@ function buildRoadSuggestionsData(suggestions: MapRoadSuggestion[], selection: M
   };
 }
 
+function buildBuildingsData(buildings: BuildingOutline[]): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: buildings
+      .filter((b) => b.vertices.length >= 3)
+      .map((b) => ({
+        type: 'Feature',
+        properties: { id: b.id, kind: 'building' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[...b.vertices, b.vertices[0]!].map(toCoord)],
+        },
+      })),
+  };
+}
+
+function buildExtRailwaysData(railways: ExternalRailway[]): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: railways
+      .filter((r) => r.vertices.length >= 2)
+      .map((r) => ({
+        type: 'Feature',
+        properties: { id: r.id, kind: 'extRailway' },
+        geometry: { type: 'LineString', coordinates: r.vertices.map(toCoord) },
+      })),
+  };
+}
+
+function buildFootwaysData(footways: FootwayLine[]): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: footways
+      .filter((f) => f.vertices.length >= 2)
+      .map((f) => ({
+        type: 'Feature',
+        properties: { id: f.id, kind: 'footway', crossing: f.crossing },
+        geometry: { type: 'LineString', coordinates: f.vertices.map(toCoord) },
+      })),
+  };
+}
+
+/** ⚠-треугольник закрытого/временно закрытого участка. */
+function createAccessWarnElement(access: RoadAccess): HTMLDivElement {
+  const el = document.createElement('div');
+  el.style.cssText = 'cursor:pointer;filter:drop-shadow(0 2px 4px rgba(0,0,0,.55));line-height:0;';
+  const color = access.kind === 'temp_closed' ? '#F59E0B' : '#EF4444';
+  el.innerHTML = `
+    <svg width="22" height="20" viewBox="0 0 22 20">
+      <path d="M11 1.5 L21 18.5 L1 18.5 Z" fill="${color}" stroke="#0A0D12" stroke-width="1.4" stroke-linejoin="round"/>
+      <text x="11" y="16" text-anchor="middle" font-size="11" font-weight="800" fill="#0A0D12">!</text>
+    </svg>`;
+  el.title = 'Участок закрыт';
+  return el;
+}
+
+/** Кандидат на ж/д переезд: заметная пилюля «Ж/Д?» + ✓/× (для редактора). */
+function createCandidateElement(canEdit: boolean): HTMLDivElement {
+  const el = document.createElement('div');
+  el.style.cssText = 'display:flex;align-items:center;gap:4px;background:rgba(8,11,17,.92);border:1px solid rgba(245,158,11,.65);border-radius:9px;padding:2px 6px;box-shadow:0 3px 10px rgba(0,0,0,.5);cursor:default;';
+  const actions = canEdit
+    ? `<button data-act="ok" title="Подтвердить переезд" style="all:unset;cursor:pointer;color:#6FBF8E;font-weight:800;font-size:12px;padding:0 3px;">✓</button>
+       <button data-act="no" title="Убрать кандидата" style="all:unset;cursor:pointer;color:#F87171;font-weight:800;font-size:12px;padding:0 3px;">×</button>`
+    : '';
+  el.innerHTML = `<span style="color:#FBBF24;font-size:10.5px;font-weight:700;letter-spacing:.02em;">Ж/Д?</span>${actions}`;
+  return el;
+}
+
 function buildOptimizeRaysData(ov: OptimizeOverlay | null): FeatureCollection {
   if (!ov?.result) return EMPTY_FEATURES;
   return {
@@ -1802,22 +2726,52 @@ function buildOptimizeRaysData(ov: OptimizeOverlay | null): FeatureCollection {
   };
 }
 
-function buildDraftData(tool: MapTool, draft: LatLng[], cursor: LatLng | null, roadPaintMode: RoadPaintMode): FeatureCollection {
-  if (tool !== 'area' && tool !== 'road' && tool !== 'eraseRoad' && tool !== 'railway' && tool !== 'confirmRoad' && tool !== 'vehicles') return EMPTY_FEATURES;
+function buildDraftData(
+  tool: MapTool,
+  draft: LatLng[],
+  cursor: LatLng | null,
+  restrictHover: LatLng[] | null = null,
+  restrictParts: LatLng[][] = [],
+): FeatureCollection {
+  if (tool !== 'area' && tool !== 'road' && tool !== 'eraseRoad' && tool !== 'eraseAccess' && tool !== 'eraseSuggestion' && tool !== 'restrict' && tool !== 'railway' && tool !== 'confirmRoad') return EMPTY_FEATURES;
   const pts = [...draft, ...(cursor ? [cursor] : [])];
-  const draftColor = tool === 'vehicles' ? roadPaintOption(roadPaintMode).color : undefined;
   const features: FeatureCollection['features'] = [];
-  if (tool === 'vehicles' && cursor) {
+  // Мягкая рабочая область вокруг курсора: кисти-ластики (красная) и
+  // «Ограничение дороги» (бирюзовая) — видно, чем и где работаешь.
+  const brushColor = tool === 'restrict'
+    ? '#22D3EE'
+    : tool === 'eraseRoad' || tool === 'eraseAccess' || tool === 'eraseSuggestion'
+      ? '#F87171'
+      : null;
+  if (brushColor && cursor) {
     features.push({
       type: 'Feature',
-      properties: { id: 'paint-cursor', kind: 'paintCursor', color: draftColor },
+      properties: { id: 'paint-cursor', kind: 'paintCursor', color: brushColor, brush: tool === 'restrict' ? 'restrict' : 'erase' },
       geometry: { type: 'Point', coordinates: toCoord(cursor) },
+    });
+  }
+  // Подсветка отрезка дороги под курсором («что закрасит клик») — до нажатия.
+  if (tool === 'restrict' && restrictHover && restrictHover.length >= 2) {
+    features.push({
+      type: 'Feature',
+      properties: { id: 'restrict-hover', kind: 'restrictHover' },
+      geometry: { type: 'LineString', coordinates: restrictHover.map(toCoord) },
+    });
+  }
+  if (tool === 'restrict') {
+    restrictParts.forEach((part, index) => {
+      if (part.length < 2) return;
+      features.push({
+        type: 'Feature',
+        properties: { id: `restrict-part-${index}`, kind: 'restrict' },
+        geometry: { type: 'LineString', coordinates: part.map(toCoord) },
+      });
     });
   }
   draft.forEach((p, index) => {
     features.push({
       type: 'Feature',
-      properties: { id: `draft-point-${index}`, kind: tool, color: draftColor },
+      properties: { id: `draft-point-${index}`, kind: tool },
       geometry: { type: 'Point', coordinates: toCoord(p) },
     });
   });
@@ -1837,21 +2791,16 @@ function buildDraftData(tool: MapTool, draft: LatLng[], cursor: LatLng | null, r
       });
     }
   } else if (pts.length >= 2) {
-    const kind = tool === 'confirmRoad'
-      ? 'confirmRoad'
-      : tool === 'vehicles'
-        ? 'vehicles'
-        : tool === 'eraseRoad'
-          ? 'eraseRoad'
-          : tool === 'railway'
-            ? 'railway'
-            : 'road';
-    const paint = roadPaintOption(roadPaintMode);
-    features.push({
-      type: 'Feature',
-      properties: { id: 'draft-road', kind, color: tool === 'vehicles' ? paint.color : undefined },
-      geometry: { type: 'LineString', coordinates: pts.map(toCoord) },
-    });
+    // Кисти-ластики: линию тянем только по СЛЕДУ кисти (draft), без хвоста к
+    // курсору — стирание уже применено живьём, хвост бы врал.
+    const lineCoords = tool === 'eraseRoad' || tool === 'eraseAccess' || tool === 'eraseSuggestion' || tool === 'restrict' ? draft : pts;
+    if (lineCoords.length >= 2) {
+      features.push({
+        type: 'Feature',
+        properties: { id: 'draft-road', kind: tool },
+        geometry: { type: 'LineString', coordinates: smoothRenderPolyline(lineCoords, tool === 'restrict' ? ACCESS_RENDER_CORNER_RADIUS_METERS : TRACK_RENDER_CORNER_RADIUS_METERS).map(toCoord) },
+      });
+    }
   }
   return { type: 'FeatureCollection', features };
 }
@@ -1875,6 +2824,49 @@ function snapToRoads(raw: LatLng, roads: MapRoad[], maxDistanceMeters: number): 
     if (!best || hit.distance < best.distance) best = { point: hit.point, distance: hit.distance };
   }
   return best?.point ?? null;
+}
+
+/**
+ * Отрезок ближайшей дороги вокруг курсора (± halfMeters по её линии) — ховер-
+ * подсветка и «клик красит ровно подсвеченное» в инструменте «Ограничение».
+ */
+function roadStretchNear(raw: LatLng, roads: MapRoad[], halfMeters: number): LatLng[] | null {
+  let best: { road: MapRoad; point: LatLng; distance: number; segmentIndex: number } | null = null;
+  for (const road of roads) {
+    const hit = nearestPointOnPolyline(raw, road.vertices);
+    if (!hit || hit.distance > VEHICLE_TRACE_SNAP_METERS) continue;
+    if (!best || hit.distance < best.distance) {
+      best = { road, point: hit.point, distance: hit.distance, segmentIndex: hit.segmentIndex };
+    }
+  }
+  if (!best) return null;
+  const v = best.road.vertices;
+  const walk = (dir: -1 | 1): LatLng[] => {
+    const out: LatLng[] = [];
+    let acc = 0;
+    let cur = best!.point;
+    let i = dir === -1 ? best!.segmentIndex : best!.segmentIndex + 1;
+    while (i >= 0 && i < v.length && acc < halfMeters) {
+      const target = v[i]!;
+      const d = distanceMeters(cur, target);
+      if (d > 0.01) {
+        if (acc + d >= halfMeters) {
+          const t = (halfMeters - acc) / d;
+          out.push({ lat: cur.lat + (target.lat - cur.lat) * t, lng: cur.lng + (target.lng - cur.lng) * t });
+          break;
+        }
+        out.push(target);
+        acc += d;
+        cur = target;
+      }
+      i += dir;
+    }
+    return out;
+  };
+  const back = walk(-1).reverse();
+  const forward = walk(1);
+  const stretch = [...back, best.point, ...forward];
+  return stretch.length >= 2 ? stretch : null;
 }
 
 /** Точка примерно на середине ломаной (по длине) — для подписи участка. */
@@ -1925,8 +2917,18 @@ function createPointMarker({
   const color = warehouse
     ? ({ removed: '#D96666', shipping: '#C99BE0', scheduled: '#6FBF8E', idle: '#5BA3D0' }[getWarehouseState(warehouse)])
     : '#9AA4B2';
-  const label = point.label || warehouse?.id || '';
-  const el = createPinElement(color, label, selected, dimmed);
+  // Компактная подпись (карта не мусорится): без наведения — ТОЛЬКО номер склада;
+  // при наведении — полное название («погрузка», «отделение ОНРС»…) (юзер 2026-07-09).
+  const fullLabel = [warehouse?.id, point.label.trim() || point.comment.trim()]
+    .filter(Boolean).join(' · ') || 'Точка';
+  const shortLabel = warehouse?.id
+    || (point.label.trim().length > 12 ? `${point.label.trim().slice(0, 11)}…` : point.label.trim());
+  const el = createPinElement(color, shortLabel, selected, dimmed);
+  const labelEl = el.querySelector<HTMLDivElement>('[data-pin-label]');
+  if (labelEl && fullLabel !== shortLabel) {
+    el.addEventListener('mouseenter', () => { labelEl.textContent = fullLabel; });
+    el.addEventListener('mouseleave', () => { labelEl.textContent = shortLabel; });
+  }
   if (hidden) el.style.display = 'none';
   el.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -1987,6 +2989,202 @@ function clearMarkers(markers: Marker[]): void {
   for (const marker of markers) marker.remove();
 }
 
+function clearGlonassMarkerEntries(entries: Map<number, GlonassMarkerEntry>): void {
+  for (const entry of entries.values()) {
+    clearGlonassEntry(entry);
+  }
+  entries.clear();
+}
+
+function clearGlonassReplayEntry(ref: MutableRefObject<GlonassReplayMarkerEntry | null>): void {
+  if (!ref.current) return;
+  clearGlonassEntry(ref.current);
+  ref.current = null;
+}
+
+function clearGlonassEntry(entry: GlonassMarkerEntry): void {
+  if (entry.frame != null) cancelAnimationFrame(entry.frame);
+  entry.marker.remove();
+  entry.frame = null;
+}
+
+function updateGlonassMarkerElement(el: HTMLDivElement, m: GlonassMarker): void {
+  const next = createGlonassMarkerElement(m);
+  // ВАЖНО: только меняем содержимое. cssText НЕ трогаем — там лежит transform
+  // от MapLibre (позиция маркера). Перезапись cssText стирала transform до
+  // следующего кадра → маркер мелькал в левом верхнем углу и «прыгал».
+  el.replaceChildren(...Array.from(next.childNodes));
+  el.title = next.title;
+}
+
+function updateGlonassReplayMarkerElement(el: HTMLDivElement, m: GlonassReplayMarker): void {
+  const next = createGlonassReplayMarkerElement(m);
+  el.replaceChildren(...Array.from(next.childNodes));
+  el.title = next.title;
+}
+
+function animateGlonassMarker(entry: GlonassMarkerEntry, target: LatLng, durationMs: number, roadPath?: LatLng[]): void {
+  if (entry.frame != null) cancelAnimationFrame(entry.frame);
+  const current = entry.marker.getLngLat();
+  const start = { lat: current.lat, lng: current.lng };
+  const meters = distanceMeters(start, target);
+  if (!Number.isFinite(meters) || meters < 0.3 || meters > GLONASS_MARKER_JUMP_METERS) {
+    entry.marker.setLngLat([target.lng, target.lat]);
+    entry.frame = null;
+    return;
+  }
+  const startedAt = performance.now();
+  const duration = meters < 6 ? Math.min(1600, durationMs) : Math.max(180, durationMs);
+  const motionPath = buildGlonassMotionPath(start, target, roadPath);
+  const step = (now: number) => {
+    const t = Math.min(1, Math.max(0, (now - startedAt) / duration));
+    const eased = easeInOutCubic(t);
+    const point = motionPath ? pointAlongPolyline(motionPath, eased) : {
+      lat: start.lat + (target.lat - start.lat) * eased,
+      lng: start.lng + (target.lng - start.lng) * eased,
+    };
+    entry.marker.setLngLat([point.lng, point.lat]);
+    if (t < 1) {
+      entry.frame = requestAnimationFrame(step);
+    } else {
+      entry.marker.setLngLat([target.lng, target.lat]);
+      entry.frame = null;
+    }
+  };
+  entry.frame = requestAnimationFrame(step);
+}
+
+function buildGlonassMotionPath(start: LatLng, target: LatLng, roadPath: LatLng[] | undefined): LatLng[] | null {
+  if (!roadPath || roadPath.length < 2) return null;
+  const clean = cleanMotionPath(roadPath);
+  if (clean.length < 2) return null;
+  const end = clean[clean.length - 1]!;
+  if (distanceMeters(end, target) > 18) clean.push(target);
+
+  const hit = nearestPointOnPolyline(start, clean);
+  if (!hit || hit.distance > 65) return [start, ...clean.slice(-Math.min(clean.length, 8))];
+  const sliced = slicePolylineFromHit(clean, hit.segmentIndex, hit.t);
+  if (sliced.length < 2) return null;
+  return hit.distance > 1 ? [start, ...sliced] : sliced;
+}
+
+function cleanMotionPath(path: LatLng[]): LatLng[] {
+  const out: LatLng[] = [];
+  for (const point of path) {
+    const prev = out[out.length - 1];
+    if (!prev || distanceMeters(prev, point) >= 0.6) out.push(point);
+  }
+  return out;
+}
+
+function slicePolylineFromHit(path: LatLng[], segmentIndex: number, t: number): LatLng[] {
+  const a = path[Math.max(0, Math.min(segmentIndex, path.length - 1))]!;
+  const b = path[Math.max(0, Math.min(segmentIndex + 1, path.length - 1))] ?? a;
+  const start = {
+    lat: a.lat + (b.lat - a.lat) * Math.max(0, Math.min(1, t)),
+    lng: a.lng + (b.lng - a.lng) * Math.max(0, Math.min(1, t)),
+  };
+  return [start, ...path.slice(segmentIndex + 1)];
+}
+
+function pointAlongPolyline(path: LatLng[], ratio: number): LatLng {
+  if (path.length === 0) return { lat: 0, lng: 0 };
+  if (path.length === 1) return path[0]!;
+  const target = polylineLength(path) * Math.max(0, Math.min(1, ratio));
+  let walked = 0;
+  for (let i = 0; i < path.length - 1; i += 1) {
+    const a = path[i]!;
+    const b = path[i + 1]!;
+    const len = distanceMeters(a, b);
+    if (walked + len >= target) {
+      const t = len > 0 ? (target - walked) / len : 0;
+      return {
+        lat: a.lat + (b.lat - a.lat) * t,
+        lng: a.lng + (b.lng - a.lng) * t,
+      };
+    }
+    walked += len;
+  }
+  return path[path.length - 1]!;
+}
+
+function polylineLength(path: LatLng[]): number {
+  let total = 0;
+  for (let i = 0; i < path.length - 1; i += 1) total += distanceMeters(path[i]!, path[i + 1]!);
+  return total;
+}
+
+/** Позиция на timed-пути в момент ms: lerp между соседними по времени точками. */
+function pointAtTimedPath(path: GlonassTimedPathPoint[], ms: number): LatLng {
+  const first = path[0]!;
+  const last = path[path.length - 1]!;
+  const firstMs = Date.parse(first.time);
+  const lastMs = Date.parse(last.time);
+  if (!Number.isFinite(ms) || !Number.isFinite(firstMs) || ms <= firstMs) return first;
+  if (!Number.isFinite(lastMs) || ms >= lastMs) return last;
+  // Бинарный поиск последней точки со временем <= ms.
+  let lo = 0;
+  let hi = path.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    const t = Date.parse(path[mid]!.time);
+    if (Number.isFinite(t) && t <= ms) lo = mid;
+    else hi = mid - 1;
+  }
+  const a = path[lo]!;
+  const b = path[Math.min(lo + 1, path.length - 1)]!;
+  const aMs = Date.parse(a.time);
+  const bMs = Date.parse(b.time);
+  if (!Number.isFinite(aMs) || !Number.isFinite(bMs) || bMs <= aMs) return a;
+  // Разрыв пути (нет дороги между точками): машина стоит на берегу и потом
+  // телепортируется, а не летит по диагонали через здания.
+  if (b.gapBefore) return { lat: a.lat, lng: a.lng };
+  const t = Math.min(1, Math.max(0, (ms - aMs) / (bMs - aMs)));
+  return { lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t };
+}
+
+/** Хвост живого следа: точки пути до момента ms + текущая позиция, не длиннее meters. */
+function liveTrailBehind(path: GlonassTimedPathPoint[], ms: number, pos: LatLng, meters: number): LatLng[] {
+  const pts: LatLng[] = [];
+  for (const p of path) {
+    const t = Date.parse(p.time);
+    if (Number.isFinite(t) && t > ms) break;
+    // Разрыв пути: след начинается заново ПОСЛЕ разрыва — без диагонали.
+    if (p.gapBefore) pts.length = 0;
+    pts.push({ lat: p.lat, lng: p.lng });
+  }
+  pts.push(pos);
+  // Обрезаем с хвоста до ~meters (след — «откуда едет», не весь путь).
+  let acc = 0;
+  let from = pts.length - 1;
+  while (from > 0) {
+    acc += distanceMeters(pts[from - 1]!, pts[from]!);
+    if (acc >= meters) break;
+    from -= 1;
+  }
+  return pts.slice(from);
+}
+
+function liveMarkerAnimationMs(entry: GlonassMarkerEntry, time: string | null): number {
+  const next = parseMarkerTimeMs(time);
+  const prev = entry.targetAt;
+  entry.targetAt = next;
+  if (prev != null && next != null && next > prev) {
+    return Math.max(2600, Math.min(15_000, (next - prev) * 0.88));
+  }
+  return GLONASS_MARKER_ANIMATION_MS;
+}
+
+function parseMarkerTimeMs(time: string | null | undefined): number | null {
+  if (!time) return null;
+  const ms = Date.parse(time);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2;
+}
+
 /** Маркер машины ГЛОНАСС: компактный fleet-бейдж + гаражный № + курс. */
 function createGlonassMarkerElement(m: GlonassMarker): HTMLDivElement {
   const color = STATUS_COLOR[m.status];
@@ -2044,7 +3242,28 @@ function createGlonassMarkerElement(m: GlonassMarker): HTMLDivElement {
 
   marker.append(icon, label);
   wrap.append(createGlonassAnchor(color), marker);
+
+  // «Плохой сигнал»: статус «движется», но машина стоит на месте. Жёлтый ⚠ с
+  // таймером НАД машиной (таймер тикает отдельным интервалом по data-bad-since).
+  if (m.badSince != null) {
+    const warn = document.createElement('div');
+    warn.style.cssText =
+      'position:absolute;left:61px;bottom:44px;transform:translateX(-50%);z-index:6;'
+      + 'display:flex;align-items:center;gap:4px;white-space:nowrap;pointer-events:none;'
+      + 'padding:2px 7px;border-radius:8px;background:rgba(146,64,14,0.96);border:1.5px solid #F59E0B;'
+      + 'color:#FEF3C7;font:800 10px/1 Inter,Arial,sans-serif;box-shadow:0 5px 14px rgba(0,0,0,0.5);';
+    const secs = Math.max(0, Math.round((Date.now() - m.badSince) / 1000));
+    warn.innerHTML = `⚠ Нет сигнала <span data-bad-since="${m.badSince}" style="font-variant-numeric:tabular-nums;">${formatBadTimer(secs)}</span>`;
+    wrap.appendChild(warn);
+  }
   return wrap;
+}
+
+/** Таймер «плохого сигнала» м:сс с начала. */
+function formatBadTimer(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 /** Маркер исторического проигрывателя: та же логика машины, но без live-статуса. */
@@ -2196,21 +3415,23 @@ function createPinElement(
   selected: boolean,
   dimmed = false,
 ): HTMLDivElement {
+  // Пин КОМПАКТНЫЙ (карта не мусорится): капля 22×29, подпись 10px. Полное
+  // название подставляется по наведению (createPointMarker меняет текст).
   const el = document.createElement('div');
-  el.style.width = '46px';
-  el.style.height = '52px';
+  el.style.width = '36px';
+  el.style.height = '42px';
   el.style.cursor = 'pointer';
   // Точка, куда выбранная машина НЕ заедет — гасим и помечаем «стоп».
   el.style.opacity = dimmed ? '0.4' : '1';
   el.innerHTML = `
-    <div style="position:relative;width:46px;height:52px;pointer-events:auto;">
-      ${label ? `<div style="position:absolute;left:50%;top:-1px;transform:translateX(-50%);max-width:88px;padding:1px 6px;border-radius:5px;background:rgba(8,11,17,.74);color:#fff;font:700 11px/15px Inter,Arial,sans-serif;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.8);">${esc(label)}</div>` : ''}
-      ${selected ? `<div style="position:absolute;left:50%;top:38px;width:14px;height:6px;margin-left:-7px;border-radius:999px;background:rgba(0,0,0,.35);filter:blur(2px);"></div><div style="position:absolute;left:50%;top:20px;width:22px;height:22px;margin-left:-11px;border-radius:999px;background:${color};opacity:.18;box-shadow:0 0 0 6px ${color}2e;"></div>` : ''}
-      <svg width="30" height="40" viewBox="-15 -40 30 40" style="position:absolute;left:8px;top:11px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.5));">
+    <div style="position:relative;width:36px;height:42px;pointer-events:auto;">
+      ${label ? `<div data-pin-label style="position:absolute;left:50%;top:0;transform:translateX(-50%);max-width:150px;padding:0.5px 5px;border-radius:4px;background:rgba(8,11,17,.72);color:#fff;font:700 10px/13.5px Inter,Arial,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px rgba(0,0,0,.8);">${esc(label)}</div>` : ''}
+      ${selected ? `<div style="position:absolute;left:50%;top:32px;width:11px;height:5px;margin-left:-5.5px;border-radius:999px;background:rgba(0,0,0,.35);filter:blur(2px);"></div><div style="position:absolute;left:50%;top:18px;width:17px;height:17px;margin-left:-8.5px;border-radius:999px;background:${color};opacity:.18;box-shadow:0 0 0 5px ${color}2e;"></div>` : ''}
+      <svg width="22" height="29" viewBox="-15 -40 30 40" style="position:absolute;left:7px;top:12px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.5));">
         <path d="M0 0 C -8.5 -13 -12.5 -19 -12.5 -27 a 12.5 12.5 0 1 1 25 0 C 12.5 -19 8.5 -13 0 0 Z" fill="${color}" stroke="#ffffff" stroke-width="${selected ? 2.4 : 1.8}" stroke-opacity="${selected ? '1' : '.85'}"/>
         <circle cx="0" cy="-27" r="4.6" fill="#0c0f14" fill-opacity=".9"/>
       </svg>
-      ${dimmed ? `<svg width="15" height="15" viewBox="0 0 16 16" style="position:absolute;left:25px;top:8px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.7));"><circle cx="8" cy="8" r="7" fill="#EF4444" stroke="#fff" stroke-width="1.4"/><rect x="3.6" y="6.8" width="8.8" height="2.4" rx="1.2" fill="#fff"/></svg>` : ''}
+      ${dimmed ? `<svg width="13" height="13" viewBox="0 0 16 16" style="position:absolute;left:20px;top:9px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.7));"><circle cx="8" cy="8" r="7" fill="#EF4444" stroke="#fff" stroke-width="1.4"/><rect x="3.6" y="6.8" width="8.8" height="2.4" rx="1.2" fill="#fff"/></svg>` : ''}
     </div>`;
   return el;
 }
@@ -2225,9 +3446,22 @@ function createCrossingElement(crossing: MapCrossing, selected: boolean): HTMLDi
   el.style.height = '40px';
   el.style.cursor = 'pointer';
   const glow = selected ? 'filter:drop-shadow(0 0 4px #fff);' : 'filter:drop-shadow(0 2px 4px rgba(0,0,0,.6));';
+  // Подпись = № ж/д пути («271») — показывается ТОЛЬКО при наведении (карта не
+  // мусорится); ищется через поиск по № пути (юзер 2026-07-09).
+  const labelText = crossing.name.trim() ? `Ж/д ${esc(crossing.name.trim())}` : '';
+  if (labelText) {
+    el.addEventListener('mouseenter', () => {
+      const lbl = el.querySelector<HTMLDivElement>('[data-crossing-label]');
+      if (lbl) lbl.style.display = 'block';
+    });
+    el.addEventListener('mouseleave', () => {
+      const lbl = el.querySelector<HTMLDivElement>('[data-crossing-label]');
+      if (lbl) lbl.style.display = 'none';
+    });
+  }
   el.innerHTML = `
     <div style="position:relative;width:44px;height:40px;pointer-events:auto;">
-      ${crossing.name ? `<div style="position:absolute;left:50%;top:-12px;transform:translateX(-50%);max-width:100px;padding:1px 5px;border-radius:4px;background:rgba(8,11,17,.72);color:#FCD34D;font:700 10.5px/14px Inter,Arial,sans-serif;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.8);">${esc(crossing.name)}</div>` : ''}
+      ${labelText ? `<div data-crossing-label style="display:none;position:absolute;left:50%;top:-12px;transform:translateX(-50%);max-width:110px;padding:1px 5px;border-radius:4px;background:rgba(8,11,17,.72);color:#FCD34D;font:700 10.5px/14px Inter,Arial,sans-serif;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.8);">${labelText}</div>` : ''}
       <svg width="44" height="40" viewBox="0 0 44 40" style="position:absolute;left:0;top:0;${glow}">
         <g transform="translate(33 6)"><path d="M0 0 L8 8 M8 0 L0 8" stroke="#FBBF24" stroke-width="2.4" stroke-linecap="round"/></g>
         <g transform="rotate(-18 22 22)">
@@ -2237,6 +3471,27 @@ function createCrossingElement(crossing: MapCrossing, selected: boolean): HTMLDi
           <circle cx="6" cy="22" r="3.4" fill="#1F2937" stroke="#fff" stroke-width="1"/>
         </g>
       </svg>
+    </div>`;
+  return el;
+}
+
+/**
+ * Кружок «Высота проезда» — как дорожный знак ограничения высоты: белый круг с
+ * красной каймой, внутри метры («5,3»). Точные мм/см — в карточке по клику.
+ */
+function createClearanceElement(clearance: MapClearance, selected: boolean): HTMLDivElement {
+  const el = document.createElement('div');
+  el.style.width = '32px';
+  el.style.height = '32px';
+  el.style.cursor = 'pointer';
+  const glow = selected
+    ? 'box-shadow:0 0 0 3px rgba(255,255,255,.85),0 2px 6px rgba(0,0,0,.6);'
+    : 'box-shadow:0 0 0 1px rgba(10,13,18,.85),0 2px 5px rgba(0,0,0,.55);';
+  el.innerHTML = `
+    <div style="position:relative;width:32px;height:32px;pointer-events:auto;">
+      <div style="position:absolute;inset:2px;border-radius:999px;background:#FFFFFF;border:3px solid #EF4444;${glow}display:flex;align-items:center;justify-content:center;">
+        <span style="font:800 10px/1 Inter,Arial,sans-serif;color:#111827;letter-spacing:-0.2px;">${esc(formatClearanceMeters(clearance.heightMm))}</span>
+      </div>
     </div>`;
   return el;
 }

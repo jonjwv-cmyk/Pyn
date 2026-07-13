@@ -1,5 +1,6 @@
 import { distanceMeters, distancePointToPolylineMeters, nearestPointOnPolyline, polylineLengthMeters } from './geo';
-import type { LatLng, MapRoad, RoadAccess, VehicleType } from './map-types';
+import { getRoadGraph, graphEntriesForSegment } from './road-graph';
+import { vehiclePurposeMatrixHasAny, type LatLng, type MapRoad, type PointPurpose, type RoadAccess, type VehicleType } from './map-types';
 
 export interface RouteResult {
   path: LatLng[];
@@ -14,16 +15,47 @@ export interface RouteOptions {
   roadAccess?: RoadAccess[];
   /** Машина, для которой строим маршрут (учёт «нет проезда» / ограничений). */
   vehicle?: VehicleType | null;
+  /** Назначение рейса для матрицы доступности участка. */
+  purpose?: PointPurpose | null;
+  /** @deprecated Маршруты теперь всегда используют только физические жёлтые рёбра. */
+  strictTopology?: boolean;
+  /** Не привязывать точку к дороге через слишком длинный «воздушный» подъезд. */
+  maxAnchorDistanceMeters?: number;
 }
 
 const BLOCK_PENALTY = 5000;
 const ACCESS_NEAR_METERS = 7;
 
-/** Запрещает ли окрашенный участок проезд данной машины. */
-export function isAccessBlocking(access: RoadAccess, vehicle: VehicleType): boolean {
-  if (access.kind === 'closed') return true;
-  // limited со списком машин — проезд ТОЛЬКО им; нашей машины нет → запрещено.
-  if (access.kind === 'limited' && access.vehicles.length > 0) return !access.vehicles.includes(vehicle);
+/** Активно ли закрытие участка СЕГОДНЯ (по датам closedFrom/closedTo, если заданы). */
+export function isAccessClosureActive(access: RoadAccess, todayIso = new Date().toISOString().slice(0, 10)): boolean {
+  if (access.kind === 'closed') {
+    return !access.closedFrom || access.closedFrom <= todayIso;
+  }
+  if (access.kind === 'temp_closed') {
+    if (access.closedFrom && access.closedFrom > todayIso) return false; // ещё не началось
+    if (access.closedTo && access.closedTo < todayIso) return false;     // уже открыли
+    return true;
+  }
+  return false;
+}
+
+/** Запрещает ли участок-ограничение проезд данной машины. */
+export function isAccessBlocking(access: RoadAccess, vehicle: VehicleType, purpose: PointPurpose | null = null): boolean {
+  if (access.kind === 'free') return false;
+  if (access.kind === 'closed' || access.kind === 'temp_closed') return isAccessClosureActive(access);
+  if (access.kind === 'limited' && vehiclePurposeMatrixHasAny(access.vehiclesByPurpose)) {
+    if (purpose) return !(access.vehiclesByPurpose[purpose] ?? []).includes(vehicle);
+    // Без назначения считаем проезд допустимым, если он разрешён хотя бы для
+    // одного потока. OR-Tools позже всегда передаст точное назначение рейса.
+    return !(['tech', 'exped', 'other'] as PointPurpose[])
+      .some((key) => (access.vehiclesByPurpose[key] ?? []).includes(vehicle));
+  }
+  // limited: allow — проезд ТОЛЬКО перечисленным; deny — перечисленным ЗАПРЕЩЁН.
+  if (access.kind === 'limited' && access.vehicles.length > 0) {
+    return access.vehiclesMode === 'deny'
+      ? access.vehicles.includes(vehicle)
+      : !access.vehicles.includes(vehicle);
+  }
   return false;
 }
 
@@ -43,12 +75,17 @@ interface SnapResult {
   point: LatLng;
   a: LatLng;
   b: LatLng;
+  distance: number;
 }
 
 /**
  * Базовый маршрут по нашей дорожной сети: точки склада цепляются к ближайшему
  * сегменту дороги, дальше идёт кратчайший путь по узлам. Позже сюда же лягут
  * ограничения по машине и времени разгрузки.
+ *
+ * Топология берётся из общего дорожного графа (road-graph): сегменты там уже
+ * РАЗРЕЗАНЫ в местах X-пересечений и T-примыканий — маршрут честно поворачивает
+ * на перекрёстках, даже если у нарисованных линий нет общей вершины.
  */
 export function computeFastestRoute(
   roads: MapRoad[],
@@ -60,17 +97,21 @@ export function computeFastestRoute(
   if (usableRoads.length === 0) return null;
 
   const blocking = options.vehicle
-    ? (options.roadAccess ?? []).filter((a) => isAccessBlocking(a, options.vehicle!))
+    ? (options.roadAccess ?? []).filter((a) => isAccessBlocking(a, options.vehicle!, options.purpose ?? null))
     : [];
 
+  // Общий топологический граф (мемо по ссылке roads); веса запретов — на наш слой.
+  const topo = getRoadGraph(roads);
+  if (topo.nodes.length === 0) return null;
   const graph = makeGraph();
-  for (const road of usableRoads) {
-    for (let i = 0; i < road.vertices.length - 1; i++) {
-      const va = road.vertices[i]!;
-      const vb = road.vertices[i + 1]!;
-      const a = graph.addNode(va);
-      const b = graph.addNode(vb);
-      graph.addEdge(a, b, distanceMeters(va, vb) * edgePenalty(va, vb, blocking));
+  const ids = topo.nodes.map((p) => graph.addNode(p));
+  for (let i = 0; i < topo.adj.length; i++) {
+    const a = topo.nodes[i]!;
+    for (const e of topo.adj[i]!) {
+      if (e.to <= i) continue;
+      if (e.kind !== 'road') continue;
+      const b = topo.nodes[e.to]!;
+      graph.addEdge(ids[i]!, ids[e.to]!, e.w * edgePenalty(a, b, blocking));
     }
   }
 
@@ -79,9 +120,19 @@ export function computeFastestRoute(
   const startSnap = nearestRoadSegment(from, usableRoads);
   const finishSnap = nearestRoadSegment(to, usableRoads);
   if (!startSnap || !finishSnap) return null;
+  const maxAnchor = options.maxAnchorDistanceMeters ?? Infinity;
+  if (startSnap.distance > maxAnchor || finishSnap.distance > maxAnchor) return null;
 
-  const startRoadNode = connectSnap(graph, startSnap);
-  const finishRoadNode = connectSnap(graph, finishSnap);
+  // Посадку цепляем к СОСЕДНИМ узлам цепочки сегмента (включая узлы-перекрёстки).
+  const connectSnap = (snap: SnapResult): number => {
+    const node = graph.addNode(snap.point);
+    for (const entry of graphEntriesForSegment(topo, snap.a, snap.b, snap.point)) {
+      graph.addEdge(node, ids[entry.node]!, Math.max(0.01, entry.off));
+    }
+    return node;
+  };
+  const startRoadNode = connectSnap(startSnap);
+  const finishRoadNode = connectSnap(finishSnap);
   graph.addEdge(startNode, startRoadNode, distanceMeters(from, startSnap.point));
   graph.addEdge(finishNode, finishRoadNode, distanceMeters(to, finishSnap.point));
 
@@ -123,15 +174,6 @@ function nearestRoadSegment(point: LatLng, roads: MapRoad[]): SnapResult | null 
     }
   }
   return best;
-}
-
-function connectSnap(graph: RoadGraph, snap: SnapResult): number {
-  const node = graph.addNode(snap.point);
-  const a = graph.addNode(snap.a);
-  const b = graph.addNode(snap.b);
-  graph.addEdge(node, a, distanceMeters(snap.point, snap.a));
-  graph.addEdge(node, b, distanceMeters(snap.point, snap.b));
-  return node;
 }
 
 interface RoadGraph {

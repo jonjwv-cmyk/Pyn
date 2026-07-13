@@ -78,3 +78,80 @@ export async function mapRoadSuggestionsGet(client: ApiClient, bbox?: MapBBox): 
   const wire = await client.call<MapSuggestionsWire>('map_road_suggestions_get', params, { timeoutMs: 90_000 });
   return Array.isArray(wire.items) ? wire.items : [];
 }
+
+export interface MapRailwayWire {
+  id?: string;
+  name?: string;
+  vertices?: Array<{ lat?: number; lng?: number }>;
+}
+
+export interface MapBuildingWire {
+  id?: string;
+  vertices?: Array<{ lat?: number; lng?: number }>;
+}
+
+/**
+ * Внешние ж/д пути (OSM) по видимой области — справочный слой для отметки
+ * переездов-кандидатов. Тем же путём, что красный черновик дорог (E2E, не наружу).
+ */
+export async function mapRailwaysGet(client: ApiClient, bbox?: MapBBox): Promise<MapRailwayWire[]> {
+  const params = bbox
+    ? { south: bbox.south, west: bbox.west, north: bbox.north, east: bbox.east }
+    : {};
+  const wire = await client.call<{ ok?: boolean; items?: MapRailwayWire[] }>('map_railways_get', params, { timeoutMs: 90_000 });
+  return Array.isArray(wire.items) ? wire.items : [];
+}
+
+/**
+ * Обезличенные контуры зданий/сооружений (OSM) по видимой области — лёгкий
+ * фиолетовый слой для читаемости тёмных участков снимка.
+ */
+export async function mapBuildingsGet(client: ApiClient, bbox?: MapBBox): Promise<MapBuildingWire[]> {
+  const params = bbox
+    ? { south: bbox.south, west: bbox.west, north: bbox.north, east: bbox.east }
+    : {};
+  const wire = await client.call<{ ok?: boolean; items?: MapBuildingWire[] }>('map_buildings_get', params, { timeoutMs: 90_000 });
+  return Array.isArray(wire.items) ? wire.items : [];
+}
+
+/** Пешеходные дорожки (OSM) — справочный слой «зеброй». */
+export async function mapFootwaysGet(client: ApiClient, bbox?: MapBBox): Promise<MapBuildingWire[]> {
+  const params = bbox
+    ? { south: bbox.south, west: bbox.west, north: bbox.north, east: bbox.east }
+    : {};
+  const wire = await client.call<{ ok?: boolean; items?: MapBuildingWire[] }>('map_footways_get', params, { timeoutMs: 90_000 });
+  return Array.isArray(wire.items) ? wire.items : [];
+}
+
+export interface MapFootwayWire {
+  id?: string;
+  crossing?: number;
+  vertices?: Array<{ lat?: number; lng?: number }>;
+}
+
+export interface MapRefWire {
+  railways: MapRailwayWire[];
+  buildings: MapBuildingWire[];
+  footways: MapFootwayWire[];
+  updatedAt: string;
+}
+
+/**
+ * Справочные слои зоны ЕВРАЗ НТМК (ж/д, здания, пешеходки) из СЕРВЕРНОГО кэша
+ * (D1, обновление раз в 12 мес). Один быстрый запрос — Overpass клиент не ждёт.
+ */
+export async function mapRefGet(client: ApiClient): Promise<MapRefWire> {
+  const wire = await client.call<{
+    ok?: boolean;
+    railways?: MapRailwayWire[];
+    buildings?: MapBuildingWire[];
+    footways?: MapFootwayWire[];
+    updated_at?: string;
+  }>('map_ref_get', {}, { timeoutMs: 150_000 });
+  return {
+    railways: Array.isArray(wire.railways) ? wire.railways : [],
+    buildings: Array.isArray(wire.buildings) ? wire.buildings : [],
+    footways: Array.isArray(wire.footways) ? wire.footways : [],
+    updatedAt: wire.updated_at || '',
+  };
+}

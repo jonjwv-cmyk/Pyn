@@ -1,6 +1,6 @@
 {
   "name": "@pyn/desktop",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "private": true,
   "description": "Pyn Desktop — Electron app (Mac, Windows)",
   "main": "dist-electron/main.js",
