@@ -201,6 +201,6 @@ export const flowDropdownRenderer: CustomRenderer<FlowDropdownCell> = {
     },
   }),
   // Delete на ячейке-выпадашке стирает значение (как в Excel) — без пункта «пусто».
-  onDelete: (cell) => ({ ...cell, data: { ...cell.data, value: '' } }),
+  onDelete: (cell) => ({ ...cell, data: { ...cell.data, value: '', displayValue: '' } }),
   onPaste: (v, d) => ({ ...d, value: v }),
 };

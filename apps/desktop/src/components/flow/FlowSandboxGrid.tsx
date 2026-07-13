@@ -31,6 +31,7 @@ import { flowDayRenderer, type FlowDayCell } from './flow-day-cell';
 import { whKey, whMapGet } from './flow-warehouse';
 import { sedComputed, SED_LABEL, flowSignalKind, SIGNAL_SWEEP } from './flow-signal';
 import { flowMatRenderer, type FlowMatCell } from './flow-mat-cell';
+import { flowPctRenderer, type FlowPctCell } from './flow-pct-cell';
 import { flowToRenderer, type FlowToCell, type FlowToOption } from './flow-to-cell';
 import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
 import { FlowAnchorHistoryCard, type FlowAnchorHistoryTarget } from './FlowAnchorHistoryCard';
@@ -78,6 +79,7 @@ import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-form
 import { FlowMonthPicker } from './FlowMonthPicker';
 import { FlowViewSwitch } from './FlowViewSwitch';
 import { useFlowColLayout } from './use-flow-col-layout';
+import { FlowHtmlGrid, type HtmlGridColumn } from './flow-html-grid';
 import {
   serializeFlowView,
   deserializeFlowView,
@@ -96,7 +98,10 @@ import {
 } from './flow-view';
 import { sessionStore } from '@/lib/token-store';
 import {
+  autoPointValue,
   effectivePointNames,
+  FLOW_WAREHOUSE_POINT_PURPOSE,
+  pointCellDisplay,
   pointNamesForWarehouse,
   unloadDisplay,
   vehicleInfoForNames,
@@ -133,6 +138,8 @@ import {
   formatUploadDay,
   formatUploadDayParts,
   flowDate,
+  fmtPct,
+  livePct,
   buildActiveColumns,
   FLOW_INFO_COLUMNS,
   FLOW_INFO_IDS,
@@ -164,12 +171,26 @@ const FLOW_RENDERERS = [
   flowMolRenderer,
   flowDayRenderer,
   flowMatRenderer,
+  flowPctRenderer,
   flowToRenderer,
   flowHistoryRenderer,
 ];
 /** Базовые метрики грида при 100% (масштабируются кнопкой масштаба).
  *  Шрифт 13px (Inter) — как в сайдбаре: читаемо и компактно (вкус Linear/Figma);
  *  высота строки плотная. */
+/** G4 спайк: `VITE_FLOW_HTML_GRID=1` — HTML-движок с виртуализацией вместо glide. */
+const USE_HTML_GRID = import.meta.env.VITE_FLOW_HTML_GRID === '1';
+
+/** Текст ячейки для HTML-спайка (copyData / displayData). */
+function gridCellDisplay(cell: GridCell): string {
+  if (cell.kind === GridCellKind.Text || cell.kind === GridCellKind.Uri) {
+    return String(cell.displayData ?? cell.data ?? '');
+  }
+  if (cell.kind === GridCellKind.Number) return cell.data != null ? String(cell.data) : '';
+  if (cell.kind === GridCellKind.Custom) return String(cell.copyData ?? '');
+  return '';
+}
+
 const BASE_ROW_HEIGHT = 20;
 /** Минимальная ширина «резиновой» колонки NOTE — ýже не даём (дальше горизонт. скролл). */
 const NOTE_MIN_WIDTH = 160;
@@ -851,8 +872,6 @@ export function FlowSandboxGrid(): JSX.Element {
       alive = false;
     };
   }, []);
-  // Flow uses the explicit "Expedition" column of the point matrix. The site
-  // uses "Technology"; sharing the map document does not mean sharing purpose.
   const mapPoints = useMapStore((state) => state.doc.points);
   useEffect(() => {
     void initMap();
@@ -1310,8 +1329,17 @@ export function FlowSandboxGrid(): JSX.Element {
     const ord = String(r.ord ?? '').trim();
     const it = String(r.it ?? '').trim();
     if (!ord) return; // без заказа якоря нет — истории нет
-    setHistoryCard({ ord, it, mat: String(r.mat ?? ''), noNum: String(r.no_num ?? '') });
-  }, []);
+    const uom = (vghByKey.get(normVghKey(r.no_num))?.uom || '').trim() || String(r.uom ?? '').trim();
+    setHistoryCard({
+      ord,
+      it,
+      mat: String(r.mat ?? ''),
+      noNum: String(r.no_num ?? ''),
+      qty: r.qty,
+      chg: r.chg,
+      uom,
+    });
+  }, [vghByKey]);
   useEffect(() => {
     const onContact = (e: Event) => {
       const detail = (e as CustomEvent<ContactActionRequest>).detail;
@@ -2475,8 +2503,8 @@ export function FlowSandboxGrid(): JSX.Element {
           deliveredQty: 0,
           wholePosition: true,
         });
-        const names = effectivePointNames(rowData.point, mapPoints, rowData.to_wh, 'exped');
-        const vehicleInfo = vehicleInfoForNames(mapPoints, rowData.to_wh, names, 'exped');
+        const names = effectivePointNames(rowData.point, mapPoints, rowData.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+        const vehicleInfo = vehicleInfoForNames(mapPoints, rowData.to_wh, names, FLOW_WAREHOUSE_POINT_PURPOSE);
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
@@ -2492,8 +2520,8 @@ export function FlowSandboxGrid(): JSX.Element {
         } satisfies FlowScoreCell;
       }
       if (spec.kind === 'loadinfo') {
-        const names = effectivePointNames(rowData.point, mapPoints, rowData.to_wh, 'exped');
-        const info = vehicleInfoForNames(mapPoints, rowData.to_wh, names, 'exped');
+        const names = effectivePointNames(rowData.point, mapPoints, rowData.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+        const info = vehicleInfoForNames(mapPoints, rowData.to_wh, names, FLOW_WAREHOUSE_POINT_PURPOSE);
         const value = info.lines.join('\n');
         const display = `${info.incomplete ? '⚠ ' : ''}${value || '—'}`;
         return {
@@ -2507,25 +2535,46 @@ export function FlowSandboxGrid(): JSX.Element {
       }
       if (spec.kind === 'dropdown') {
         // УР: 0 — основная поставка, показываем ПУСТО (выбрать «0» нельзя — это дефолт).
-        const names = effectivePointNames(rowData.point, mapPoints, rowData.to_wh, 'exped');
-        const derivedUnload = unloadDisplay(rowData.unload_equip, mapPoints, rowData.to_wh, names, 'exped');
+        const names = effectivePointNames(rowData.point, mapPoints, rowData.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+        const derivedUnload = unloadDisplay(rowData.unload_equip, mapPoints, rowData.to_wh, names, FLOW_WAREHOUSE_POINT_PURPOSE);
+        if (spec.id === 'point') {
+          const pd = pointCellDisplay(rowData.point, mapPoints, rowData.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+          if (!pd.editable) {
+            return {
+              kind: GridCellKind.Text,
+              data: '—',
+              displayData: '—',
+              allowOverlay: false,
+            };
+          }
+          const labels = pd.options.map((o) => (o === '' ? '(пусто)' : o));
+          return {
+            kind: GridCellKind.Custom,
+            allowOverlay: true,
+            copyData: pd.value,
+            data: {
+              kind: 'flow-dropdown',
+              value: pd.value,
+              displayValue: pd.label,
+              options: [...pd.options],
+              labels,
+              multi: false,
+            },
+          } satisfies FlowDropdownCell;
+        }
         const value = spec.id === 'split_level'
           ? (Number(raw) > 0 ? String(raw) : '')
-          : spec.id === 'point'
-            ? names.join('\n')
-            : spec.id === 'unload_equip'
-              ? derivedUnload
-              : spec.id === 'priority'
-                ? priorityDisplay(String(raw ?? ''))
-                : String(raw ?? '');
+          : spec.id === 'unload_equip'
+            ? derivedUnload
+            : spec.id === 'priority'
+              ? priorityDisplay(String(raw ?? ''))
+              : String(raw ?? '');
         // STAT — пункты ПО СТРОКЕ (statOptionsForRow): авто-ярлык не предлагаем руками.
         const options = spec.id === 'stat'
           ? statOptionsForRow(rowData)
-          : spec.id === 'point'
-            ? pointNamesForWarehouse(mapPoints, rowData.to_wh, 'exped')
-            : spec.id === 'unload_equip'
-              ? EQUIP_LABELS
-              : (spec.options ?? []);
+          : spec.id === 'unload_equip'
+            ? EQUIP_LABELS
+            : (spec.options ?? []);
         // УР: в списке «уровень N», в ячейке — чистая цифра; пустого пункта нет
         // (снять уровень = Delete по ячейке → 0).
         const labels = spec.id === 'split_level' ? options.map((o) => `уровень ${o}`) : undefined;
@@ -2538,16 +2587,36 @@ export function FlowSandboxGrid(): JSX.Element {
             value,
             options,
             labels,
-            multi: spec.id === 'point' || spec.id === 'unload_equip',
-            maxSelected: spec.id === 'point' ? 3 : EQUIP_LABELS.length,
+            multi: spec.id === 'unload_equip',
+            maxSelected: EQUIP_LABELS.length,
           },
         } satisfies FlowDropdownCell;
+      }
+      if (spec.kind === 'percent') {
+        const p = livePct(rowData);
+        const label = p == null || p === 0 ? '' : fmtPct(p);
+        const anchorKey = `${rowData.ord}|${rowData.it}`;
+        const uom = (vghByKey.get(normVghKey(rowData.no_num))?.uom || '').trim() || String(rowData.uom ?? '').trim();
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: true,
+          copyData: label,
+          data: {
+            kind: 'flow-pct',
+            label,
+            hasHistory: anchorsWithHistory.has(anchorKey),
+            ord: String(rowData.ord ?? ''),
+            it: String(rowData.it ?? ''),
+            qty: rowData.qty,
+            chg: rowData.chg,
+            uom,
+          },
+        } satisfies FlowPctCell;
       }
       if (
         spec.kind === 'order' ||
         spec.kind === 'kgv' ||
         spec.kind === 'info' ||
-        spec.kind === 'percent' ||
         spec.kind === 'time'
       ) {
         const parts = flowComposed(spec, rowData);
@@ -2569,7 +2638,7 @@ export function FlowSandboxGrid(): JSX.Element {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor, mapPoints, transferPendingByAnchor, planWasByAnchor],
+    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor, mapPoints, transferPendingByAnchor, planWasByAnchor, vghByKey],
   );
 
   // Шрифт ЗНАЧЕНИЯ per-колонке (clst 7 / day·stat·kg·v·mol·request 8 / прочее 10) +
@@ -2680,18 +2749,14 @@ export function FlowSandboxGrid(): JSX.Element {
     [applyServerRows],
   );
 
-  // Point automation: one Expedition point for TO is selected automatically;
-  // several points require an explicit choice. A point from another warehouse
-  // is cleared after TO changes. The same write path persists it for Plan/Report.
+  // Точка склада (карта, колонка «Экспедиция»): 0 → «—»; 1 → автовыбор;
+  // 2+ → выбор или пусто. Пишем в якорь → План/Отчёт; правки там — обратно сюда.
   useEffect(() => {
     if (mapPoints.length === 0) return;
     const changes = new Map<number, FlowRowPatch>();
     for (const row of rowsRef.current) {
       if (String(row.day_wk ?? '').toUpperCase() === 'OFF') continue;
-      const available = pointNamesForWarehouse(mapPoints, row.to_wh, 'exped');
-      const selected = String(row.point || '').split('\n').map((item) => item.trim()).filter(Boolean);
-      const valid = selected.length > 0 && selected.every((item) => available.includes(item));
-      const next = valid ? selected.join('\n') : available.length === 1 ? available[0]! : '';
+      const next = autoPointValue(row.point, mapPoints, row.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
       if (next !== String(row.point || '')) {
         changes.set(row.id, { point: next, unload_equip: '' });
       }
@@ -2745,7 +2810,10 @@ export function FlowSandboxGrid(): JSX.Element {
       .then((serverRows) => {
         // CLST и % в БД нет — виртуальные поля-ключи колонок: clst посчитает liveRows из
         // графика, % считается livePct из qty/chg (значение pct не используется).
-        if (alive) setRows(serverRows.map((r) => ({ ...r, clst: '', pct: null }) as FlowSandboxRow));
+        // Пустой ответ при живом кэше не затираем (иначе грид «моргает» в ноль при сбое/гонке).
+        if (!alive) return;
+        if (serverRows.length === 0 && rowsRef.current.length > 0) return;
+        setRows(serverRows.map((r) => ({ ...r, clst: '', pct: null }) as FlowSandboxRow));
       })
       .catch(() => {
         /* ошибка сети — остаёмся на кэше (или пусто) */
@@ -2896,10 +2964,10 @@ export function FlowSandboxGrid(): JSX.Element {
             newVal = n;
             if (newVal === (Number(viewRow.split_level) || 0)) continue;
           } else if (spec.id === 'point') {
-            const picked = v.split('\n').map((item) => item.trim()).filter(Boolean);
-            const allowed = pointNamesForWarehouse(mapPoints, viewRow.to_wh, 'exped');
-            if (picked.length > 3 || picked.some((item) => !allowed.includes(item))) continue;
-            newVal = picked.join('\n');
+            const picked = v.split('\n').map((item) => item.trim()).filter(Boolean).slice(0, 1);
+            const allowed = pointNamesForWarehouse(mapPoints, viewRow.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+            if (picked.length > 0 && picked.some((item) => !allowed.includes(item))) continue;
+            newVal = picked[0] ?? '';
           } else if (spec.id === 'unload_equip') {
             const picked = v.split('\n').map((item) => item.trim()).filter(Boolean);
             if (picked.some((item) => !EQUIP_LABELS.includes(item))) continue;
@@ -2970,6 +3038,17 @@ export function FlowSandboxGrid(): JSX.Element {
             const pb = before.get(viewRow.id) ?? {};
             if (!('pr' in pb)) before.set(viewRow.id, { ...pb, pr: curPr });
           }
+          // Смена склада — точка с карты заново (как f-to на сайте).
+          after.set(viewRow.id, {
+            ...(after.get(viewRow.id) ?? {}),
+            point: '',
+            unload_equip: '',
+          });
+          const pb2 = before.get(viewRow.id) ?? {};
+          if (!('point' in pb2)) before.set(viewRow.id, { ...pb2, point: viewRow.point ?? '' });
+          if (!('unload_equip' in pb2)) {
+            before.set(viewRow.id, { ...(before.get(viewRow.id) ?? pb2), unload_equip: viewRow.unload_equip ?? '' });
+          }
         }
         if (spec.id === 'point' && String(viewRow.unload_equip || '') !== '') {
           after.set(viewRow.id, { ...(after.get(viewRow.id) ?? {}), unload_equip: '' });
@@ -3001,10 +3080,7 @@ export function FlowSandboxGrid(): JSX.Element {
       const r = viewRows[row];
       if (!spec || !r) return;
       if (spec.id === 'no_num') openVghCard(r);
-      else if (
-        (spec.id === 'pct' || spec.kind === 'history') &&
-        anchorsWithHistory.has(`${r.ord}|${r.it}`)
-      ) {
+      else if (spec.kind === 'history' && anchorsWithHistory.has(`${r.ord}|${r.it}`)) {
         openHistoryCard(r);
       }
     },
@@ -3844,6 +3920,16 @@ export function FlowSandboxGrid(): JSX.Element {
   // прокрутки и границу последней колонки. Если влезает в окно — рисуем РОВНО
   // столько: справа нет пустых «фантомных» колонок, но граница последней видна и
   // полоса прокрутки помещается. Шире окна → width = окно + горизонтальная полоса.
+  const htmlColumns = useMemo(
+    (): HtmlGridColumn[] =>
+      activeColumns.map((c) => ({
+        id: c.id,
+        title: c.title,
+        width: c.id === 'note' ? noteWidth : Math.round((colWidths[c.id] ?? c.width) * zoom),
+      })),
+    [activeColumns, colWidths, zoom, noteWidth],
+  );
+
   const contentWidth = useMemo(() => {
     const marker = Math.round(markerWidth * zoom);
     const cols = activeColsRef.current.reduce(
@@ -4181,7 +4267,22 @@ export function FlowSandboxGrid(): JSX.Element {
             Загрузка формирования…
           </div>
         )}
-        {size.width > 0 && size.height > 0 && (
+        {size.width > 0 && size.height > 0 && USE_HTML_GRID && (
+          <FlowHtmlGrid
+            columns={htmlColumns}
+            rows={viewRows}
+            rowHeight={getRowHeight}
+            overscan={100}
+            getRowStyle={(r) => {
+              const t = rowTheme(r, molIsGone(r, molByWarehouse));
+              return t?.bg ? { backgroundColor: t.bg, color: t.text } : undefined;
+            }}
+            renderCell={(r, col, ri, ci) => gridCellDisplay(getCellContent([ci, ri]))}
+            onCellDoubleClick={(ri, ci) => onCellActivated([ci, ri])}
+            className="h-full"
+          />
+        )}
+        {size.width > 0 && size.height > 0 && !USE_HTML_GRID && (
           <DataEditor
             ref={gridRef}
             theme={gridTheme}

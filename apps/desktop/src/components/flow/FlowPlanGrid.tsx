@@ -9,7 +9,7 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { ArrowDownUp, Check, ClipboardPaste, Redo2, Route, Trash2, Undo2 } from 'lucide-react';
+import { ArrowDownUp, Check, ClipboardPaste, Redo2, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { BODY_TYPES } from './flow-body-types';
@@ -62,14 +62,11 @@ import {
   flowWorkflowGet,
   flowWorkflowEdit,
   flowVehiclesGet,
-  flowTransportGet,
   flowPlanRowsApply,
   parsePlanPasteTsv,
   flowDeliveryAdd,
   flowXlsxLayoutGet,
-  optimizationStart,
   optimizationStatus,
-  optimizationConfirm,
   type FlowXlsxLayout,
   type FlowPlanPasteRow,
   type FlowDeliveryRow,
@@ -77,7 +74,6 @@ import {
   type FlowChangedEvent,
   type FlowDeliveriesChangedEvent,
   type FlowVehicle,
-  type FlowTransportRow,
   type OptimizationJob,
   type FlowVehiclesChangedEvent,
   type VghChangedEvent,
@@ -92,7 +88,10 @@ import { useVghStore, normVghKey } from '@/lib/vgh-store';
 import { ensureVghLoaded, applyVghChanged } from '@/lib/vgh-repo';
 import { whKey, whMapGet, whDisplay } from './flow-warehouse';
 import {
+  autoPointValue,
   effectivePointNames,
+  FLOW_WAREHOUSE_POINT_PURPOSE,
+  pointCellDisplay,
   pointNamesForWarehouse,
   unloadDisplay,
   vehicleInfoForNames,
@@ -105,7 +104,6 @@ import {
 } from '@/lib/schedule/use-schedule-sync';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
-import { buildFlowOptimizationPayload } from './flow-optimization';
 import {
   fmtNum3, MONTH_ABBR_RU, parseMol, compactFio, matCardLines, needsWarn, findMolOptionForWh,
   nearestGraphDate, graphDayLabel, graphDateSoon, todayIsoLocal, formatUploadDay, formatUploadDayParts, flowDate, planMatTitle,
@@ -187,7 +185,7 @@ const snapEpsAnchor = (
 ): Pick<FlowRow, 'priority' | 'delivery'> | undefined =>
   Number(r.fixation_id) > 0 ? { priority: r.snap_priority ?? '', delivery: r.snap_delivery ?? '' } : anchor;
 
-/** §3.2 План — 19 видимых + 15 скрываемых (PLAN_HIDDEN_COLS) = 34. */
+/** §3.2 План — 19 видимых + 11 скрываемых (PLAN_HIDDEN_COLS) = 30. */
 const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'fix', title: 'FIX', width: 60 },
   { id: 'graph', title: 'ГРАФ', width: 56 },
@@ -212,10 +210,6 @@ const PLAN_COLS: readonly PlanColSpec[] = [
 
 /** §3.2 хвост Плана (кол. 20–34) — скрыт по умолчанию, тумблеры. */
 const PLAN_HIDDEN_COLS: readonly PlanHiddenColSpec[] = [
-  { id: 'trz', title: 'ТЗ', width: 86, editable: true, anchorAfter: 'mol' },
-  { id: 'exp', title: 'Экспедитор', width: 190, editable: true, anchorAfter: 'mol' },
-  { id: 'vehicleType', title: 'Машина', width: 130, editable: true, anchorAfter: 'mol' },
-  { id: 'vehicle', title: 'ID', width: 170, editable: true, anchorAfter: 'mol' },
   { id: 'sap_author', title: 'АВТОР', width: 110, anchorAfter: 'mol' },
   { id: 'sap_date', title: 'ДАТА', width: 92, anchorAfter: 'mol' },
   { id: 'sap_time', title: 'ВРЕМЯ', width: 88, anchorAfter: 'mol' },
@@ -583,9 +577,7 @@ export function FlowPlanGrid({
   const [rows, setRows] = useState<FlowDeliveryRow[]>(() => planDlvCache ?? []);
   const [anchors, setAnchors] = useState<FlowRow[]>(() => planAnchorsCache ?? []);
   const [vehicles, setVehicles] = useState<FlowVehicle[]>(() => planVehiclesCache ?? []);
-  const [transportRows, setTransportRows] = useState<FlowTransportRow[]>([]);
   const [optimizationJob, setOptimizationJob] = useState<OptimizationJob | null>(null);
-  const [optimizing, setOptimizing] = useState(false);
   const [loading, setLoading] = useState(() => planDlvCache === null);
   const mapPoints = useMapStore((state) => state.doc.points);
   useEffect(() => {
@@ -638,24 +630,29 @@ export function FlowPlanGrid({
     onColumnMoved,
   } = useFlowColLayout(colLayoutGrid, baseCols);
   // ПЛАН — всегда КОНКРЕТНЫЙ день (юзер 2026-07-02): «все дни» не показываем и не редактируем.
-  // Дефолт = ближайший день с черновиками (не прошлый), иначе сегодня. Прошлые дни в календаре
-  // Плана недоступны (сегодня — можно).
+  // Дефолт = ближайший день с черновиками (сегодня и вперёд), иначе сегодня/последний день с данными.
+  // Зафиксированные дни — read-only история: по ним можно ходить в календаре и смотреть слепок.
   useEffect(() => {
     if (mode !== 'plan' || selectedDay) return;
     const today = isoTodayLocal();
-    const days = rows
+    const allDays = rows
+      .filter((r) => Number(r.reserved) !== 1 && Number(r.fixation_id) >= 0)
+      .map((r) => (r.plan_date || '').slice(0, 10))
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort();
+    const futureDraftDays = rows
       .filter((r) => Number(r.fixation_id) === 0 && Number(r.reserved) !== 1)
       .map((r) => (r.plan_date || '').slice(0, 10))
       .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= today)
       .sort();
-    setSelectedDay(days[0] ?? today);
+    const futureDays = allDays.filter((d) => d >= today);
+    setSelectedDay(futureDraftDays[0] ?? futureDays[0] ?? allDays[allDays.length - 1] ?? today);
   }, [mode, selectedDay, rows]);
   useEffect(() => {
     onSelectedDayChange?.(selectedDay);
   }, [selectedDay, onSelectedDayChange]);
   useEffect(() => {
     const day = selectedDay || isoTodayLocal();
-    void flowTransportGet(api, day).then(setTransportRows).catch(() => setTransportRows([]));
     // Маршрутизация считается СЕРВЕРОМ по крону (каждые 5 мин, 07:00–20:00 Екб).
     // Клиент только ЧИТАЕТ готовый результат нашего дня (любой источник — cron/site/
     // desktop), без кнопок «Рассчитать», и обновляет раз в 5 мин пока экран открыт.
@@ -1093,9 +1090,9 @@ export function FlowPlanGrid({
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   }, []);
   const baseRows = useMemo(() => {
-    // ПЛАН = черновики (fixation_id===0) + ЗАФИКСИРОВАННЫЕ строки текущего месяца
-    // (юзер 2026-07-04: при фиксации строки НЕ исчезают — видны слепком, read-only
-    // через rowLocked). Контрольные zmvl-эпизоды (fixation_id=-1) не показываем.
+    // ПЛАН = черновики (fixation_id===0) + зафиксированные строки (история, read-only).
+    // Месячный срез только в Отчёте; в Плане прошлые зафиксированные дни доступны в календаре.
+    // Контрольные zmvl-эпизоды (fixation_id=-1) не показываем.
     let out =
       mode === 'report'
         ? rows.filter(
@@ -1104,8 +1101,7 @@ export function FlowPlanGrid({
         : rows.filter(
             (r) =>
               Number(r.reserved) !== 1 &&
-              (Number(r.fixation_id) === 0 ||
-                (Number(r.fixation_id) > 0 && (r.plan_date || '').slice(0, 7) >= currentMonthPrefix)),
+              (Number(r.fixation_id) === 0 || Number(r.fixation_id) > 0),
           );
     // Календарь (P7): выбран день → показываем только его.
     if (selectedDay) out = out.filter((r) => (r.plan_date || '').slice(0, 10) === selectedDay);
@@ -1326,9 +1322,12 @@ export function FlowPlanGrid({
         case 'note':
           // Черновик с якорем — живой коммент якоря; ручная строка БЕЗ якоря — со строки.
           return Number(r.fixation_id) > 0 ? r.snap_note || '' : anchor ? anchor.note ?? '' : r.snap_note || '';
-        case 'point':
-          return (r as FlowPlanViewRow).__flowPoint ||
-            effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, 'exped').join('\n');
+        case 'point': {
+          const stored = snapPoint(r, anchor);
+          const shown = (r as FlowPlanViewRow).__flowPoint ||
+            String(stored || '').split('\n').map((s) => s.trim()).filter(Boolean).join('\n');
+          return shown || '—';
+        }
         case 'delivery':
           return snapDelivery(r, anchor);
         case 'priority':
@@ -1445,7 +1444,7 @@ export function FlowPlanGrid({
     const sorted = colFilters.applySort(colFilters.applyFilters(baseRows));
     return sorted.flatMap((row) => {
       const anchor = anchorByKey.get(`${row.ord}|${row.it}`);
-      const names = effectivePointNames(snapPoint(row, anchor), mapPoints, row.to_wh, 'exped');
+      const names = effectivePointNames(snapPoint(row, anchor), mapPoints, row.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
       if (names.length <= 1) return [row];
       return names.map((point, index) => ({ ...row, __flowPoint: point, __flowPointIndex: index }));
     });
@@ -1477,60 +1476,6 @@ export function FlowPlanGrid({
     }
     return notes;
   }, [optimizationJob, rows, anchorByKey]);
-  const runOptimization = useCallback(async () => {
-    const day = selectedDay || isoTodayLocal();
-    if (baseRows.length === 0) {
-      setMsg('На выбранный день нет строк для маршрутизации');
-      return;
-    }
-    const weightByNo = new Map<string, number>();
-    for (const row of baseRows) {
-      const weight = vghByKey.get(normVghKey(row.no_num))?.weight_kg;
-      if (weight != null && weight > 0) weightByNo.set(row.no_num.trim(), weight);
-    }
-    const built = buildFlowOptimizationPayload({
-      rows: baseRows,
-      anchors: anchorByKey,
-      mapPoints,
-      transport: transportRows,
-      vehicles,
-      weightByNo,
-    });
-    if (built.payload.vehicles.length === 0) {
-      setMsg('Нет доступных машин в Транспорте на выбранный день');
-      return;
-    }
-    setOptimizing(true);
-    setMsg(built.warnings.length ? `⚠ ${built.warnings[0]}` : 'OR-Tools: расчёт запущен');
-    try {
-      const started = await optimizationStart(api, day, built.payload);
-      for (let attempt = 0; attempt < 35; attempt += 1) {
-        const job = await optimizationStatus(api, started.job_id);
-        setOptimizationJob(job);
-        if (!['QUEUED', 'RUNNING'].includes(job.status)) {
-          setMsg(job.explanation || `OR-Tools: ${job.status}`);
-          return;
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-      }
-      setMsg('OR-Tools: превышено время ожидания результата');
-    } catch (error) {
-      setMsg(`OR-Tools: ${error instanceof Error ? error.message : 'ошибка расчёта'}`);
-    } finally {
-      setOptimizing(false);
-    }
-  }, [selectedDay, baseRows, vghByKey, anchorByKey, mapPoints, transportRows, vehicles]);
-
-  const confirmOptimizationJob = useCallback(async () => {
-    if (!optimizationJob?.id) return;
-    try {
-      const result = await optimizationConfirm(api, optimizationJob.id);
-      setOptimizationJob((job) => job ? { ...job, confirmed_at: result.confirmed_at } : job);
-      setMsg('Предложенный маршрут подтверждён; автоматически в План не применялся');
-    } catch (error) {
-      setMsg(`Подтверждение: ${error instanceof Error ? error.message : 'ошибка'}`);
-    }
-  }, [optimizationJob]);
   // Живое выделение из FlowGridEditor (обновляется его колбэком). Все действия
   // (заливка/копирование/удаление/вставка/статус) читают ОТСЮДА — без ре-рендера.
   const selectionRef = useRef<GridSelection>(EMPTY_GRID_SELECTION);
@@ -1668,7 +1613,7 @@ export function FlowPlanGrid({
       const noteText = Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchor?.note || '');
       const noteLines = reportWrapLines(noteText, (colWidths.note ?? 230) - REPORT_HPAD * 2);
       const visualPoint = (r as FlowPlanViewRow).__flowPoint;
-      const pointNames = visualPoint ? [visualPoint] : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, 'exped');
+      const pointNames = visualPoint ? [visualPoint] : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
       const pointLines = Math.max(1, pointNames.length);
       // ТИП ТС — наш маркер (поле vehicle, до 3 через \n); высота по числу выбранных типов.
       const vtypeLines = Math.max(1, splitMultiCell(rowVehicle(r)).length);
@@ -1723,20 +1668,31 @@ export function FlowPlanGrid({
       }
       if (spec.id === 'point') {
         const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
-        const value = effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, 'exped').join('\n');
-        const displayValue = (r as FlowPlanViewRow).__flowPoint || value;
+        const pd = pointCellDisplay(snapPoint(r, anchor), mapPoints, r.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+        const flowPoint = (r as FlowPlanViewRow).__flowPoint;
+        const displayValue = flowPoint || pd.label;
+        if (!pd.editable) {
+          return {
+            kind: GridCellKind.Text,
+            data: '—',
+            displayData: '—',
+            allowOverlay: false,
+            themeOverride: planCellTheme(spec.id),
+          };
+        }
+        const labels = pd.options.map((o) => (o === '' ? '(пусто)' : o));
         const cell: FlowDropdownCell = {
           kind: GridCellKind.Custom,
           allowOverlay: Boolean(spec.editable) && !locked && Boolean(anchor),
-          copyData: value,
+          copyData: pd.value,
           themeOverride: planCellTheme(spec.id),
           data: {
             kind: 'flow-dropdown',
-            value,
+            value: pd.value,
             displayValue,
-            options: pointNamesForWarehouse(mapPoints, r.to_wh, 'exped'),
-            multi: true,
-            maxSelected: 3,
+            options: [...pd.options],
+            labels,
+            multi: false,
           },
         };
         return cell;
@@ -1767,8 +1723,8 @@ export function FlowPlanGrid({
         const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
         const result = deliveryRowEps(r, snapEpsAnchor(r, anchor));
         const visualPoint = (r as FlowPlanViewRow).__flowPoint;
-        const names = visualPoint ? [visualPoint] : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, 'exped');
-        const vehicleInfo = vehicleInfoForNames(mapPoints, r.to_wh, names, 'exped');
+        const names = visualPoint ? [visualPoint] : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+        const vehicleInfo = vehicleInfoForNames(mapPoints, r.to_wh, names, FLOW_WAREHOUSE_POINT_PURPOSE);
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
@@ -1787,8 +1743,8 @@ export function FlowPlanGrid({
       if (spec.id === 'load_info') {
         const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
         const visualPoint = (r as FlowPlanViewRow).__flowPoint;
-        const names = visualPoint ? [visualPoint] : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, 'exped');
-        const info = vehicleInfoForNames(mapPoints, r.to_wh, names, 'exped');
+        const names = visualPoint ? [visualPoint] : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+        const info = vehicleInfoForNames(mapPoints, r.to_wh, names, FLOW_WAREHOUSE_POINT_PURPOSE);
         const text = `${info.incomplete ? '⚠ ' : ''}${info.lines.join('\n') || '—'}`;
         return {
           kind: GridCellKind.Text,
@@ -1804,8 +1760,8 @@ export function FlowPlanGrid({
       if (spec.id === 'unload_equip') {
         const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
         const visualPoint = (r as FlowPlanViewRow).__flowPoint;
-        const names = visualPoint ? [visualPoint] : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, 'exped');
-        const value = unloadDisplay(snapUnload(r, anchor), mapPoints, r.to_wh, names, 'exped');
+        const names = visualPoint ? [visualPoint] : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+        const value = unloadDisplay(snapUnload(r, anchor), mapPoints, r.to_wh, names, FLOW_WAREHOUSE_POINT_PURPOSE);
         return {
           kind: GridCellKind.Custom,
           allowOverlay: Boolean(spec.editable) && !locked && Boolean(anchor),
@@ -2219,10 +2175,7 @@ export function FlowPlanGrid({
   useEffect(() => {
     if (mapPoints.length === 0) return;
     for (const anchor of anchors) {
-      const available = pointNamesForWarehouse(mapPoints, anchor.to_wh, 'exped');
-      const selected = String(anchor.point || '').split('\n').map((item) => item.trim()).filter(Boolean);
-      const valid = selected.length > 0 && selected.every((item) => available.includes(item));
-      const next = valid ? selected.join('\n') : available.length === 1 ? available[0]! : '';
+      const next = autoPointValue(anchor.point, mapPoints, anchor.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
       if (next !== String(anchor.point || '')) {
         applyAnchorFields(anchor, { point: next, unload_equip: '' });
       }
@@ -2408,14 +2361,13 @@ export function FlowPlanGrid({
           }
           let value = String(data.value ?? '').trim();
           if (spec.id === 'point') {
-            const selected = value.split('\n').map((item) => item.trim()).filter(Boolean);
-            const allowed = pointNamesForWarehouse(mapPoints, r.to_wh, 'exped');
-            if (selected.length > 3 || selected.some((item) => !allowed.includes(item))) {
-              setMsg('Можно выбрать не больше трёх точек Экспедиции этого склада');
+            const selected = value.split('\n').map((item) => item.trim()).filter(Boolean).slice(0, 1);
+            const allowed = pointNamesForWarehouse(mapPoints, r.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+            if (selected.length > 0 && selected.some((item) => !allowed.includes(item))) {
+              setMsg('Точка не из карты этого склада (Экспедиция)');
               return;
             }
-            value = selected.join('\n');
-            applyAnchorFields(anchor, { point: value, unload_equip: '' });
+            applyAnchorFields(anchor, { point: selected[0] ?? '', unload_equip: '' });
           } else if (spec.id === 'priority') {
             if (!PRIORITY_OPTIONS.includes(value)) return;
             applyAnchorFields(anchor, { priority: value });
@@ -3349,7 +3301,7 @@ export function FlowPlanGrid({
           </button>
         </div>
         {/* Календарь дня (P7): статусы дней — красный черновики / зелёный фиксация / смешанный.
-            План — всегда конкретный день, без «Все дни», прошлое недоступно (юзер 2026-07-02).
+            План — всегда конкретный день, без «Все дни»; прошлые зафиксированные дни — история.
             В Отчёте прошлые месяцы скрыты из вида → и в календаре недоступны. */}
         <FlowDayPicker
           mode={mode}
@@ -3358,7 +3310,7 @@ export function FlowPlanGrid({
           onSelect={(d) => { if (mode !== 'plan' || d) setSelectedDay(d); }}
           {...(mode === 'report'
             ? { minDate: `${currentMonthPrefix}-01`, disabledTitle: 'прошлый месяц скрыт из отчёта' }
-            : { allowClear: false, minDate: isoTodayLocal(), disabledTitle: 'прошлый день — план только вперёд' })}
+            : { allowClear: false })}
         />
         {/* CSV-экспорт убран (юзер 2026-07-03: «нам эксель подойдёт обычный») — только .xlsx. */}
         {/* «Буфер» (юзер 2026-07-02): вставка строк SAP из буфера. План — номера на черновики /
@@ -3374,18 +3326,6 @@ export function FlowPlanGrid({
           <ClipboardPaste size={13} strokeWidth={1.75} />
           Буфер
         </button>
-        {/* Маршрутизация считается АВТОМАТИЧЕСКИ на сервере (крон каждые 5 мин,
-            07:00–20:00 Екб) — кнопок «Рассчитать»/«Подтвердить» больше нет. Балл и
-            маршрут показываются в колонках Плана; здесь — read-only индикатор. */}
-        <div
-          title="Маршрутизация считается автоматически (сервер, каждые 5 мин, 07:00–20:00). Балл и маршрут — в колонках Плана."
-          className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[12px] text-[#3F3D38]"
-        >
-          <Route size={13} strokeWidth={1.75} />
-          {optimizationJob?.result
-            ? `Маршрутизация · ${optimizationJob.result.routes?.length ?? 0} маршр.`
-            : 'Маршрутизация · авто'}
-        </div>
         {/* §4 + T6 (юзер 2026-07-13): один поповер «Колонки» вместо россыпи кнопок —
             тумблеры служебных/жёлтых колонок + «Перестановка». В xlsx/печать не идут. */}
         <FlowColumnsMenu

@@ -1,4 +1,5 @@
 import type { ApiClient } from '../api/client';
+import type { ApiCallOptions } from '../api/transport';
 
 /**
  * Раздел «Поток», вкладка «Транспорт» — реестр «машина на день» (эталон — лист 🚚).
@@ -174,9 +175,17 @@ export async function flowVehiclesUpsert(
   return wire.vehicle ?? null;
 }
 
-/** Строки транспорта (все или один день). */
-export async function flowTransportGet(client: ApiClient, date?: string): Promise<FlowTransportRow[]> {
-  const wire = await client.call<{ rows?: FlowTransportRow[] }>('flow_transport_get', date ? { date } : {});
+/** Строки транспорта (все или один день). Без date — вся база (~3k строк), нужен увеличенный timeout. */
+export async function flowTransportGet(
+  client: ApiClient,
+  date?: string,
+  opts?: ApiCallOptions,
+): Promise<FlowTransportRow[]> {
+  const wire = await client.call<{ rows?: FlowTransportRow[] }>(
+    'flow_transport_get',
+    date ? { date } : {},
+    opts ?? (date ? undefined : { timeoutMs: 120_000 }),
+  );
   return Array.isArray(wire.rows) ? wire.rows : [];
 }
 

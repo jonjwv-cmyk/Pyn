@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
-import { Ban, Building2, Check, CheckCheck, ChevronLeft, ChevronRight, CloudRain, Crosshair, Eraser, Eye, EyeOff, Filter, Footprints, Globe, MapPin, MousePointer2, Network, Pause, Pencil, Pentagon, Play, Redo2, Route, Ruler, Satellite, Scissors, SlidersHorizontal, TrainTrack, Trash2, Truck, Undo2, Warehouse, X } from 'lucide-react';
+import { Ban, Building2, Check, CheckCheck, ChevronLeft, ChevronRight, CloudRain, Crosshair, Eraser, Eye, EyeOff, Filter, Footprints, Globe, List, MapPin, MousePointer2, Network, Pause, Pencil, Pentagon, Play, Redo2, Route, Ruler, Satellite, Scissors, SlidersHorizontal, TrainTrack, Trash2, Truck, Undo2, Warehouse, X } from 'lucide-react';
 import { getWarehouseState } from '@pyn/core';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { cn } from '@/lib/cn';
@@ -306,10 +306,10 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const [warehouseCardId, setWarehouseCardId] = useState<string | null>(null);
   const [ghost, setGhost] = useState<LatLng | null>(null);
   const [focus, setFocus] = useState<{ latlng: LatLng; nonce: number; zoom?: number } | null>(null);
-  const [openedOnDefaultPoint, setOpenedOnDefaultPoint] = useState(false);
+
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [editorToolsOpen, setEditorToolsOpen] = useState(false);
-  const [showRoadSuggestions, setShowRoadSuggestions] = useState(true);
+  const [showRoadSuggestions, setShowRoadSuggestions] = useState(false);
   const [showRoadAccess, setShowRoadAccess] = useState(true);
   // «Высота проезда» — по умолчанию СКРЫТО (ТЗ 2026-07-11), включается в «Виде».
   const [showClearances, setShowClearances] = useState(false);
@@ -319,7 +319,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   // фоновое обновление раз в 12 часов (map-ref-layers). Тумблеры — показ/скрытие.
   const [refLayers, setRefLayers] = useState<MapRefLayers>({ at: 0, railways: [], buildings: [], footways: [] });
   const [showBuildings, setShowBuildings] = useState(true);
-  const [showExtRails, setShowExtRails] = useState(true);
+  const [showExtRails, setShowExtRails] = useState(false);
   const [showFootways, setShowFootways] = useState(false);
   // Показ НАШИХ ручных областей/площадок (полигоны) — своя кнопка, как у зданий.
   const [showAreas, setShowAreas] = useState(false);
@@ -437,16 +437,6 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
     }
     clearFocusWarehouse();
   }, [focusPointId, focusWarehouseId, doc.points, clearFocusWarehouse]);
-
-  useEffect(() => {
-    if (!loaded || openedOnDefaultPoint || selection || doc.points.length === 0) return;
-    const point0616 = doc.points.find((p) => isPoint0616(p.label) || isPoint0616(p.warehouseId) || isPoint0616(p.comment));
-    if (!point0616) return;
-    setOpenedOnDefaultPoint(true);
-    setTool('select');
-    setSelection({ type: 'point', id: point0616.id });
-    setFocus({ latlng: { lat: point0616.lat, lng: point0616.lng }, nonce: Date.now(), zoom: NTMK_ZOOM });
-  }, [doc.points, loaded, openedOnDefaultPoint, selection]);
 
   // ── Создание объектов ──
   const handleCreatePoint = useCallback((latlng: LatLng) => {
@@ -682,10 +672,22 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   }, [doc.points, routeSourcePointId]);
 
   // Точку сначала показываем поповером у пина; не-точки — сразу полной карточкой.
+  // При переключении точка→точка режим (поповер / полная карточка) сохраняем.
+  const prevSelectionTypeRef = useRef<MapSelection['type'] | null>(null);
   useEffect(() => {
-    if (!selection) { setDetailExpanded(false); return; }
-    setDetailExpanded(selection.type !== 'point');
-  }, [selection?.type, selection?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!selection) {
+      setDetailExpanded(false);
+      prevSelectionTypeRef.current = null;
+      return;
+    }
+    const prevType = prevSelectionTypeRef.current;
+    prevSelectionTypeRef.current = selection.type;
+    if (selection.type !== 'point') {
+      setDetailExpanded(true);
+    } else if (prevType !== 'point') {
+      setDetailExpanded(false);
+    }
+  }, [selection]);
 
   const selectedWarehouse = selectedPoint?.warehouseId ? warehouses.get(selectedPoint.warehouseId) : undefined;
   const showFullCard = tool !== 'optimize' && selection !== null && (selection.type !== 'point' || detailExpanded);
@@ -951,6 +953,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
           />
           <LayerToggle icon={Satellite} label="Глонасс" on={glonassOpen} onClick={() => setGlonassOpen(!glonassOpen)} title="Спутниковый мониторинг транспорта — поиск/слежение машин" />
           <VehicleFilter active={activeVehicle} onChange={setActiveVehicle} />
+          <LegendMenu />
           <PointsFilter
             warehouses={warehousesOnMap}
             activeWarehouses={activeWarehouses}
@@ -1010,6 +1013,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               glonassFollowId={glonassFollowId}
               glonassTracks={glonassTrackLines}
               glonassHistoryTracks={glonassHistoryLines}
+
               showGlonassPro={showGlonassPro}
               glonassReplayMarker={glonassReplayMarker}
               onSelect={setSelection}
@@ -1121,17 +1125,6 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
             <RestrictionDialog onSave={saveRestriction} onCancel={cancelRestriction} />
           )}
 
-          {/* Легенда дорог (низ-право): Машины / Ж-д / пешеходы / красный черновик */}
-          <MapLegend
-            showRails={showExtRails || (doc.railways ?? []).length > 0}
-            showFootways={showFootways}
-            showSuggestions={showRoadSuggestions && doc.roadSuggestions.length > 0}
-            showBuildings={showBuildings}
-            restrictions={showRoadAccess
-              ? ROAD_ACCESS_KIND_META.filter((m) => doc.roadAccess.some((a) => a.kind === m.id))
-              : []}
-          />
-
           {/* Панель оптимизации поверх карты */}
           {tool === 'optimize' && (
             <OptimizePanel
@@ -1151,7 +1144,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
           {/* Панель «Глонасс» (поиск/выбор машин) */}
           <GlonassPanel onFocusVehicle={handleFocusGlonassVehicle} />
 
-          <GlonassHistoryChips />
+          <GlonassHistoryChips shiftLeft={showFullCard ? 370 : 0} />
           <GlonassHistoryPlayer onFocus={handleFocusHistoryPoint} pointsOverride={activeReplayPoints} />
 
           {/* Поповер-карточка у пина (краткая) + кнопка «Подробно» */}
@@ -1163,7 +1156,6 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               subtitle={selectedWarehouse?.shop_name ?? selectedPoint.comment.trim() ?? ''}
               category={categoryOfPoint(selectedPoint.warehouseId)}
               onDetails={() => setDetailExpanded(true)}
-              onRouteFrom={() => setRouteSourcePointId(selectedPoint.id)}
               onWarehouseCard={selectedPoint.warehouseId
                 ? () => setWarehouseCardId(selectedPoint.warehouseId)
                 : null}
@@ -1210,12 +1202,12 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   );
 }
 
-function isPoint0616(value: string | null | undefined): boolean {
-  const normalized = String(value ?? '').trim().replace(/\s+/g, '').toLowerCase();
-  return normalized === '0616' || normalized === '616' || normalized.includes('0616');
-}
+/** Карандаш: right-3 (12px) + w-9 (36px) + зазор 6px. */
+const MAP_PENCIL_RIGHT_INSET = 12;
+const MAP_PENCIL_WIDTH = 36;
+const MAP_PENCIL_GAP = 6;
 
-function GlonassHistoryChips() {
+function GlonassHistoryChips({ shiftLeft = 0 }: { shiftLeft?: number }) {
   const layers = useGlonassStore((s) => s.historyLayers);
   const activeId = useGlonassStore((s) => s.activeHistoryLayerId);
   const setActive = useGlonassStore((s) => s.setActiveHistoryLayer);
@@ -1224,41 +1216,45 @@ function GlonassHistoryChips() {
 
   if (layers.length === 0) return null;
 
+  const chipsRight = shiftLeft + MAP_PENCIL_RIGHT_INSET + MAP_PENCIL_WIDTH + MAP_PENCIL_GAP;
+
   return (
-    <div className="pointer-events-none absolute left-[374px] right-14 top-3 z-[7] flex flex-wrap justify-end gap-1.5">
+    <div
+      className="pointer-events-none absolute top-3 z-[454] flex max-h-[min(420px,calc(100%-5rem))] flex-col items-end gap-1 overflow-y-auto"
+      style={{ right: `${chipsRight}px` }}
+    >
       {layers.map((layer) => (
         <div
           key={layer.id}
           className={cn(
-            'pointer-events-auto flex h-8 max-w-[260px] items-center gap-1 overflow-hidden rounded-lg border bg-bg-surface px-1.5 text-[11px] text-text-secondary shadow-[0_10px_28px_rgba(0,0,0,0.34)]',
-            activeId === layer.id ? 'border-accent-clay/55 text-text-strong' : 'border-border-subtle',
+            'pointer-events-auto flex h-9 w-[148px] items-center gap-0.5 overflow-hidden rounded-lg border bg-bg-surface/95 pl-1.5 pr-0.5 text-[10.5px] text-text-secondary shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-sm',
+            activeId === layer.id ? 'border-accent-clay/50 text-text-strong' : 'border-border-subtle/80',
           )}
         >
           <button
             type="button"
             onClick={() => setActive(layer.id)}
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left outline-none transition-colors hover:bg-bg-hover"
+            className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-0.5 text-left outline-none transition-colors hover:bg-bg-hover"
             title={layer.subtitle}
           >
-            <span className="h-2.5 w-5 shrink-0 rounded-full" style={{ backgroundColor: layer.color }} />
-            <span className="min-w-0 truncate font-semibold">{layer.title}</span>
-            {layer.pointCount > 0 && <span className="shrink-0 font-mono text-[10px] text-text-muted">{layer.pointCount}</span>}
+            <span className="h-2 w-4 shrink-0 rounded-full" style={{ backgroundColor: layer.color }} />
+            <span className="min-w-0 truncate font-medium">{layer.title}</span>
           </button>
           <button
             type="button"
-            title={layer.visible ? 'Скрыть слой' : 'Показать слой'}
+            title={layer.visible ? 'Скрыть' : 'Показать'}
             onClick={() => toggleVisible(layer.id)}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
           >
-            {layer.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+            {layer.visible ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
           </button>
           <button
             type="button"
-            title="Удалить слой"
+            title="Удалить"
             onClick={() => removeLayer(layer.id)}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-rose-500/18 hover:text-rose-200"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-rose-500/18 hover:text-rose-200"
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-3 w-3" />
           </button>
         </div>
       ))}
@@ -1292,13 +1288,7 @@ function GlonassHistoryPlayer({
   const index = Math.min(Math.max(0, playbackIndex), maxIndex);
   const point = points[index] ?? null;
   const window = useMemo(() => historyTimelineWindow(layer, points), [layer, points]);
-  const pointTimeMs = point ? Date.parse(point.time) : NaN;
-  const timelineMs = Number.isFinite(pointTimeMs)
-    ? Math.min(window.endMs, Math.max(window.startMs, pointTimeMs))
-    : window.startMs;
   const virtualTimeRef = useRef<number>(point ? Date.parse(point.time) : NaN);
-  const speedIndex = Math.max(0, PLAYBACK_SPEEDS.findIndex((speed) => speed === playbackSpeed));
-
   useEffect(() => {
     if (!playbackPlaying) virtualTimeRef.current = point ? Date.parse(point.time) : NaN;
   }, [point?.time, playbackPlaying, layer?.id]);
@@ -1343,25 +1333,42 @@ function GlonassHistoryPlayer({
     if (playbackIndex !== index) setPlaybackIndex(index);
   }, [index, playbackIndex, setPlaybackIndex]);
 
+  const [speedOpen, setSpeedOpen] = useState(false);
+
   if (!layer || points.length < 2 || !point) return null;
 
+  const pointMoving = historyPointMoving(point.speed);
+
+  const dateParts = formatHistoryPointDateParts(point.time);
+
   return (
-    <div className="absolute bottom-3 left-[64px] right-[92px] z-[7] overflow-hidden rounded-2xl border border-border-default bg-bg-surface text-text-primary shadow-[0_18px_58px_rgba(0,0,0,0.46)]">
-      <div className="grid grid-cols-[minmax(170px,240px)_minmax(420px,1fr)_144px] items-center gap-2.5 px-3 py-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="h-2.5 w-5 shrink-0 rounded-full" style={{ backgroundColor: layer.color }} />
-            <span className="min-w-0 truncate text-[12px] font-semibold text-text-strong">{layer.title}</span>
+    <div className="absolute bottom-3 left-[188px] right-3 z-[450] rounded-xl border border-border-subtle/90 bg-bg-surface/95 px-3 py-2 text-text-primary shadow-[0_10px_32px_rgba(0,0,0,0.38)] backdrop-blur-md">
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-max min-w-[108px] shrink-0 flex-col justify-between border-r border-border-subtle/45 pr-3">
+          <div className="leading-tight">
+            <p className="whitespace-nowrap text-[10.5px] font-medium tracking-[-0.01em] text-text-muted">
+              {dateParts.dayMonth}
+            </p>
+            {dateParts.year ? (
+              <p className="whitespace-nowrap text-[9.5px] font-medium tabular-nums tracking-[-0.01em] text-text-muted/70">
+                {dateParts.year}
+              </p>
+            ) : null}
           </div>
-          <div className="mt-0.5 truncate text-[10.5px] text-text-muted">
-            {formatHistoryPointTime(point.time)} · {formatGlonassSpeed(point.speed)}
+          <div className="leading-none">
+            <p className="font-mono text-[13px] font-semibold tabular-nums tracking-[-0.02em] text-text-strong">
+              {formatHistoryPointClock(point.time)}
+            </p>
+            <p className={cn('mt-0.5 whitespace-nowrap text-[9px] font-medium tabular-nums', pointMoving ? 'text-emerald-300' : 'text-rose-300')}>
+              {formatGlonassSpeed(point.speed)}
+            </p>
           </div>
         </div>
 
         <DayTimeline
+          className="min-w-0 flex-1"
           points={points}
           index={index}
-          color={layer.color}
           startMs={window.startMs}
           endMs={window.endMs}
           onPick={(targetMs) => {
@@ -1371,99 +1378,155 @@ function GlonassHistoryPlayer({
           }}
         />
 
-        <div className="grid shrink-0 grid-rows-2 gap-1">
-          <div className="grid h-8 grid-cols-4 overflow-hidden rounded-lg border border-border-subtle bg-bg-elevated">
-            <button
-              type="button"
-              title="Назад по истории"
-              onClick={() => {
-                setPlaybackDirection(-1);
-                setPlaybackPlaying(true);
-              }}
-              className="flex h-8 items-center justify-center text-text-secondary outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              title={playbackPlaying ? 'Пауза' : 'Проиграть вперёд'}
-              onClick={() => {
-                if (!playbackPlaying) setPlaybackDirection(1);
-                setPlaybackPlaying(!playbackPlaying);
-              }}
-              className="flex h-8 items-center justify-center border-x border-sky-400/35 bg-sky-500/12 text-sky-200 outline-none transition-colors hover:bg-sky-500/20 hover:text-sky-100"
-            >
-              {playbackPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 translate-x-px" />}
-            </button>
-            <button
-              type="button"
-              title="Вперёд по истории"
-              onClick={() => {
-                setPlaybackDirection(1);
-                setPlaybackPlaying(true);
-              }}
-              className="flex h-8 items-center justify-center text-text-secondary outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              title={followPlayback ? 'Отключить слежение за машиной' : 'Следить за машиной'}
-              onClick={() => {
-                const next = !followPlayback;
-                setFollowPlayback(next);
-                if (next) onFocus(point);
-              }}
-              className={cn(
-                'flex h-8 items-center justify-center border-l border-border-subtle outline-none transition-colors',
-                followPlayback
-                  ? 'bg-accent-clay-bg text-accent-clay shadow-[inset_0_0_0_1px_rgba(217,119,87,0.35)]'
-                  : 'text-text-muted hover:bg-bg-hover hover:text-text-strong',
-              )}
-            >
-              <Crosshair className="h-4 w-4" />
-            </button>
-          </div>
-          <div className="grid h-8 grid-cols-[36px_minmax(0,1fr)_36px] overflow-hidden rounded-lg border border-border-subtle bg-bg-elevated">
-            <button
-              type="button"
-              title="Медленнее"
-              disabled={speedIndex <= 0}
-              onClick={() => setPlaybackSpeed(PLAYBACK_SPEEDS[Math.max(0, speedIndex - 1)]!)}
-              className="flex h-8 items-center justify-center text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong disabled:cursor-not-allowed disabled:opacity-35"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="flex min-w-0 items-center justify-center border-x border-border-subtle px-2 text-center text-[11px] font-semibold tabular-nums text-text-strong">
-              {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
-            </span>
-            <button
-              type="button"
-              title="Быстрее"
-              disabled={speedIndex >= PLAYBACK_SPEEDS.length - 1}
-              onClick={() => setPlaybackSpeed(PLAYBACK_SPEEDS[Math.min(PLAYBACK_SPEEDS.length - 1, speedIndex + 1)]!)}
-              className="flex h-8 items-center justify-center text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong disabled:cursor-not-allowed disabled:opacity-35"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
+        <HistoryPlaybackControls
+          className="shrink-0"
+          playbackPlaying={playbackPlaying}
+          followPlayback={followPlayback}
+          playbackSpeed={playbackSpeed}
+          speedOpen={speedOpen}
+          onSpeedOpenChange={setSpeedOpen}
+          onRewind={() => { setPlaybackDirection(-1); setPlaybackPlaying(true); }}
+          onTogglePlay={() => {
+            if (!playbackPlaying) setPlaybackDirection(1);
+            setPlaybackPlaying(!playbackPlaying);
+          }}
+          onForward={() => { setPlaybackDirection(1); setPlaybackPlaying(true); }}
+          onToggleFollow={() => {
+            const next = !followPlayback;
+            setFollowPlayback(next);
+            if (next) onFocus(point);
+          }}
+          onPickSpeed={setPlaybackSpeed}
+        />
       </div>
     </div>
   );
 }
 
+const historyBarBtn =
+  'flex h-8 w-8 shrink-0 items-center justify-center text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong';
+
+function HistoryPlaybackControls({
+  className,
+  playbackPlaying,
+  followPlayback,
+  playbackSpeed,
+  speedOpen,
+  onSpeedOpenChange,
+  onRewind,
+  onTogglePlay,
+  onForward,
+  onToggleFollow,
+  onPickSpeed,
+}: {
+  className?: string;
+  playbackPlaying: boolean;
+  followPlayback: boolean;
+  playbackSpeed: number;
+  speedOpen: boolean;
+  onSpeedOpenChange: (open: boolean) => void;
+  onRewind: () => void;
+  onTogglePlay: () => void;
+  onForward: () => void;
+  onToggleFollow: () => void;
+  onPickSpeed: (speed: number) => void;
+}) {
+  return (
+    <div className={cn('flex h-8 items-stretch overflow-hidden rounded-[10px] border border-border-subtle/90 bg-bg-elevated', className)}>
+      <button type="button" title="Назад" onClick={onRewind} className={historyBarBtn}>
+        <ChevronLeft className="h-3.5 w-3.5" strokeWidth={2} />
+      </button>
+      <button
+        type="button"
+        title={playbackPlaying ? 'Пауза' : 'Воспроизвести'}
+        onClick={onTogglePlay}
+        className={cn(historyBarBtn, 'w-9 border-x border-border-subtle/70 bg-sky-500/12 text-sky-200 hover:bg-sky-500/20 hover:text-sky-100')}
+      >
+        {playbackPlaying ? <Pause className="h-3.5 w-3.5" strokeWidth={2} /> : <Play className="h-3.5 w-3.5 translate-x-px" strokeWidth={2} />}
+      </button>
+      <button type="button" title="Вперёд" onClick={onForward} className={historyBarBtn}>
+        <ChevronRight className="h-3.5 w-3.5" strokeWidth={2} />
+      </button>
+      <span className="w-px shrink-0 self-stretch bg-border-subtle/80" />
+      <button
+        type="button"
+        title={followPlayback ? 'Слежение вкл.' : 'Следить за машиной'}
+        onClick={onToggleFollow}
+        className={cn(
+          historyBarBtn,
+          followPlayback && 'bg-accent-clay-bg text-accent-clay hover:bg-accent-clay-bg hover:text-accent-clay',
+        )}
+      >
+        <Crosshair className="h-3.5 w-3.5" strokeWidth={2} />
+      </button>
+      <span className="w-px shrink-0 self-stretch bg-border-subtle/80" />
+      <Popover.Root open={speedOpen} onOpenChange={onSpeedOpenChange}>
+        <Popover.Trigger asChild>
+          <button
+            type="button"
+            title="Скорость воспроизведения"
+            className={cn(
+              'flex h-8 w-9 shrink-0 items-center justify-center font-mono text-[10.5px] font-semibold tabular-nums outline-none transition-colors',
+              speedOpen ? 'bg-bg-hover text-text-strong' : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+            )}
+          >
+            {playbackSpeed === 1 ? '1×' : `${playbackSpeed}×`}
+          </button>
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Content
+            side="top"
+            align="end"
+            sideOffset={6}
+            className="z-[700] max-h-52 w-[72px] overflow-y-auto rounded-lg border border-border-default bg-bg-elevated p-1 shadow-[0_10px_32px_rgba(0,0,0,0.45)] outline-none"
+          >
+            {PLAYBACK_SPEEDS.map((speed) => (
+              <button
+                key={speed}
+                type="button"
+                onClick={() => {
+                  onPickSpeed(speed);
+                  onSpeedOpenChange(false);
+                }}
+                className={cn(
+                  'flex h-7 w-full items-center justify-center rounded-md font-mono text-[11px] font-semibold tabular-nums outline-none transition-colors',
+                  speed === playbackSpeed
+                    ? 'bg-sky-500/16 text-sky-200'
+                    : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+                )}
+              >
+                {speed === 1 ? '1×' : `${speed}×`}
+              </button>
+            ))}
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
+    </div>
+  );
+}
+
+const HISTORY_CHART_MOVING = '#34D399';
+const HISTORY_CHART_STOPPED = '#F87171';
+const HISTORY_CHART_Y_MIN = 3;
+const HISTORY_CHART_Y_MAX = 21;
+const HISTORY_CHART_VIEW_H = 24;
+
+/** > 3 км/ч — движение (как в glonass-store); иначе стоянка / ровный участок. */
+function historyPointMoving(speed: number | null | undefined): boolean {
+  return (speed ?? 0) > 3;
+}
+
 function DayTimeline({
+  className,
   points,
   index,
-  color,
   startMs,
   endMs,
   onPick,
 }: {
+  className?: string;
   points: GlonassHistoryPoint[];
   index: number;
-  color: string;
   startMs: number;
   endMs: number;
   onPick: (timeMs: number) => void;
@@ -1473,75 +1536,89 @@ function DayTimeline({
     const rect = event.currentTarget.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width)));
     const rawMs = startMs + ratio * (endMs - startMs);
-    const halfHourMs = 30 * 60 * 1000;
-    const snapped = Math.round((rawMs - startMs) / halfHourMs) * halfHourMs + startMs;
-    onPick(Math.min(endMs - 1000, Math.max(startMs, snapped)));
+    onPick(Math.min(endMs, Math.max(startMs, rawMs)));
   };
-  if (!chart) {
-    return (
-      <div className="min-w-0">
-        <div onClick={pick} className="h-14 cursor-crosshair rounded-lg border border-border-subtle bg-bg-elevated" />
-        <DayTimelineTicks />
-      </div>
-    );
-  }
+  if (!chart) return null;
+  const cursorStroke = chart.cursorMoving ? HISTORY_CHART_MOVING : HISTORY_CHART_STOPPED;
   return (
-    <div className="min-w-0">
+    <div className={cn('min-w-0', className)}>
       <div
         role="slider"
         tabIndex={0}
-        aria-label="Шкала дня"
+        aria-label="Шкала движения"
         aria-valuetext={formatTimeOfDay(startMs + (chart.cursorX / 100) * (endMs - startMs))}
         onClick={pick}
-        className="relative h-14 cursor-crosshair overflow-hidden rounded-lg border border-border-subtle bg-bg-elevated outline-none transition-colors hover:border-sky-300/40"
+        className="relative h-10 cursor-crosshair overflow-hidden rounded-[10px] border border-border-subtle/70 bg-bg-elevated/80 outline-none transition-colors hover:border-sky-300/35"
       >
-        <svg viewBox="0 0 100 46" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
-          <path d="M0 10H100M0 22H100M0 34H100" stroke="rgba(255,255,255,.1)" strokeWidth="0.35" vectorEffect="non-scaling-stroke" />
-          <polyline points={chart.points} fill="none" stroke={color} strokeWidth="1.45" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-          <line x1={chart.cursorX} x2={chart.cursorX} y1="1" y2="45" stroke="rgba(255,255,255,.9)" strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
-          <circle cx={chart.cursorX} cy={chart.cursorY} r="1.1" fill="rgba(255,255,255,.96)" vectorEffect="non-scaling-stroke" />
-        </svg>
-        {Array.from({ length: 49 }, (_, tick) => {
-          const major = tick % 2 === 0;
-          return (
-            <span
-              key={tick}
-              className={cn(
-                'pointer-events-none absolute bottom-0 w-px -translate-x-1/2',
-                major ? 'h-4 bg-white/30' : 'h-2.5 bg-white/14',
-              )}
-              style={{ left: `${(tick / 48) * 100}%` }}
+        <svg
+          viewBox={`0 0 100 ${HISTORY_CHART_VIEW_H}`}
+          preserveAspectRatio="none"
+          className="absolute inset-x-0 top-0 h-7 w-full"
+        >
+          {chart.segments.map((segment, i) => (
+            <polyline
+              key={i}
+              points={segment.points}
+              fill="none"
+              stroke={segment.moving ? HISTORY_CHART_MOVING : HISTORY_CHART_STOPPED}
+              strokeWidth="1.7"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
             />
-          );
-        })}
+          ))}
+          <line
+            x1={chart.cursorX}
+            x2={chart.cursorX}
+            y1={HISTORY_CHART_Y_MIN}
+            y2={HISTORY_CHART_Y_MAX}
+            stroke="rgba(255,255,255,.78)"
+            strokeWidth="0.6"
+            vectorEffect="non-scaling-stroke"
+          />
+          <circle
+            cx={chart.cursorX}
+            cy={chart.cursorY}
+            r="1.45"
+            fill={cursorStroke}
+            stroke="rgba(255,255,255,.92)"
+            strokeWidth="0.45"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+        <DayTimelineTicks startMs={startMs} endMs={endMs} />
       </div>
-      <DayTimelineTicks />
     </div>
   );
 }
 
-function DayTimelineTicks() {
+function DayTimelineTicks({ startMs, endMs }: { startMs: number; endMs: number }) {
+  const labels = useMemo(() => {
+    const span = Math.max(1, endMs - startMs);
+    const steps = span <= 20 * 60_000 ? 4 : span <= 2 * 3_600_000 ? 5 : 6;
+    return Array.from({ length: steps }, (_, i) => {
+      const ratio = i / (steps - 1);
+      const ms = startMs + ratio * span;
+      return { ratio, text: formatTimeOfDay(ms), edge: i === 0 ? 'start' as const : i === steps - 1 ? 'end' as const : 'mid' as const };
+    });
+  }, [startMs, endMs]);
+
   return (
-    <div className="mt-0.5">
-      <div className="relative h-3">
-        {Array.from({ length: 49 }, (_, index) => {
-          const major = index % 2 === 0;
-          return (
-            <span
-              key={index}
-              className={major ? 'absolute top-0 h-3 w-px bg-text-muted/35' : 'absolute top-1 h-2 w-px bg-text-muted/18'}
-              style={{ left: `${(index / 48) * 100}%` }}
-            />
-          );
-        })}
-      </div>
-      <div
-        className="grid text-[8px] font-mono tabular-nums leading-none text-text-muted/75"
-        style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}
-      >
-        {Array.from({ length: 24 }, (_, hour) => (
-          <span key={hour} className={cn(hour === 0 ? 'text-left' : hour === 23 ? 'text-right' : 'text-center')}>
-            {hour.toString().padStart(2, '0')}
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[1] h-[15px]">
+      <div className="absolute inset-0 bg-gradient-to-t from-bg-elevated/98 via-bg-elevated/72 to-transparent" />
+      <div className="relative h-full px-2">
+        {labels.map((label) => (
+          <span
+            key={label.ratio}
+            className={cn(
+              'absolute bottom-1 font-mono text-[7.5px] tabular-nums leading-none text-text-muted/75',
+              label.edge === 'start' && 'left-2 translate-x-0',
+              label.edge === 'end' && 'right-2 translate-x-0',
+              label.edge === 'mid' && '-translate-x-1/2',
+            )}
+            style={label.edge === 'mid' ? { left: `${label.ratio * 100}%` } : undefined}
+          >
+            {label.text}
           </span>
         ))}
       </div>
@@ -1567,25 +1644,49 @@ function buildSpeedChart(
   index: number,
   startMs: number,
   endMs: number,
-): { points: string; cursorX: number; cursorY: number } | null {
+): { segments: Array<{ points: string; moving: boolean }>; cursorX: number; cursorY: number; cursorMoving: boolean } | null {
   if (points.length < 2) return null;
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
   const maxSpeed = Math.max(1, ...points.map((p) => p.speed ?? 0));
-  const sample = sampleHistoryPoints(points, 180);
+  const sample = sampleHistoryPoints(points, 120);
+  const chartSpan = HISTORY_CHART_Y_MAX - HISTORY_CHART_Y_MIN;
   const xy = (p: GlonassHistoryPoint) => {
     const t = Date.parse(p.time);
     const x = Math.min(100, Math.max(0, ((t - startMs) / (endMs - startMs)) * 100));
-    const y = 30 - Math.min(1, Math.max(0, (p.speed ?? 0) / maxSpeed)) * 25;
+    const norm = Math.min(1, Math.max(0, (p.speed ?? 0) / maxSpeed));
+    const y = HISTORY_CHART_Y_MAX - norm * chartSpan;
     return { x, y };
   };
-  const current = xy(points[Math.min(Math.max(0, index), points.length - 1)]!);
+  const format = (p: GlonassHistoryPoint) => {
+    const { x, y } = xy(p);
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  };
+
+  const segments: Array<{ points: string; moving: boolean }> = [];
+  let segMoving = historyPointMoving(sample[0]?.speed);
+  let coords = [format(sample[0]!)];
+  for (let i = 1; i < sample.length; i += 1) {
+    const p = sample[i]!;
+    const moving = historyPointMoving(p.speed);
+    const coord = format(p);
+    if (moving !== segMoving) {
+      coords.push(coord);
+      if (coords.length >= 2) segments.push({ points: coords.join(' '), moving: segMoving });
+      segMoving = moving;
+      coords = [coord];
+    } else {
+      coords.push(coord);
+    }
+  }
+  if (coords.length >= 2) segments.push({ points: coords.join(' '), moving: segMoving });
+
+  const currentPoint = points[Math.min(Math.max(0, index), points.length - 1)]!;
+  const current = xy(currentPoint);
   return {
-    points: sample.map((p) => {
-      const { x, y } = xy(p);
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    }).join(' '),
+    segments,
     cursorX: current.x,
     cursorY: current.y,
+    cursorMoving: historyPointMoving(currentPoint.speed),
   };
 }
 
@@ -1599,15 +1700,18 @@ function sampleHistoryPoints(points: GlonassHistoryPoint[], max: number): Glonas
   return out;
 }
 
-function formatHistoryPointTime(value: string): string {
+function formatHistoryPointDateParts(value: string): { dayMonth: string; year: string | null } {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return { dayMonth: '—', year: null };
+  const dayMonth = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(date);
+  const year = date.getFullYear() !== new Date().getFullYear() ? String(date.getFullYear()) : null;
+  return { dayMonth, year };
+}
+
+function formatHistoryPointClock(value: string): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return '—';
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
+  return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(date);
 }
 
 function formatTimeOfDay(value: number): string {
@@ -1616,19 +1720,20 @@ function formatTimeOfDay(value: number): string {
   return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(date);
 }
 
-function historyTimelineWindow(layer: GlonassHistoryLayer | null, points: GlonassHistoryPoint[]): { startMs: number; endMs: number } {
-  const fromMs = Date.parse(layer?.from ?? '');
-  const toMs = Date.parse(layer?.to ?? '');
-  if (Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs) return { startMs: fromMs, endMs: toMs };
-  const firstMs = Date.parse(points[0]?.time ?? '');
-  if (Number.isFinite(firstMs)) {
-    const d = new Date(firstMs);
-    const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
-    return { startMs: start, endMs: start + 24 * 60 * 60 * 1000 };
+function historyTimelineWindow(_layer: GlonassHistoryLayer | null, points: GlonassHistoryPoint[]): { startMs: number; endMs: number } {
+  if (points.length >= 2) {
+    const firstMs = Date.parse(points[0]!.time);
+    const lastMs = Date.parse(points[points.length - 1]!.time);
+    if (Number.isFinite(firstMs) && Number.isFinite(lastMs) && lastMs > firstMs) {
+      const span = lastMs - firstMs;
+      const pad = Math.max(30_000, Math.round(span * 0.015));
+      return { startMs: firstMs - pad, endMs: lastMs + pad };
+    }
   }
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
-  return { startMs: start, endMs: start + 24 * 60 * 60 * 1000 };
+  const firstMs = Date.parse(points[0]?.time ?? '');
+  if (Number.isFinite(firstMs)) return { startMs: firstMs - 60_000, endMs: firstMs + 60_000 };
+  const now = Date.now();
+  return { startMs: now - 60_000, endMs: now + 60_000 };
 }
 
 function courseAt(points: GlonassHistoryPoint[], index: number): number | null {
@@ -1934,50 +2039,82 @@ function MapToolStrip({
   );
 }
 
-/** Легенда дорог (компактная, низ-право): что каким цветом нарисовано. */
-function MapLegend({ showRails, showFootways, showSuggestions, showBuildings, restrictions }: {
-  showRails: boolean;
-  showFootways: boolean;
-  showSuggestions: boolean;
-  showBuildings: boolean;
-  restrictions: Array<{ color: string; label: string }>;
-}) {
+/** Легенда — справочник обозначений (кнопка в шапке, поповер как «Вид»). */
+function LegendMenu() {
+  const items: Array<{ key: string; label: string; swatch: ReactNode }> = [
+    {
+      key: 'roads',
+      label: 'Машины (наши дороги)',
+      swatch: <span className="inline-block h-[3px] w-6 shrink-0 rounded-full bg-[#FFC83D]" />,
+    },
+    {
+      key: 'buildings',
+      label: 'Здания (справочно)',
+      swatch: <span className="inline-block h-2.5 w-6 shrink-0 rounded-sm border border-[#C4B5FD]/60 bg-[#A78BFA]/25" />,
+    },
+    ...ROAD_ACCESS_KIND_META.map((meta) => ({
+      key: meta.id,
+      label: meta.label,
+      swatch: <span className="inline-block h-[3px] w-6 shrink-0 rounded-full" style={{ backgroundColor: meta.color }} />,
+    })),
+    {
+      key: 'rails',
+      label: 'Ж/д путь',
+      swatch: <span className="inline-block h-[3px] w-6 shrink-0 rounded-full" style={{ background: 'repeating-linear-gradient(90deg,#111827 0 3px,#D1D5DB 3px 6px)' }} />,
+    },
+    {
+      key: 'footway',
+      label: 'Пешеходная дорожка',
+      swatch: <span className="inline-block h-[2px] w-6 shrink-0 rounded-full bg-[#38BDF8]" />,
+    },
+    {
+      key: 'crosswalk',
+      label: 'Пешеходный переход',
+      swatch: <span className="inline-block h-[4px] w-6 shrink-0 rounded-sm" style={{ background: 'repeating-linear-gradient(90deg,#38BDF8 0 3px,transparent 3px 5px)' }} />,
+    },
+    {
+      key: 'suggestions',
+      label: 'Возможные дороги',
+      swatch: <span className="inline-block h-[3px] w-6 shrink-0 rounded-full" style={{ background: 'repeating-linear-gradient(90deg,#EF4444 0 4px,transparent 4px 7px)' }} />,
+    },
+  ];
+
   return (
-    <div className="pointer-events-none absolute bottom-3 right-3 z-[448] rounded-lg border border-border-subtle bg-bg-surface px-2.5 py-1.5 text-[10.5px] leading-[17px] text-text-secondary shadow-lg">
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block h-[3px] w-6 rounded-full bg-[#FFC83D]" /> Машины (наши дороги)
-      </div>
-      {showRails && (
-        <div className="flex items-center gap-1.5">
-          <span className="inline-block h-[3px] w-6 rounded-full" style={{ background: 'repeating-linear-gradient(90deg,#111827 0 3px,#D1D5DB 3px 6px)' }} /> Ж/д путь
-        </div>
-      )}
-      {showFootways && (
-        <div className="flex items-center gap-1.5">
-          <span className="inline-block h-[2px] w-6 rounded-full bg-[#38BDF8]" /> Пешеходная дорожка
-        </div>
-      )}
-      {showFootways && (
-        <div className="flex items-center gap-1.5">
-          <span className="inline-block h-[4px] w-6 rounded-sm" style={{ background: 'repeating-linear-gradient(90deg,#38BDF8 0 3px,transparent 3px 5px)' }} /> Пешеходный переход
-        </div>
-      )}
-      {showSuggestions && (
-        <div className="flex items-center gap-1.5">
-          <span className="inline-block h-[3px] w-6 rounded-full" style={{ background: 'repeating-linear-gradient(90deg,#EF4444 0 4px,transparent 4px 7px)' }} /> Возможные дороги
-        </div>
-      )}
-      {showBuildings && (
-        <div className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-6 rounded-sm border border-[#C4B5FD]/60 bg-[#A78BFA]/25" /> Здания (справочно)
-        </div>
-      )}
-      {restrictions.map((r) => (
-        <div key={r.label} className="flex items-center gap-1.5">
-          <span className="inline-block h-[3px] w-6 rounded-full" style={{ backgroundColor: r.color }} /> {r.label}
-        </div>
-      ))}
-    </div>
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          title="Легенда карты — что каким цветом нарисовано"
+          className="flex h-6 items-center gap-1 rounded-md border border-border-subtle px-2 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary data-[state=open]:border-accent-clay/55 data-[state=open]:bg-accent-clay-bg data-[state=open]:text-accent-clay"
+        >
+          <List size={13} strokeWidth={1.75} />
+          Легенда
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="bottom"
+          align="end"
+          sideOffset={6}
+          className="z-[700] w-60 rounded-lg border border-border-default bg-bg-elevated p-2 shadow-[0_16px_44px_rgba(0,0,0,0.44)] outline-none"
+        >
+          <p className="mb-1.5 px-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+            Обозначения на карте
+          </p>
+          <div className="space-y-0.5">
+            {items.map((item) => (
+              <div
+                key={item.key}
+                className="flex items-center gap-2 rounded-md px-1.5 py-1 text-[11.5px] leading-snug text-text-secondary"
+              >
+                {item.swatch}
+                <span className="min-w-0 flex-1">{item.label}</span>
+              </div>
+            ))}
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -2544,10 +2681,10 @@ function weatherText(code: number | null | undefined, precipMm: number | null, s
   return 'прогноз';
 }
 
-/** Краткий поповер у пина точки: название, цех, категория + «Подробно» + «Склад». */
-function PinPopover({ x, y, title, subtitle, category, onDetails, onRouteFrom, onWarehouseCard, onClose }: {
+/** Краткий поповер у пина: склад, цех, «Подробнее», карточка склада. */
+function PinPopover({ x, y, title, subtitle, category, onDetails, onWarehouseCard, onClose }: {
   x: number; y: number; title: string; subtitle: string; category: PointCategory;
-  onDetails: () => void; onRouteFrom: () => void;
+  onDetails: () => void;
   /** null — у точки нет склада, кнопку не показываем. */
   onWarehouseCard: (() => void) | null;
   onClose: () => void;
@@ -2555,43 +2692,43 @@ function PinPopover({ x, y, title, subtitle, category, onDetails, onRouteFrom, o
   const cat = POINT_CATEGORY_META.find((c) => c.id === category) ?? POINT_CATEGORY_META[2]!;
   return (
     <div
-      className="absolute z-[455] w-56 -translate-x-1/2 -translate-y-full rounded-xl border border-border-default bg-bg-deep/94 px-3 py-2.5 shadow-[0_8px_30px_rgba(0,0,0,0.5)] backdrop-blur-md"
-      style={{ left: x, top: y - 52 }}
+      className="absolute z-[455] w-[232px] -translate-x-1/2 -translate-y-full rounded-xl border border-border-default bg-bg-deep/95 px-3 py-2.5 shadow-[0_10px_32px_rgba(0,0,0,0.48)] backdrop-blur-md"
+      style={{ left: x, top: y - 48 }}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-[13px] font-bold text-text-strong">{title}</p>
-          {subtitle && <p className="truncate text-[11.5px] text-text-muted">{subtitle}</p>}
+          <p className="truncate text-[13px] font-semibold text-text-strong">{title}</p>
+          {subtitle && <p className="mt-0.5 truncate text-[11px] text-text-muted">{subtitle}</p>}
         </div>
-        <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${cat.color}22`, color: cat.color }}>{cat.label}</span>
+        <span className="shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-medium" style={{ backgroundColor: `${cat.color}22`, color: cat.color }}>{cat.label}</span>
       </div>
-      <div className="mt-2 flex items-center gap-1.5">
+      <div className="mt-2.5 flex items-center gap-1.5">
         <button
           type="button"
           onClick={onDetails}
-          className="h-7 flex-1 rounded border border-accent-clay/45 bg-accent-clay-bg px-2 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/15"
-        >Подробно →</button>
+          className="h-7 flex-1 rounded-lg border border-accent-clay/40 bg-accent-clay-bg/80 px-2.5 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/15"
+        >Подробнее</button>
         {onWarehouseCard && (
           <button
             type="button"
             onClick={onWarehouseCard}
-            title="Карточка склада и МОЛы — поверх карты"
-            className="flex h-7 items-center justify-center rounded border border-emerald-400/35 px-2 text-[12px] text-emerald-300 outline-none transition-colors hover:bg-emerald-400/10"
-          ><Warehouse size={13} strokeWidth={1.75} /></button>
+            title="Карточка склада и МОЛы"
+            className="flex h-7 shrink-0 items-center gap-1 rounded-lg border border-emerald-400/30 px-2 text-[11px] text-emerald-300 outline-none transition-colors hover:bg-emerald-400/10"
+          >
+            <Warehouse size={12} strokeWidth={1.75} />
+            <span>Склад</span>
+          </button>
         )}
         <button
           type="button"
-          onClick={onRouteFrom}
-          title="Маршрут отсюда"
-          className="flex h-7 items-center justify-center rounded border border-sky-400/35 px-2 text-[12px] text-sky-200 outline-none transition-colors hover:bg-sky-400/10"
-        ><Route size={13} strokeWidth={1.75} /></button>
-        <button
-          type="button"
           onClick={onClose}
-          className="flex h-7 w-7 items-center justify-center rounded border border-border-subtle text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
-        >×</button>
+          aria-label="Закрыть"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border-subtle text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+        >
+          <X className="h-3.5 w-3.5" strokeWidth={1.75} />
+        </button>
       </div>
-      <div className="absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 border-b border-r border-border-default bg-bg-deep/94" />
+      <div className="absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 border-b border-r border-border-default bg-bg-deep/95" />
     </div>
   );
 }

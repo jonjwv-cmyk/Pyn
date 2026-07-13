@@ -198,7 +198,9 @@ export function FlowDayPicker({
           </div>
           <div className="mt-1.5 flex items-center justify-between border-t border-white/10 pt-1.5">
             <span className="text-[10px] text-text-muted/70">
-              {mode === 'report' ? 'зелёный — выполнено есть' : 'красный — черновики'}
+              {mode === 'report'
+                ? 'зелёный — выполнено есть'
+                : 'красный — черновики · зелёный — зафиксировано'}
             </span>
             {allowClear && (
               <button

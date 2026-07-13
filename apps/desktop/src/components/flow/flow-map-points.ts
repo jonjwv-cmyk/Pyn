@@ -10,10 +10,38 @@ import {
   type PointPurpose,
   type VehicleType,
 } from '@/components/map/map-types';
+import { whKey } from './flow-warehouse';
 
-/** A point belongs to a flow only when that purpose is explicitly selected. */
+/** Формирование / План / Отчёт — точки склада из колонки «Экспедиция» карты. */
+export const FLOW_WAREHOUSE_POINT_PURPOSE: PointPurpose = 'exped';
+
+/** Подпись точки в потоке — как pointTitle на сайте / карточке карты. */
+export function pointDisplayTitle(point: MapPoint, index: number, warehouse: string): string {
+  const wh = String(warehouse || point.warehouseId || '').trim();
+  return String(point.label || point.comment || `${wh} · точка ${index + 1}`).trim();
+}
+
+/**
+ * Назначение точки: явный purposes ИЛИ ненулевая матрица ТС (как activePurposesForPoint на карте).
+ * Legacy без purposes: склад → только «Технология»; свободная → «Иное».
+ */
 export function pointHasPurpose(point: MapPoint, purpose: PointPurpose): boolean {
-  return Array.isArray(point.purposes) && point.purposes.includes(purpose);
+  const matrix = point.vehiclesByPurpose ?? {};
+  if ((matrix[purpose]?.length ?? 0) > 0) return true;
+
+  const purposes = point.purposes;
+  if (!Array.isArray(purposes) || purposes.length === 0) {
+    const wh = Boolean(String(point.warehouseId || '').trim());
+    if (purpose === 'tech') return wh;
+    return !wh && purpose === 'other';
+  }
+  return purposes.includes(purpose);
+}
+
+function warehouseMatches(pointWarehouse: string | null | undefined, warehouse: string): boolean {
+  const target = whKey(warehouse);
+  if (!target) return false;
+  return whKey(pointWarehouse) === target;
 }
 
 export function pointsForWarehouse(
@@ -25,10 +53,29 @@ export function pointsForWarehouse(
   if (!wh) return [];
   return points.filter(
     (point) =>
-      String(point.warehouseId || '').trim() === wh &&
+      warehouseMatches(point.warehouseId, wh) &&
       pointHasPurpose(point, purpose) &&
-      Boolean(String(point.label || '').trim()),
+      Boolean(pointDisplayTitle(point, 0, wh)),
   );
+}
+
+/** Уникальные подписи для выпадашки; при совпадении — суффикс « · 2», « · 3»… */
+export function pointOptionLabelsForWarehouse(
+  points: readonly MapPoint[],
+  warehouse: string,
+  purpose: PointPurpose,
+): string[] {
+  const matched = pointsForWarehouse(points, warehouse, purpose);
+  const raw = matched.map((point, index) => pointDisplayTitle(point, index, warehouse));
+  const freq = new Map<string, number>();
+  for (const title of raw) freq.set(title, (freq.get(title) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return raw.map((title) => {
+    if ((freq.get(title) ?? 0) <= 1) return title;
+    const n = (seen.get(title) ?? 0) + 1;
+    seen.set(title, n);
+    return n === 1 ? title : `${title} · ${n}`;
+  });
 }
 
 export function pointNamesForWarehouse(
@@ -36,7 +83,47 @@ export function pointNamesForWarehouse(
   warehouse: string,
   purpose: PointPurpose,
 ): string[] {
-  return [...new Set(pointsForWarehouse(points, warehouse, purpose).map((point) => point.label.trim()))];
+  return pointOptionLabelsForWarehouse(points, warehouse, purpose);
+}
+
+/** Показ в ячейке: 0 точек → «—»; 2+ без выбора → пусто; иначе выбранная точка. */
+export function pointCellDisplay(
+  rowPoint: string | undefined,
+  points: readonly MapPoint[],
+  warehouse: string,
+  purpose: PointPurpose = FLOW_WAREHOUSE_POINT_PURPOSE,
+): { value: string; label: string; options: readonly string[]; editable: boolean } {
+  const available = pointNamesForWarehouse(points, warehouse, purpose);
+  const stored = String(rowPoint || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const value = stored.join('\n');
+  const label = value || (available.length === 0 ? '—' : '');
+  return {
+    value,
+    label,
+    options: available.length > 1 ? ['', ...available] : available,
+    editable: available.length > 0,
+  };
+}
+
+/** Одна точка → автовыбор; несколько → пусто или валидный выбор; ноль → пусто. */
+export function autoPointValue(
+  rowPoint: string | undefined,
+  points: readonly MapPoint[],
+  warehouse: string,
+  purpose: PointPurpose = FLOW_WAREHOUSE_POINT_PURPOSE,
+): string {
+  const available = pointNamesForWarehouse(points, warehouse, purpose);
+  const selected = String(rowPoint || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const valid = selected.length > 0 && selected.every((item) => available.includes(item));
+  if (valid) return selected.join('\n');
+  if (available.length === 1) return available[0]!;
+  return '';
 }
 
 /** One point is filled automatically; several remain unselected. */
@@ -64,11 +151,10 @@ export function findPurposePoint(
 ): MapPoint | null {
   const normalized = String(label || '').trim().toLocaleLowerCase('ru');
   if (!normalized) return null;
-  return (
-    pointsForWarehouse(points, warehouse, purpose).find(
-      (point) => point.label.trim().toLocaleLowerCase('ru') === normalized,
-    ) ?? null
-  );
+  const matched = pointsForWarehouse(points, warehouse, purpose);
+  const titles = pointOptionLabelsForWarehouse(points, warehouse, purpose);
+  const idx = titles.findIndex((title) => title.trim().toLocaleLowerCase('ru') === normalized);
+  return idx >= 0 ? matched[idx]! : null;
 }
 
 /**

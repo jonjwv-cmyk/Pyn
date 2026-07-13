@@ -7,7 +7,7 @@ import { formatMobilePhone, MOL_UNTIL_PILL_CLASS, molUntilStatus, molStatusKind 
 import { cn } from '@/lib/cn';
 import { sedComputed, SED_LABEL, SED_COLOR } from './flow-signal';
 import { whKey } from './flow-warehouse';
-import { formatUntilDate } from './flow-sandbox.fixtures';
+import { fmtNum3, fmtPct, formatUntilDate, livePct } from './flow-sandbox.fixtures';
 
 /**
  * Карточка ИСТОРИИ движения позиции по ЯКОРЮ (заказ+позиция) — «как в Транспорте».
@@ -21,6 +21,10 @@ export interface FlowAnchorHistoryTarget {
   it: string;
   mat: string;
   noNum: string;
+  /** Живой расчёт % (Формирование, клик по колонке «%»). */
+  qty?: number | null;
+  chg?: number | null;
+  uom?: string;
 }
 
 interface Props {
@@ -366,6 +370,23 @@ export function FlowAnchorHistoryCard({ target, load, onClose }: Props) {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          {target.chg != null && target.qty != null && (() => {
+            const uom = (target.uom || '').trim();
+            const shipped = target.chg - target.qty;
+            const pct = livePct({ qty: target.qty, chg: target.chg });
+            const uomSfx = uom ? ` ${uom}` : '';
+            return (
+              <div className="mb-4 rounded-lg border border-border-subtle bg-bg-primary px-3 py-2.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Вывоз по заказу</div>
+                <div className="mt-1 text-[13px] tabular-nums text-text-strong">
+                  В заказе: {fmtNum3(target.chg)}{uomSfx}
+                  {' · '}
+                  Вывезено: {fmtNum3(shipped)}{uomSfx}
+                  {pct != null && <> · {fmtPct(pct)}</>}
+                </div>
+              </div>
+            );
+          })()}
           {loading && <div className="py-8 text-center text-[12px] text-text-muted">Загрузка…</div>}
           {!loading && obdGroups.length === 0 && (
             <div className="py-8 text-center text-[12px] text-text-muted">

@@ -20,7 +20,7 @@ import { refreshWarehousesFromServer } from '@/lib/warehouses-repo';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { usePresenceStore, useUiStateStore } from '@/lib/stores';
 import type { NavSection, NavSectionId } from '@/types/nav';
-import { FlowScriptButtons } from './FlowScriptButtons';
+import { SyncNavRow } from './SyncNavRow';
 import { SessionExpiryPill } from './SessionExpiryPill';
 import { SidebarHeader } from './SidebarHeader';
 import { NavItem } from './NavItem';
@@ -318,9 +318,8 @@ export function Sidebar({
           изменение высоты родителя. */}
       <div className="relative min-h-0 flex-1">
       <nav className="absolute inset-0 flex flex-col gap-0.5 overflow-y-auto px-1.5">
-        {/* §scripts — 6 кнопок прогонов (Контакты/OBD/zm_vl/СЭД/МОЛы/OTIF5):
-            свечение при работе + аватар запустившего. Не отдельный экран (юзер 2026-06-11). */}
-        {showFlow && <FlowScriptButtons collapsed={collapsed} />}
+        {/* Synchronization — подпункты-скрипты (пока «База МОЛов», далее по мере подключения). */}
+        {showFlow && <SyncNavRow collapsed={collapsed} />}
 
         {/* Секция «Работа». Порядок пунктов (юзер 2026-06-12):
             Поток · Рассылка · Транспорт · База · График · ВГХ · ЛОГ · ОТИФ(серым) · Хранилище.

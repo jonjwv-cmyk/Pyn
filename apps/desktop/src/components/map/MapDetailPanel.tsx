@@ -131,16 +131,40 @@ function pointHasRearLoad(point: MapPoint): boolean {
   return vehicleMatrixHasAny(point.rearByPurpose) || point.rearUnload;
 }
 
-function rearSummaryText(point: MapPoint): string {
-  const rearByPurpose = point.rearByPurpose ?? {};
-  const parts = POINT_PURPOSE_META
-    .map((purpose) => {
-      const list = rearByPurpose[purpose.id] ?? [];
-      if (list.length === 0) return '';
-      return `${purpose.label}: ${list.map(vehicleLabel).join(', ')}`;
-    })
-    .filter(Boolean);
-  return parts.join('; ');
+/** Оснастка места выгрузки — подписи из матрицы equipment. */
+function equipmentSummaryText(point: MapPoint): string {
+  const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
+  const list = EQUIPMENT_META.filter((m) => equipment[m.key]).map((m) => m.label);
+  return list.length > 0 ? list.join(', ') : 'не указано';
+}
+
+const PURPOSE_SHORT: Record<PointPurpose, string> = {
+  tech: 'Тех.',
+  exped: 'Эксп.',
+  other: 'Иное',
+};
+
+/** Назначения с ненулевой матрицей ТС или явно отмеченные в purposes. */
+function activePurposesForPoint(point: MapPoint): PointPurpose[] {
+  const vbp = point.vehiclesByPurpose ?? {};
+  const declared = new Set(point.purposes?.length ? point.purposes : []);
+  for (const p of POINT_PURPOSE_IDS) {
+    if ((vbp[p]?.length ?? 0) > 0) declared.add(p);
+  }
+  return POINT_PURPOSE_IDS.filter((p) => declared.has(p));
+}
+
+function purposeVehiclesLine(point: MapPoint, purpose: PointPurpose): string {
+  const list = point.vehiclesByPurpose?.[purpose] ?? [];
+  if (list.length === 0) return 'не указано';
+  if (list.length >= POINT_VEHICLE_TYPES.length) return 'все типы';
+  return list.map(vehicleLabel).join(', ');
+}
+
+function purposeRearLine(point: MapPoint, purpose: PointPurpose): string | null {
+  const list = point.rearByPurpose?.[purpose] ?? [];
+  if (list.length === 0) return null;
+  return list.map(vehicleLabel).join(', ');
 }
 
 function PointEditor({
@@ -180,52 +204,44 @@ function PointEditor({
     : 0;
 
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-3">
       <PointSummary point={point} />
+
+      {point.warehouseId && siblingPointCount > 1 && (
+        <WarehousePointsBlock
+          currentId={id}
+          warehouseId={point.warehouseId}
+          points={allPoints}
+          onSelect={(pointId) => onSelect({ type: 'point', id: pointId })}
+          onFocus={(p) => onFocus({ lat: p.lat, lng: p.lng })}
+        />
+      )}
+
+      {point.warehouseId && !editing && (
+        <button
+          type="button"
+          onClick={() => onShowWarehouseCard(point.warehouseId!)}
+          className="flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-400/8 text-[12px] font-medium text-emerald-300 outline-none transition-colors hover:bg-emerald-400/12"
+        >
+          <Warehouse className="h-3.5 w-3.5" strokeWidth={1.75} /> Склад и МОЛы
+        </button>
+      )}
 
       {canEdit && (
         <button
           type="button"
           onClick={() => setEditing((v) => !v)}
-          className="flex h-7 w-full items-center justify-between rounded border border-border-default px-2 text-[12px] text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-secondary"
+          className="text-[12px] font-medium text-accent-clay underline-offset-2 outline-none transition-colors hover:text-accent-clay/80 hover:underline"
         >
-          <span>{editing ? 'Скрыть правку точки' : 'Редактировать точку'}</span>
-          <span>{editing ? '−' : '+'}</span>
+          {editing ? 'Скрыть правку' : 'Редактировать'}
         </button>
       )}
 
-      {canEdit && editing && (
-        <SectionTitle label="Основное" />
-      )}
       {canEdit && editing && (
         <WarehousePicker
           value={point.warehouseId}
           onPick={(wid) => updatePoint(id, { warehouseId: wid })}
         />
-      )}
-
-      {/* Данные склада (карточка «как в Цеха» + МОЛы) — оверлеем ПОВЕРХ карты,
-          в панели точки остаются чисто данные точки (юзер 2026-07-05). */}
-      {point.warehouseId && !editing && (
-        <button
-          type="button"
-          onClick={() => onShowWarehouseCard(point.warehouseId!)}
-          className="flex h-8 w-full items-center justify-center gap-1.5 rounded border border-accent-clay/40 bg-accent-clay-bg/50 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/15"
-        >
-          <Warehouse className="h-3.5 w-3.5" strokeWidth={1.75} /> Карточка склада и МОЛы
-        </button>
-      )}
-
-      {point.warehouseId && siblingPointCount > 1 && (
-        <FoldBlock title="Точки выгрузки" defaultOpen>
-          <WarehousePointsBlock
-            currentId={id}
-            warehouseId={point.warehouseId}
-            points={allPoints}
-            onSelect={(pointId) => onSelect({ type: 'point', id: pointId })}
-            onFocus={(p) => onFocus({ lat: p.lat, lng: p.lng })}
-          />
-        </FoldBlock>
       )}
 
       {canEdit && editing && (
@@ -347,74 +363,60 @@ function PointEditor({
 
 function PointSummary({ point }: { point: MapPoint }) {
   const warehouse = useWarehousesStore((s) => (point.warehouseId ? s.byId.get(point.warehouseId) : undefined));
-  const equipment = point.equipment ?? EMPTY_POINT_EQUIPMENT;
-  const equipmentList = EQUIPMENT_META
-    .filter((m) => equipment[m.key])
-    .map((m) => m.label.toLowerCase());
-  const allowedVehicles = point.allowedVehicles ?? [];
   const title = point.warehouseId
     ? `Склад ${point.warehouseId}`
     : point.label.trim() || 'Точка без склада';
-  const place = point.comment.trim() || point.label.trim() || 'место выгрузки не подписано';
-  const vehicles = allowedVehicles.length === 0
-    ? 'Все машины'
-    : allowedVehicles.map(vehicleLabel).join(', ');
-  const purposes: PointPurpose[] = point.purposes?.length ? point.purposes : (point.warehouseId ? ['tech'] : ['other']);
-  const rearSummary = rearSummaryText(point);
+  const place = point.comment.trim() || point.label.trim();
+  const purposes = activePurposesForPoint(point);
+  const equipment = equipmentSummaryText(point);
 
   return (
-    <section className="rounded-lg border border-border-subtle bg-bg-elevated/35 px-3 py-2.5">
+    <section className="rounded-xl border border-border-subtle/80 bg-bg-elevated/30 px-3 py-2.5">
       <div className="flex items-start gap-2">
         <MapPinned className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" strokeWidth={1.75} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[14px] font-bold text-text-strong">{title}</p>
-          {warehouse?.shop_name && <p className="mt-0.5 truncate text-[12px] text-text-muted">{warehouse.shop_name}</p>}
-          <p className="mt-1 text-[12.5px] text-text-secondary">{place}</p>
+          <p className="truncate text-[14px] font-semibold text-text-strong">{title}</p>
+          {warehouse?.shop_name && <p className="mt-0.5 truncate text-[11.5px] text-text-muted">{warehouse.shop_name}</p>}
+          {place && <p className="mt-1 text-[12px] leading-snug text-text-secondary">{place}</p>}
         </div>
       </div>
 
-      {/* Назначения точки — явные признаки (Технология / Экспедиция / Иное) */}
-      <div className="mt-2 flex flex-wrap gap-1">
-        {POINT_PURPOSE_META.filter((m) => purposes.includes(m.id)).map((m) => (
-          <span
-            key={m.id}
-            className="rounded px-1.5 py-0.5 text-[10.5px] font-medium"
-            style={{ backgroundColor: `${m.color}22`, color: m.color }}
-          >{m.label}</span>
-        ))}
+      <div className="mt-2.5 grid grid-cols-3 gap-1.5">
+        {POINT_PURPOSE_IDS.map((purposeId) => {
+          const meta = POINT_PURPOSE_META.find((m) => m.id === purposeId)!;
+          const active = purposes.includes(purposeId);
+          const vehicles = purposeVehiclesLine(point, purposeId);
+          const rearLine = purposeRearLine(point, purposeId);
+          return (
+            <div
+              key={purposeId}
+              className={cn(
+                'min-w-0 rounded-lg border px-2 py-1.5',
+                active ? 'border-border-subtle bg-bg-deep/35' : 'border-transparent bg-bg-deep/15 opacity-55',
+              )}
+            >
+              <p className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: meta.color }}>
+                {PURPOSE_SHORT[purposeId]}
+              </p>
+              <p className="mt-0.5 text-[10.5px] leading-snug text-text-secondary" title={active ? vehicles : undefined}>
+                {active ? vehicles : '—'}
+              </p>
+              {active && rearLine && (
+                <p className="mt-0.5 text-[10px] leading-snug text-emerald-200/85" title={`ТМЦ сзади: ${rearLine}`}>
+                  сзади: {rearLine}
+                </p>
+              )}
+            </div>
+          );
+        })}
       </div>
 
-      <div className="mt-2 grid grid-cols-2 gap-1.5 text-[11.5px]">
-        <InfoPill label="Заезд" value={vehicles} />
-        <InfoPill label="Оснастка" value={equipmentList.length > 0 ? equipmentList.join(', ') : 'не указано'} />
-        {pointHasRearLoad(point) && <InfoPill label="Сзади" value={rearSummary || 'ТМЦ сзади'} />}
-      </div>
-    </section>
-  );
-}
-
-function InfoPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 rounded-md border border-border-subtle bg-bg-deep/35 px-2 py-1">
-      <p className="text-[10px] uppercase tracking-[0.06em] text-text-muted">{label}</p>
-      <p className="truncate text-text-secondary" title={value}>{value}</p>
-    </div>
-  );
-}
-
-function FoldBlock({ title, defaultOpen = false, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <section className="rounded-lg border border-border-subtle/80 bg-bg-deep/[0.18]">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex h-8 w-full items-center justify-between px-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted outline-none transition-colors hover:text-text-secondary"
-      >
-        <span>{title}</span>
-        <span className="text-[14px] leading-none">{open ? '−' : '+'}</span>
-      </button>
-      {open && <div className="px-2 pb-2">{children}</div>}
+      {equipment !== 'не указано' && (
+        <p className="mt-2 text-[11px] text-text-muted">
+          <span className="text-text-muted/80">Оснастка: </span>
+          <span className="text-text-secondary">{equipment}</span>
+        </p>
+      )}
     </section>
   );
 }
@@ -504,14 +506,14 @@ function WarehousePointsBlock({
   const siblings = points.filter((p) => p.warehouseId === warehouseId);
   if (siblings.length <= 1) return null;
   return (
-    <div className="rounded-lg border border-border-subtle bg-bg-elevated/35 px-3 py-2.5">
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-        Точки склада {warehouseId}
+    <div>
+      <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+        Точки склада · {siblings.length}
       </p>
-      <div className="space-y-1">
+      <div className="flex flex-wrap gap-1">
         {siblings.map((p, index) => {
           const active = p.id === currentId;
-          const title = p.label.trim() || p.comment.trim() || `${warehouseId} · точка ${index + 1}`;
+          const title = p.label.trim() || p.comment.trim() || `${index + 1}`;
           return (
             <button
               key={p.id}
@@ -521,15 +523,14 @@ function WarehousePointsBlock({
                 onFocus(p);
               }}
               className={cn(
-                'flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-[12px] outline-none transition-colors',
+                'max-w-full truncate rounded-lg border px-2 py-1 text-[11.5px] outline-none transition-colors',
                 active
-                  ? 'border-emerald-400/45 bg-emerald-400/10 text-text-strong'
+                  ? 'border-emerald-400/45 bg-emerald-400/12 font-medium text-text-strong'
                   : 'border-border-subtle text-text-secondary hover:bg-bg-hover',
               )}
+              title={p.label.trim() || p.comment.trim() || `${warehouseId} · точка ${index + 1}`}
             >
-              <MapPinned className="h-3.5 w-3.5 shrink-0 text-emerald-300" strokeWidth={1.75} />
-              <span className="min-w-0 flex-1 truncate">{title}</span>
-              {pointHasRearLoad(p) && <span className="shrink-0 rounded bg-emerald-400/15 px-1 text-[10px] text-emerald-200">сзади</span>}
+              {title}
             </button>
           );
         })}

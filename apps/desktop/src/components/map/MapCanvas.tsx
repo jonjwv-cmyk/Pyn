@@ -3425,11 +3425,11 @@ function createPinElement(
   el.style.opacity = dimmed ? '0.4' : '1';
   el.innerHTML = `
     <div style="position:relative;width:36px;height:42px;pointer-events:auto;">
-      ${label ? `<div data-pin-label style="position:absolute;left:50%;top:0;transform:translateX(-50%);max-width:150px;padding:0.5px 5px;border-radius:4px;background:rgba(8,11,17,.72);color:#fff;font:700 10px/13.5px Inter,Arial,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px rgba(0,0,0,.8);">${esc(label)}</div>` : ''}
-      ${selected ? `<div style="position:absolute;left:50%;top:32px;width:11px;height:5px;margin-left:-5.5px;border-radius:999px;background:rgba(0,0,0,.35);filter:blur(2px);"></div><div style="position:absolute;left:50%;top:18px;width:17px;height:17px;margin-left:-8.5px;border-radius:999px;background:${color};opacity:.18;box-shadow:0 0 0 5px ${color}2e;"></div>` : ''}
-      <svg width="22" height="29" viewBox="-15 -40 30 40" style="position:absolute;left:7px;top:12px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.5));">
-        <path d="M0 0 C -8.5 -13 -12.5 -19 -12.5 -27 a 12.5 12.5 0 1 1 25 0 C 12.5 -19 8.5 -13 0 0 Z" fill="${color}" stroke="#ffffff" stroke-width="${selected ? 2.4 : 1.8}" stroke-opacity="${selected ? '1' : '.85'}"/>
-        <circle cx="0" cy="-27" r="4.6" fill="#0c0f14" fill-opacity=".9"/>
+      ${label ? `<div data-pin-label style="position:absolute;left:50%;top:0;transform:translateX(-50%);max-width:150px;padding:1px 6px;border-radius:5px;background:rgba(8,11,17,.78);color:#fff;font:600 10px/13px Inter,Arial,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px rgba(0,0,0,.75);">${esc(label)}</div>` : ''}
+      ${selected ? `<div style="position:absolute;left:50%;top:33px;width:12px;height:5px;margin-left:-6px;border-radius:999px;background:rgba(0,0,0,.32);filter:blur(2px);"></div><div style="position:absolute;left:50%;top:17px;width:20px;height:20px;margin-left:-10px;border-radius:999px;background:${color};opacity:.16;box-shadow:0 0 0 6px ${color}24;"></div>` : ''}
+      <svg width="22" height="29" viewBox="-15 -40 30 40" style="position:absolute;left:7px;top:12px;filter:drop-shadow(0 2px 4px rgba(0,0,0,.45));">
+        <path d="M0 0 C -8.5 -13 -12.5 -19 -12.5 -27 a 12.5 12.5 0 1 1 25 0 C 12.5 -19 8.5 -13 0 0 Z" fill="${color}" stroke="#ffffff" stroke-width="${selected ? 2.5 : 2}" stroke-opacity="${selected ? '1' : '.9'}"/>
+        <circle cx="0" cy="-27" r="4.2" fill="#fff" fill-opacity=".95" stroke="#0c0f14" stroke-width="1.1"/>
       </svg>
       ${dimmed ? `<svg width="13" height="13" viewBox="0 0 16 16" style="position:absolute;left:20px;top:9px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.7));"><circle cx="8" cy="8" r="7" fill="#EF4444" stroke="#fff" stroke-width="1.4"/><rect x="3.6" y="6.8" width="8.8" height="2.4" rx="1.2" fill="#fff"/></svg>` : ''}
     </div>`;
@@ -3481,16 +3481,16 @@ function createCrossingElement(crossing: MapCrossing, selected: boolean): HTMLDi
  */
 function createClearanceElement(clearance: MapClearance, selected: boolean): HTMLDivElement {
   const el = document.createElement('div');
-  el.style.width = '32px';
-  el.style.height = '32px';
+  el.style.width = '40px';
+  el.style.height = '40px';
   el.style.cursor = 'pointer';
   const glow = selected
     ? 'box-shadow:0 0 0 3px rgba(255,255,255,.85),0 2px 6px rgba(0,0,0,.6);'
     : 'box-shadow:0 0 0 1px rgba(10,13,18,.85),0 2px 5px rgba(0,0,0,.55);';
   el.innerHTML = `
-    <div style="position:relative;width:32px;height:32px;pointer-events:auto;">
-      <div style="position:absolute;inset:2px;border-radius:999px;background:#FFFFFF;border:3px solid #EF4444;${glow}display:flex;align-items:center;justify-content:center;">
-        <span style="font:800 10px/1 Inter,Arial,sans-serif;color:#111827;letter-spacing:-0.2px;">${esc(formatClearanceMeters(clearance.heightMm))}</span>
+    <div style="position:relative;width:40px;height:40px;pointer-events:auto;">
+      <div style="position:absolute;inset:1px;border-radius:999px;background:#FFFFFF;border:2.5px solid #EF4444;${glow}display:flex;align-items:center;justify-content:center;">
+        <span style="font:800 11.5px/1 Inter,Arial,sans-serif;color:#111827;letter-spacing:-0.15px;">${esc(formatClearanceMeters(clearance.heightMm))}</span>
       </div>
     </div>`;
   return el;

@@ -476,23 +476,39 @@ export function FlowTransportGrid(): JSX.Element {
 
   useEffect(() => {
     let alive = true;
-    void Promise.all([flowTransportGet(api), flowVehiclesGet(api)])
-      .then(([tr, veh]) => {
+    const load = async () => {
+      setLoading(true);
+      setMsg('');
+      try {
+        const veh = trVehCache ?? await flowVehiclesGet(api);
         if (!alive) return;
-        trRowsCache = tr;
         trVehCache = veh;
-        setRows(tr);
         setVehicles(veh);
-        setLoading(false);
-      })
-      .catch((e) => {
+      } catch {
+        /* машины вторичны — грузим строки дня в любом случае */
+      }
+      const backoff = [0, 2000, 5000];
+      for (let i = 0; i < backoff.length; i++) {
+        if (backoff[i]) await new Promise((r) => setTimeout(r, backoff[i]));
         if (!alive) return;
-        setLoading(false);
-        setMsg(`Ошибка загрузки: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
-      });
-    return () => {
-      alive = false;
+        try {
+          const tr = await flowTransportGet(api);
+          if (!alive) return;
+          trRowsCache = tr;
+          setRows(tr);
+          setLoading(false);
+          setMsg('');
+          return;
+        } catch (e) {
+          if (i === backoff.length - 1) {
+            setLoading(false);
+            setMsg(`Ошибка загрузки: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
+          }
+        }
+      }
     };
+    void load();
+    return () => { alive = false; };
   }, []);
 
   useWsEvent<FlowTransportChangedEvent>('flow_transport_changed', (e) => {
