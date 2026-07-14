@@ -185,6 +185,8 @@ export type VehicleType =
   | 'pullman9'
   | 'pullman10'
   | 'pullman12'
+  | 'pullman135'
+  | 'bus'
   | 'bort'
   | 'bortovik'
   | 'gazelle'
@@ -211,6 +213,8 @@ const BODY_TYPE_TO_VEHICLE: Record<BodyType, VehicleType> = {
   'Пульман 9м': 'pullman9',
   'Пульман 10м': 'pullman10',
   'Пульман 12м': 'pullman12',
+  'Пульман 13,5 м': 'pullman135',
+  'Автобус': 'bus',
   'Газель': 'gazelle',
   'Масловоз': 'maslovoz',
   'Трал': 'tral',
@@ -235,6 +239,8 @@ const VEHICLE_SHORT: Record<VehicleType, string> = {
   pullman9: 'П9',
   pullman10: 'П10',
   pullman12: 'П12',
+  pullman135: 'П13.5',
+  bus: 'АВТ',
   gazelle: 'ГАЗ',
   maslovoz: 'МАСЛ',
   tral: 'ТРАЛ',
@@ -266,7 +272,7 @@ export const VEHICLE_TYPES: ReadonlyArray<{ id: VehicleType; label: string; shor
  *  уже стоят П9/П12/БОРТ и т.д.), НОВЫЕ 5 добавляем следом. */
 export const POINT_VEHICLE_TYPES: ReadonlyArray<{ id: VehicleType; label: string; short: string }> =
   ([
-    'furgon_khp', 'bort', 'pullman9', 'pullman10', 'pullman12', 'gazelle', 'maslovoz',
+    'furgon_khp', 'bort', 'pullman9', 'pullman10', 'pullman12', 'pullman135', 'bus', 'gazelle', 'maslovoz',
     'tral', 'benzovoz', 'samosval_bort', 'samosval_bez_bort', 'belaz',
     'atlas_bucket', 'atlas', 'furgon',
   ] as VehicleType[]).map((id) => ({

@@ -12,6 +12,8 @@ export const BODY_TYPES = [
   'Пульман 9м',
   'Пульман 10м',
   'Пульман 12м',
+  'Пульман 13,5 м',
+  'Автобус',
   'Газель',
   'Масловоз',
   'Трал',
@@ -43,6 +45,8 @@ const REAR_LOAD_BY_BODY_TYPE: Record<BodyType, boolean> = {
   'Пульман 9м': true,
   'Пульман 10м': true,
   'Пульман 12м': true,
+  'Пульман 13,5 м': true,
+  'Автобус': false,
   'Газель': true,
   'Масловоз': false,
   'Трал': true,
@@ -71,6 +75,8 @@ const CAPACITY_BY_BODY_TYPE_KG: Record<string, number> = {
   'пульман 9м': 15_000,
   'пульман 10м': 20_000,
   'пульман 12м': 20_000,
+  'пульман 13,5м': 22_000,
+  'автобус': 8_000,
   'самосвал борт': 10_000,
   'самосвал без борт': 10_000,
 };
@@ -80,7 +86,7 @@ function bodyTypeKey(label: string): string {
     .trim()
     .toLowerCase()
     .replace(/[.]+$/g, '')
-    .replace(/(\d+)\s*м/g, '$1м')
+    .replace(/(\d+(?:[.,]\d+)?)\s*м/g, '$1м')
     .replace(/\s+/g, ' ');
 }
 

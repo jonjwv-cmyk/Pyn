@@ -113,49 +113,125 @@ function parseRuDate(raw: string): string {
   return '';
 }
 
+const T = (v: unknown) => String(v == null ? '' : v).trim();
+
+/** Гаражный № в ячейке (без пробелов). */
+function looksGarageNo(raw: string): boolean {
+  const s = T(raw).replace(/\s+/g, '');
+  return /^\d{1,5}$/.test(s);
+}
+
+/** Полный шаблон (29 кол.) или укороченный без формульного блока (24 кол.). */
+type TransportPasteLayout = 'full' | 'short';
+
+function detectTransportPasteLayout(parts: string[]): TransportPasteLayout | null {
+  if (!parseRuDate(parts[0] ?? '')) return null;
+  if (parts.length >= 10 && looksGarageNo(parts[9] ?? '')) return 'full';
+  if (parts.length >= 5 && looksGarageNo(parts[4] ?? '')) return 'short';
+  return null;
+}
+
+/** Индексы полей вставки (без заголовка). */
+const PASTE_IDX = {
+  full: {
+    garage: 9, gos: 11, work: 12, time: 13, status: 14, comment: 15, driver: 16,
+    phoneFmt: 17, exp: 18, ot: 19, sp: 20, order: 21, maxMass: 22, capacity: 23,
+    len: 24, wid: 25, hei: 26, ban: 27, phoneRaw: 28,
+  },
+  // Без формульных колонок 4–8 (доп.тн/тн/Д/Ш/В) — типичная копия «как есть».
+  short: {
+    garage: 4, gos: 6, work: 7, time: 8, status: 9, comment: 10, driver: 11,
+    phoneFmt: 12, exp: 13, ot: 14, sp: 15, order: 16, maxMass: 17, capacity: 18,
+    len: 19, wid: 20, hei: 21, ban: 22, phoneRaw: 23,
+  },
+} as const;
+
+function pick(parts: string[], idx: number): string {
+  return idx >= 0 && idx < parts.length ? T(parts[idx]) : '';
+}
+
+function parsePasteNumber(raw: string): number | null {
+  const s = T(raw).replace(/\s+/g, '').replace(/,/g, '.');
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Габарит в мм из сырой ячейки; отсекаем массы/мусор. */
+function parsePasteDimMm(raw: string, kind: 'len' | 'wid' | 'hei'): string {
+  const n = parsePasteNumber(raw);
+  if (n == null) return '';
+  const ranges = {
+    len: [2500, 25000],
+    wid: [1400, 3600],
+    hei: [120, 6000],
+  } as const;
+  const [lo, hi] = ranges[kind];
+  if (n < lo || n > hi) return '';
+  return String(Math.round(n));
+}
+
+type PasteFieldIdx = { len: number; wid: number; hei: number };
+
+function parsePasteDims(parts: string[], idx: PasteFieldIdx): { len_mm: string; wid_mm: string; hei_mm: string } {
+  const len = parsePasteDimMm(pick(parts, idx.len), 'len');
+  const wid = parsePasteDimMm(pick(parts, idx.wid), 'wid');
+  const hei = parsePasteDimMm(pick(parts, idx.hei), 'hei');
+  // Частично заполненный хвост (Excel обрезал пустые) — не тянем capacity в «длину».
+  if (!len && (pick(parts, idx.wid) || pick(parts, idx.hei))) return { len_mm: '', wid_mm: wid, hei_mm: hei };
+  return { len_mm: len, wid_mm: wid, hei_mm: hei };
+}
+
+function parseTransportPasteRow(parts: string[], layout: TransportPasteLayout): FlowTransportPasteRow | null {
+  const idx = PASTE_IDX[layout];
+  const tdate = parseRuDate(parts[0] ?? '');
+  if (!tdate) return null;
+  const garage = pick(parts, idx.garage);
+  const work = pick(parts, idx.work);
+  if (!garage && !work) return null;
+  const dims = parsePasteDims(parts, idx);
+  const banRaw = pick(parts, idx.ban).toLowerCase();
+  return {
+    tdate,
+    garage_no: garage,
+    color: pick(parts, 1),
+    vtype: pick(parts, 2),
+    model: pick(parts, 3),
+    gos_no: pick(parts, idx.gos),
+    max_mass_kg: pick(parts, idx.maxMass),
+    capacity_kg: pick(parts, idx.capacity),
+    ...dims,
+    ban: banRaw.startsWith('да') ? 1 : 0,
+    work,
+    time_range: pick(parts, idx.time),
+    status: pick(parts, idx.status),
+    comment: pick(parts, idx.comment),
+    driver: pick(parts, idx.driver),
+    driver_phone: pick(parts, idx.phoneRaw) || pick(parts, idx.phoneFmt),
+    expeditors: pick(parts, idx.exp),
+    ot: pick(parts, idx.ot),
+    sp: pick(parts, idx.sp),
+    order_no: pick(parts, idx.order),
+  };
+}
+
 /**
- * Разобрать вставку из буфера — шаблон листа 🚚 КАК ЕСТЬ (TSV, 29 колонок):
- * ДАТА·Цв.куз.·ТИП·МОДЕЛЬ·доп.тн·тн·Д·Ш·В·№·ВЫЕЗД·ГОС.№·РАБОТА·⏰·СТАТУС·КОМЕНТ.·
- * ВОДИТЕЛЬ·СОТ.·ЭКСПЕДИТОРЫ·ОТ·СП·Заказ·max.доп.масса/кг·грузопод./кг·Д·Ш·В·ЗАПРЕТ·СОТ(raw).
- * Формульные колонки шаблона (доп.тн/тн/Д-Ш-В м/ВЫЕЗД/СОТ formatted) игнорируем —
- * берём «хвостовые» сырые (масса/габариты мм/запрет/телефон raw). Строки без даты
- * (шапка/мусор) пропускаем; строки без машины (напр. «Отклонен») сохраняем.
+ * Разобрать вставку из буфера — шаблон листа 🚚 (TSV, без заголовка):
+ * полный 29 кол. или укороченный 24 кол. (без формульного блока 4–8).
+ * Сырые габариты мм — только из хвоста; пустые в буфере = «нет данных» (сброс
+ * старых неверных значений на сервере). Строки без даты пропускаем.
  */
 export function parseTransportPaste(tsv: string): FlowTransportPasteRow[] {
   const out: FlowTransportPasteRow[] = [];
+  let layout: TransportPasteLayout | null = null;
   for (const raw of String(tsv ?? '').split(/\r?\n/)) {
-    if (!raw.trim()) continue;
-    const p = raw.split('\t').map((x) => x.trim());
-    const tdate = parseRuDate(p[0] ?? '');
-    if (!tdate) continue; // шапка/мусор
-    const work = p[12] ?? '';
-    const garage = p[9] ?? '';
-    if (!garage && !work) continue; // совсем пустая строка дня
-    const banRaw = (p[27] ?? '').toLowerCase();
-    out.push({
-      tdate,
-      garage_no: garage,
-      color: p[1] ?? '',
-      vtype: p[2] ?? '',
-      model: p[3] ?? '',
-      gos_no: p[11] ?? '',
-      max_mass_kg: p[22] ?? '',
-      capacity_kg: p[23] ?? '',
-      len_mm: p[24] ?? '',
-      wid_mm: p[25] ?? '',
-      hei_mm: p[26] ?? '',
-      ban: banRaw.startsWith('да') ? 1 : 0,
-      work,
-      time_range: p[13] ?? '',
-      status: p[14] ?? '',
-      comment: p[15] ?? '',
-      driver: p[16] ?? '',
-      driver_phone: (p[28] ?? '') || (p[17] ?? ''),
-      expeditors: p[18] ?? '',
-      ot: p[19] ?? '',
-      sp: p[20] ?? '',
-      order_no: p[21] ?? '',
-    });
+    if (!T(raw)) continue;
+    const parts = raw.split('\t').map((x) => x.trim());
+    const rowLayout: TransportPasteLayout | null = layout ?? detectTransportPasteLayout(parts);
+    if (!rowLayout) continue;
+    layout = rowLayout;
+    const row = parseTransportPasteRow(parts, rowLayout);
+    if (row) out.push(row);
   }
   return out;
 }
