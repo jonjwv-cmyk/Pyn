@@ -799,25 +799,11 @@ export function ProbaScreen() {
                   </span>
                 </div>
 
-                {/* Легенда предпраздничных дней — показываем только если в месяце
-                    есть дни `*` (иначе строка лишняя). После «Склады отгрузки». */}
-                {shortDaysMonth.length > 0 && (
-                  <div className="proba-meta-row proba-meta-row--readonly proba-meta-row--legend">
-                    <span className="proba-meta-label">
-                      <span className="proba-meta-label-text">
-                        <sup className="proba-date-star">*</sup>
-                      </span>
-                    </span>
-                    <span className="proba-meta-value">
-                      смена короче на 1 час
-                    </span>
-                  </div>
-                )}
               </div>
 
             </header>
 
-            <TableHead counts={clusterCounts} />
+            <TableHead counts={clusterCounts} hasShort={shortDaysMonth.length > 0} />
             </div>
 
             <main className="proba-shops">
@@ -846,6 +832,11 @@ export function ProbaScreen() {
                           <span className="proba-cluster-total">
                             · {clusterCounts.ntmk + clusterCounts.vyezd + clusterCounts.khp}
                           </span>
+                          {shortDaysMonth.length > 0 && (
+                            <span className="proba-shift-legend">
+                              <span className="proba-date-star">*</span> смена короче на 1 час
+                            </span>
+                          )}
                         </span>
                       </div>
                     </td>
@@ -1225,8 +1216,11 @@ function VerstkaLine({ commit }: { commit: ScheduleCommit }) {
 
 function TableHead({
   counts,
+  hasShort,
 }: {
   counts: { ntmk: number; vyezd: number; khp: number };
+  /** В месяце есть предпраздничные дни `*` → показать легенду у счётчика. */
+  hasShort: boolean;
 }) {
   const { t } = useTranslation();
   const total = counts.ntmk + counts.vyezd + counts.khp;
@@ -1248,6 +1242,11 @@ function TableHead({
             {t('common.cluster_khp')}<span className="proba-cluster-count">{counts.khp}</span>
           </span>
           <span className="proba-cluster-total">· {total}</span>
+          {hasShort && (
+            <span className="proba-shift-legend">
+              <span className="proba-date-star">*</span> смена короче на 1 час
+            </span>
+          )}
         </span>
       </div>
     </div>
@@ -1330,7 +1329,7 @@ function ShopBlock({
                       <span className={d === todayDay ? 'proba-date--today' : undefined}>
                         {d}
                         {shortSet.has(d) && (
-                          <sup className="proba-date-star" title="Предпраздничный день — смена сокращена на 1 час">*</sup>
+                          <span className="proba-date-star" title="Предпраздничный день — смена короче на 1 час">*</span>
                         )}
                       </span>
                     </Fragment>
@@ -1976,18 +1975,17 @@ function ProbaStyles() {
         letter-spacing: 0.04em;
         white-space: nowrap;
       }
-      /* Звёздочка-степень у предпраздничных чисел (смена −1ч). */
+      /* Звёздочка у предпраздничных чисел — инлайн «3*» (смена −1ч). */
       .proba-date-star {
-        font-size: 0.7em;
-        line-height: 0;
-        vertical-align: super;
         color: #C08457;
         font-weight: 600;
-        margin-left: 0.5px;
       }
-      .proba-meta-row--legend .proba-meta-value {
+      /* Легенда «* смена короче на 1 час» в строке счётчика складов. */
+      .proba-shift-legend {
+        margin-left: 8px;
         color: #8C8A83;
         font-style: italic;
+        white-space: nowrap;
       }
 
       .proba-codes {
