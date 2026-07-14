@@ -216,6 +216,7 @@ export {
   scheduleGet,
   schedulePut,
   scheduleMonthsList,
+  prodCalendarGet,
   readConflictSnapshot,
   scheduleLockAcquire,
   scheduleLockHeartbeat,
@@ -226,6 +227,7 @@ export {
   type ScheduleMonthSummary,
   type SchedulePutResult,
   type ScheduleLockOwner,
+  type ProdCalendarYearWire,
 } from './schedule';
 
 export {

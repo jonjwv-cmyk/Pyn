@@ -73,6 +73,7 @@ import { FlowSearchPanel, type FlowSearchGroup } from './FlowSearchPanel';
 import { ContactActionDialog, type ContactActionRequest } from '@/components/mol/ContactActionDialog';
 import { useMolStore } from '@/lib/stores';
 import { useWarehousesStore } from '@/lib/warehouses-store';
+import { useProdCalendarStore, pickYear, dayShiftEndMin } from '@/lib/prod-calendar';
 import { useMapStore } from '@/lib/map-store';
 import { initMap } from '@/lib/map-repo';
 import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
@@ -1491,6 +1492,8 @@ export function FlowSandboxGrid(): JSX.Element {
   const planMonths = useMemo(() => [{ year: planYear, month: planMonth }], [planYear, planMonth]);
   const planMetaMap = useScheduleMonthsMeta(planMonths);
   const planMeta = planMetaMap.get(monthKey(planYear, planMonth));
+  // Производственный календарь — для конца дневной смены в колонке ОКНО (endMin).
+  const prodCalByYear = useProdCalendarStore((s) => s.byYear);
 
   // Якоря с АКТИВНОЙ поставкой (позиция «ушла в план») — в формировании её нет, и в
   // транспортную норму (доступный остаток) такие НЕ считаем. Источник — flow_deliveries
@@ -2484,13 +2487,32 @@ export function FlowSandboxGrid(): JSX.Element {
         } satisfies FlowHistoryCell;
       }
       if (spec.kind === 'window') {
-        // Доставка — наше окно времени (пикер 08:30–19:30 с правилами обеда).
+        // Доставка — окно ДНЕВНОЙ смены (08:00 → конец смены, обед 12:00–12:45).
+        // Конец смены зависит от даты этой строки по графику (колонка ГРАФ):
+        // ПН-ЧТ 17:00 / ПТ 15:45, −1ч в предпраздничные. Считаем от той же
+        // ближайшей даты, что и ГРАФ; нет даты → дефолт 17:00 в самой ячейке.
         const value = String(rowData.delivery ?? '');
+        let endMin: number | undefined;
+        const clstStr = String(rowData.clst ?? '');
+        const wd = clstStr && clstStr !== CLST_NONE ? clstStr.split(' ')[0] : '';
+        if (wd) {
+          const todayIso = todayIsoLocal();
+          const tomorrow = isoAddDays(todayIso, 1);
+          const monthStart = `${planYear}-${String(planMonth).padStart(2, '0')}-01`;
+          const graphRef = monthStart > tomorrow ? monthStart : tomorrow;
+          const near = nearestGraphDate(wd, graphRef);
+          if (near) {
+            const y = Number(near.slice(0, 4));
+            const m = Number(near.slice(5, 7));
+            const d = Number(near.slice(8, 10));
+            endMin = dayShiftEndMin(pickYear(prodCalByYear, y), y, m, d) ?? undefined;
+          }
+        }
         return {
           kind: GridCellKind.Custom,
           allowOverlay: spec.editable === true,
           copyData: value,
-          data: { kind: 'flow-window', value },
+          data: { kind: 'flow-window', value, endMin },
         } satisfies FlowWindowCell;
       }
       if (spec.kind === 'score') {
@@ -2638,7 +2660,7 @@ export function FlowSandboxGrid(): JSX.Element {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor, mapPoints, transferPendingByAnchor, planWasByAnchor, vghByKey],
+    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor, mapPoints, transferPendingByAnchor, planWasByAnchor, vghByKey, planYear, planMonth, prodCalByYear],
   );
 
   // Шрифт ЗНАЧЕНИЯ per-колонке (clst 7 / day·stat·kg·v·mol·request 8 / прочее 10) +

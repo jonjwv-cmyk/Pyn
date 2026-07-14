@@ -20,6 +20,7 @@ import { PersonEditDialog } from '@/components/mol/PersonEditDialog';
 import { distinctStatuses } from '@/lib/persons-view';
 import { initWarehouses, refreshWarehousesFromServer } from '@/lib/warehouses-repo';
 import { refreshMapFromServer } from '@/lib/map-repo';
+import { refreshProdCalendarFromServer } from '@/lib/prod-calendar/repo';
 import { initPersons, refreshPersonsFromServer } from '@/lib/persons-repo';
 import { usePersonsStore } from '@/lib/persons-store';
 import { prefetchScheduleMonthsMeta } from '@/lib/schedule/use-schedule-sync';
@@ -622,6 +623,8 @@ export function App() {
     // Прогреваем мету графика (prev/current/next) — карточки склада показывают
     // дни доставки сразу, без async pop-in при первом открытии Базы.
     prefetchScheduleMonthsMeta();
+    // Производственный календарь (D1) — для «Графика» и окна ОКНО; при ошибке seed.
+    void refreshProdCalendarFromServer();
   }, [session]);
   // §единая-база — base_changed больше не слушаем: МОЛ выводится из persons,
   // а правки контактов прилетают через 'persons_changed' (ниже).

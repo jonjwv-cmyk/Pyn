@@ -12,6 +12,11 @@ import {
 } from '@/lib/schedule/compute';
 import { migrateScheduleLocalStorageToServer } from '@/lib/schedule/migrate-localstorage';
 import { resetScheduleCache, useScheduleSync } from '@/lib/schedule/use-schedule-sync';
+import {
+  autoNonDeliveryDays,
+  shortDaysOfMonth,
+  useProdCalendarYear,
+} from '@/lib/prod-calendar';
 import { LockedEditorContent } from '@/components/schedule/EditorLockedOverlay';
 import type {
   ScheduleApproverDate,
@@ -198,6 +203,31 @@ export function ProbaScreen() {
   const state = sync.state;
   const setState = sync.setState;
 
+  // ── Производственный календарь (авто «не возим» + предпраздничные) ──────────
+  // Авто-нерабочие для ГРАФИКА: выходные + праздники + первый/последний рабочий
+  // день месяца. Их снять руками нельзя. Ручные добавки живут в meta.holidays.
+  // Эффективный набор «не возим» = авто ∪ ручные. Для зафиксированного месяца
+  // meta.holidays уже заморожен как эффективный набор на момент фиксации —
+  // повторно авто-правила НЕ накладываем (иначе задним числом изменим архив).
+  const cal = useProdCalendarYear(state.meta.year);
+  const autoNonDelivery = useMemo(
+    () => autoNonDeliveryDays(cal, state.meta.year, state.meta.month),
+    [cal, state.meta.year, state.meta.month],
+  );
+  const shortDaysMonth = useMemo(
+    () => shortDaysOfMonth(cal, state.meta.year, state.meta.month),
+    [cal, state.meta.year, state.meta.month],
+  );
+  // «Не возим» = ВСЕ нерабочие дни: выходные + праздники + первый/последний
+  // рабочий день месяца + ручные добавки. Перечисляем полностью (юзер 2026-07-14).
+  const effectiveHolidays = useMemo(
+    () =>
+      state.meta.commit
+        ? state.meta.holidays
+        : [...new Set([...autoNonDelivery, ...state.meta.holidays])].sort((a, b) => a - b),
+    [state.meta.commit, autoNonDelivery, state.meta.holidays],
+  );
+
   // ─── Lock resource_id'ы для editor popover'ов ─────────────────────────────
   // §TZ-SERVER-SYNC-COLLAB §3.1. Каждый editor получает уникальный ID per-month
   // → юзеры в разных месяцах не блокируют друг друга. Один и тот же editor в
@@ -254,6 +284,11 @@ export function ProbaScreen() {
     // месяц рендерится из него (useArchived), не из живого warehouses store, и
     // больше не меняется вслед за правками карточек складов в МОЛ.
     const frozen = buildFrozenSnapshot(useWarehousesStore.getState().warehouses);
+    // Замораживаем ЭФФЕКТИВНЫЙ набор «не возим» (авто ∪ ручные) в meta.holidays,
+    // чтобы зафиксированный месяц воспроизводил те же даты доставки и после
+    // изменения производственного календаря на сервере.
+    const frozenHolidays = [...new Set([...autoNonDelivery, ...state.meta.holidays])]
+      .sort((a, b) => a - b);
     setState((s) => ({
       ...s,
       shops: frozen.shops,
@@ -261,13 +296,14 @@ export function ProbaScreen() {
       removedWarehouses: frozen.removed,
       meta: {
         ...s.meta,
+        holidays: frozenHolidays,
         commit: {
           author: currentUser || 'неизвестно',
           committedAt: new Date().toISOString(),
         },
       },
     }));
-  }, [setState, currentUser]);
+  }, [setState, currentUser, autoNonDelivery, state.meta.holidays]);
 
   const undo = sync.undo;
   const redo = sync.redo;
@@ -343,7 +379,7 @@ export function ProbaScreen() {
         const rows: ScheduleShop['rows'] = [];
         for (const row of shop.rows) {
           const natural = computeNaturalDays(
-            meta.year, meta.month, row.weekday, meta.holidays,
+            meta.year, meta.month, row.weekday, effectiveHolidays,
           );
           const groups = splitWarehousesByOverrides(
             row.warehouses, natural, meta.overrides,
@@ -396,7 +432,7 @@ export function ProbaScreen() {
             isVyezd: w.cluster === 'ВЫЕЗД' ? true : undefined,
           }));
         const natural = computeNaturalDays(
-          meta.year, meta.month, weekday, meta.holidays,
+          meta.year, meta.month, weekday, effectiveHolidays,
         );
         const groups = splitWarehousesByOverrides(codes, natural, meta.overrides);
         groups.forEach((g, gi) => {
@@ -411,7 +447,7 @@ export function ProbaScreen() {
     });
   }, [
     allWarehouses, useArchived, state.shops,
-    meta.year, meta.month, meta.holidays, meta.overrides,
+    meta.year, meta.month, effectiveHolidays, meta.overrides,
   ]);
 
   const shippingWarehouses = useMemo<WarehouseCode[]>(
@@ -500,12 +536,15 @@ export function ProbaScreen() {
   // Пользовательские explicit-снятия (override.days subset of natural) — сохраняются.
   const setHolidays = (days: number[]) =>
     setState((s) => {
+      // Эффективный набор «не возим» = авто (выходные/праздники/первый-последний
+      // рабочий день) ∪ ручные — по нему считаем natural для фильтра overrides.
+      const eff = [...new Set([...autoNonDelivery, ...days])];
       const byIdSnapshot = useWarehousesStore.getState().byId;
       const newOverrides = s.meta.overrides.map((rule) => {
         const code = rule.codes[0];
         const wh = code ? byIdSnapshot.get(code) : undefined;
         if (!wh?.delivery_day) return rule;
-        const newNatural = computeNaturalDays(s.meta.year, s.meta.month, wh.delivery_day, days);
+        const newNatural = computeNaturalDays(s.meta.year, s.meta.month, wh.delivery_day, eff);
         const naturalSet = new Set(newNatural);
         // Filter override.days: оставляем только дни, которые в новом natural.
         return { ...rule, days: rule.days.filter((d) => naturalSet.has(d)) };
@@ -600,10 +639,10 @@ export function ProbaScreen() {
       <ProbaToolbar
         onCommit={commitMonth}
         isLocked={isLocked}
-        canCommit={meta.holidays.length > 0}
+        canCommit={effectiveHolidays.length > 0}
         year={meta.year}
         month={meta.month}
-        holidays={meta.holidays}
+        holidays={effectiveHolidays}
         overrides={meta.overrides}
         onChangeOverrides={setOverrides}
         downloadLabel={t('schedule.download')}
@@ -678,6 +717,8 @@ export function ProbaScreen() {
                   year={meta.year}
                   month={meta.month}
                   holidays={meta.holidays}
+                  autoDays={isLocked ? [] : autoNonDelivery}
+                  shortDays={shortDaysMonth}
                   onChange={setHolidays}
                   lockResourceId={lockIds.holidays}
                   locked={isLocked}
@@ -689,15 +730,15 @@ export function ProbaScreen() {
                   >
                     <span className="proba-meta-label">
                       <span className="proba-meta-label-text">{t('proba.days_no_delivery')}</span>
-                      {meta.holidays.length > 0 && (
-                        <span className="proba-cluster-count">{meta.holidays.length}</span>
+                      {effectiveHolidays.length > 0 && (
+                        <span className="proba-cluster-count">{effectiveHolidays.length}</span>
                       )}
                     </span>
                     <span
-                      className={`proba-meta-value ${meta.holidays.length === 0 ? 'proba-meta-value--empty' : ''}`}
+                      className={`proba-meta-value ${effectiveHolidays.length === 0 ? 'proba-meta-value--empty' : ''}`}
                     >
-                      {meta.holidays.length > 0
-                        ? meta.holidays.join(', ')
+                      {effectiveHolidays.length > 0
+                        ? effectiveHolidays.join(', ')
                         : t('proba.no_value_add')}
                     </span>
                   </button>
@@ -757,6 +798,21 @@ export function ProbaScreen() {
                       : t('proba.dash')}
                   </span>
                 </div>
+
+                {/* Легенда предпраздничных дней — показываем только если в месяце
+                    есть дни `*` (иначе строка лишняя). После «Склады отгрузки». */}
+                {shortDaysMonth.length > 0 && (
+                  <div className="proba-meta-row proba-meta-row--readonly proba-meta-row--legend">
+                    <span className="proba-meta-label">
+                      <span className="proba-meta-label-text">
+                        <sup className="proba-date-star">*</sup>
+                      </span>
+                    </span>
+                    <span className="proba-meta-value">
+                      смена короче на 1 час
+                    </span>
+                  </div>
+                )}
               </div>
 
             </header>
@@ -801,6 +857,8 @@ export function ProbaScreen() {
                       key={shop.id}
                       shop={shop}
                       meta={meta}
+                      effectiveHolidays={effectiveHolidays}
+                      shortDays={shortDaysMonth}
                       isSearchTarget={shop.id === searchTargetId}
                       searchQuery={searchQuery}
                     />
@@ -1201,15 +1259,22 @@ function TableHead({
 function ShopBlock({
   shop,
   meta,
+  effectiveHolidays,
+  shortDays,
   isSearchTarget,
   searchQuery,
 }: {
   shop: ScheduleShop;
   meta: ScheduleMeta;
+  /** Эффективный набор «не возим» (авто ∪ ручные) — им режем даты доставки. */
+  effectiveHolidays: number[];
+  /** Числа месяца, предпраздничные (−1ч) — рисуем звёздочку-степень. */
+  shortDays: number[];
   isSearchTarget: boolean;
   searchQuery: string;
 }) {
   const { t } = useTranslation();
+  const shortSet = useMemo(() => new Set(shortDays), [shortDays]);
   const rows = useMemo(() => {
     return shop.rows.map((row) => ({
       row,
@@ -1218,11 +1283,11 @@ function ShopBlock({
         meta.month,
         row.weekday,
         row.warehouses,
-        meta.holidays,
+        effectiveHolidays,
         meta.overrides,
       ),
     }));
-  }, [shop.rows, meta]);
+  }, [shop.rows, meta, effectiveHolidays]);
 
   // Подсветка «сегодня»: число месяца, если на листе показан ТЕКУЩИЙ месяц/год
   // (иначе «сегодня» к чужому месяцу не относится → -1, не подсветится).
@@ -1264,6 +1329,9 @@ function ShopBlock({
                       {di > 0 ? ', ' : ''}
                       <span className={d === todayDay ? 'proba-date--today' : undefined}>
                         {d}
+                        {shortSet.has(d) && (
+                          <sup className="proba-date-star" title="Предпраздничный день — смена сокращена на 1 час">*</sup>
+                        )}
                       </span>
                     </Fragment>
                   ))}
@@ -1907,6 +1975,19 @@ function ProbaStyles() {
         font-variant-numeric: tabular-nums;
         letter-spacing: 0.04em;
         white-space: nowrap;
+      }
+      /* Звёздочка-степень у предпраздничных чисел (смена −1ч). */
+      .proba-date-star {
+        font-size: 0.7em;
+        line-height: 0;
+        vertical-align: super;
+        color: #C08457;
+        font-weight: 600;
+        margin-left: 0.5px;
+      }
+      .proba-meta-row--legend .proba-meta-value {
+        color: #8C8A83;
+        font-style: italic;
       }
 
       .proba-codes {

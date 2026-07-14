@@ -8,8 +8,17 @@ import { MONTH_NAMES_RU } from '@/lib/schedule/compute';
 interface HolidaysCalendarProps {
   year: number;
   month: number;
+  /** РУЧНЫЕ добавки «не возим» (кроме авто). Редактируются здесь. */
   holidays: number[];
   onChange: (holidays: number[]) => void;
+  /**
+   * Авто «не возим» из производственного календаря: выходные + праздники +
+   * первый/последний рабочий день месяца. Показываются как locked (снять
+   * нельзя). Для зафиксированного месяца передаётся [].
+   */
+  autoDays?: number[];
+  /** Предпраздничные (−1ч) — рисуем звёздочку-степень у числа. */
+  shortDays?: number[];
   /**
    * Optional custom trigger. Если передан — Popover.Trigger asChild оборачивает
    * этот элемент вместо встроенной «Не возим»-кнопки. Используется в «Пробе»,
@@ -39,6 +48,8 @@ export function HolidaysCalendar({
   month,
   holidays,
   onChange,
+  autoDays,
+  shortDays,
   children,
   lockResourceId,
   locked = false,
@@ -47,6 +58,9 @@ export function HolidaysCalendar({
   const [draft, setDraft] = useState<number[]>(holidays);
   const monthName = MONTH_NAMES_RU[month - 1];
   const draftSet = useMemo(() => new Set(draft), [draft]);
+  // Авто-дни (выходные/праздники/первый-последний рабочий) — locked, снять нельзя.
+  const autoSet = useMemo(() => new Set(autoDays ?? []), [autoDays]);
+  const shortSet = useMemo(() => new Set(shortDays ?? []), [shortDays]);
 
   // Ресинк черновика с внешними holidays при открытии поповера. Пока поповер
   // открыт, holidays не меняются (onChange только по «Подтвердить»), поэтому
@@ -86,6 +100,8 @@ export function HolidaysCalendar({
   }, [year, month]);
 
   const toggleDay = (day: number) => {
+    // Авто-дни (выходные/праздники/первый-последний рабочий) снять нельзя.
+    if (autoSet.has(day)) return;
     setDraft((prev) => {
       const next = new Set(prev);
       if (next.has(day)) next.delete(day);
@@ -95,18 +111,6 @@ export function HolidaysCalendar({
   };
 
   const clearAll = () => setDraft([]);
-
-  const fillWeekends = () => {
-    const weekends: number[] = [];
-    const daysInMonth = new Date(year, month, 0).getDate();
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dow = (new Date(year, month - 1, d).getDay() + 6) % 7;
-      if (dow >= 5) weekends.push(d);
-    }
-    // Объединяем с уже выбранными — fill, не replace, чтобы не терять
-    // праздники-будни (1, 9 мая и т.д.).
-    setDraft((prev) => [...new Set([...prev, ...weekends])].sort((a, b) => a - b));
-  };
 
   const dirty = useMemo(() => {
     if (draft.length !== holidays.length) return true;
@@ -168,46 +172,58 @@ export function HolidaysCalendar({
               if (c.day === null) {
                 return <div key={`empty_${i}`} className="h-7" />;
               }
-              const selected = draftSet.has(c.day);
+              const isAuto = autoSet.has(c.day);
+              const selected = !isAuto && draftSet.has(c.day);
               const isToday = todayDay === c.day;
+              const isShort = shortSet.has(c.day);
               return (
                 <button
                   key={c.day}
                   type="button"
                   onClick={() => toggleDay(c.day!)}
+                  title={
+                    isAuto
+                      ? 'Авто: выходной / праздник / крайний рабочий день месяца — не возим (снять нельзя)'
+                      : undefined
+                  }
                   className={[
-                    'flex h-7 items-center justify-center rounded text-[11.5px] tabular-nums transition-colors',
-                    selected
-                      ? 'bg-text-strong text-bg-primary font-semibold'
-                      : c.weekend
-                        ? 'text-accent-clay/80 hover:bg-white/[0.06] hover:text-accent-clay'
-                        : 'text-text-primary hover:bg-white/[0.06] hover:text-text-strong',
-                    isToday && !selected ? 'ring-1 ring-inset ring-accent-clay/50' : '',
+                    'relative flex h-7 items-center justify-center rounded text-[11.5px] tabular-nums transition-colors',
+                    isAuto
+                      ? 'cursor-default bg-white/[0.07] text-text-muted'
+                      : selected
+                        ? 'bg-text-strong text-bg-primary font-semibold'
+                        : c.weekend
+                          ? 'text-accent-clay/80 hover:bg-white/[0.06] hover:text-accent-clay'
+                          : 'text-text-primary hover:bg-white/[0.06] hover:text-text-strong',
+                    isToday && !selected && !isAuto ? 'ring-1 ring-inset ring-accent-clay/50' : '',
                   ].join(' ')}
                 >
                   {c.day}
+                  {isShort && (
+                    <sup className="ml-[1px] text-[8px] leading-none text-accent-clay">*</sup>
+                  )}
                 </button>
               );
             })}
           </div>
 
+          {/* Подпись: серые дни — авто (выходные/праздники/крайние рабочие),
+              снять нельзя; кликом добавляешь свои дни. */}
+          <div className="mt-2 flex items-center gap-1.5 text-[10px] text-text-muted">
+            <span className="inline-block h-2.5 w-2.5 rounded-[3px] bg-white/[0.07]" />
+            авто — не возим (снять нельзя)
+          </div>
+
           {/* Footer actions */}
-          <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/[0.06] pt-2">
+          <div className="mt-2 flex items-center justify-between gap-2 border-t border-white/[0.06] pt-2">
             <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={fillWeekends}
-                className="text-[11px] text-text-muted transition-colors hover:text-text-primary"
-              >
-                + выходные
-              </button>
               <button
                 type="button"
                 onClick={clearAll}
                 disabled={draft.length === 0}
                 className="text-[11px] text-text-muted transition-colors hover:text-accent-clay disabled:cursor-not-allowed disabled:opacity-30"
               >
-                Очистить
+                Очистить свои
               </button>
             </div>
             <button

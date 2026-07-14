@@ -131,6 +131,43 @@ export async function schedulePut(
   };
 }
 
+// ── PROD_CALENDAR_GET ──────────────────────────────────────────────────────
+
+/** Производственный календарь одного года (wire = domain, MM-DD строки). */
+export interface ProdCalendarYearWire {
+  year: number;
+  holidays: string[];
+  shortDays: string[];
+  workingWeekends: string[];
+}
+
+/**
+ * Производственный календарь по годам (для «Графика» и окна ОКНО). Сервер
+ * отдаёт seed ∪ строки D1 `prod_calendar`. Ключ — год (число).
+ */
+export async function prodCalendarGet(
+  client: ApiClient,
+): Promise<Record<number, ProdCalendarYearWire>> {
+  const wire = await client.call<{
+    years?: Record<
+      string,
+      { year?: number; holidays?: string[]; shortDays?: string[]; workingWeekends?: string[] }
+    >;
+  }>('prod_calendar_get', {});
+  const out: Record<number, ProdCalendarYearWire> = {};
+  for (const [k, v] of Object.entries(wire.years ?? {})) {
+    const y = Number(k);
+    if (!Number.isFinite(y)) continue;
+    out[y] = {
+      year: y,
+      holidays: Array.isArray(v?.holidays) ? v!.holidays!.map(String) : [],
+      shortDays: Array.isArray(v?.shortDays) ? v!.shortDays!.map(String) : [],
+      workingWeekends: Array.isArray(v?.workingWeekends) ? v!.workingWeekends!.map(String) : [],
+    };
+  }
+  return out;
+}
+
 // ── SCHEDULE_MONTHS_LIST ───────────────────────────────────────────────────
 
 /** Список всех записанных (year, month) с краткой meta. Сортировка — свежие сверху. */

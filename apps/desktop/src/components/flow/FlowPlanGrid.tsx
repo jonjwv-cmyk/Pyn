@@ -50,6 +50,7 @@ import {
   fmtTransferDate,
 } from './flow-transfer';
 import { useWarehousesStore } from '@/lib/warehouses-store';
+import { useProdCalendarStore, pickYear, dayShiftEndMin } from '@/lib/prod-calendar';
 import { useMapStore } from '@/lib/map-store';
 import { initMap } from '@/lib/map-repo';
 import { sessionStore } from '@/lib/token-store';
@@ -670,6 +671,8 @@ export function FlowPlanGrid({
 
   // CLST: кластер/день доставки склада-получателя из живой базы складов.
   const whById = useWarehousesStore((st) => st.byId);
+  // Производственный календарь — конец дневной смены для окна ОКНО по дате строки.
+  const prodCalByYear = useProdCalendarStore((st) => st.byYear);
   // Стор ключует по сырому w.id — перекладываем на канон whKey (zero-insensitive), чтобы
   // поиск склада по to_wh совпадал так же, как в карте МОЛ (ТЗ §3, «нет МОЛа» одинаково).
   const whByKey = useMemo(
@@ -1700,12 +1703,22 @@ export function FlowPlanGrid({
       if (spec.id === 'delivery') {
         const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
         const value = snapDelivery(r, anchor);
+        // Конец дневной смены — по КОНКРЕТНОЙ дате строки плана/отчёта (ПН-ЧТ 17:00
+        // / ПТ 15:45, −1ч в предпраздничные). Нет даты → дефолт 17:00 в ячейке.
+        let endMin: number | undefined;
+        const pd = r.plan_date || '';
+        if (/^\d{4}-\d{2}-\d{2}/.test(pd)) {
+          const y = Number(pd.slice(0, 4));
+          const mo = Number(pd.slice(5, 7));
+          const d = Number(pd.slice(8, 10));
+          endMin = dayShiftEndMin(pickYear(prodCalByYear, y), y, mo, d) ?? undefined;
+        }
         return {
           kind: GridCellKind.Custom,
           allowOverlay: Boolean(spec.editable) && !locked && Boolean(anchor),
           copyData: value,
           themeOverride: planCellTheme(spec.id),
-          data: { kind: 'flow-window', value },
+          data: { kind: 'flow-window', value, endMin },
         } satisfies FlowWindowCell;
       }
       if (spec.id === 'priority') {
@@ -1984,7 +1997,7 @@ export function FlowPlanGrid({
         contentAlign: spec.id === 'qty' || spec.id === 'kg' || spec.id === 'v' ? 'right' : 'left',
       };
     },
-    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo, whStatusNote, rowExpeditors, rowVehicle, mapPoints, transferChainDates, routeNoteByRowId, vghByKey],
+    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo, whStatusNote, rowExpeditors, rowVehicle, mapPoints, transferChainDates, routeNoteByRowId, vghByKey, prodCalByYear],
   );
 
   /** Применить серверные строки поставок (ответ правки/конфликта). */

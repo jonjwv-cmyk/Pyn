@@ -8,22 +8,31 @@ import { cn } from '@/lib/cn';
 import { useFlipUpIfClipped } from './flow-cell-flip';
 
 /**
- * Ячейка «Доставка» — наше окно времени (юзер 2026-07-12). Не из САП.
- * Правила: рабочий диапазон 08:30–19:30, шаг 30 мин; конец > начала (мин. окно 30 мин,
- * т.е. если конец 19:30 — начало максимум 19:00). Обед 12:00–12:30 — «мёртвый»:
- * начало ≠ 12:00, конец ∉ {12:00, 12:30}. Значение = «HH:MM–HH:MM» (пусто = вся смена).
+ * Ячейка «Доставка» — окно ДНЕВНОЙ смены (юзер 2026-07-14). Не из САП.
+ *
+ * Смена: 08:00 → конец дневной смены (ПН-ЧТ 17:00 / ПТ 15:45), в предпраздничные
+ * дни −1ч (16:00 / 14:45). Конец приходит per-row в `endMin` (из производственного
+ * календаря по дате колонки ГРАФ); дефолт 17:00. Шаг 15 мин.
+ *
+ * Обед 12:00–12:45 «мёртвый»: ни начало, ни конец окна не могут лежать внутри
+ * блока обеда — только ДО (≤11:45) или ПОСЛЕ (≥12:45). Окно на всю смену
+ * (08:00–17:00) спокойно ПЕРЕКРЫВАЕТ обед — запрет только на сами эндпоинты.
+ *
+ * Значение = «HH:MM–HH:MM». Пусто = стандартное окно всей смены (рисуется приглушённо).
  */
 export interface FlowWindowData {
   readonly kind: 'flow-window';
   readonly value: string;
+  /** Конец дневной смены (мин от полуночи) для даты этой строки. Дефолт 17:00. */
+  readonly endMin?: number;
 }
 export type FlowWindowCell = CustomCell<FlowWindowData>;
 
-const DAY_START = 8 * 60 + 30; // 08:30
-const DAY_END = 19 * 60 + 30; // 19:30
-const STEP = 30;
+const DAY_START = 8 * 60; // 08:00
+const DEFAULT_END = 17 * 60; // 17:00 (ПН-ЧТ, если endMin не передан)
+const STEP = 15;
 const LUNCH_START = 12 * 60; // 12:00
-const LUNCH_END = 12 * 60 + 30; // 12:30
+const LUNCH_END = 12 * 60 + 45; // 12:45
 
 function fmt(min: number): string {
   const h = Math.floor(min / 60);
@@ -35,21 +44,25 @@ function parseWindow(value: string): { start: number | null; end: number | null 
   if (!m) return { start: null, end: null };
   return { start: Number(m[1]) * 60 + Number(m[2]), end: Number(m[3]) * 60 + Number(m[4]) };
 }
-/** Допустимые НАЧАЛА: 08:30..19:00 шаг 30, кроме 12:00 (обед). */
-function startOptions(): number[] {
+/** Эндпоинт лежит в блоке обеда [12:00, 12:45) — запрещён. 12:45 разрешён («после»). */
+function inLunch(t: number): boolean {
+  return t >= LUNCH_START && t < LUNCH_END;
+}
+/** Допустимые НАЧАЛА: 08:00..end−15 шаг 15, кроме блока обеда. */
+function startOptions(endMin: number): number[] {
   const out: number[] = [];
-  for (let t = DAY_START; t <= DAY_END - STEP; t += STEP) {
-    if (t === LUNCH_START) continue;
+  for (let t = DAY_START; t <= endMin - STEP; t += STEP) {
+    if (inLunch(t)) continue;
     out.push(t);
   }
   return out;
 }
-/** Допустимые КОНЦЫ при заданном начале: (start+30)..19:30 шаг 30, кроме 12:00 и 12:30. */
-function endOptions(start: number | null): number[] {
+/** Допустимые КОНЦЫ при заданном начале: (start+15)..end шаг 15, кроме блока обеда. */
+function endOptions(start: number | null, endMin: number): number[] {
   const from = start == null ? DAY_START + STEP : start + STEP;
   const out: number[] = [];
-  for (let t = from; t <= DAY_END; t += STEP) {
-    if (t === LUNCH_START || t === LUNCH_END) continue;
+  for (let t = from; t <= endMin; t += STEP) {
+    if (inLunch(t)) continue;
     out.push(t);
   }
   return out;
@@ -62,6 +75,7 @@ function FlowWindowEditor({
   value: FlowWindowCell;
   onFinishedEditing: (newValue?: FlowWindowCell) => void;
 }) {
+  const endMin = cell.data.endMin ?? DEFAULT_END;
   const cur = parseWindow(cell.data.value);
   const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   const commit = (start: number, end: number): void =>
@@ -70,17 +84,20 @@ function FlowWindowEditor({
 
   // Клик по началу — если конец несовместим, подбираем ближайший валидный.
   const pickStart = (s: number): void => {
-    const ends = endOptions(s);
-    const keep = cur.end != null && ends.includes(cur.end) ? cur.end : ends[0]!;
+    const ends = endOptions(s, endMin);
+    const keep = cur.end != null && ends.includes(cur.end) ? cur.end : ends[ends.length - 1]!;
     commit(s, keep);
   };
   const pickEnd = (e: number): void => {
-    const s = cur.start != null && startOptions().includes(cur.start) && e > cur.start ? cur.start : DAY_START;
+    const s =
+      cur.start != null && startOptions(endMin).includes(cur.start) && e > cur.start
+        ? cur.start
+        : DAY_START;
     commit(s, e);
   };
 
-  const starts = startOptions();
-  const ends = endOptions(cur.start);
+  const starts = startOptions(endMin);
+  const ends = endOptions(cur.start, endMin);
   const col = 'flex max-h-[300px] min-h-0 flex-1 flex-col overflow-y-auto';
   const item = (active: boolean) =>
     cn(
@@ -129,7 +146,19 @@ export const flowWindowRenderer: CustomRenderer<FlowWindowCell> = {
     c.data !== null &&
     (c.data as { kind?: unknown }).kind === 'flow-window',
   draw: (args, cell) => {
-    drawTextCell(args, cell.data.value ?? '', cell.contentAlign);
+    const v = cell.data.value;
+    if (v) {
+      drawTextCell(args, v, cell.contentAlign);
+      return true;
+    }
+    // Пусто → стандартное окно всей смены, приглушённо (08:00–конец смены).
+    const end = cell.data.endMin ?? DEFAULT_END;
+    const def = `${fmt(DAY_START)}–${fmt(end)}`;
+    drawTextCell(
+      { ...args, theme: { ...args.theme, textDark: args.theme.textLight } },
+      def,
+      cell.contentAlign,
+    );
     return true;
   },
   provideEditor: () => ({
