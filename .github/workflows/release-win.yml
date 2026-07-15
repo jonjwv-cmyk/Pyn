@@ -119,8 +119,11 @@ jobs:
           SSH="ssh -i ~/.ssh/vps_key -o StrictHostKeyChecking=accept-new"
           REMOTE_DIR="/var/www/otl-releases"
           $SCP "$ARTIFACT" "$VPS:$REMOTE_DIR/pyn-$VERSION.exe"
-          $SSH "$VPS" "cp -f $REMOTE_DIR/pyn-$VERSION.exe $REMOTE_DIR/pyn-latest.exe && printf '%s\n' \"add_header Content-Disposition 'attachment; filename=\\\"pyn-$VERSION.exe\\\"';\" > $REMOTE_DIR/win-exe-headers.conf && chmod 644 $REMOTE_DIR/pyn-$VERSION.exe $REMOTE_DIR/pyn-latest.exe $REMOTE_DIR/win-exe-headers.conf"
-          echo "VPS sslip.io → $REMOTE_DIR/pyn-$VERSION.exe (+ pyn-latest.exe symlink copy)"
+          # win-exe-headers.conf (имя файла в Content-Disposition) — это nginx include,
+          # он перечитывается ТОЛЬКО при reload. Без reload скачанный файл сохраняется
+          # под ИМЕНЕМ прошлой версии (контент свежий, но имя старое — путает юзера).
+          $SSH "$VPS" "cp -f $REMOTE_DIR/pyn-$VERSION.exe $REMOTE_DIR/pyn-latest.exe && printf '%s\n' \"add_header Content-Disposition 'attachment; filename=\\\"pyn-$VERSION.exe\\\"';\" > $REMOTE_DIR/win-exe-headers.conf && chmod 644 $REMOTE_DIR/pyn-$VERSION.exe $REMOTE_DIR/pyn-latest.exe $REMOTE_DIR/win-exe-headers.conf && (nginx -t && nginx -s reload)"
+          echo "VPS sslip.io → $REMOTE_DIR/pyn-$VERSION.exe (+ pyn-latest.exe, nginx reloaded)"
 
       - name: Update D1 app_version[desktop-win]
         env:
