@@ -165,6 +165,64 @@ const debug = (msg: string): void => {
   window.pyn?.debugLog?.('blob', msg);
 };
 
+function resolveMime(plain: Uint8Array, knownMime?: string): string {
+  const km = (knownMime || '').trim();
+  if (km && km !== 'application/octet-stream') return km;
+  const detected = detectMediaMime(plain);
+  return detected !== 'application/octet-stream' ? detected : (km || detected);
+}
+
+async function fetchBytes(url: string): Promise<Uint8Array> {
+  debug(`fetch ${url.slice(0, 80)}`);
+  try {
+    return await window.pyn.blobFetch(url);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    debug(`fetch failed: ${msg}`);
+    throw err;
+  }
+}
+
+function bytesToBlobUrl(plain: Uint8Array, knownMime: string | undefined, cacheStoreKey: string): string {
+  const mime = resolveMime(plain, knownMime);
+  debug(`blob ${plain.length}B mime=${mime}`);
+  const blob = new Blob([plain as BufferSource], { type: mime });
+  const blobUrl = URL.createObjectURL(blob);
+  cache.set(cacheStoreKey, blobUrl);
+  return blobUrl;
+}
+
+async function loadPlainMedia(url: string, knownMime?: string): Promise<string> {
+  const storeKey = `plain:${url}`;
+  const cached = cache.get(storeKey);
+  if (cached) return cached;
+  const inFlight = inflight.get(storeKey);
+  if (inFlight) return inFlight;
+
+  const promise = (async () => {
+    const baseUrl = rewriteHost(url);
+    let bytes: Uint8Array;
+    try {
+      bytes = await fetchBytes(baseUrl);
+    } catch (err) {
+      debug(`plain fetch failed, cache-bust retry`);
+      const bust = baseUrl.includes('?') ? `${baseUrl}&_cb=${Date.now()}` : `${baseUrl}?_cb=${Date.now()}`;
+      bytes = await fetchBytes(bust);
+    }
+    const blobUrl = bytesToBlobUrl(bytes, knownMime, storeKey);
+    inflight.delete(storeKey);
+    return blobUrl;
+  })();
+
+  inflight.set(storeKey, promise);
+  try {
+    return await promise;
+  } catch (err) {
+    inflight.delete(storeKey);
+    throw err;
+  }
+}
+
 async function loadAvatar(
   url: string,
   keyB64: string,
@@ -178,37 +236,27 @@ async function loadAvatar(
   if (inFlight) return inFlight;
 
   const promise = (async () => {
-    const fetchUrl = rewriteHost(url);
-    debug(`fetch ${fetchUrl.slice(0, 80)}`);
-    let bytes: Uint8Array;
-    try {
-      // Через main process — обходит CORS-блок renderer fetch'а.
-      bytes = await window.pyn.blobFetch(fetchUrl);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      debug(`fetch failed: ${msg}`);
-      throw err;
-    }
+    const baseUrl = rewriteHost(url);
+    let bytes = await fetchBytes(baseUrl);
     debug(`fetched ${bytes.length}B, decrypting`);
     let plain: Uint8Array;
+    const decrypt = (raw: Uint8Array): Uint8Array =>
+      decryptBlob({ encrypted: raw, keyB64, nonceB64 });
     try {
-      plain = decryptBlob({
-        encrypted: bytes,
-        keyB64,
-        nonceB64,
-      });
+      plain = decrypt(bytes);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      debug(`decrypt failed: ${msg}`);
-      throw err;
+      debug(`decrypt failed: ${msg}, cache-bust retry`);
+      const bust = baseUrl.includes('?') ? `${baseUrl}&_cb=${Date.now()}` : `${baseUrl}?_cb=${Date.now()}`;
+      bytes = await fetchBytes(bust);
+      try {
+        plain = decrypt(bytes);
+      } catch (err2) {
+        debug(`decrypt retry failed: ${err2 instanceof Error ? err2.message : String(err2)}`);
+        throw err2;
+      }
     }
-    // Если caller знает MIME (из attachment.file_type) — используем его.
-    // Иначе magic-bytes детектор покрывает только images (для аватаров).
-    const mime = knownMime && knownMime !== '' ? knownMime : detectImageMime(plain);
-    debug(`decrypted ${plain.length}B mime=${mime}`);
-    const blob = new Blob([plain as BufferSource], { type: mime });
-    const blobUrl = URL.createObjectURL(blob);
-    cache.set(key, blobUrl);
+    const blobUrl = bytesToBlobUrl(plain, knownMime, key);
     inflight.delete(key);
     return blobUrl;
   })();
@@ -222,8 +270,8 @@ async function loadAvatar(
   }
 }
 
-/** Magic-bytes детектор image MIME — server отдаёт `application/octet-stream`. */
-function detectImageMime(bytes: Uint8Array): string {
+/** Magic-bytes детектор media MIME — server отдаёт `application/octet-stream`. */
+function detectMediaMime(bytes: Uint8Array): string {
   if (bytes.length < 4) return 'application/octet-stream';
   // PNG: 89 50 4E 47
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
@@ -241,6 +289,16 @@ function detectImageMime(bytes: Uint8Array): string {
   if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
     return 'image/webp';
   }
+  // MP4/MOV: ....ftyp
+  if (
+    bytes.length >= 12 &&
+    bytes[4] === 0x66 &&
+    bytes[5] === 0x74 &&
+    bytes[6] === 0x79 &&
+    bytes[7] === 0x70
+  ) {
+    return 'video/mp4';
+  }
   return 'application/octet-stream';
 }
 
@@ -255,52 +313,53 @@ export function useDecryptedBlob(
   keyB64: string | undefined,
   nonceB64: string | undefined,
   /** Wire-MIME из admin response (например `video/mp4`, `image/gif`). Если не
-   * передан, magic-bytes детектор покроет только images. */
+   * передан, magic-bytes детектор покроет images + mp4. */
   knownMime?: string,
 ): string | null {
-  // §pyn-1.2.54 — useState lazy init читает module-level cache SYNC. Если URL
-  // уже расшифровывался в этой сессии — first render возвращает blob URL,
-  // <img src> декодит из browser bitmap-cache на первом paint'e, scrollHeight
-  // включает natural-image-высоту с frame'a 1. Без этого useState(null) давал
-  // placeholder h-32 на первом paint → useEffect после paint → setBlobUrl →
-  // image natural-size на втором paint → CLS, который при scroll-restore
-  // вылазит как «прыжок» (target клампится к меньшему scrollHeight, потом
-  // ResizeObserver re-applies к финальному target). Inter-chat switch создаёт
-  // новые AttachmentTile-инстансы для сообщений нового peer'a — каждый mount
-  // проходил через этот null→url цикл, отсюда видимый прыжок.
+  const isInlineData = !!url && url.startsWith('data:');
+  const storeKey = url
+    ? (isInlineData ? url : keyB64 ? cacheKey(url, keyB64) : `plain:${url}`)
+    : '';
+
+  // §pyn-1.2.54 — useState lazy init читает module-level cache SYNC.
   const [blobUrl, setBlobUrl] = useState<string | null>(() => {
-    if (!url || !keyB64) return null;
-    return cache.get(cacheKey(url, keyB64)) ?? null;
+    if (!url) return null;
+    if (isInlineData) return url;
+    if (storeKey) return cache.get(storeKey) ?? null;
+    return null;
   });
 
   useEffect(() => {
-    if (!url || !keyB64) {
+    if (!url) {
       setBlobUrl(null);
       return;
     }
-    // Re-check cache на смену url'a в уже-mounted-компоненте: useState init
-    // фиксирует cache snapshot только при первом mount'е, последующая смена
-    // url-props (редко, но возможно — edit message с replaced attachment) не
-    // переинициализирует initial → нужен sync re-check здесь тоже.
-    const cached = cache.get(cacheKey(url, keyB64));
+    if (isInlineData) {
+      setBlobUrl(url);
+      return;
+    }
+    const cached = storeKey ? cache.get(storeKey) : null;
     if (cached) {
       setBlobUrl(cached);
       return;
     }
     let cancelled = false;
-    loadAvatar(url, keyB64, nonceB64, knownMime)
+    const loader = keyB64
+      ? loadAvatar(url, keyB64, nonceB64, knownMime)
+      : loadPlainMedia(url, knownMime);
+    loader
       .then((u) => {
         if (!cancelled) setBlobUrl(u);
       })
       .catch((err) => {
         // eslint-disable-next-line no-console
-        console.warn('[pyn:avatar] failed:', err);
+        console.warn('[pyn:blob] load failed:', err);
         if (!cancelled) setBlobUrl(null);
       });
     return () => {
       cancelled = true;
     };
-  }, [url, keyB64, nonceB64, knownMime]);
+  }, [url, keyB64, nonceB64, knownMime, isInlineData, storeKey]);
 
   return blobUrl;
 }

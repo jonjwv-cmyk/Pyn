@@ -72,9 +72,22 @@ export function createChatsStore<TPartner, TMessage>(
     persist(initializer, {
       name: 'pyn-chats-cache',
       storage,
-      // v2: ChatMessageItem получил attachments + reactions + myReactions +
-      //     numericId. Старый кеш без этих полей — invalidate.
       version: 2,
+      migrate: (persisted: unknown, version: number) => {
+        if (version < 2 && persisted && typeof persisted === 'object') {
+          const s = persisted as Partial<ChatsState<TPartner, TMessage>>;
+          return {
+            partners: Array.isArray(s.partners) ? s.partners : [],
+            partnersLastFetchedAt: s.partnersLastFetchedAt ?? null,
+            messagesByPeer: s.messagesByPeer && typeof s.messagesByPeer === 'object' ? s.messagesByPeer : {},
+            messagesLastFetchedByPeer:
+              s.messagesLastFetchedByPeer && typeof s.messagesLastFetchedByPeer === 'object'
+                ? s.messagesLastFetchedByPeer
+                : {},
+          } as unknown as ChatsState<TPartner, TMessage>;
+        }
+        return persisted as ChatsState<TPartner, TMessage>;
+      },
     }),
   );
 }

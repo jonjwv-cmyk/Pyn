@@ -58,7 +58,7 @@ const DRAFT_SAVE_DEBOUNCE_MS = 1500;
  * Composer владеет state'ом attachments. File picker (`<input type=file>`)
  * читает выбранные файлы → base64 `data:MIME;…` URL → передаются вверх в
  * onSend → `send_message` body. Server encrypt'ит в R2 при receipt и вернёт
- * blob_key/blob_nonce в response. Cap — 20 МБ per file.
+ * blob_key/blob_nonce в response. Cap — 100 МБ per file.
  */
 export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
 function ChatComposer(
@@ -107,7 +107,7 @@ function ChatComposer(
     setAttachError(null);
     for (const file of arr) {
       if (file.size > ATTACHMENT_MAX_SIZE) {
-        setAttachError(`«${file.name}» больше 20 МБ`);
+        setAttachError(`«${file.name}» больше ${Math.round(ATTACHMENT_MAX_SIZE / (1024 * 1024))} МБ`);
         continue;
       }
       try {

@@ -1,11 +1,5 @@
-import type {
-  AttachmentWire,
-  NewsItemWire,
-  PollWire,
-  Attachment,
-  NewsItem,
-  Poll,
-} from '@pyn/core';
+import type { NewsItemWire, PollWire, NewsItem, Poll } from '@pyn/core';
+import { wireToAttachment } from '@/lib/attachment-wire';
 import { computeInitials } from '@/lib/initials';
 import { formatFullYek } from '@/lib/format-time';
 import { normalizePresence } from '@/types/presence';
@@ -37,18 +31,6 @@ export function wireToNewsItem(wire: NewsItemWire, myLogin: string): NewsItem {
     attachments: (wire.attachments ?? []).map(wireToAttachment),
     poll: wire.poll ? wireToPoll(wire.poll) : null,
     isOwn: wire.sender_login === myLogin,
-  };
-}
-
-function wireToAttachment(wire: AttachmentWire): Attachment {
-  return {
-    id: wire.file_url,
-    filename: wire.file_name,
-    size: wire.file_size,
-    mimeType: wire.file_type,
-    url: wire.file_url,
-    blobKey: wire.blob_key_b64,
-    blobNonce: wire.blob_nonce_b64,
   };
 }
 

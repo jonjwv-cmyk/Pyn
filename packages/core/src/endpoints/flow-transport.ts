@@ -57,6 +57,8 @@ export interface FlowTransportRow {
   order_no: string;
   /** Ручная колонка ВЫЕЗД: '' | ДА | НЕТ. Не заполняется из буфера. */
   out_status: string;
+  /** БЕЗ ЭКСП.: '' | ДА | НЕТ (только приложение). */
+  no_exp_status: string;
   /** Свой ТИП ТС на день: Фургон КХП / Борт / Пульман 9м / ... */
   vehicle_type: string;
   /** Факт начало/конец работы машины, HH:MM без ведущего нуля на показе. */
@@ -97,6 +99,7 @@ export interface FlowTransportPasteRow {
   sp: string;
   order_no: string;
   out_status?: string;
+  no_exp_status?: string;
   vehicle_type?: string;
   fact_start?: string;
   fact_end?: string;

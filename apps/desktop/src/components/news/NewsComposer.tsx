@@ -137,7 +137,7 @@ function NewsComposer({ onPublish, initialText, onDraftSave }, ref) {
     setAttachError(null);
     for (const file of arr) {
       if (file.size > ATTACHMENT_MAX_SIZE) {
-        setAttachError(`«${file.name}» больше 20 МБ`);
+        setAttachError(`«${file.name}» больше ${Math.round(ATTACHMENT_MAX_SIZE / (1024 * 1024))} МБ`);
         continue;
       }
       try {

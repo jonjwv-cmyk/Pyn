@@ -54,6 +54,20 @@ import {
   useWsLifecycle,
 } from '@/lib/hooks';
 import type { ChatPartner } from '@/types/chat';
+
+/** Пока inbox грузится — stub peer чтобы чат из кэша не был пустым. */
+function stubChatPartner(peerId: string): ChatPartner {
+  return {
+    id: peerId,
+    type: 'user',
+    name: peerId,
+    initials: computeInitials(peerId),
+    lastMessage: '',
+    lastMessageAt: '',
+    unreadCount: 0,
+    presence: 'offline',
+  };
+}
 import type { NavSectionId } from '@/types/nav';
 import {
   ApiError,
@@ -853,10 +867,10 @@ export function App() {
     };
   }, [session, activeChatId, setMessagesForPeer]);
 
-  const activeChat = useMemo(
-    () => partners.find((c) => c.id === activeChatId) ?? null,
-    [partners, activeChatId],
-  );
+  const activeChat = useMemo(() => {
+    if (!activeChatId) return null;
+    return partners.find((c) => c.id === activeChatId) ?? stubChatPartner(activeChatId);
+  }, [partners, activeChatId]);
 
   const messages = useMemo(
     () => (activeChatId ? messagesByPeer[activeChatId] ?? [] : []),
@@ -930,6 +944,13 @@ export function App() {
         mimeType: a.mimeType ?? 'application/octet-stream',
         size: a.size ?? 0,
       }));
+    const optimisticAttachments = wireAttachments.map((a) => ({
+      id: a.url,
+      filename: a.filename,
+      size: a.size,
+      mimeType: a.mimeType,
+      url: a.url,
+    }));
 
     // Offline path — если нет сети, кладём в outbox. Optimistic bubble
     // показывается без numericId → pending-status (анимированная ✓) и
@@ -947,6 +968,7 @@ export function App() {
         text: text.trim(),
         time: i18next.t('common.queued'),
         isOwn: true,
+        attachments: optimisticAttachments.length > 0 ? optimisticAttachments : undefined,
       });
       return;
     }
@@ -968,6 +990,7 @@ export function App() {
         text: text.trim(),
         time: i18next.t('common.now'),
         isOwn: true,
+        attachments: optimisticAttachments.length > 0 ? optimisticAttachments : undefined,
       });
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -1358,8 +1381,7 @@ export function App() {
                       />
                     </div>
                     {Array.from(openedChatIds).map((peerId) => {
-                      const peer = partnersById.get(peerId);
-                      if (!peer) return null;
+                      const peer = partnersById.get(peerId) ?? stubChatPartner(peerId);
                       const peerMessages = messagesByPeer[peerId] ?? [];
                       const isActive = activeChatId === peerId;
                       return (

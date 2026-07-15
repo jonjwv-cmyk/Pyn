@@ -108,5 +108,5 @@ export interface PendingAttachment {
   size?: number;
 }
 
-/** Server cap на attachment size — 20 MB (см. OTLHelper2 AttachmentComponents.kt). */
-export const ATTACHMENT_MAX_SIZE = 20 * 1024 * 1024;
+/** Лимит вложения — 100 MB (клиент + сервер). */
+export const ATTACHMENT_MAX_SIZE = 100 * 1024 * 1024;

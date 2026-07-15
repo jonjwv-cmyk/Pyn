@@ -1,33 +1,26 @@
-import { avatarColorForLogin } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import { useDecryptedBlob } from '@/lib/avatar';
+import { DefaultAvatarSprite } from './DefaultAvatarSprite';
 
 interface AvatarProps {
-  /** 1-2 буквы (имя/логин). Авто-uppercase, truncate до 2 символов. */
+  /** 1-2 буквы (имя/логин). Fallback если нет login для дефолтной картинки. */
   initials: string;
   /** Diameter в px. По умолчанию 28. */
   size?: number;
   className?: string;
-  /** URL зашифрованной картинки (`/a/<id>?v=...`). Если null — показываем initials. */
+  /** URL зашифрованной картинки (`/a/<id>?v=...`). Только с blobKey. */
   avatarUrl?: string;
-  /** Base64 AES-256 key (32 bytes). Без него decrypt'ать нечем. */
+  /** Base64 AES-256 key (32 bytes). Без него — встроенная дефолтная аватарка. */
   avatarBlobKey?: string;
   /** Base64 12-byte nonce (sanity check vs envelope). */
   avatarBlobNonce?: string;
-  /**
-   * Login юзера — используется как seed для детерминированного цвета фона
-   * (когда аватарка не загружена). Один и тот же login всегда даёт один и
-   * тот же цвет, 1:1 c Kotlin `AvatarColors` палитрой. Если не передан —
-   * fallback на accent-clay.
-   */
+  /** Login — seed для детерминированной встроенной аватарки (без своего фото). */
   login?: string;
 }
 
 /**
- * Круглый аватар. Если есть `avatarUrl` + `avatarBlobKey` — пытается
- * расшифровать зашифрованный blob и показать `<img>`. Пока грузится или
- * при ошибке — fallback на инициалы на фоне детерминированного цвета
- * (по `login`) — как в Kotlin-клиенте OTLHelper2.
+ * Круглый аватар. Своя картинка (url + blobKey) → расшифровка и `<img>`.
+ * Без своего фото → одна из 12 встроенных mascots по login (всегда одинаково).
  */
 export function Avatar({
   initials,
@@ -38,7 +31,12 @@ export function Avatar({
   avatarBlobNonce,
   login,
 }: AvatarProps) {
-  const blobUrl = useDecryptedBlob(avatarUrl, avatarBlobKey, avatarBlobNonce);
+  const hasCustomAvatar = !!(avatarUrl?.trim() && avatarBlobKey?.trim());
+  const blobUrl = useDecryptedBlob(
+    hasCustomAvatar ? avatarUrl : undefined,
+    hasCustomAvatar ? avatarBlobKey : undefined,
+    hasCustomAvatar ? avatarBlobNonce : undefined,
+  );
 
   if (blobUrl) {
     return (
@@ -51,24 +49,18 @@ export function Avatar({
     );
   }
 
-  // Цвет фона — детерминированный по login (Kotlin parity). Без login'a
-  // используем `accent-clay` как нейтральный fallback.
-  const bgColor = login ? avatarColorForLogin(login) : undefined;
+  if (login) {
+    return <DefaultAvatarSprite login={login} size={size} className={className} />;
+  }
 
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center justify-center rounded-full',
-        'text-white font-medium select-none',
-        bgColor ? '' : 'bg-accent-clay',
+        'inline-flex shrink-0 items-center justify-center rounded-full bg-accent-clay',
+        'font-medium text-white select-none',
         className,
       )}
-      style={{
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.38),
-        ...(bgColor ? { backgroundColor: bgColor } : {}),
-      }}
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.38) }}
     >
       {initials.slice(0, 2).toUpperCase()}
     </span>

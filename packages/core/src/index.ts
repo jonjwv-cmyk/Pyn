@@ -15,6 +15,7 @@
 export * from './api';
 export * from './auth';
 export * from './avatar-colors';
+export * from './default-avatars';
 export * from './endpoints';
 export * from './crypto';
 export * from './mol-query';

@@ -51,6 +51,8 @@ interface AttachmentTileProps {
  *   • chat → max-w 320px, max-h 380px (компактнее, помещается в bubble).
  *   • news → max-w 480px, max-h 460px (карточка новостей шире).
  */
+const CHAT_MEDIA_MIN = 'min-h-[140px] min-w-[200px]';
+
 export function AttachmentTile({ attachment, context = 'chat' }: AttachmentTileProps) {
   const isImage = attachment.mimeType.startsWith('image/');
   const isVideo = attachment.mimeType.startsWith('video/');
@@ -60,6 +62,10 @@ export function AttachmentTile({ attachment, context = 'chat' }: AttachmentTileP
     attachment.blobNonce,
     attachment.mimeType,
   );
+  const [mediaFailed, setMediaFailed] = useState(false);
+  useEffect(() => {
+    setMediaFailed(false);
+  }, [attachment.url, blobUrl]);
   const isNews = context === 'news';
   // Две парадигмы:
   //   • Chat (bubble) — `inline-flex w-fit` снаружи; tile shrink-wraps под
@@ -80,22 +86,27 @@ export function AttachmentTile({ attachment, context = 'chat' }: AttachmentTileP
     // width/height резервируют точный placeholder ДО async image-load →
     // scrollHeight стабилен с frame 1 → scroll-restore попадает в реальный
     // bottom/target → нет CLS jump'а при inter-chat switch.
-    const cachedDims = getDimsSync(attachment.url);
+    const rawDims = getDimsSync(attachment.url);
+    const cachedDims =
+      rawDims && rawDims.w >= 48 && rawDims.h >= 48 ? rawDims : null;
     const handleImgLoad = (e: React.SyntheticEvent<HTMLImageElement>): void => {
       const img = e.currentTarget;
+      setMediaFailed(false);
       if (img.naturalWidth > 0 && img.naturalHeight > 0) {
         setDimsSync(attachment.url, img.naturalWidth, img.naturalHeight);
       }
     };
+    const showMedia = !!blobUrl && !mediaFailed;
     return (
       <div
         className={cn(
           'group/img relative overflow-hidden rounded-lg',
           'border border-border-default bg-bg-primary',
           isNews ? 'block w-full' : 'inline-block',
+          !isNews && showMedia && CHAT_MEDIA_MIN,
         )}
       >
-        {blobUrl ? (
+        {showMedia ? (
           <>
             {isNews && (
               <AmbientBackdrop blobUrl={blobUrl} kind="image" />
@@ -119,6 +130,7 @@ export function AttachmentTile({ attachment, context = 'chat' }: AttachmentTileP
                 width={cachedDims?.w}
                 height={cachedDims?.h}
                 onLoad={handleImgLoad}
+                onError={() => setMediaFailed(true)}
                 className={mediaSizing}
               />
             </a>
@@ -133,7 +145,7 @@ export function AttachmentTile({ attachment, context = 'chat' }: AttachmentTileP
         ) : (
           <span
             className={cn(
-              'flex h-32 w-full items-center justify-center text-text-muted',
+              'flex h-32 w-full min-w-[200px] items-center justify-center text-text-muted',
               wrapperClass,
             )}
           >
@@ -152,6 +164,8 @@ export function AttachmentTile({ attachment, context = 'chat' }: AttachmentTileP
         context={context}
         wrapperClass={wrapperClass}
         mediaSizing={mediaSizing}
+        onMediaError={() => setMediaFailed(true)}
+        mediaFailed={mediaFailed}
       />
     );
   }
@@ -314,6 +328,8 @@ interface VideoTileProps {
   wrapperClass: string;
   /** Классы для самого <video> (object-cover для news, object-contain для chat). */
   mediaSizing: string;
+  mediaFailed?: boolean;
+  onMediaError?: () => void;
 }
 
 /**
@@ -335,6 +351,8 @@ function VideoTile({
   context,
   wrapperClass,
   mediaSizing,
+  mediaFailed = false,
+  onMediaError,
 }: VideoTileProps) {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -483,16 +501,19 @@ function VideoTile({
     v.requestFullscreen?.().catch(() => undefined);
   }, []);
 
+  const showMedia = !!blobUrl && !mediaFailed;
+
   return (
     <div
       className={cn(
         'group/video relative overflow-hidden rounded-lg',
         'border border-border-default bg-bg-primary',
         isNews ? 'block w-full' : 'inline-block',
+        !isNews && showMedia && CHAT_MEDIA_MIN,
         wrapperClass,
       )}
     >
-      {blobUrl ? (
+      {showMedia ? (
         <>
           {isNews && <AmbientBackdrop blobUrl={blobUrl} kind="video" />}
           <video
@@ -503,6 +524,7 @@ function VideoTile({
             loop
             playsInline
             preload="metadata"
+            onError={() => onMediaError?.()}
             controlsList={
               isNews
                 ? 'nodownload noplaybackrate noremoteplayback nofullscreen'
@@ -544,7 +566,7 @@ function VideoTile({
           )}
         </>
       ) : (
-        <span className="flex h-32 w-full items-center justify-center text-text-muted">
+        <span className="flex h-32 w-full min-w-[200px] items-center justify-center text-text-muted">
           <Play className="h-5 w-5" strokeWidth={1.75} />
         </span>
       )}

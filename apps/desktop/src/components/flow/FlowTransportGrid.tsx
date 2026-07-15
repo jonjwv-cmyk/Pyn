@@ -47,7 +47,9 @@ import { MONTH_ABBR_RU } from './flow-sandbox.fixtures';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { flowStackRenderer, type FlowStackCell } from './flow-stack-cell';
 import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
-import { colZeroRowSelection } from './flow-grid-selection';
+import { colRowSelection } from './flow-grid-selection';
+import { useProdCalendarStore } from '@/lib/prod-calendar';
+import { isShiftUndershoot } from './flow-transport-shift';
 import { FlowSearchPanel } from './FlowSearchPanel';
 import { useFlowGridSearch, type FlowSearchColumn } from './flow-grid-search';
 import { FlowHeaderMenu } from './FlowHeaderMenu';
@@ -94,8 +96,11 @@ type TrEdit = { id: number; before: Record<string, string>; after: Record<string
 /** Шаг «вставка из буфера» (юзер 2026-07-06): отмена = удалить вставленные новые строки,
  *  повтор = вставить те же строки заново (id обновятся). */
 type TrPasteStep = { kind: 'paste'; insertedIds: number[]; rows: ReturnType<typeof parseTransportPaste> };
-type TrHistStep = TrEdit | TrPasteStep;
+/** Заливка диапазона одним значением (Excel): один Ctrl+Z отменяет всю заливку. */
+type TrFillStep = { kind: 'fill'; edits: TrEdit[] };
+type TrHistStep = TrEdit | TrPasteStep | TrFillStep;
 const isPasteStep = (s: TrHistStep): s is TrPasteStep => 'kind' in s && s.kind === 'paste';
+const isFillStep = (s: TrHistStep): s is TrFillStep => 'kind' in s && s.kind === 'fill';
 
 // Порядок колонок (юзер 2026-06-12): дата · ИСТОРИЯ(рейс) · статус · работа · время · марка ·
 // №·ГОС · выезд · водитель · комментарий. ТИП/ДОП.ТН/ТН/Д/Ш/В — НЕ колонки, а карточка машины
@@ -111,17 +116,19 @@ const TR_COLS: readonly TrColSpec[] = [
   { id: 'time', title: 'ВРЕМЯ', editable: true },
   { id: 'fact_start', title: 'ФАКТ НАЧ', editable: true },
   { id: 'fact_end', title: 'ФАКТ КОН', editable: true },
-  { id: 'force', title: 'ФОРМ М', editable: true },
+  { id: 'force', title: 'ФОРС М', editable: true },
   { id: 'brand', title: 'МАРКА' }, // стек: марка + цвет
   { id: 'garage', title: '№ · ГОС' }, // стек: № (жирный) + гос; двойной клик → карточка характеристик
   { id: 'out', title: 'ВЫЕЗД', editable: true },
   { id: 'driver', title: 'ВОДИТЕЛЬ', editable: true }, // ФИО + СОТ под ним
+  { id: 'no_exp', title: 'БЕЗ ЭКСП.', editable: true },
   { id: 'comment', title: 'КОММЕНТАРИЙ', editable: true },
 ];
 
 /** Порядок статусов в выпадашке — по слову юзера; «(пусто)» НЕТ (снять = Delete). */
 const STATUS_ORDER = ['Размещен', 'Дополнение', 'Отклонен', 'Отмена', 'Не приехал', 'Новый', 'Открыт'] as const;
 const OUT_STATUS_ORDER = ['ДА', 'НЕТ'] as const;
+const YES_NO_ORDER = ['ДА', 'НЕТ'] as const;
 const FORCE_REASONS = ['ожидание выгрузки', 'поломка ТС'] as const;
 
 /** Шрифт как в Формировании: стандарт 10px на всю таблицу. Мелкие (8px) — только стек-ячейки
@@ -393,6 +400,16 @@ export function workIsSixPlus(w: string): boolean {
 // Кэш на сессию (мгновенный повторный вход, потом refetch + реалтайм).
 let trRowsCache: FlowTransportRow[] | null = null;
 let trVehCache: FlowVehicle[] | null = null;
+/** Позиция скролла грида + фильтр дней — восстанавливаем при возврате в раздел (ТЗ п.4). */
+let trScrollCache: { col: number; row: number } | null = null;
+let trDaySelCache: Set<string> | null = null;
+
+/** Колонка-маркер выбора строк: ДАТА (если видна) иначе ИСТОРИЯ (юзер 2026-07-14). */
+function rowSelectColIndex(cols: readonly TrColSpec[]): number {
+  const dateIdx = cols.findIndex((c) => c.id === 'date');
+  if (dateIdx >= 0) return dateIdx;
+  return cols.findIndex((c) => c.id === 'trip');
+}
 
 export function FlowTransportGrid(): JSX.Element {
   const [rows, setRows] = useState<FlowTransportRow[]>(() => trRowsCache ?? []);
@@ -424,12 +441,11 @@ export function FlowTransportGrid(): JSX.Element {
     columns: CompactSelection.empty(),
     rows: CompactSelection.empty(),
   });
-  // Фильтры (статус-чипы, день). Свободный поиск теперь — отдельная панель-поиск
-  // (как в Формировании): подсветка/перелёт, НЕ прячет строки (см. useFlowGridSearch).
-  const [statusFilter, setStatusFilter] = useState<Set<string>>(() => new Set());
+  // Фильтр дней. Статус — только колоночный фильтр грида. Поиск — отдельная панель.
   // Выбор дней — МНОЖЕСТВО (юзер 2026-06-12): клик-тогл + протяжка по дням (range).
   // Пусто = все дни. Ровно один день — колонку ДАТА прячем (она в фильтре).
-  const [daySel, setDaySel] = useState<Set<string>>(() => new Set());
+  const [daySel, setDaySel] = useState<Set<string>>(() => new Set(trDaySelCache ?? []));
+  const prodCalByYear = useProdCalendarStore((st) => st.byYear);
   const [dayPickerOpen, setDayPickerOpen] = useState(false);
   // Вид «Общий / Личный» (filter-views, как в Формировании): фильтры поиска/статусов/дней.
   const [viewMode, setViewMode] = useState<FlowViewMode>('shared');
@@ -454,6 +470,8 @@ export function FlowTransportGrid(): JSX.Element {
   // Свой выбор дней для печати (тот же календарь, что у фильтра) — при открытии
   // подхватывает текущий фильтр дней, дальше правится независимо.
   const [printSel, setPrintSel] = useState<Set<string>>(() => new Set());
+  const [printDok, setPrintDok] = useState(false);
+  const [printOkalina, setPrintOkalina] = useState(false);
   const [trip, setTrip] = useState<{ row: FlowTransportRow; x: number; y: number } | null>(null);
   // Карточка характеристик машины (по двойному клику на №·ГОС).
   const [specCard, setSpecCard] = useState<{ row: FlowTransportRow; garage: string; veh: FlowVehicle | null; x: number; y: number } | null>(null);
@@ -598,6 +616,8 @@ export function FlowTransportGrid(): JSX.Element {
           return r.order_no || '';
         case 'out':
           return r.out_status || '';
+        case 'no_exp':
+          return r.no_exp_status || '';
         case 'vehicle_type':
           return r.vehicle_type || '';
         case 'fact_start':
@@ -655,8 +675,9 @@ export function FlowTransportGrid(): JSX.Element {
       TR_COLS.filter((c) => (c.id === 'date' ? showDate : c.id === 'order' ? showOrder : true)),
     [showDate, showOrder],
   );
+  const rowSelectCol = useMemo(() => rowSelectColIndex(cols), [cols]);
 
-  // База показа: статус-чипы и день (свободный поиск НЕ прячет строки — он подсвечивает).
+  // База показа: день (свободный поиск НЕ прячет строки — он подсвечивает).
   // Свежий день сверху, внутри дня — по номеру работы. Дни НЕ выбраны → ТЕКУЩИЙ МЕСЯЦ
   // (+ будущее), а не весь архив (юзер 2026-07-04); прошлые месяцы — выбором дней в календаре.
   const currentMonthPrefix = useMemo(() => isoToday().slice(0, 7), []);
@@ -665,7 +686,6 @@ export function FlowTransportGrid(): JSX.Element {
       if (daySel.size > 0) {
         if (!daySel.has(r.tdate)) return false;
       } else if ((r.tdate || '').slice(0, 7) < currentMonthPrefix) return false;
-      if (statusFilter.size > 0 && !statusFilter.has(r.status || '')) return false;
       return true;
     });
     out.sort(
@@ -676,7 +696,7 @@ export function FlowTransportGrid(): JSX.Element {
         a.id - b.id,
     );
     return out;
-  }, [rows, statusFilter, daySel, currentMonthPrefix]);
+  }, [rows, daySel, currentMonthPrefix]);
 
   // Значение ячейки для поиска/фильтра: объединённые колонки склеиваем «A · B» (№/ГОС,
   // Марка/Цвет, Водитель/тел) → чек-лист и поиск-сужение по любому под-значению.
@@ -880,6 +900,15 @@ export function FlowTransportGrid(): JSX.Element {
         };
         return cell;
       }
+      if (spec.id === 'no_exp') {
+        const cell: FlowDropdownCell = {
+          kind: GridCellKind.Custom,
+          allowOverlay: !locked,
+          copyData: r.no_exp_status || '',
+          data: { kind: 'flow-dropdown', value: r.no_exp_status || '', options: YES_NO_ORDER },
+        };
+        return cell;
+      }
       if (spec.id === 'trip') {
         // §8: значок истории ТОЛЬКО где есть НАШИ зафикс. поставки на эту машину+день; иначе пусто
         // (отмена/отклонённые/открытые без поставок — без значка). Двойной клик → карточка.
@@ -962,7 +991,7 @@ export function FlowTransportGrid(): JSX.Element {
       }
       const editable = colEditable(spec, locked);
       if (spec.id === 'time') {
-        // ВРЕМЯ: 24 часа без ведущих нулей.
+        const undershoot = isShiftUndershoot(r.time_range, r.work, r.tdate, prodCalByYear);
         return {
           kind: GridCellKind.Text,
           data: r.time_range,
@@ -970,6 +999,7 @@ export function FlowTransportGrid(): JSX.Element {
           allowOverlay: editable,
           readonly: !editable,
           allowWrapping: false,
+          themeOverride: undershoot ? { baseFontStyle: `700 ${STD_FONT}` } : fontOverride,
         };
       }
       const rawData = text;
@@ -984,7 +1014,7 @@ export function FlowTransportGrid(): JSX.Element {
         themeOverride: fontOverride,
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked, colEditable, driverOptions, driverByFio, cols, tripKeys],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked, colEditable, driverOptions, driverByFio, cols, tripKeys, prodCalByYear],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -1031,6 +1061,31 @@ export function FlowTransportGrid(): JSX.Element {
     },
     [applyServerRows],
   );
+  const applyFieldsBatch = useCallback(
+    (edits: { id: number; fields: Record<string, string> }[]) => {
+      if (edits.length === 0) return;
+      const curRows = rowsRef.current;
+      const byId = new Map(edits.map((e) => [e.id, e.fields]));
+      const wire = edits
+        .map((e) => {
+          const cur = curRows.find((x) => x.id === e.id);
+          return cur ? { id: e.id, row_version: cur.row_version, fields: e.fields } : null;
+        })
+        .filter((x): x is { id: number; row_version: number; fields: Record<string, string> } => x !== null);
+      setMsg('');
+      setRows((prev) => {
+        const next = prev.map((x) => {
+          const f = byId.get(x.id);
+          return f ? ({ ...x, ...f } as FlowTransportRow) : x;
+        });
+        trRowsCache = next;
+        rowsRef.current = next;
+        return next;
+      });
+      if (wire.length) void flowTransportEdit(api, wire).then((res) => applyServerRows(res.rows));
+    },
+    [applyServerRows],
+  );
 
   const pushHistory = useCallback(
     (e: TrHistStep) => {
@@ -1064,22 +1119,38 @@ export function FlowTransportGrid(): JSX.Element {
       })
       .catch((err) => setMsg(`Ошибка повтора: ${(err instanceof Error ? err.message : String(err)).slice(0, 80)}`));
   }, []);
+  const undoFillStep = useCallback(
+    (e: TrFillStep) => {
+      applyFieldsBatch(e.edits.map((x) => ({ id: x.id, fields: x.before })));
+      setMsg(`Заливка отменена: ${e.edits.length} ячеек`);
+    },
+    [applyFieldsBatch],
+  );
+  const redoFillStep = useCallback(
+    (e: TrFillStep) => {
+      applyFieldsBatch(e.edits.map((x) => ({ id: x.id, fields: x.after })));
+      setMsg(`Заливка повторена: ${e.edits.length} ячеек`);
+    },
+    [applyFieldsBatch],
+  );
   const undo = useCallback(() => {
     const e = undoRef.current.pop();
     if (!e) return;
     if (isPasteStep(e)) undoPasteStep(e);
+    else if (isFillStep(e)) undoFillStep(e);
     else applyFields(e.id, e.before);
     redoRef.current.push(e);
     syncHistory();
-  }, [applyFields, syncHistory, undoPasteStep]);
+  }, [applyFields, syncHistory, undoPasteStep, undoFillStep]);
   const redo = useCallback(() => {
     const e = redoRef.current.pop();
     if (!e) return;
     if (isPasteStep(e)) redoPasteStep(e);
+    else if (isFillStep(e)) redoFillStep(e);
     else applyFields(e.id, e.after);
     undoRef.current.push(e);
     syncHistory();
-  }, [applyFields, syncHistory, redoPasteStep]);
+  }, [applyFields, syncHistory, redoPasteStep, redoFillStep]);
 
   // ⌘Z / ⌘⇧Z (Ctrl на Win) — отмена/повтор, кроме случая когда фокус в поле ввода
   // (там Cmd+Z правит текст). Грид монтируется только на активной вкладке Транспорт.
@@ -1138,6 +1209,7 @@ export function FlowTransportGrid(): JSX.Element {
         fact_end: 'fact_end',
         force: 'force_json',
         out: 'out_status',
+        no_exp: 'no_exp_status',
         status: 'status',
         comment: 'comment',
       };
@@ -1149,6 +1221,49 @@ export function FlowTransportGrid(): JSX.Element {
       pushHistory({ id: r.id, before: { [field]: before }, after: { [field]: value } });
     },
     [viewRows, applyFields, pushHistory, rowLocked, cols],
+  );
+
+  // Вставка в выделенный диапазон (Excel: одно значение → все ячейки, ТЗ п.5).
+  const handlePaste = useCallback(
+    (_target: Item, values: readonly (readonly string[])[]): boolean => {
+      const single = values.length === 1 && values[0]?.length === 1 ? values[0][0] : undefined;
+      const range = selection.current?.range;
+      if (single === undefined || !range || (range.width <= 1 && range.height <= 1)) return true;
+      const fieldByCol: Record<string, string> = {
+        garage: 'garage_no',
+        order: 'order_no',
+        work: 'work',
+        vehicle_type: 'vehicle_type',
+        time: 'time_range',
+        out: 'out_status',
+        no_exp: 'no_exp_status',
+        status: 'status',
+        comment: 'comment',
+      };
+      const fillByRow = new Map<number, TrEdit>();
+      for (let ri = range.y; ri < range.y + range.height; ri++) {
+        for (let c = range.x; c < range.x + range.width; c++) {
+          const spec = cols[c];
+          const r = viewRows[ri];
+          if (!spec || !r || rowLocked(r) || !colEditable(spec, rowLocked(r))) continue;
+          const field = fieldByCol[spec.id];
+          if (!field) continue;
+          const before = String((r as unknown as Record<string, unknown>)[field] ?? '');
+          const value = single.trim();
+          if (before === value) continue;
+          const acc = fillByRow.get(r.id) ?? { id: r.id, before: {}, after: {} };
+          acc.before[field] = before;
+          acc.after[field] = value;
+          fillByRow.set(r.id, acc);
+        }
+      }
+      const fillEdits = [...fillByRow.values()];
+      if (fillEdits.length === 0) return false;
+      applyFieldsBatch(fillEdits.map((e) => ({ id: e.id, fields: e.after })));
+      pushHistory({ kind: 'fill', edits: fillEdits });
+      return false;
+    },
+    [selection, cols, viewRows, rowLocked, colEditable, applyFieldsBatch, pushHistory],
   );
 
   // Del/Backspace: ФАКТ НАЧ/ФАКТ КОН — readonly-ячейки (правятся поповером), штатное
@@ -1227,7 +1342,9 @@ export function FlowTransportGrid(): JSX.Element {
       const r = viewRows[row];
       if (!r) return undefined;
       if (r.status === 'Размещен' || r.status === 'Дополнение') return { bgCell: '#EAF5EA' };
-      if (r.status === 'Отклонен' || r.status === 'Отмена' || r.status === 'Не приехал') return { bgCell: '#FBE7E4', textDark: '#7A2A1D' };
+      if (r.status === 'Отклонен' || r.status === 'Отмена' || r.status === 'Не приехал' || r.status === 'Открыт') {
+        return { bgCell: '#FBE7E4', textDark: '#7A2A1D' };
+      }
       if (rowLocked(r)) return { textDark: '#8C8983' };
       return undefined;
     },
@@ -1286,7 +1403,7 @@ export function FlowTransportGrid(): JSX.Element {
   const deleteSelected = useCallback(() => {
     const ids: number[] = [];
     let lockedHit = false;
-    for (const idx of selection.rows) {
+    for (const idx of selection.rows.toArray()) {
       const r = viewRows[idx];
       if (!r) continue;
       if (rowLocked(r)) {
@@ -1295,8 +1412,12 @@ export function FlowTransportGrid(): JSX.Element {
       }
       ids.push(r.id);
     }
-    if (lockedHit) setMsg('Часть строк старше 7 дней — они не удаляются (архив)');
-    if (ids.length === 0) return;
+    if (lockedHit && !isDev) setMsg('Часть строк старше 7 дней — они не удаляются (архив)');
+    if (ids.length === 0) {
+      if (lockedHit && !isDev) return;
+      if (selection.rows.length > 0) setMsg('Нет строк для удаления');
+      return;
+    }
     setRows((prev) => {
       const drop = new Set(ids);
       const next = prev.filter((r) => !drop.has(r.id));
@@ -1305,7 +1426,16 @@ export function FlowTransportGrid(): JSX.Element {
     });
     setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
     void flowTransportDelete(api, ids).catch(() => undefined);
-  }, [selection, viewRows, rowLocked]);
+  }, [selection, viewRows, rowLocked, isDev]);
+
+  const selectAllRows = useCallback(() => {
+    if (viewRows.length === 0) return;
+    setSelection({
+      columns: CompactSelection.empty(),
+      rows: CompactSelection.fromSingleSelection([0, viewRows.length]),
+      current: undefined,
+    });
+  }, [viewRows.length]);
 
   const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
@@ -1336,10 +1466,9 @@ export function FlowTransportGrid(): JSX.Element {
   // Применить вид к фильтрам. lastViewJsonRef ставим ДО setState — тогда save-эффект
   // увидит «не изменилось» и не пере-сохранит (без эха).
   const applyView = useCallback((v: TransportView) => {
-    lastViewJsonRef.current = canonicalTransportViewJson(v);
-    // v.search больше не применяется: свободный поиск — отдельная панель (подсветка),
-    // не часть сохраняемого вида. Поле оставлено в типе для совместимости со старым JSON.
-    setStatusFilter(new Set(v.statuses));
+    // statuses/search — legacy в JSON; фильтр статуса только в колонке грида.
+    const view = { search: '', statuses: [] as string[], days: v.days };
+    lastViewJsonRef.current = canonicalTransportViewJson(view);
     setDaySel(new Set(v.days));
   }, []);
 
@@ -1402,7 +1531,7 @@ export function FlowTransportGrid(): JSX.Element {
   // Изменение фильтров → сохраняем в АКТИВНЫЙ источник (личный localStorage / общий сервер).
   useEffect(() => {
     if (!viewHydratedRef.current) return;
-    const view: TransportView = { search: '', statuses: [...statusFilter], days: [...daySel] };
+    const view: TransportView = { search: '', statuses: [], days: [...daySel] };
     const json = canonicalTransportViewJson(view);
     if (json === lastViewJsonRef.current) return;
     lastViewJsonRef.current = json;
@@ -1418,7 +1547,16 @@ export function FlowTransportGrid(): JSX.Element {
     } else {
       scheduleSharedSave(json);
     }
-  }, [statusFilter, daySel, scheduleSharedSave]);
+  }, [daySel, scheduleSharedSave]);
+
+  useEffect(() => {
+    trDaySelCache = new Set(daySel);
+  }, [daySel]);
+
+  useEffect(() => {
+    if (loading || viewRows.length === 0 || !gridRef.current || !trScrollCache) return;
+    gridRef.current.scrollTo(trScrollCache.col, trScrollCache.row, 'both', 0, 0);
+  }, [loading, viewRows.length]);
 
   // Реалтайм: кто-то изменил ОБЩИЙ вид. Автора/наличие обновляем всегда; ПРИМЕНЯЕМ только
   // если я в «Общем» и это не моё эхо.
@@ -1638,6 +1776,34 @@ export function FlowTransportGrid(): JSX.Element {
               className="z-50 w-[248px] rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-lg"
             >
               <FlowDayMultiPicker selected={printSel} onChange={setPrintSel} dataDays={allDaysSet} />
+              <div className="mt-2 flex items-center gap-1 border-t border-border-subtle pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPrintDok((v) => !v)}
+                  title="Включить в печать работы ДОК (6.x)"
+                  className={cn(
+                    'flex h-6 flex-1 items-center justify-center rounded-md border text-[12px] outline-none transition-colors',
+                    printDok
+                      ? 'border-accent-clay/60 bg-accent-clay/15 font-medium text-text-strong'
+                      : 'border-border-subtle text-text-secondary hover:border-border-default hover:bg-accent-clay/10 hover:text-text-strong',
+                  )}
+                >
+                  ДОК
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPrintOkalina((v) => !v)}
+                  title="Включить в печать работы ОКАЛИНА (8.x)"
+                  className={cn(
+                    'flex h-6 flex-1 items-center justify-center rounded-md border text-[12px] outline-none transition-colors',
+                    printOkalina
+                      ? 'border-accent-clay/60 bg-accent-clay/15 font-medium text-text-strong'
+                      : 'border-border-subtle text-text-secondary hover:border-border-default hover:bg-accent-clay/10 hover:text-text-strong',
+                  )}
+                >
+                  ОКАЛИНА
+                </button>
+              </div>
               <button
                 type="button"
                 disabled={printSel.size === 0}
@@ -1719,7 +1885,7 @@ export function FlowTransportGrid(): JSX.Element {
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
-        {/* Вид «Общий / Личный» (filter-views) — фильтры поиска/статусов/дней (юзер 2026-06-12). */}
+        {/* Вид «Общий / Личный» (filter-views) — фильтр дней (юзер 2026-06-12). */}
         <FlowViewSwitch
           mode={viewMode}
           onModeChange={handleViewModeChange}
@@ -1728,32 +1894,6 @@ export function FlowTransportGrid(): JSX.Element {
           hasPersonalView={hasPersonalView}
           onReset={handleViewReset}
         />
-        <div className="flex items-center gap-1">
-          {STATUS_ORDER.map((st) => {
-            const on = statusFilter.has(st);
-            return (
-              <button
-                key={st}
-                type="button"
-                onClick={() =>
-                  setStatusFilter((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(st)) next.delete(st);
-                    else next.add(st);
-                    return next;
-                  })
-                }
-                title={`Фильтр: ${st}`}
-                className={cn(
-                  'rounded-full border px-1.5 py-[1px] text-[11px] transition-colors',
-                  on ? 'border-accent-clay/70 text-[#0A0A0A]' : 'border-black/10 text-[#6B6862]/70 hover:text-[#3F3D38]',
-                )}
-              >
-                {st}
-              </button>
-            );
-          })}
-        </div>
         {msg && (
           <span className="max-w-[300px] truncate text-[11px] text-[#6B6862]" title={msg}>
             {msg}
@@ -1806,7 +1946,10 @@ export function FlowTransportGrid(): JSX.Element {
               onCellActivated={onCellActivated}
               onDelete={onGridDelete}
               gridSelection={selection}
-              onGridSelectionChange={(sel) => setSelection(colZeroRowSelection(sel) ?? sel)}
+              onGridSelectionChange={(sel) => {
+                setSelection(colRowSelection(sel, rowSelectCol) ?? sel);
+              }}
+              onPaste={handlePaste}
               getRowThemeOverride={getRowThemeOverride}
               drawCell={drawCell}
               customRenderers={TR_RENDERERS}
@@ -1819,11 +1962,28 @@ export function FlowTransportGrid(): JSX.Element {
               rowHeight={getRowHeight}
               headerHeight={22}
               highlightRegions={gridSearch.highlightRegions}
-              onVisibleRegionChanged={gridSearch.onVisibleRegionChanged}
+              onVisibleRegionChanged={(region) => {
+                trScrollCache = { col: region.x, row: region.y };
+                gridSearch.onVisibleRegionChanged(region);
+              }}
               onHeaderMenuClick={colFilters.handleHeaderMenuClick}
               onKeyDown={(e) => {
-                gridSearch.handleKey(e);
+                if (gridSearch.handleKey(e)) return;
+                if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+                  e.cancel();
+                  selectAllRows();
+                  return;
+                }
+                if (
+                  (e.key === 'Delete' || e.key === 'Backspace') &&
+                  selection.rows.length > 0 &&
+                  selection.columns.length === 0
+                ) {
+                  e.cancel();
+                  deleteSelected();
+                }
               }}
+              keybindings={{ search: false, delete: 'Backspace|Delete' }}
               smoothScrollX
               smoothScrollY
             />
@@ -1941,6 +2101,8 @@ export function FlowTransportGrid(): JSX.Element {
             )}
           vehByGarage={vehByGarage}
           driverByFio={driverByFio}
+          printDok={printDok}
+          printOkalina={printOkalina}
           onClose={() => setPrintDays(null)}
         />
       )}
@@ -2426,7 +2588,7 @@ function ForceMajorModal({
       <div className="fixed left-1/2 top-1/2 z-[60] flex max-h-[82vh] w-[620px] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border-subtle bg-bg-surface p-4 text-[12px] shadow-2xl">
         <div className="flex items-baseline justify-between gap-3">
           <div>
-            <div className="text-[14px] font-semibold text-text-strong">ФОРМ М · машина {row.garage_no || '—'}</div>
+            <div className="text-[14px] font-semibold text-text-strong">ФОРС М · машина {row.garage_no || '—'}</div>
             <div className="mt-0.5 text-[11px] text-text-muted/70">{fmtDay(row.tdate)} · {row.work || 'без работы'}</div>
           </div>
           <button
@@ -2452,14 +2614,14 @@ function ForceMajorModal({
                 </select>
                 <button
                   type="button"
-                  onClick={() => setTimePicker({ idx, field: 'start', title: 'ФОРМ М начало' })}
+                  onClick={() => setTimePicker({ idx, field: 'start', title: 'ФОРС М начало' })}
                   className="h-8 rounded-md border border-border-subtle px-2 text-[12px] tabular-nums text-text-primary transition-colors hover:border-accent-clay/60"
                 >
                   с {it.start || '—'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setTimePicker({ idx, field: 'end', title: 'ФОРМ М окончание' })}
+                  onClick={() => setTimePicker({ idx, field: 'end', title: 'ФОРС М окончание' })}
                   className="h-8 rounded-md border border-border-subtle px-2 text-[12px] tabular-nums text-text-primary transition-colors hover:border-accent-clay/60"
                 >
                   по {it.end || '—'}

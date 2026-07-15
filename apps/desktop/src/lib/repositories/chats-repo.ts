@@ -1,5 +1,6 @@
 import type { ChatMessageWire } from '@pyn/core';
 import type { ChatMessageItem, ChatPartner, ChatPartnerType } from '@/types/chat';
+import { wireToAttachment } from '@/lib/attachment-wire';
 import { computeInitials } from '@/lib/initials';
 import { formatTimeYek } from '@/lib/format-time';
 import { normalizePresence } from '@/types/presence';
@@ -86,15 +87,7 @@ export function wireToChatMessage(wire: ChatMessageWire, myLogin: string): ChatM
         }
       : undefined,
     isOwn,
-    attachments: (wire.attachments ?? []).map((a) => ({
-      id: a.file_url,
-      filename: a.file_name,
-      size: a.file_size,
-      mimeType: a.file_type,
-      url: a.file_url,
-      blobKey: a.blob_key_b64,
-      blobNonce: a.blob_nonce_b64,
-    })),
+    attachments: (wire.attachments ?? []).map(wireToAttachment),
     reactions: wire.reactions && typeof wire.reactions === 'object' ? wire.reactions : {},
     myReactions: wire.my_reactions ?? [],
   };
