@@ -98,6 +98,9 @@ jobs:
           echo "R2 uploaded: otl-app-releases/$R2_KEY (sha256=${{ steps.artifact.outputs.sha256 }})"
 
       - name: Upload EXE to VPS (sslip.io /win.exe)
+        # Бонус (короткая ссылка в обход прокси). НЕ должен блокировать релиз —
+        # если VPS недоступен/ключ не подошёл, идём дальше к D1-обновлению версии.
+        continue-on-error: true
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
         shell: bash
@@ -106,9 +109,11 @@ jobs:
           # Файл на диске VPS + имя pyn-<version>.exe в Content-Disposition.
           VERSION="${{ steps.artifact.outputs.version }}"
           ARTIFACT="${{ steps.artifact.outputs.path }}"
-          install -m 600 -d ~/.ssh
+          # mkdir -p, НЕ `install -m 600 -d` — на Windows-раннере ~/.ssh уже есть
+          # и install падает на смене прав ('cannot change permissions ... .ssh').
+          mkdir -p ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
-          chmod 600 ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key || true
           VPS="root@45.12.239.5"
           SCP="scp -i ~/.ssh/vps_key -o StrictHostKeyChecking=accept-new"
           SSH="ssh -i ~/.ssh/vps_key -o StrictHostKeyChecking=accept-new"
