@@ -23,6 +23,7 @@ export {
   type FlowPlanFixedEvent,
   type FlowScriptPressedEvent,
   type FlowScriptLoggedEvent,
+  type FlowMolsLoggedEvent,
   type FlowTransportChangedEvent,
   type FlowVehiclesChangedEvent,
   type FlowPlanMonthChangedEvent,

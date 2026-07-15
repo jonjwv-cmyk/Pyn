@@ -42,6 +42,7 @@ function exitCodeHint(code: number | null): string {
 export interface MacroRunResult {
   ok: boolean;
   tsv?: string;
+  html?: string;
   error?: string;
 }
 
@@ -78,10 +79,19 @@ function encodeWin1251(text: string): Buffer {
   return Buffer.from(bytes);
 }
 
+function decodeHtmlOutput(buf: Buffer): string {
+  const probe = buf.subarray(0, Math.min(buf.length, 4096)).toString('ascii');
+  const charset = /charset\s*=\s*["']?([\w-]+)/i.exec(probe)?.[1]?.toLowerCase() ?? '';
+  const encoding = charset.includes('1251') || charset.includes('cp1251') ? 'windows-1251' : 'utf-8';
+  let html = new TextDecoder(encoding).decode(buf);
+  if (html.charCodeAt(0) === 0xFEFF) html = html.slice(1);
+  return html;
+}
+
 export function setupMacroBridge(): void {
   ipcMain.handle(
     'pyn:macro:run-vbs',
-    async (_evt, vbsSource: string, opts?: { inputFiles?: MacroInputFile[] }): Promise<MacroRunResult> => {
+    async (_evt, vbsSource: string, opts?: { inputFiles?: MacroInputFile[]; outputFormat?: 'tsv' | 'html' }): Promise<MacroRunResult> => {
       if (process.platform !== 'win32') {
         return { ok: false, error: 'platform_not_supported' };
       }
@@ -195,13 +205,18 @@ export function setupMacroBridge(): void {
           };
         }
 
+        const outputFormat = opts?.outputFormat === 'html' ? 'html' : 'tsv';
+        if (outputFormat === 'html') {
+          const html = decodeHtmlOutput(readFileSync(tsvPath));
+          cleanup();
+          if (!html.trim()) return { ok: false, error: 'empty_output' };
+          return { ok: true, html };
+        }
+
         // TSV из VBS — UTF-16 LE с BOM. Sub WriteUnicode в VBS источниках
         // делает `CreateTextFile(path, True, True)` — третий True = Unicode
         // mode = UTF-16 LE + BOM (0xFF 0xFE). Читаем 1:1 c Kotlin
         // MacroOrchestrator.kt:265 — `readText(Charsets.UTF_16LE).removePrefix("﻿")`.
-        // ⚠️ Был bug: читали как 'utf-8' → submit улетал с NUL-байтами,
-        // Sheets API писал мусор или отвечал 400 → юзер видел «не сработало»
-        // несмотря на EXIT_OK от VBS.
         let tsv = readFileSync(tsvPath).toString('utf16le');
         if (tsv.charCodeAt(0) === 0xFEFF) tsv = tsv.slice(1);
         cleanup();

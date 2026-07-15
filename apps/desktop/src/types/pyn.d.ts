@@ -202,8 +202,9 @@ declare global {
               content: string;
               encoding?: 'utf8' | 'win1251';
             }>;
+            outputFormat?: 'tsv' | 'html';
           },
-        ) => Promise<{ ok: boolean; tsv?: string; error?: string }>;
+        ) => Promise<{ ok: boolean; tsv?: string; html?: string; error?: string }>;
       };
       /** Auto-update — download + install с поддержкой SHA verify и кэша. */
       update: {

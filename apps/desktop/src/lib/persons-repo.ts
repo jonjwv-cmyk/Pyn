@@ -64,7 +64,12 @@ function deriveMolFromPersons(persons: Person[]): MolRecord[] {
       createdAt: p.updatedAt,
     });
     if (p.warehouses.length === 0) out.push(row('МОЛ', ''));
-    else for (const w of p.warehouses) out.push(row(w.code, w.until));
+    else {
+      for (const w of p.warehouses) {
+        const until = w.isWas ? 'был' : w.until;
+        out.push(row(w.code, until));
+      }
+    }
   }
   return out;
 }

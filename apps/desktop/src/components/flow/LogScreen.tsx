@@ -2,10 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   flowImportRunsGet,
+  flowMolsRunsGet,
   flowScriptRunsGet,
   flowSapRunsGet,
   type FlowImportRun,
   type FlowImportLoggedEvent,
+  type FlowMolsLoggedEvent,
+  type FlowMolsRun,
   type FlowScriptRun,
   type FlowScriptLoggedEvent,
   type FlowSapRun,
@@ -54,6 +57,7 @@ export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Ele
   const [runs, setRuns] = useState<FlowImportRun[]>([]);
   const [scriptRuns, setScriptRuns] = useState<FlowScriptRun[]>([]);
   const [sapRuns, setSapRuns] = useState<FlowSapRun[]>([]);
+  const [molsRuns, setMolsRuns] = useState<FlowMolsRun[]>([]);
   const [loading, setLoading] = useState(true);
   const users = useUsersStore((s) => s.users);
   // Presence — из единого источника (как у всех аватаров): статус-точка на аватаре прогона.
@@ -68,12 +72,14 @@ export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Ele
       flowImportRunsGet(api).catch(() => [] as FlowImportRun[]),
       flowScriptRunsGet(api).catch(() => []),
       flowSapRunsGet(api).catch(() => []),
+      flowMolsRunsGet(api).catch(() => []),
     ])
-      .then(([imp, scr, sap]) => {
+      .then(([imp, scr, sap, mols]) => {
         if (!alive) return;
         if (imp.length > 0) setRuns(imp);
         if (scr.length > 0) setScriptRuns(scr);
         if (sap.length > 0) setSapRuns(sap);
+        if (mols.length > 0) setMolsRuns(mols);
       })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
@@ -93,6 +99,11 @@ export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Ele
     setRuns((prev) => (prev.some((r) => r.id === run.id) ? prev : [run, ...prev]));
   });
   // Реалтайм: нажата кнопка-скрипт — добавляем строку сверху.
+  useWsEvent<FlowMolsLoggedEvent>('flow_mols_logged', (e) => {
+    const run = e.run as unknown as FlowMolsRun;
+    if (!run || !run.id) return;
+    setMolsRuns((prev) => (prev.some((r) => r.id === run.id) ? prev : [run, ...prev]));
+  });
   useWsEvent<FlowScriptLoggedEvent>('flow_script_logged', (e) => {
     const w = e.run;
     if (!w || !w.id) return;
@@ -112,13 +123,15 @@ export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Ele
       | { kind: 'import'; ts: number; run: FlowImportRun }
       | { kind: 'script'; ts: number; run: FlowScriptRun }
       | { kind: 'sap'; ts: number; run: FlowSapRun }
+      | { kind: 'mols'; ts: number; run: FlowMolsRun }
     > = [];
     for (const r of runs) items.push({ kind: 'import', ts: parseUtcMs(r.started_at), run: r });
     for (const r of scriptRuns) items.push({ kind: 'script', ts: parseUtcMs(r.at), run: r });
     for (const r of sapRuns) items.push({ kind: 'sap', ts: parseUtcMs(r.started_at), run: r });
+    for (const r of molsRuns) items.push({ kind: 'mols', ts: parseUtcMs(r.started_at), run: r });
     items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
     return items;
-  }, [runs, scriptRuns, sapRuns]);
+  }, [runs, scriptRuns, sapRuns, molsRuns]);
 
   return (
     <main className="flex flex-1 flex-col overflow-hidden">
@@ -185,6 +198,62 @@ export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Ele
                           <span className="text-text-muted/60">
                             (поставок {s.total_before} → {s.total_after})
                           </span>
+                        </div>
+                      ) : (
+                        <div className="text-[11.5px] text-rose-600" title={s.error}>
+                          ошибка: {s.error || 'нет данных'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+              if (item.kind === 'mols') {
+                const s = item.run;
+                const u = users.find((x) => x.login === s.login);
+                const nm = s.full_name || s.login || '—';
+                const pres = presenceByLogin[s.login]?.status ?? 'offline';
+                const dur = fmtDuration(s.started_at, s.finished_at);
+                const delta = s.mol_after - s.mol_before;
+                const deltaStr = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '±0';
+                return (
+                  <div
+                    key={`mols${s.id}`}
+                    className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${
+                      s.ok
+                        ? 'border-border-subtle bg-bg-surface/40'
+                        : 'border-rose-300/60 bg-rose-50/40'
+                    }`}
+                  >
+                    <span className="relative mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center">
+                      <Avatar
+                        initials={u?.initials || computeInitials(nm)}
+                        size={32}
+                        login={s.login || undefined}
+                        avatarUrl={u?.avatarUrl}
+                        avatarBlobKey={u?.avatarBlobKey ?? undefined}
+                        avatarBlobNonce={u?.avatarBlobNonce ?? undefined}
+                      />
+                      <PresenceDot state={pres} size={10} ringClass="ring-bg-surface" className="absolute -bottom-0.5 -right-0.5" />
+                    </span>
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <span className="max-w-[220px] truncate text-[13px] font-medium text-text-strong" title={nm}>
+                          {nm}
+                        </span>
+                        <span className="text-[12px] text-accent-clay">· База МОЛов</span>
+                        <span className="text-[11px] text-text-muted/80">{formatFullYek(s.started_at)}</span>
+                        {dur && <span className="text-[11px] text-text-secondary">· за {dur}</span>}
+                      </div>
+                      {s.ok ? (
+                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11.5px] tabular-nums text-text-secondary">
+                          <span>таб. {s.received}</span>
+                          <span>
+                            МОЛ {s.mol_before} → {s.mol_after} ({deltaStr})
+                          </span>
+                          {s.new_count > 0 && (
+                            <span className="text-emerald-700/90">· новых {s.new_count}{s.new_tabs ? `: ${s.new_tabs}` : ''}</span>
+                          )}
                         </div>
                       ) : (
                         <div className="text-[11.5px] text-rose-600" title={s.error}>

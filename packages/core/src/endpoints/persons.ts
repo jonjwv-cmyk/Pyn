@@ -87,6 +87,8 @@ export function serializeBroadcastApprovalWarehouses(codes: readonly string[]): 
 export interface PersonWarehouse {
   code: string;
   until: string;
+  /** Исторический МОЛ — склад без нового назначения в SAP. */
+  isWas?: boolean;
 }
 
 export interface Person {
@@ -237,7 +239,11 @@ function wireToPerson(w: PersonWire): Person {
     isMol: Number(w.is_mol ?? 0) === 1,
     isOrphan: Number(w.is_orphan ?? 0) === 1,
     source: w.source === 'manual' ? 'manual' : 'import',
-    warehouses: (w.warehouses ?? []).map((x) => ({ code: x.code ?? '', until: x.until ?? '' })),
+    warehouses: (w.warehouses ?? []).map((x) => ({
+      code: x.code ?? '',
+      until: x.until ?? '',
+      isWas: Number((x as { is_was?: number }).is_was ?? 0) === 1 || x.until === 'был',
+    })),
     updatedAt: w.updated_at ?? '',
     broadcastEnabled: Number(w.broadcast_enabled ?? 0) === 1,
     broadcastGroup: w.broadcast_group ?? '',
@@ -320,6 +326,55 @@ export async function personCreate(
     { person },
   );
   return { id: Number(wire.id ?? 0), version: wire.version ?? '', updatedAt: wire.updated_at ?? '' };
+}
+
+/** Запись импорта МОЛ из SAP HTML (по табельному). */
+export interface PersonsMolsImportEntry {
+  tab: string;
+  position: string;
+  warehouses: Array<{ code: string; until: string }>;
+}
+
+export interface PersonsMolsImportResult {
+  version: string;
+  updatedAt: string;
+  received: number;
+  molBefore: number;
+  molAfter: number;
+  newTabs: string[];
+  newCount: number;
+  startedAt: string;
+  finishedAt: string;
+}
+
+/** Полная перезапись МОЛ-данных в persons из SAP HTML. */
+export async function personsImportMols(
+  client: ApiClient,
+  entries: PersonsMolsImportEntry[],
+  startedAt?: string,
+): Promise<PersonsMolsImportResult> {
+  const wire = await client.call<{
+    version?: string;
+    updated_at?: string;
+    received?: number;
+    mol_before?: number;
+    mol_after?: number;
+    new_tabs?: string[];
+    new_count?: number;
+    started_at?: string;
+    finished_at?: string;
+  }>('persons_import_mols', { entries, started_at: startedAt });
+  return {
+    version: wire.version ?? '',
+    updatedAt: wire.updated_at ?? '',
+    received: Number(wire.received ?? 0),
+    molBefore: Number(wire.mol_before ?? 0),
+    molAfter: Number(wire.mol_after ?? 0),
+    newTabs: Array.isArray(wire.new_tabs) ? wire.new_tabs.map(String) : [],
+    newCount: Number(wire.new_count ?? 0),
+    startedAt: wire.started_at ?? '',
+    finishedAt: wire.finished_at ?? '',
+  };
 }
 
 /** Парсит plain JSON (после decrypt+gunzip) слепка персон в Person[]. */

@@ -810,6 +810,27 @@ export async function flowScriptRunsGet(client: ApiClient, limit?: number): Prom
   }));
 }
 
+/** Прогон синхронизации базы МОЛ (SAP HTML → persons). */
+export interface FlowMolsRun {
+  id: number;
+  login: string;
+  full_name: string;
+  started_at: string;
+  finished_at: string;
+  received: number;
+  mol_before: number;
+  mol_after: number;
+  new_tabs: string;
+  new_count: number;
+  ok: number;
+  error: string;
+}
+
+export async function flowMolsRunsGet(client: ApiClient, limit?: number): Promise<FlowMolsRun[]> {
+  const wire = await client.call<{ runs?: FlowMolsRun[] }>('flow_mols_runs_get', limit ? { limit } : {});
+  return Array.isArray(wire.runs) ? wire.runs : [];
+}
+
 /** Последние нажатия всех кнопок (подсветка при входе в раздел). */
 export async function flowScriptPressesGet(client: ApiClient): Promise<FlowScriptPress[]> {
   const wire = await client.call<{ presses?: Array<{ id?: string; by?: string; by_name?: string; at?: string }> }>(

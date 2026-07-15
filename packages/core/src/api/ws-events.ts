@@ -109,6 +109,8 @@ export const WS_EVENT_TYPES = {
   FLOW_SCRIPT_PRESSED: 'flow_script_pressed',
   /** Нажатие кнопки-скрипта записано в журнал LOG — добавить строку сверху. */
   FLOW_SCRIPT_LOGGED: 'flow_script_logged',
+  /** Прогон синхронизации базы МОЛ завершён — журнал LOG. */
+  FLOW_MOLS_LOGGED: 'flow_mols_logged',
   /**
    * Раздел «Поток», вкладка «Транспорт» — строки «машина на день» изменены
    * (вставка из буфера / правка / добавление / удаление).
@@ -253,6 +255,25 @@ export interface FlowScriptPressedEvent extends WsServerEvent {
 export interface FlowScriptLoggedEvent extends WsServerEvent {
   type: 'flow_script_logged';
   run: { id: number; script_id: string; login: string; full_name: string; at: string };
+}
+
+/** Прогон синхронизации базы МОЛ записан в журнал LOG. */
+export interface FlowMolsLoggedEvent extends WsServerEvent {
+  type: 'flow_mols_logged';
+  run: {
+    id: number;
+    login: string;
+    full_name: string;
+    started_at: string;
+    finished_at: string;
+    received: number;
+    mol_before: number;
+    mol_after: number;
+    new_tabs: string;
+    new_count: number;
+    ok: number;
+    error: string;
+  };
 }
 
 /** Строки «машина на день» (Транспорт) изменены — актуальные строки + опц. id удалённых. */

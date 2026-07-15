@@ -19,6 +19,7 @@ export * from './default-avatars';
 export * from './endpoints';
 export * from './crypto';
 export * from './mol-query';
+export * from './mols-html';
 export * from './reactions';
 export * from './types';
 export * from './store';

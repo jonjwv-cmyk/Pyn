@@ -113,6 +113,7 @@ export {
 
 // Persons — единая база ПЕРСОН (ФИО + МОЛ), вкладка «Контакты». МОЛ — производное.
 export {
+  personsImportMols,
   personsVersion,
   personsDownload,
   personsDownloadUrl,
@@ -130,6 +131,8 @@ export {
   type PersonsDownloadInfo,
   type PersonPatch,
   type PersonCreateInput,
+  type PersonsMolsImportEntry,
+  type PersonsMolsImportResult,
 } from './persons';
 
 // Chats
@@ -246,6 +249,7 @@ export {
   flowImport,
   flowImportRunsGet,
   flowSapRunsGet,
+  flowMolsRunsGet,
   flowZmvlReconcile,
   flowScriptPress,
   flowScriptPressesGet,
@@ -264,6 +268,7 @@ export {
   type FlowImportResult,
   type FlowImportRun,
   type FlowSapRun,
+  type FlowMolsRun,
   type FlowZmvlRow,
   type FlowZmvlReconcileResult,
   type FlowSedRow,

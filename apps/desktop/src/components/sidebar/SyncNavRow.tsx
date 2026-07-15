@@ -3,6 +3,9 @@ import * as HoverCard from '@radix-ui/react-hover-card';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { useSheetsLockStore } from '@pyn/core';
+import { MOLS_SYNC_ACTION_ID, runMolsSync } from '@/lib/mols-sync-run';
+import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
 
 type SyncItemId = 'mols-db';
 
@@ -13,94 +16,139 @@ type SyncItem = {
   enabled: boolean;
 };
 
-/** Подпункты «Synchronization» — скрипты подключаем по одному. */
 const SYNC_ITEMS: SyncItem[] = [
-  { id: 'mols-db', label: 'База МОЛов', hint: 'Синхронизация базы МОЛов', enabled: false },
+  { id: 'mols-db', label: 'База МОЛов', hint: 'Синхронизация базы МОЛов из SAP', enabled: true },
 ];
 
 interface SyncNavRowProps {
   collapsed: boolean;
 }
 
-/**
- * Пункт «Synchronization» в сайдбаре — заменил сетку из 6 кнопок-скриптов.
- * Hover-флайаут с подпунктами (как «База» / Google-таблицы). В свёрнутом рейле —
- * единый SidebarTooltip справа; флайаут по hover остаётся.
- */
 export function SyncNavRow({ collapsed }: SyncNavRowProps) {
-  const onPick = (item: SyncItem) => {
-    if (!item.enabled) return;
-    // TODO: подключить прогон скрипта (mols-db → flowScriptPress / SAP-run).
+  const [running, setRunning] = React.useState(false);
+  const [msg, setMsg] = React.useState<string | null>(null);
+  const [pwOpen, setPwOpen] = React.useState(false);
+  const activeLock = useSheetsLockStore((s) => s.activeLock);
+  const blockedByOther = Boolean(
+    activeLock && activeLock.actionId !== MOLS_SYNC_ACTION_ID,
+  );
+  const molsLockedByOther = Boolean(
+    activeLock && activeLock.actionId === MOLS_SYNC_ACTION_ID && activeLock.userName !== 'Вы',
+  );
+
+  const run = (password?: string) => {
+    setRunning(true);
+    setMsg(null);
+    void runMolsSync(password)
+      .then((r) => setMsg(r.msg))
+      .finally(() => setRunning(false));
   };
 
-  const trigger = <SyncTrigger collapsed={collapsed} label="Synchronization" />;
+  const onPick = (item: SyncItem) => {
+    if (!item.enabled || running || blockedByOther || molsLockedByOther) return;
+    setPwOpen(true);
+  };
+
+  const trigger = (
+    <SyncTrigger
+      collapsed={collapsed}
+      label="Synchronization"
+      className={running ? 'animate-pulse' : undefined}
+    />
+  );
 
   return (
-    <HoverCard.Root openDelay={80} closeDelay={150}>
-      {collapsed ? (
-        <Tooltip.Root>
-          <HoverCard.Trigger asChild>
-            <Tooltip.Trigger asChild>{trigger}</Tooltip.Trigger>
-          </HoverCard.Trigger>
-          <Tooltip.Portal>
-            <Tooltip.Content
-              side="right"
-              sideOffset={20}
-              className="z-50 rounded-md bg-bg-deep px-2 py-1 text-[12px] text-text-strong shadow-lg"
-            >
+    <>
+      <HoverCard.Root openDelay={80} closeDelay={150}>
+        {collapsed ? (
+          <Tooltip.Root>
+            <HoverCard.Trigger asChild>
+              <Tooltip.Trigger asChild>{trigger}</Tooltip.Trigger>
+            </HoverCard.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content
+                side="right"
+                sideOffset={20}
+                className="z-50 rounded-md bg-bg-deep px-2 py-1 text-[12px] text-text-strong shadow-lg"
+              >
+                Synchronization
+                <Tooltip.Arrow className="fill-bg-deep" />
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
+        ) : (
+          <HoverCard.Trigger asChild>{trigger}</HoverCard.Trigger>
+        )}
+        <HoverCard.Portal>
+          <HoverCard.Content
+            side="right"
+            align="start"
+            sideOffset={20}
+            collisionPadding={8}
+            className={cn(
+              'z-50 flex w-[196px] flex-col',
+              'rounded-xl border border-border-default bg-bg-elevated p-1.5 shadow-2xl',
+              'data-[state=open]:animate-in data-[state=closed]:animate-out',
+              'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
+              'data-[side=right]:slide-in-from-left-2',
+            )}
+          >
+            <p className="px-2 pb-1 text-[10px] font-medium tracking-[-0.01em] text-text-muted/75">
               Synchronization
-              <Tooltip.Arrow className="fill-bg-deep" />
-            </Tooltip.Content>
-          </Tooltip.Portal>
-        </Tooltip.Root>
-      ) : (
-        <HoverCard.Trigger asChild>{trigger}</HoverCard.Trigger>
-      )}
-      <HoverCard.Portal>
-        <HoverCard.Content
-          side="right"
-          align="start"
-          sideOffset={20}
-          collisionPadding={8}
-          className={cn(
-            'z-50 flex w-[196px] flex-col',
-            'rounded-xl border border-border-default bg-bg-elevated p-1.5 shadow-2xl',
-            'data-[state=open]:animate-in data-[state=closed]:animate-out',
-            'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
-            'data-[side=right]:slide-in-from-left-2',
-          )}
-        >
-          <p className="px-2 pb-1 text-[10px] font-medium tracking-[-0.01em] text-text-muted/75">
-            Synchronization
-          </p>
-          <ul className="flex flex-col gap-0.5">
-            {SYNC_ITEMS.map((item) => (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  disabled={!item.enabled}
-                  title={item.enabled ? item.hint : `${item.hint} · скоро`}
-                  onClick={() => onPick(item)}
-                  className={cn(
-                    'flex h-8 w-full items-center rounded-md px-2 text-left text-[12.5px] outline-none transition-colors',
-                    item.enabled
-                      ? 'text-text-secondary hover:bg-bg-hover hover:text-text-strong'
-                      : 'cursor-not-allowed text-text-muted/45',
-                  )}
-                >
-                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                  {!item.enabled ? (
-                    <span className="ml-2 shrink-0 text-[9px] font-medium uppercase tracking-wide text-text-muted/50">
-                      soon
-                    </span>
-                  ) : null}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </HoverCard.Content>
-      </HoverCard.Portal>
-    </HoverCard.Root>
+            </p>
+            {msg ? (
+              <p className="mx-1 mb-1 line-clamp-3 px-1 text-[10px] text-text-muted/80" title={msg}>
+                {msg}
+              </p>
+            ) : null}
+            <ul className="flex flex-col gap-0.5">
+              {SYNC_ITEMS.map((item) => {
+                const disabled = !item.enabled || running || blockedByOther || molsLockedByOther;
+                const title = molsLockedByOther
+                  ? `Синхронизацию запустил ${activeLock?.userName}`
+                  : blockedByOther
+                    ? `Занято: ${activeLock?.actionLabel}`
+                    : item.hint;
+                return (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      title={title}
+                      onClick={() => onPick(item)}
+                      className={cn(
+                        'flex h-8 w-full items-center rounded-md px-2 text-left text-[12.5px] outline-none transition-colors',
+                        disabled
+                          ? 'cursor-not-allowed text-text-muted/45'
+                          : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+                        running && item.enabled && !blockedByOther && !molsLockedByOther
+                          ? 'text-accent-clay'
+                          : null,
+                      )}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                      <span className="ml-2 shrink-0 text-[10px] font-medium text-accent-clay/90">
+                        {running ? '…' : 'Обновить МОЛов'}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </HoverCard.Content>
+        </HoverCard.Portal>
+      </HoverCard.Root>
+
+      <SheetsPasswordPrompt
+        open={pwOpen}
+        actionLabel="База МОЛов"
+        onSubmit={(password) => {
+          setPwOpen(false);
+          run(password);
+        }}
+        onCancel={() => setPwOpen(false)}
+      />
+    </>
   );
 }
 
