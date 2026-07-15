@@ -3,14 +3,54 @@ import {
   getMacroBundle,
   parseMolsHtml,
   personsImportMols,
+  personsMolsBackupCreate,
+  personsMolsBackupRestore,
   releaseSheetLock,
   useSheetsLockStore,
 } from '@pyn/core';
 import { api } from '@/lib/api';
 import { reportClientError } from '@/lib/error-report';
+import { refreshMolFromServer } from '@/lib/mol-repo';
 import { refreshPersonsFromServer } from '@/lib/persons-repo';
 
 export const MOLS_SYNC_ACTION_ID = 'mols_sync';
+
+async function refreshPersonsAndMol(): Promise<void> {
+  await refreshPersonsFromServer({ force: true });
+  await refreshMolFromServer({ force: true });
+}
+
+/** Резерв контактов + МОЛ (перед синхронизацией). */
+export async function runMolsBackup(label = 'manual_desktop'): Promise<{ ok: boolean; msg: string }> {
+  try {
+    const b = await personsMolsBackupCreate(api, label);
+    if (!b.id) return { ok: false, msg: 'Резерв не создан' };
+    return {
+      ok: true,
+      msg: `Резерв #${b.id}: ${b.personsCount} контактов, ${b.molCount} МОЛ, ${b.warehouseLinksCount} складов`,
+    };
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    reportClientError('mols_backup', m, { context: 'Резерв МОЛ' });
+    return { ok: false, msg: `Резерв: ${m.slice(0, 100)}` };
+  }
+}
+
+/** Откат к последнему резерву (контакты + МОЛ + производный блоб). */
+export async function runMolsRestore(): Promise<{ ok: boolean; msg: string }> {
+  try {
+    const r = await personsMolsBackupRestore(api);
+    await refreshPersonsAndMol();
+    return {
+      ok: true,
+      msg: `Откат #${r.backupId}: ${r.personsCount} контактов, ${r.molCount} МОЛ (резерв ${r.backupLabel || r.backupCreatedAt})`,
+    };
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    reportClientError('mols_restore', m, { context: 'Откат МОЛ' });
+    return { ok: false, msg: `Откат: ${m.slice(0, 100)}` };
+  }
+}
 
 /**
  * Синхронизация базы МОЛов: SAP Y_DVK_31000126 → HTML → persons_import_mols.
@@ -59,7 +99,7 @@ export async function runMolsSync(password?: string): Promise<{ ok: boolean; msg
     }
 
     const r = await personsImportMols(api, entries, startedAt);
-    await refreshPersonsFromServer({ force: true });
+    await refreshPersonsAndMol();
 
     const delta = r.molAfter - r.molBefore;
     const deltaStr = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '±0';

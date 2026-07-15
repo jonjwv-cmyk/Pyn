@@ -1,6 +1,6 @@
 import { app, ipcMain } from 'electron';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -19,11 +19,15 @@ import path from 'node:path';
  *      храним — приватность + Kaspersky scanning).
  *   5. Возвращаем TSV-строку renderer'у → он отправит submitMacroData.
  *
- * Timeout — 5 мин на cscript. SAP-связь у юзеров на работе тормозит, но
- * 5 мин — потолок (на больше — что-то не так с SAP сессией).
+ * Timeout — НЕ функциональный лимит времени, а предохранитель от зомби-процесса.
+ * Раньше было 5 мин и это УБИВАЛО тяжёлые отчёты (МОЛ Y_DVK_31000126 «Выполнить» =
+ * 5–7 мин) прямо на выгрузке. Реальная защита от «висит вечно» — сам VBS замечает,
+ * что SAP закрыли (WaitReady/WaitForId → Quit 22), и `.press` по мёртвой сессии
+ * бросает COM-ошибку → cscript выходит. Здесь остаётся лишь потолок 60 мин: если
+ * VBS всё же завис при ЖИВОМ SAP — не держать вечно lock синхронизации.
  */
 
-const CSCRIPT_TIMEOUT_MS = 5 * 60 * 1000;
+const CSCRIPT_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Расшифровка known VBS exit codes (см. wf_plan VBS source). */
 function exitCodeHint(code: number | null): string {
@@ -35,6 +39,7 @@ function exitCodeHint(code: number | null): string {
     case 14: return 'obd.txt пустой';
     case 20: return 'SAP GUI не запущен — открой SAP и залогинься';
     case 21: return 'SAP session недоступна';
+    case 22: return 'SAP закрыли во время макроса — открой SAP и повтори';
     default: return '';
   }
 }
@@ -79,6 +84,23 @@ function encodeWin1251(text: string): Buffer {
   return Buffer.from(bytes);
 }
 
+/** SAP МОЛы: если OTL_MACRO_OUTPUT пуст, VBS пишет в %APPDATA%\\@pyn\\desktop\\macro-temp\\mols_export_*.htm */
+function findLatestMolsHtmlExport(): string | null {
+  const dir = path.join(app.getPath('appData'), '@pyn', 'desktop', 'macro-temp');
+  try {
+    const files = readdirSync(dir)
+      .filter((f) => /^mols_export_.*\.htm$/i.test(f))
+      .map((f) => path.join(dir, f))
+      .filter((p) => {
+        try { return statSync(p).size > 1024; } catch { return false; }
+      })
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    return files[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function decodeHtmlOutput(buf: Buffer): string {
   const probe = buf.subarray(0, Math.min(buf.length, 4096)).toString('ascii');
   const charset = /charset\s*=\s*["']?([\w-]+)/i.exec(probe)?.[1]?.toLowerCase() ?? '';
@@ -111,12 +133,13 @@ export function setupMacroBridge(): void {
 
       const id = randomUUID();
       const vbsPath = path.join(macrosDir, `${id}.vbs`);
-      const tsvPath = path.join(macrosDir, `${id}.tsv`);
+      const outputFormat = opts?.outputFormat === 'html' ? 'html' : 'tsv';
+      const outPath = path.join(macrosDir, `${id}.${outputFormat === 'html' ? 'htm' : 'tsv'}`);
       const inputPaths: string[] = [];
 
       const cleanup = (): void => {
         try { rmSync(vbsPath, { force: true }); } catch (_) {}
-        try { rmSync(tsvPath, { force: true }); } catch (_) {}
+        try { rmSync(outPath, { force: true }); } catch (_) {}
         for (const p of inputPaths) {
           try { rmSync(p, { force: true }); } catch (_) {}
         }
@@ -149,46 +172,50 @@ export function setupMacroBridge(): void {
         let stderrBuf = '';
         let exitCode: number | null = null;
 
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            try { child.kill(); } catch (_) {}
-            reject(new Error('cscript_timeout'));
-          }, CSCRIPT_TIMEOUT_MS);
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              try { child.kill(); } catch (_) {}
+              reject(new Error('cscript_timeout'));
+            }, CSCRIPT_TIMEOUT_MS);
 
-          // Args 1:1 c Kotlin: `//Nologo` (двойной слэш), БЕЗ `/B`.
-          // `/B` подавляет stderr — теряем диагностику если VBS упал.
-          const child = spawn('cscript', ['//Nologo', vbsPath], {
-            env: {
-              ...process.env,
-              ...extraEnv,
-              OTL_MACRO_OUTPUT: tsvPath,
-              OTL_MACRO_DEBUG_LOG: debugLogPath,
-            },
-            windowsHide: true,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            // Args 1:1 c Kotlin: `//Nologo` (двойной слэш), БЕЗ `/B`.
+            // `/B` подавляет stderr — теряем диагностику если VBS упал.
+            const child = spawn('cscript', ['//Nologo', vbsPath], {
+              env: {
+                ...process.env,
+                ...extraEnv,
+                OTL_MACRO_OUTPUT: outPath,
+                OTL_MACRO_DEBUG_LOG: debugLogPath,
+              },
+              windowsHide: true,
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            child.stdout?.on('data', (d: Buffer) => {
+              stdoutBuf += d.toString('utf-8');
+              if (stdoutBuf.length > 4000) stdoutBuf = stdoutBuf.slice(-4000);
+            });
+            child.stderr?.on('data', (d: Buffer) => {
+              stderrBuf += d.toString('utf-8');
+              if (stderrBuf.length > 4000) stderrBuf = stderrBuf.slice(-4000);
+            });
+            child.on('exit', (code) => {
+              clearTimeout(timer);
+              exitCode = code;
+              if (code === 0) resolve();
+              else reject(new Error(`cscript_exit_${code}`));
+            });
+            child.on('error', (e) => {
+              clearTimeout(timer);
+              reject(e);
+            });
           });
-          child.stdout?.on('data', (d: Buffer) => {
-            stdoutBuf += d.toString('utf-8');
-            if (stdoutBuf.length > 4000) stdoutBuf = stdoutBuf.slice(-4000);
-          });
-          child.stderr?.on('data', (d: Buffer) => {
-            stderrBuf += d.toString('utf-8');
-            if (stderrBuf.length > 4000) stderrBuf = stderrBuf.slice(-4000);
-          });
-          child.on('exit', (code) => {
-            clearTimeout(timer);
-            exitCode = code;
-            if (code === 0) resolve();
-            else reject(new Error(`cscript_exit_${code}`));
-          });
-          child.on('error', (e) => {
-            clearTimeout(timer);
-            reject(e);
-          });
-        }).catch((e) => {
-          // Перевыбрасываем как обычную ошибку — message подхватится ниже.
-          throw e instanceof Error ? e : new Error(String(e));
-        });
+        } catch (e) {
+          // МОЛы: SAP мог сохранить HTML в macro-temp, даже если VBS вернул 13.
+          if (outputFormat !== 'html' || (!existsSync(outPath) && !findLatestMolsHtmlExport())) {
+            throw e instanceof Error ? e : new Error(String(e));
+          }
+        }
 
         // §VBS-EXIT-CODES (см. wf_plan VBS):
         //   10 = clipboard read threw, 11 = clipboard empty,
@@ -196,7 +223,11 @@ export function setupMacroBridge(): void {
         //   14 = obd.txt пустой, 20 = SAP не запущен, 21 = no SAP session
         const stderrTail = (stderrBuf || stdoutBuf).slice(-400).replace(/\s+/g, ' ').trim();
 
-        if (!existsSync(tsvPath)) {
+        let resultPath = existsSync(outPath) ? outPath : null;
+        if (!resultPath && outputFormat === 'html') {
+          resultPath = findLatestMolsHtmlExport();
+        }
+        if (!resultPath) {
           cleanup();
           const hint = exitCodeHint(exitCode);
           return {
@@ -205,9 +236,8 @@ export function setupMacroBridge(): void {
           };
         }
 
-        const outputFormat = opts?.outputFormat === 'html' ? 'html' : 'tsv';
         if (outputFormat === 'html') {
-          const html = decodeHtmlOutput(readFileSync(tsvPath));
+          const html = decodeHtmlOutput(readFileSync(resultPath));
           cleanup();
           if (!html.trim()) return { ok: false, error: 'empty_output' };
           return { ok: true, html };
@@ -217,7 +247,7 @@ export function setupMacroBridge(): void {
         // делает `CreateTextFile(path, True, True)` — третий True = Unicode
         // mode = UTF-16 LE + BOM (0xFF 0xFE). Читаем 1:1 c Kotlin
         // MacroOrchestrator.kt:265 — `readText(Charsets.UTF_16LE).removePrefix("﻿")`.
-        let tsv = readFileSync(tsvPath).toString('utf16le');
+        let tsv = readFileSync(resultPath).toString('utf16le');
         if (tsv.charCodeAt(0) === 0xFEFF) tsv = tsv.slice(1);
         cleanup();
         if (!tsv.trim()) {

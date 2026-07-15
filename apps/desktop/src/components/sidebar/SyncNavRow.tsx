@@ -4,7 +4,7 @@ import * as Tooltip from '@radix-ui/react-tooltip';
 import { RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useSheetsLockStore } from '@pyn/core';
-import { MOLS_SYNC_ACTION_ID, runMolsSync } from '@/lib/mols-sync-run';
+import { MOLS_SYNC_ACTION_ID, runMolsBackup, runMolsRestore, runMolsSync } from '@/lib/mols-sync-run';
 import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
 
 type SyncItemId = 'mols-db';
@@ -36,17 +36,32 @@ export function SyncNavRow({ collapsed }: SyncNavRowProps) {
     activeLock && activeLock.actionId === MOLS_SYNC_ACTION_ID && activeLock.userName !== 'Вы',
   );
 
-  const run = (password?: string) => {
+  const runAction = (fn: () => Promise<{ ok: boolean; msg: string }>) => {
     setRunning(true);
     setMsg(null);
-    void runMolsSync(password)
+    void fn()
       .then((r) => setMsg(r.msg))
       .finally(() => setRunning(false));
+  };
+
+  const run = (password?: string) => {
+    runAction(() => runMolsSync(password));
   };
 
   const onPick = (item: SyncItem) => {
     if (!item.enabled || running || blockedByOther || molsLockedByOther) return;
     setPwOpen(true);
+  };
+
+  const onBackup = () => {
+    if (running || blockedByOther) return;
+    runAction(() => runMolsBackup('manual_before_sync'));
+  };
+
+  const onRestore = () => {
+    if (running || blockedByOther) return;
+    if (!window.confirm('Откатить контакты и МОЛ к последнему резерву?')) return;
+    runAction(() => runMolsRestore());
   };
 
   const trigger = (
@@ -135,6 +150,34 @@ export function SyncNavRow({ collapsed }: SyncNavRowProps) {
                 );
               })}
             </ul>
+            <div className="mx-1 mt-1 flex flex-col gap-0.5 border-t border-border-default/60 pt-1">
+              <button
+                type="button"
+                disabled={running || blockedByOther}
+                onClick={onBackup}
+                className={cn(
+                  'flex h-7 w-full items-center rounded-md px-2 text-left text-[11px] outline-none transition-colors',
+                  running || blockedByOther
+                    ? 'cursor-not-allowed text-text-muted/45'
+                    : 'text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+                )}
+              >
+                Сохранить резерв
+              </button>
+              <button
+                type="button"
+                disabled={running || blockedByOther}
+                onClick={onRestore}
+                className={cn(
+                  'flex h-7 w-full items-center rounded-md px-2 text-left text-[11px] outline-none transition-colors',
+                  running || blockedByOther
+                    ? 'cursor-not-allowed text-text-muted/45'
+                    : 'text-amber-400/85 hover:bg-bg-hover hover:text-amber-300',
+                )}
+              >
+                Откатить резерв
+              </button>
+            </div>
           </HoverCard.Content>
         </HoverCard.Portal>
       </HoverCard.Root>

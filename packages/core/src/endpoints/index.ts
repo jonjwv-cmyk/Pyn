@@ -114,6 +114,9 @@ export {
 // Persons — единая база ПЕРСОН (ФИО + МОЛ), вкладка «Контакты». МОЛ — производное.
 export {
   personsImportMols,
+  personsMolsBackupCreate,
+  personsMolsBackupGet,
+  personsMolsBackupRestore,
   personsVersion,
   personsDownload,
   personsDownloadUrl,
@@ -125,6 +128,8 @@ export {
   parseBroadcastApprovalWarehouses,
   serializeBroadcastApprovalWarehouses,
   type BroadcastGroup,
+  type PersonsMolsBackupInfo,
+  type PersonsMolsBackupRestoreResult,
   type Person,
   type PersonWarehouse,
   type PersonsMeta,

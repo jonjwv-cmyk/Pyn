@@ -347,6 +347,112 @@ export interface PersonsMolsImportResult {
   finishedAt: string;
 }
 
+export interface PersonsMolsBackupInfo {
+  id: number;
+  label: string;
+  createdAt: string;
+  createdBy: string;
+  personsCount: number;
+  molCount: number;
+  warehouseLinksCount: number;
+}
+
+export interface PersonsMolsBackupRestoreResult {
+  backupId: number;
+  personsCount: number;
+  molCount: number;
+  molRows: number;
+  version: string;
+  updatedAt: string;
+  backupCreatedAt: string;
+  backupLabel: string;
+}
+
+/** Резервная копия контактов + привязок складов (перед синхронизацией МОЛ). */
+export async function personsMolsBackupCreate(
+  client: ApiClient,
+  label?: string,
+): Promise<PersonsMolsBackupInfo> {
+  const wire = await client.call<{
+    backup?: {
+      id?: number;
+      label?: string;
+      created_at?: string;
+      created_by?: string;
+      persons_count?: number;
+      mol_count?: number;
+      warehouse_links_count?: number;
+    };
+  }>('persons_mols_backup_create', label ? { label } : {});
+  const b = wire.backup ?? {};
+  return {
+    id: Number(b.id ?? 0),
+    label: b.label ?? '',
+    createdAt: b.created_at ?? '',
+    createdBy: b.created_by ?? '',
+    personsCount: Number(b.persons_count ?? 0),
+    molCount: Number(b.mol_count ?? 0),
+    warehouseLinksCount: Number(b.warehouse_links_count ?? 0),
+  };
+}
+
+/** Список последних резервов МОЛ. */
+export async function personsMolsBackupGet(
+  client: ApiClient,
+  limit = 5,
+): Promise<PersonsMolsBackupInfo[]> {
+  const wire = await client.call<{
+    backups?: Array<{
+      id?: number;
+      label?: string;
+      created_at?: string;
+      created_by?: string;
+      persons_count?: number;
+      mol_count?: number;
+      warehouse_links_count?: number;
+    }>;
+  }>('persons_mols_backup_get', { limit });
+  return (wire.backups ?? []).map((b) => ({
+    id: Number(b.id ?? 0),
+    label: b.label ?? '',
+    createdAt: b.created_at ?? '',
+    createdBy: b.created_by ?? '',
+    personsCount: Number(b.persons_count ?? 0),
+    molCount: Number(b.mol_count ?? 0),
+    warehouseLinksCount: Number(b.warehouse_links_count ?? 0),
+  }));
+}
+
+/** Откат к резерву (по умолчанию — последний). */
+export async function personsMolsBackupRestore(
+  client: ApiClient,
+  backupId?: number,
+): Promise<PersonsMolsBackupRestoreResult> {
+  const wire = await client.call<{
+    backup_id?: number;
+    restored?: {
+      persons_count?: number;
+      mol_count?: number;
+      mol_rows?: number;
+      version?: string;
+      updated_at?: string;
+      backup_created_at?: string;
+      backup_label?: string;
+    };
+  }>('persons_mols_backup_restore', backupId ? { backup_id: backupId } : {});
+  const r = wire.restored ?? {};
+  return {
+    backupId: Number(wire.backup_id ?? 0),
+    personsCount: Number(r.persons_count ?? 0),
+    molCount: Number(r.mol_count ?? 0),
+    molRows: Number(r.mol_rows ?? 0),
+    version: r.version ?? '',
+    updatedAt: r.updated_at ?? '',
+    backupCreatedAt: r.backup_created_at ?? '',
+    backupLabel: r.backup_label ?? '',
+  };
+}
+
 /** Полная перезапись МОЛ-данных в persons из SAP HTML. */
 export async function personsImportMols(
   client: ApiClient,

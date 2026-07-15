@@ -97,6 +97,26 @@ jobs:
             --remote
           echo "R2 uploaded: otl-app-releases/$R2_KEY (sha256=${{ steps.artifact.outputs.sha256 }})"
 
+      - name: Upload EXE to VPS (sslip.io /win.exe)
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        shell: bash
+        run: |
+          # Короткая ссылка для юзеров: https://45-12-239-5.sslip.io/win.exe
+          # Файл на диске VPS + имя pyn-<version>.exe в Content-Disposition.
+          VERSION="${{ steps.artifact.outputs.version }}"
+          ARTIFACT="${{ steps.artifact.outputs.path }}"
+          install -m 600 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          VPS="root@45.12.239.5"
+          SCP="scp -i ~/.ssh/vps_key -o StrictHostKeyChecking=accept-new"
+          SSH="ssh -i ~/.ssh/vps_key -o StrictHostKeyChecking=accept-new"
+          REMOTE_DIR="/var/www/otl-releases"
+          $SCP "$ARTIFACT" "$VPS:$REMOTE_DIR/pyn-$VERSION.exe"
+          $SSH "$VPS" "cp -f $REMOTE_DIR/pyn-$VERSION.exe $REMOTE_DIR/pyn-latest.exe && printf '%s\n' \"add_header Content-Disposition 'attachment; filename=\\\"pyn-$VERSION.exe\\\"';\" > $REMOTE_DIR/win-exe-headers.conf && chmod 644 $REMOTE_DIR/pyn-$VERSION.exe $REMOTE_DIR/pyn-latest.exe $REMOTE_DIR/win-exe-headers.conf"
+          echo "VPS sslip.io → $REMOTE_DIR/pyn-$VERSION.exe (+ pyn-latest.exe symlink copy)"
+
       - name: Update D1 app_version[desktop-win]
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -113,4 +133,5 @@ jobs:
           echo "  Version: $VERSION"
           echo "  SHA-256: $SHA"
           echo "  Download URL: https://api.otlhelper.com/desktop/win/latest"
+          echo "  VPS bypass:     https://45-12-239-5.sslip.io/win.exe"
           echo "  Clients with current_version < $VERSION will see update pill on next app_status call."
