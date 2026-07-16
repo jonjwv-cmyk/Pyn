@@ -36,25 +36,33 @@ export async function runMolsBackup(label = 'manual_desktop'): Promise<{ ok: boo
   }
 }
 
-/** Откат к последнему резерву (контакты + МОЛ + производный блоб). */
-export async function runMolsRestore(): Promise<{ ok: boolean; msg: string }> {
+/** Откат к последнему резерву (developer + пароль 01012 на сервере). */
+export async function runMolsRestore(password: string): Promise<{ ok: boolean; msg: string }> {
   try {
-    const r = await personsMolsBackupRestore(api);
+    const r = await personsMolsBackupRestore(api, { password });
     await refreshPersonsAndMol();
+    const from = r.versionFrom || '—';
+    const to = r.versionTo || r.version || '—';
+    const sec = r.durationMs ? `${Math.round(r.durationMs / 1000)} с` : '';
     return {
       ok: true,
-      msg: `Откат #${r.backupId}: ${r.personsCount} контактов, ${r.molCount} МОЛ (резерв ${r.backupLabel || r.backupCreatedAt})`,
+      msg: `Откат базы контактов: ${from} → ${to}`
+        + (sec ? ` · ${sec}` : '')
+        + ` · ${r.personsCount} контактов, ${r.molCount} МОЛ`,
     };
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
     reportClientError('mols_restore', m, { context: 'Откат МОЛ' });
+    if (/wrong_password|403/i.test(m)) return { ok: false, msg: 'Неверный пароль отката' };
+    if (/developer|forbidden/i.test(m)) return { ok: false, msg: 'Откат только для разработчика' };
     return { ok: false, msg: `Откат: ${m.slice(0, 100)}` };
   }
 }
 
 /**
- * Синхронизация базы МОЛов: SAP Y_DVK_31000126 → HTML → persons_import_mols.
- * Путь сохранения задаётся через OTL_MACRO_OUTPUT (как у выгрузки заказов).
+ * Импорт базы МОЛ: SAP → HTML → persons_import_mols.
+ * Резерв «как есть» делает UI перед вызовом (auto_before_import) — чтобы
+ * «Откат» всегда имел слепок до изменений.
  */
 export async function runMolsSync(password?: string): Promise<{ ok: boolean; msg: string }> {
   if (window.pyn?.platform !== 'win32') {
@@ -69,7 +77,7 @@ export async function runMolsSync(password?: string): Promise<{ ok: boolean; msg
   const startedAt = new Date().toISOString();
   useSheetsLockStore.getState().acquire({
     actionId: MOLS_SYNC_ACTION_ID,
-    actionLabel: 'База МОЛов',
+    actionLabel: 'Импорт МОЛ',
     userName: 'Вы',
     tabName: '',
     lockedTabRawNames: [],
@@ -82,7 +90,7 @@ export async function runMolsSync(password?: string): Promise<{ ok: boolean; msg
       actionId: MOLS_SYNC_ACTION_ID,
       password,
       tabName: '',
-      actionLabel: 'База МОЛов',
+      actionLabel: 'Импорт МОЛ',
     });
     if (!bundle.ok) {
       return { ok: false, msg: bundle.error === 'wrong_password' ? 'Неверный пароль' : `Макрос: ${bundle.error}` };
@@ -101,17 +109,26 @@ export async function runMolsSync(password?: string): Promise<{ ok: boolean; msg
     const r = await personsImportMols(api, entries, startedAt);
     await refreshPersonsAndMol();
 
-    const delta = r.molAfter - r.molBefore;
-    const deltaStr = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '±0';
-    const newPart = r.newCount > 0 ? ` · +${r.newCount} новых таб.` : '';
-    const tabsPart = r.newTabs.length > 0 ? ` (${r.newTabs.slice(0, 5).join(', ')}${r.newTabs.length > 5 ? '…' : ''})` : '';
-    return {
-      ok: true,
-      msg: `МОЛы: было ${r.molBefore} → стало ${r.molAfter} (${deltaStr})${newPart}${tabsPart} · ${r.received} таб.`,
-    };
+    const molDelta = r.molAfter - r.molBefore;
+    const molDeltaStr = molDelta > 0 ? `+${molDelta}` : molDelta < 0 ? `${molDelta}` : '±0';
+    const parts = [
+      r.contactsNew > 0 ? `Контакты: +${r.contactsNew} новых` : 'Контакты: +0 новых',
+      `МОЛ: было ${r.molBefore} → стало ${r.molAfter} (${molDeltaStr})`,
+    ];
+    const whDelta = r.whEmptyAfter - r.whEmptyBefore;
+    const whDeltaStr = whDelta > 0 ? `+${whDelta}` : whDelta < 0 ? `${whDelta}` : '±0';
+    let whPart = `Склады без МОЛ: было ${r.whEmptyBefore} → стало ${r.whEmptyAfter} (${whDeltaStr})`;
+    if (r.whEmptyCodes.length > 0) {
+      const list = r.whEmptyCodes.slice(0, 12).join(', ')
+        + (r.whEmptyCodes.length > 12 ? '…' : '');
+      whPart += `: ${list}`;
+    }
+    parts.push(whPart);
+
+    return { ok: true, msg: parts.join(' · ') };
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    reportClientError('mols_sync', m, { stack: e instanceof Error ? e.stack : undefined, context: 'База МОЛов' });
+    reportClientError('mols_sync', m, { stack: e instanceof Error ? e.stack : undefined, context: 'Импорт МОЛ' });
     return { ok: false, msg: `Ошибка: ${m.slice(0, 100)}` };
   } finally {
     useSheetsLockStore.getState().release(MOLS_SYNC_ACTION_ID);

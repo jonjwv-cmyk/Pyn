@@ -6,7 +6,7 @@ import { useUiStateStore } from '@/lib/stores';
 import { usePersonsStore } from '@/lib/persons-store';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { distinctStatuses, matchesPersonQuery, sortPersons } from '@/lib/persons-view';
-import { parseMolQuery, type Person } from '@pyn/core';
+import { isValidPersonFio, parseMolQuery, warehouseCodeKey, type Person } from '@pyn/core';
 import { ContactActionDialog, type ContactActionRequest } from './ContactActionDialog';
 import { MolEmptyView, type MolEmptyState } from './MolEmptyView';
 import { MolTable, type MolTableRow } from './MolTable';
@@ -16,8 +16,8 @@ import { usePersonEditStore } from '@/lib/person-edit-store';
 import { ShopsTab } from './ShopsTab';
 import { WarehouseSidebar } from './WarehouseSidebar';
 
-/** Сколько строк рендерим максимум — защита от лага на очень широком запросе. */
-const RESULTS_CAP = 1000;
+/** Сколько строк рендерим максимум — paste 500–1000 складов → много МОЛ; cap с запасом. */
+const RESULTS_CAP = 5000;
 
 /**
  * Раздел «Контакты» — единая база ПЕРСОН (ФИО + МОЛ) + лист «Цеха».
@@ -38,17 +38,87 @@ export function MolScreen() {
   const setShopsQuery = useUiStateStore((s) => s.setShopsQuery);
 
   const [actionRequest, setActionRequest] = useState<ContactActionRequest | null>(null);
+  /** Боковая панель: нормализация «кривых» vs новые МОЛ/контакты. */
+  const [normalizeMode, setNormalizeMode] = useState(false);
   const openPersonEdit = usePersonEditStore((s) => s.open);
 
   // База «Контакты» (persons) грузится eager после логина (App.tsx) — она же
   // питает производный МОЛ для Потока/Цеха. Здесь только читаем.
   const parsed = useMemo(() => parseMolQuery(query), [query]);
 
-  // Контакты = персоны с ФИО (орфаны — отдельно, в панели). Счётчики по ним.
-  const contacts = useMemo(() => persons.filter((p) => !p.isOrphan), [persons]);
-  const orphans = useMemo(() => persons.filter((p) => p.isOrphan), [persons]);
-  const contactsCount = contacts.length;
-  const molCount = useMemo(() => contacts.filter((p) => p.isMol).length, [contacts]);
+  // Счётчик контактов = все с табельным (ключ) + ручные без tab, но с ФИО.
+  // Таблица — валидное ФИО. Панель справа ТОЛЬКО из выгрузки МОЛ:
+  //   • Новый МОЛ = is_mol + tab + нет валидного ФИО (в т.ч. только что появившиеся табельные)
+  //   • Новый контакт = source=sap_mol, уже не МОЛ, ФИО так и не завели
+  //     (не весь мусор базы без ФИО — иначе «простыня»).
+  const contactsCount = useMemo(
+    () => persons.filter((p) => p.tab.trim().length > 0 || p.fio.trim().length > 0).length,
+    [persons],
+  );
+  const contacts = useMemo(
+    () => persons.filter((p) => isValidPersonFio(p.fio)),
+    [persons],
+  );
+  const newMols = useMemo(
+    () => persons.filter((p) => p.isMol && !isValidPersonFio(p.fio) && p.tab.trim().length > 0),
+    [persons],
+  );
+  const newContacts = useMemo(
+    () => persons.filter(
+      (p) => !p.isMol
+        && !isValidPersonFio(p.fio)
+        && p.tab.trim().length > 0
+        && p.source === 'sap_mol',
+    ),
+    [persons],
+  );
+  const molCount = useMemo(() => persons.filter((p) => p.isMol).length, [persons]);
+  /**
+   * Нормализация (узко + приоритет):
+   *  • Со складом / «был»: важны сотовый и почта (и кривое ФИО).
+   *  • Просто МОЛ без склада: важен сотовый; «нет только почты» — НЕ показываем.
+   * Порядок: склад без тел+почты → склад без почты → склад без сотового →
+   *          просто МОЛ без сотового → (кривое ФИО).
+   */
+  const normalizePeople = useMemo(() => {
+    type Row = { p: Person; tier: number };
+    const rows: Row[] = [];
+    for (const p of persons) {
+      if (!p.tab.trim()) continue;
+      const hasWh = p.warehouses.some(
+        (w) => (w.code && w.code !== 'МОЛ' && w.code !== 'MOL') || w.isWas,
+      );
+      const noMail = !p.mail.trim();
+      const noMobile = !p.mobile.trim();
+      const badFio = !isValidPersonFio(p.fio);
+
+      if (hasWh) {
+        // Склад/«был»: почта желательна, сотовый важен.
+        if (!badFio && !noMail && !noMobile) continue;
+        let tier = 9;
+        if (noMobile && noMail) tier = 0;
+        else if (noMail && !noMobile) tier = 1;
+        else if (noMobile && !noMail) tier = 2;
+        else if (badFio) tier = 3;
+        rows.push({ p, tier });
+        continue;
+      }
+
+      if (p.isMol) {
+        // Просто МОЛ: почта не обязательна. Показываем без сотового или с кривым ФИО.
+        if (!noMobile && !badFio) continue;
+        let tier = 9;
+        if (noMobile) tier = 4;
+        else if (badFio) tier = 5;
+        rows.push({ p, tier });
+      }
+    }
+    rows.sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      return a.p.tab.localeCompare(b.p.tab, 'ru', { numeric: true });
+    });
+    return rows.map((r) => r.p);
+  }, [persons]);
   const statuses = useMemo(() => distinctStatuses(persons), [persons]);
 
   const filtered = useMemo<Person[]>(() => {
@@ -84,31 +154,48 @@ export function MolScreen() {
   );
 
   // Правый сайдбар складов — только в режиме поиска по складу.
+  // Порядок токенов = порядок ввода/paste; сравнение 824T ≡ 824Т.
   const foundWarehouseIds = useMemo<string[]>(() => {
     if (parsed.mode !== 'warehouse') return [];
-    const found = new Set<string>();
+    const tokenKeys = new Set(parsed.tokens.map(warehouseCodeKey).filter(Boolean));
+    const foundByKey = new Map<string, string>();
     for (const p of filtered) {
       for (const w of p.warehouses) {
-        if (parsed.tokens.some((tok) => tok.toLowerCase() === w.code.toLowerCase())) found.add(w.code);
+        const k = warehouseCodeKey(w.code);
+        if (k && tokenKeys.has(k) && !foundByKey.has(k)) foundByKey.set(k, w.code);
       }
     }
-    return [...found];
+    // Порядок как в запросе (не алфавит кодов).
+    const out: string[] = [];
+    for (const tok of parsed.tokens) {
+      const k = warehouseCodeKey(tok);
+      const code = foundByKey.get(k);
+      if (code) out.push(code);
+    }
+    return out;
   }, [parsed, filtered]);
 
   const emptyWarehouseIds = useMemo<string[]>(() => {
     if (parsed.mode !== 'warehouse') return [];
-    const foundLower = new Set(foundWarehouseIds.map((c) => c.toLowerCase()));
+    const foundKeys = new Set(foundWarehouseIds.map(warehouseCodeKey));
     const out: string[] = [];
+    const seen = new Set<string>();
     for (const tok of parsed.tokens) {
-      if (foundLower.has(tok.toLowerCase())) continue;
-      const w = byIdLower.get(tok.toLowerCase());
+      const k = warehouseCodeKey(tok);
+      if (!k || foundKeys.has(k) || seen.has(k)) continue;
+      seen.add(k);
+      // byIdLower — exact lower; также ищем по key среди складов.
+      const w =
+        byIdLower.get(tok.toLowerCase())
+        ?? warehouses.find((x) => warehouseCodeKey(x.id) === k);
       if (w) out.push(w.id);
     }
-    return out.sort(byWarehouseCode);
-  }, [parsed, foundWarehouseIds, byIdLower]);
+    return out;
+  }, [parsed, foundWarehouseIds, byIdLower, warehouses]);
 
+  // Склады в сайдбаре — порядок ввода (paste), не алфавит; контакты в таблице — по ФИО.
   const sidebarWarehouseIds = useMemo<string[]>(
-    () => [...foundWarehouseIds, ...emptyWarehouseIds].sort(byWarehouseCode),
+    () => [...foundWarehouseIds, ...emptyWarehouseIds],
     [foundWarehouseIds, emptyWarehouseIds],
   );
 
@@ -120,11 +207,16 @@ export function MolScreen() {
     return { kind: 'notFound', mode: parsed.mode };
   }, [parsed.mode, emptyWarehouseIds]);
 
-  // На пустом запросе справа — панель орфанов (если есть). Уходит при поиске.
-  const showOrphanPanel = parsed.mode === 'empty' && orphans.length > 0;
+  // Пустой поиск: нормализация (если кнопка вкл) или «Новые МОЛы/контакты».
+  const showSidePanel =
+    parsed.mode === 'empty'
+    && (normalizeMode || newMols.length > 0 || newContacts.length > 0);
 
-  const openEdit = (person: Person) =>
-    openPersonEdit({ mode: person.isOrphan ? 'orphan' : 'edit', person });
+  const openEdit = (person: Person) => {
+    // Активный МОЛ без ФИО → режим orphan; иначе обычный edit (ФИО/должность правятся).
+    const mode = person.isMol && !isValidPersonFio(person.fio) ? 'orphan' : 'edit';
+    openPersonEdit({ mode, person });
+  };
   const onEditPersonId = (id: number) => {
     const p = persons.find((x) => x.id === id);
     if (p) openEdit(p);
@@ -143,6 +235,9 @@ export function MolScreen() {
         molCount={molCount}
         molPreviousCount={meta?.previous?.molCount ?? null}
         onAddContact={() => openPersonEdit({ mode: 'create' })}
+        normalizeActive={normalizeMode}
+        normalizeCount={normalizePeople.length}
+        onToggleNormalize={() => setNormalizeMode((v) => !v)}
         query={tab === 'mol' ? query : shopsQuery}
         onQueryChange={tab === 'mol' ? setQuery : setShopsQuery}
       />
@@ -184,8 +279,14 @@ export function MolScreen() {
                 warehouseIds={sidebarWarehouseIds}
                 onContactAction={setActionRequest}
               />
-            ) : showOrphanPanel ? (
-              <OrphanPanel orphans={orphans} onEdit={openEdit} />
+            ) : showSidePanel ? (
+              <OrphanPanel
+                newMols={newMols}
+                newContacts={newContacts}
+                normalizeMode={normalizeMode}
+                normalizePeople={normalizePeople}
+                onEdit={openEdit}
+              />
             ) : null}
           </div>
         </WorkspaceCard>
@@ -236,7 +337,3 @@ function personToRow(p: Person): MolTableRow {
   };
 }
 
-/** Сортировка кодов складов как нумерация в графике: numeric locale-compare. */
-function byWarehouseCode(a: string, b: string): number {
-  return a.localeCompare(b, 'ru', { numeric: true });
-}

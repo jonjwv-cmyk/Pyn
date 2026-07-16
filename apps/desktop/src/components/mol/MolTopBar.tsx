@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { AlertCircle, Plus, Search, X } from 'lucide-react';
+import { AlertCircle, ListFilter, Plus, Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/cn';
 
@@ -20,6 +20,10 @@ interface MolTopBarProps {
   molPreviousCount: number | null;
   /** «+ Контакт» — открыть окно создания контакта. */
   onAddContact: () => void;
+  /** Режим «Нормализация» (боковая панель с «кривыми» записями). */
+  normalizeActive?: boolean;
+  normalizeCount?: number;
+  onToggleNormalize?: () => void;
   /** Поиск МОЛ — теперь в шапке (как в графике), а не нижним композером. */
   query: string;
   onQueryChange: (v: string) => void;
@@ -41,6 +45,9 @@ export function MolTopBar({
   molCount,
   molPreviousCount,
   onAddContact,
+  normalizeActive = false,
+  normalizeCount = 0,
+  onToggleNormalize,
   query,
   onQueryChange,
 }: MolTopBarProps) {
@@ -135,15 +142,43 @@ export function MolTopBar({
       <div className="flex-1" />
 
       {tab === 'mol' && (
-        <button
-          type="button"
-          onClick={onAddContact}
-          title={t('mol.add_contact_tip')}
-          className="no-drag-region flex h-7 shrink-0 items-center gap-1 rounded-md bg-accent-clay/[0.1] pl-1.5 pr-2.5 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/[0.16]"
-        >
-          <Plus className="h-3.5 w-3.5" strokeWidth={2} />
-          {t('mol.add_contact')}
-        </button>
+        <div className="no-drag-region flex shrink-0 items-center gap-1.5">
+          {onToggleNormalize && (
+            <button
+              type="button"
+              onClick={onToggleNormalize}
+              title={t('mol.normalize.tip')}
+              className={cn(
+                'flex h-7 items-center gap-1 rounded-md pl-1.5 pr-2.5 text-[12px] font-medium outline-none transition-colors',
+                normalizeActive
+                  ? 'bg-accent-clay/[0.14] text-accent-clay ring-1 ring-accent-clay/50'
+                  : 'bg-white/[0.04] text-text-muted hover:bg-white/[0.07] hover:text-text-secondary',
+              )}
+            >
+              <ListFilter className="h-3.5 w-3.5" strokeWidth={1.85} />
+              {t('mol.normalize.button')}
+              {normalizeCount > 0 && (
+                <span
+                  className={cn(
+                    'ml-0.5 tabular-nums',
+                    normalizeActive ? 'text-accent-clay/90' : 'text-text-muted/80',
+                  )}
+                >
+                  {normalizeCount.toLocaleString('ru-RU')}
+                </span>
+              )}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onAddContact}
+            title={t('mol.add_contact_tip')}
+            className="flex h-7 items-center gap-1 rounded-md bg-accent-clay/[0.1] pl-1.5 pr-2.5 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/[0.16]"
+          >
+            <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+            {t('mol.add_contact')}
+          </button>
+        </div>
       )}
 
       {hasError && errorMessage && (
@@ -157,13 +192,20 @@ export function MolTopBar({
 }
 
 /**
- * Поле поиска МОЛ в шапке — зеркало ProbaSearchField графика: компактный
- * h-7 пилл, clay-контур + clay-иконка когда активно. Живой фильтр (onChange),
- * Esc — очистить. Ширина пилла — РОВНО по тексту (placeholder, либо значение
- * если оно длиннее): плашка «обнимает» текст и сразу заканчивается, не
- * растягиваясь на всю шапку. Замер через скрытый sizer-span (точная ширина
- * проп. шрифта + кириллица), `+58px` — место под иконки поиска/очистки.
+ * Поле поиска в шапке Базы (Контакты / Цеха).
+ * Компактный h-7 пилл, clay-контур когда активно. Esc — очистить.
+ *
+ * Ширина: по placeholder/короткому value (как раньше), НО с потолком —
+ * paste 500–1000 складов больше не раздувает шапку и не сдвигает сайдбар.
+ * Длинный текст крутится внутри input (нативный horizontal scroll).
  */
+/** Мин. ширина пилла (иконки + короткий placeholder). */
+const SEARCH_W_MIN = 140;
+/** Макс. ширина — длинный paste не разъезжает header/сайдбар. */
+const SEARCH_W_MAX = 280;
+/** pl-7 + pr-7 + запас под иконки. */
+const SEARCH_PAD_X = 58;
+
 function MolSearchField({
   value,
   onChange,
@@ -177,46 +219,52 @@ function MolSearchField({
   const active = value.trim() !== '';
   const sizerRef = useRef<HTMLSpanElement>(null);
   const [textW, setTextW] = useState(0);
-  // Ширину берём из offsetWidth скрытого sizer'а. Раздел МОЛ всегда смонтирован
-  // и переключается через display:none (App.tsx) → при ПЕРВОМ маунте (вкладка
-  // скрыта) offsetWidth = 0, пилюля схлопывается в иконку и без re-measure такой
-  // и остаётся (помогал лишь «прыжок по вкладкам»). ResizeObserver ловит переход
-  // 0→N в момент, когда вкладка становится видимой, и переизмеряет сам.
+  // Замер короткого текста/placeholder. Длинный value sizer'ом НЕ кормим —
+  // иначе ResizeObserver + DOM на 10k символов; width и так упирается в MAX.
+  const sizerText =
+    value.length === 0
+      ? placeholder
+      : value.length > 48
+        ? value.slice(0, 48)
+        : value;
   useLayoutEffect(() => {
     const el = sizerRef.current;
     if (!el) return;
     const measure = () => {
       const w = el.offsetWidth;
-      if (w > 0) setTextW(w); // не сбрасываем в 0, когда вкладка прячется
+      if (w > 0) setTextW(w);
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [value, placeholder]);
+  }, [sizerText]);
+  const width = Math.min(SEARCH_W_MAX, Math.max(SEARCH_W_MIN, textW + SEARCH_PAD_X));
   return (
-    <div className="no-drag-region relative flex h-7 shrink-0 items-center">
+    <div
+      className="no-drag-region relative flex h-7 shrink-0 items-center"
+      style={{ width }}
+    >
       <Search
         className={cn(
-          'pointer-events-none absolute left-2 h-3.5 w-3.5 transition-colors',
+          'pointer-events-none absolute left-2 z-[1] h-3.5 w-3.5 transition-colors',
           active ? 'text-accent-clay/80' : 'text-text-muted/70',
         )}
         strokeWidth={1.75}
       />
-      {/* Невидимый sizer — мерит ширину текста (placeholder либо длинного value)
-          тем же шрифтом 12px, чтобы инпут был точно по тексту. */}
       <span
         ref={sizerRef}
         aria-hidden
         className="pointer-events-none invisible absolute whitespace-pre text-[12px]"
       >
-        {value.length > placeholder.length ? value : placeholder}
+        {sizerText}
       </span>
       <input
         type="text"
         value={value}
         spellCheck={false}
         autoComplete="off"
+        title={value.length > 40 ? value : undefined}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
@@ -226,9 +274,10 @@ function MolSearchField({
           }
         }}
         placeholder={placeholder}
-        style={{ width: textW + 58 }}
         className={cn(
-          'h-7 rounded-md pl-7 pr-7 text-[12px] text-text-primary outline-none',
+          // w-full + min-w-0: ширина от родителя (cap), overflow — скролл вбок.
+          'h-7 w-full min-w-0 rounded-md pl-7 pr-7 text-[12px] text-text-primary outline-none',
+          'overflow-x-auto whitespace-nowrap',
           'transition-[background-color,box-shadow] placeholder:text-text-muted/60',
           active
             ? 'bg-accent-clay/[0.08] ring-1 ring-accent-clay/55'
@@ -241,7 +290,7 @@ function MolSearchField({
           onClick={() => onChange('')}
           aria-label={t('mol.clear_aria')}
           title={t('mol.clear_aria')}
-          className="absolute right-1.5 flex h-4 w-4 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-white/[0.08] hover:text-text-strong"
+          className="absolute right-1.5 z-[1] flex h-4 w-4 items-center justify-center rounded text-text-muted outline-none transition-colors hover:bg-white/[0.08] hover:text-text-strong"
         >
           <X className="h-3 w-3" strokeWidth={2} />
         </button>

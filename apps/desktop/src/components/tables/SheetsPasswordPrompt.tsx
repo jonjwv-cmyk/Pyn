@@ -13,18 +13,22 @@ import { PasswordInput } from '@/components/ui/PasswordInput';
 export function SheetsPasswordPrompt({
   open,
   actionLabel: _actionLabel,
+  title,
   onSubmit,
   onCancel,
 }: {
   open: boolean;
-  /** Сохранено для callers — UI больше не показывает (юзер просил minimal). */
+  /** Сохранено для callers / fallback title. */
   actionLabel: string;
+  /** Заголовок модалки; по умолчанию tables.script_password_title. */
+  title?: string;
   onSubmit: (password: string) => void;
   onCancel: () => void;
 }): JSX.Element {
   const { t } = useTranslation();
   const [password, setPassword] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const heading = title || t('tables.script_password_title');
 
   // Очищаем пароль при закрытии и автофокусируем поле при открытии.
   useEffect(() => {
@@ -69,7 +73,7 @@ export function SheetsPasswordPrompt({
             </div>
             <div className="flex min-w-0 flex-1 items-center">
               <Dialog.Title className="text-[14px] font-semibold text-text-strong">
-                {t('tables.script_password_title')}
+                {heading}
               </Dialog.Title>
             </div>
             <Dialog.Close asChild>

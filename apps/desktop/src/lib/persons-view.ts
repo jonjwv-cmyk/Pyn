@@ -4,7 +4,7 @@
  * (склад/телефон/почта/ФИО), но матчинг идёт по Person (со складами-массивом).
  */
 
-import type { ParsedMolQuery, Person } from '@pyn/core';
+import { warehouseCodeKey, type ParsedMolQuery, type Person } from '@pyn/core';
 import { molStatusKind } from './mol-format';
 
 /** Подходит ли контакт под разобранный запрос (по всей базе, как у МОЛ). */
@@ -14,8 +14,11 @@ export function matchesPersonQuery(p: Person, parsed: ParsedMolQuery): boolean {
   switch (parsed.mode) {
     case 'warehouse': {
       if (parsed.tokens.length === 0) return false;
-      const codes = p.warehouses.map((w) => w.code.toLowerCase());
-      return parsed.tokens.some((t) => codes.includes(t.toLowerCase()));
+      // Латиница/кириллица 4-й буквы: 824T ≡ 824Т (выгрузка SAP бывает и так, и так).
+      const codeKeys = new Set(
+        p.warehouses.map((w) => warehouseCodeKey(w.code)).filter(Boolean),
+      );
+      return parsed.tokens.some((t) => codeKeys.has(warehouseCodeKey(t)));
     }
     case 'phone': {
       const q = t0;

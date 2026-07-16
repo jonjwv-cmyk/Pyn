@@ -1271,10 +1271,14 @@ function WarehouseCell({ warehouses, isMol }: { warehouses: Array<{ code: string
             key={w.code}
             className={cn(
               'inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium tabular-nums ring-1',
-              MOL_UNTIL_PILL_CLASS[molUntilStatus(w.until)],
+              w.until === 'был'
+                ? 'bg-text-muted/12 text-text-muted ring-border-default/60'
+                : MOL_UNTIL_PILL_CLASS[molUntilStatus(w.until)],
             )}
           >
-            {w.code} · по {formatMolUntil(w.until)}
+            {w.until === 'был'
+              ? `${w.code} · ранее`
+              : `${w.code} · по ${formatMolUntil(w.until)}`}
           </span>
         ) : (
           <span key={w.code} className="px-0.5 text-[11.5px] tabular-nums text-text-secondary">

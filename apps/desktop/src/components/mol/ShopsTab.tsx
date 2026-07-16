@@ -15,6 +15,7 @@ import {
   getWarehouseState,
   groupByWarehouse,
   parseMolQuery,
+  warehouseCodeKey,
   type MolRecord,
   type ParsedMolQuery,
   type Warehouse,
@@ -196,8 +197,8 @@ function warehouseMatchesParsed(w: Warehouse, parsed: ParsedMolQuery): boolean {
       return true;
     case 'warehouse': {
       if (parsed.tokens.length === 0) return false;
-      const id = w.id.toLowerCase();
-      return parsed.tokens.some((tk) => id === tk.toLowerCase());
+      const idKey = warehouseCodeKey(w.id);
+      return parsed.tokens.some((tk) => warehouseCodeKey(tk) === idKey);
     }
     case 'phone': {
       const qd = parsed.tokens[0] ?? '';
@@ -269,13 +270,14 @@ export function ShopsTab({ query, onContactAction }: ShopsTabProps) {
   const warehouses = useWarehousesStore((s) => s.warehouses);
   const molRecords = useMolStore((s) => s.records);
 
-  // §per-цех — число уникальных МОЛ-людей (по табельному) на каждый цех, по всем
-  // его складам. Для счётчика «МОЛов: N» в шапке цеха рядом со «складов: N».
+  // §per-цех — число уникальных АКТИВНЫХ МОЛ-людей (по табельному) на каждый цех.
+  // Фантомы «был» (склад без МОЛ) в счётчик не входят — «0 МОЛов», смотреть можно в списке.
   const molCountByShop = useMemo(() => {
     const widToShop = new Map<string, string>();
     for (const w of warehouses) widToShop.set(w.id.trim().toLowerCase(), w.shop_name || '—');
     const byShop = new Map<string, Set<string>>();
     for (const r of molRecords) {
+      if ((r.warehouseUntil || '').trim().toLowerCase() === 'был') continue;
       const shop = widToShop.get(r.warehouseId.trim().toLowerCase());
       if (!shop) continue;
       const key = r.tab.trim() ? `t:${r.tab.trim()}` : `n:${r.fio.trim().toLowerCase()}|${r.mobile.trim()}`;
@@ -922,6 +924,11 @@ function WarehouseMolsPill({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const sorted = useMemo(() => sortMolRecords(records), [records]);
+  // В счётчике — только активные; «был» в списке есть (посмотреть), но не +N.
+  const activeCount = useMemo(
+    () => records.filter((r) => (r.warehouseUntil || '').trim().toLowerCase() !== 'был').length,
+    [records],
+  );
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -933,11 +940,13 @@ function WarehouseMolsPill({
             'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-semibold tracking-wide transition-colors',
             open
               ? 'bg-accent-clay/15 text-accent-clay'
-              : 'bg-bg-hover text-text-secondary hover:bg-accent-clay/[0.10] hover:text-accent-clay',
+              : activeCount === 0
+                ? 'bg-bg-hover text-text-muted hover:bg-accent-clay/[0.10] hover:text-accent-clay'
+                : 'bg-bg-hover text-text-secondary hover:bg-accent-clay/[0.10] hover:text-accent-clay',
           )}
         >
           <span>{t('shops.mols_short')}</span>
-          <span className="tabular-nums">{records.length}</span>
+          <span className="tabular-nums">{activeCount}</span>
           <ChevronDown
             className={cn('h-3 w-3 transition-transform duration-150', open && 'rotate-180')}
             strokeWidth={2}
@@ -1022,10 +1031,12 @@ function MolPopoverRow({
         <span
           className={cn(
             'inline-flex shrink-0 items-center rounded-md px-1.5 py-0.5 text-[10.5px] font-medium tabular-nums ring-1',
-            MOL_UNTIL_PILL_CLASS[molUntilStatus(until)],
+            until === 'был'
+              ? 'bg-text-muted/12 text-text-muted ring-border-default/60'
+              : MOL_UNTIL_PILL_CLASS[molUntilStatus(until)],
           )}
         >
-          по {formatMolUntil(until)}
+          {until === 'был' ? 'ранее' : `по ${formatMolUntil(until)}`}
         </span>
       )}
     </li>

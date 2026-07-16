@@ -2,10 +2,15 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
-import { Check, ChevronDown, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, X } from 'lucide-react';
 import {
   BROADCAST_GROUPS,
   BROADCAST_PURPOSE_OPTIONAL_GROUPS,
+  isValidPersonFio,
+  normalizePersonFio,
+  normalizePersonMail,
+  normalizePersonMobileStorage,
+  normalizePersonWorkStorage,
   serializeBroadcastApprovalWarehouses,
   type Person,
   type PersonCreateInput,
@@ -69,6 +74,7 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
   const setSaving = usePersonEditStore((s) => s.setSaving);
   const setWarehousesSearchQuery = usePersonEditStore((s) => s.setWarehousesSearchQuery);
   const [saveError, setSaveError] = useState('');
+  const [tabCopied, setTabCopied] = useState(false);
 
   const open = target !== null;
   const mode = target?.mode ?? 'create';
@@ -94,10 +100,14 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
     setForm({ [key]: value });
 
   useEffect(() => {
-    if (open) setSaveError('');
+    if (open) {
+      setSaveError('');
+      setTabCopied(false);
+    }
   }, [open, personId]);
 
-  const fioRequired = mode === 'create' || mode === 'orphan';
+  // ФИО: ≥2 слова, в каждом >2 букв (иначе остаётся в панели «Новый МОЛ/контакт»).
+  const fioOk = isValidPersonFio(form.fio);
   const broadcastOk = (() => {
     if (!form.broadcastEnabled) return true;
     if (!form.broadcastGroup.trim()) return false;
@@ -111,19 +121,31 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
     // ИТР УПП / Заявители: обязательна цель рассылки.
     return form.broadcastPurpose.trim().length > 0;
   })();
-  const canSave = !saving
-    && (!fioRequired || form.fio.trim().length > 0)
-    && broadcastOk;
+  const canSave = !saving && fioOk && broadcastOk;
 
+  // edit/orphan: ФИО + должность правятся; табельный — только create (иначе read-only + copy).
   const showField = {
     tab: mode === 'create',
-    fio: mode === 'create' || mode === 'orphan',
-    position: mode === 'create',
-    status: mode === 'create' || mode === 'edit',
+    tabReadonly: mode === 'edit' || mode === 'orphan',
+    fio: true,
+    position: true,
+    status: mode === 'create' || mode === 'edit' || mode === 'orphan',
     mobile: true,
     work: true,
     mail: true,
     comment: true,
+  };
+
+  const copyTab = async () => {
+    const tab = form.tab.trim();
+    if (!tab) return;
+    try {
+      await navigator.clipboard.writeText(tab);
+      setTabCopied(true);
+      window.setTimeout(() => setTabCopied(false), 1500);
+    } catch {
+      /* clipboard may be denied */
+    }
   };
 
   // Группа «Согласующие» → панель складов открывается сразу.
@@ -142,28 +164,32 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
     setSaving(true);
     setSaveError('');
     try {
-      const mobile = toCanonMobile(form.mobile);
+      // Локальная нормализация = серверная (на сервере ещё раз, «база сама»).
+      const fio = normalizePersonFio(form.fio);
+      const mobile = normalizePersonMobileStorage(form.mobile) || toCanonMobile(form.mobile);
+      const work = normalizePersonWorkStorage(form.work);
+      const mail = normalizePersonMail(form.mail);
       if (mode === 'create') {
         const input: PersonCreateInput = {
-          tab: form.tab.trim(), fio: form.fio.trim(), position: form.position.trim(),
-          status: form.status.trim(), mobile, work: form.work.trim(), mail: form.mail.trim(),
+          tab: form.tab.trim(), fio, position: form.position.trim(),
+          status: form.status.trim(), mobile, work, mail,
           comment: form.comment.trim(),
           ...broadcastPatchFromForm(form),
         };
         await createPerson(input);
       } else if (personId !== null) {
         const broadcast = broadcastPatchFromForm(form);
-        const patch: PersonPatch = mode === 'orphan'
-          ? {
-              fio: form.fio.trim(), mobile, work: form.work.trim(),
-              mail: form.mail.trim(), comment: form.comment.trim(),
-              ...broadcast,
-            }
-          : {
-              status: form.status.trim(), mobile, work: form.work.trim(),
-              mail: form.mail.trim(), comment: form.comment.trim(),
-              ...broadcast,
-            };
+        // edit и orphan: ФИО + должность + контакты (табельный не меняем).
+        const patch: PersonPatch = {
+          fio,
+          position: form.position.trim(),
+          status: form.status.trim(),
+          mobile,
+          work,
+          mail,
+          comment: form.comment.trim(),
+          ...broadcast,
+        };
         await savePerson(personId, patch);
       }
       close();
@@ -208,11 +234,6 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
           <div ref={leftPanelRef} className="relative flex w-[420px] shrink-0 flex-col overflow-y-auto p-3.5">
           <Dialog.Title className="text-[13px] font-semibold text-text-strong">
             {title}
-            {mode !== 'create' && personId !== null && form.tab && (
-              <span className="ml-2 text-[11px] font-normal tabular-nums text-text-muted">
-                {t('mol.tab_short')} {form.tab}
-              </span>
-            )}
           </Dialog.Title>
           <Dialog.Description className="sr-only">{title}</Dialog.Description>
 
@@ -227,6 +248,30 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
                   mono
                 />
               )}
+              {showField.tabReadonly && form.tab.trim() && (
+                <div>
+                  <FieldLabel label={t('mol.edit.field_tab')} />
+                  {/* Одна высота: поле и кнопка — items-stretch + одинаковые py/text */}
+                  <div className="flex items-stretch gap-1.5">
+                    <div className="flex min-h-[34px] min-w-0 flex-1 items-center rounded border border-border-default bg-bg-surface/60 px-2 font-mono text-[12.5px] tabular-nums text-text-primary">
+                      {form.tab}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void copyTab()}
+                      title={tabCopied ? t('mol.edit.tab_copied') : t('mol.edit.tab_copy')}
+                      className={cn(
+                        'flex min-h-[34px] shrink-0 items-center gap-1 self-stretch rounded border border-border-default px-2.5',
+                        'text-[11.5px] text-text-muted outline-none transition-colors',
+                        'hover:border-accent-clay/40 hover:bg-bg-hover hover:text-accent-clay',
+                      )}
+                    >
+                      <Copy className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+                      {tabCopied ? t('mol.edit.tab_copied') : t('mol.edit.tab_copy')}
+                    </button>
+                  </div>
+                </div>
+              )}
               {showField.fio && (
                 <div ref={!showField.status ? alignRowRef : undefined}>
                   <Field
@@ -234,7 +279,7 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
                     value={form.fio}
                     onChange={(v) => set('fio', v)}
                     required
-                    autoFocus
+                    autoFocus={mode === 'create' || mode === 'orphan' || !isValidPersonFio(form.fio)}
                   />
                 </div>
               )}

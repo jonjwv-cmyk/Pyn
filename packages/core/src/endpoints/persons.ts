@@ -105,9 +105,10 @@ export interface Person {
   comment: string;
   /** Материально-ответственное лицо (склад непустой ИЛИ флаг «МОЛ»). */
   isMol: boolean;
-  /** МОЛ-табельный без ФИО (для панели «Нет данных МОЛов»). */
+  /** Активный МОЛ без ФИО (панель «Новый МОЛ / Новые МОЛы»). */
   isOrphan: boolean;
-  source: 'import' | 'manual';
+  /** sap_mol — заведён выгрузкой МОЛ (табельный впервые); import — прочий импорт; manual — «+ Контакт». */
+  source: 'import' | 'manual' | 'sap_mol';
   warehouses: PersonWarehouse[];
   updatedAt: string;
   /** Участвует в рассылке. */
@@ -238,7 +239,7 @@ function wireToPerson(w: PersonWire): Person {
     comment: w.comment ?? '',
     isMol: Number(w.is_mol ?? 0) === 1,
     isOrphan: Number(w.is_orphan ?? 0) === 1,
-    source: w.source === 'manual' ? 'manual' : 'import',
+    source: w.source === 'manual' ? 'manual' : w.source === 'sap_mol' ? 'sap_mol' : 'import',
     warehouses: (w.warehouses ?? []).map((x) => ({
       code: x.code ?? '',
       until: x.until ?? '',
@@ -343,6 +344,11 @@ export interface PersonsMolsImportResult {
   molAfter: number;
   newTabs: string[];
   newCount: number;
+  /** Новые табельные (пополнение базы контактов). */
+  contactsNew: number;
+  whEmptyBefore: number;
+  whEmptyAfter: number;
+  whEmptyCodes: string[];
   startedAt: string;
   finishedAt: string;
 }
@@ -426,8 +432,17 @@ export async function personsMolsBackupGet(
 /** Откат к резерву (по умолчанию — последний). */
 export async function personsMolsBackupRestore(
   client: ApiClient,
-  backupId?: number,
-): Promise<PersonsMolsBackupRestoreResult> {
+  opts?: { backupId?: number; password?: string },
+): Promise<PersonsMolsBackupRestoreResult & {
+  versionFrom?: string;
+  versionTo?: string;
+  durationMs?: number;
+  startedAt?: string;
+  finishedAt?: string;
+}> {
+  const payload: Record<string, unknown> = {};
+  if (opts?.backupId) payload.backup_id = opts.backupId;
+  if (opts?.password) payload.password = opts.password;
   const wire = await client.call<{
     backup_id?: number;
     restored?: {
@@ -438,8 +453,13 @@ export async function personsMolsBackupRestore(
       updated_at?: string;
       backup_created_at?: string;
       backup_label?: string;
+      version_from?: string;
+      version_to?: string;
+      duration_ms?: number;
+      started_at?: string;
+      finished_at?: string;
     };
-  }>('persons_mols_backup_restore', backupId ? { backup_id: backupId } : {});
+  }>('persons_mols_backup_restore', payload);
   const r = wire.restored ?? {};
   return {
     backupId: Number(wire.backup_id ?? 0),
@@ -450,6 +470,11 @@ export async function personsMolsBackupRestore(
     updatedAt: r.updated_at ?? '',
     backupCreatedAt: r.backup_created_at ?? '',
     backupLabel: r.backup_label ?? '',
+    versionFrom: r.version_from ?? '',
+    versionTo: r.version_to ?? r.version ?? '',
+    durationMs: Number(r.duration_ms ?? 0),
+    startedAt: r.started_at ?? '',
+    finishedAt: r.finished_at ?? '',
   };
 }
 
@@ -467,9 +492,19 @@ export async function personsImportMols(
     mol_after?: number;
     new_tabs?: string[];
     new_count?: number;
+    contacts_new?: number;
+    wh_empty_before?: number;
+    wh_empty_after?: number;
+    wh_empty_codes?: string[] | string;
     started_at?: string;
     finished_at?: string;
   }>('persons_import_mols', { entries, started_at: startedAt });
+  const whCodes = Array.isArray(wire.wh_empty_codes)
+    ? wire.wh_empty_codes.map(String)
+    : String(wire.wh_empty_codes || '')
+        .split(/[,;]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
   return {
     version: wire.version ?? '',
     updatedAt: wire.updated_at ?? '',
@@ -478,6 +513,10 @@ export async function personsImportMols(
     molAfter: Number(wire.mol_after ?? 0),
     newTabs: Array.isArray(wire.new_tabs) ? wire.new_tabs.map(String) : [],
     newCount: Number(wire.new_count ?? 0),
+    contactsNew: Number(wire.contacts_new ?? wire.new_count ?? 0),
+    whEmptyBefore: Number(wire.wh_empty_before ?? 0),
+    whEmptyAfter: Number(wire.wh_empty_after ?? 0),
+    whEmptyCodes: whCodes,
     startedAt: wire.started_at ?? '',
     finishedAt: wire.finished_at ?? '',
   };

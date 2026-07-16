@@ -101,12 +101,31 @@ export function formatMolUntil(raw: string): string {
 }
 
 /**
+ * Фантом «был»: склад после выгрузки остался БЕЗ активного МОЛ — связь
+ * хранится для просмотра (Поток/Цеха/Контакты), выбрать/назначить нельзя.
+ * Не путать с датой «по DD.MM.YYYY».
+ */
+export function isMolWasUntil(until: string | null | undefined): boolean {
+  return (until || '').trim().toLowerCase() === 'был';
+}
+
+/**
+ * Можно ли назначить этого МОЛ в плане: не фантом «был» и не просроченный договор.
+ * Склад с одними «был» → нет валидных МОЛов → «Нет МОЛа».
+ */
+export function isMolAssignableUntil(until: string | null | undefined): boolean {
+  if (isMolWasUntil(until)) return false;
+  return molUntilStatus(until || '') !== 'expired';
+}
+
+/**
  * Статус срока «по» относительно СЕГОДНЯ (для цвета пилюли в колонке «Склад»):
  *   • 'expired' — дедлайн уже прошёл (раньше сегодня) → красный;
  *   • 'soon'    — осталось ≤2 дней, т.е. окно [дедлайн−2 … дедлайн] (3 дня
  *                 включая сам дедлайн: для «по 23» это 21/22/23) → жёлтый;
  *   • 'ok'      — до срока ещё >2 дней (или дата не распознана) → обычная подсветка.
  * Сравнение по календарным дням (полночь), дедлайн включителен.
+ * «был» — не дата (см. isMolWasUntil / isMolAssignableUntil), не 'expired'.
  */
 export function molUntilStatus(until: string): 'expired' | 'soon' | 'ok' {
   const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec((until || '').trim());

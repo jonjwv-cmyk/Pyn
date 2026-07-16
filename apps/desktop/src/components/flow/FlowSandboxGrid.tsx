@@ -76,7 +76,13 @@ import { useWarehousesStore } from '@/lib/warehouses-store';
 import { useProdCalendarStore, pickYear, dayShiftEndMin } from '@/lib/prod-calendar';
 import { useMapStore } from '@/lib/map-store';
 import { initMap } from '@/lib/map-repo';
-import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
+import {
+  molStatusKind,
+  formatMobilePhone,
+  molUntilStatus,
+  isMolAssignableUntil,
+  isMolWasUntil,
+} from '@/lib/mol-format';
 import { FlowMonthPicker } from './FlowMonthPicker';
 import { FlowViewSwitch } from './FlowViewSwitch';
 import { useFlowColLayout } from './use-flow-col-layout';
@@ -624,10 +630,9 @@ function dlvInfoOf(d: FlowDeliveryRow): DlvInfo {
   };
 }
 
-// «Нет МОЛа» — ПО ФАКТУ (ТЗ §3): склад есть, но валидных (не просроченных) МОЛов у него нет
-// → плашка на ВСЕХ строках склада, независимо от текста в ячейке (пусто/истёк/«нет мол»).
-// Если валидные МОЛы есть — не красим: есть кого выбрать (авто-эффект подставит/снимет).
-// Работает и для НОВЫХ строк (макрос/скрипт): вердикт от склада, а не от содержимого ячейки.
+// «Нет МОЛа» — ПО ФАКТУ (ТЗ §3): склад есть, но НАЗНАЧАЕМЫХ МОЛов нет
+// (просроченные и фантомы «был» не считаются) → плашка на ВСЕХ строках склада.
+// «был» остаётся в выпадашке только для просмотра. Если есть живые — не красим.
 function molIsGone(
   row: FlowSandboxRow,
   molByWarehouse: ReadonlyMap<string, readonly FlowMolOption[]>,
@@ -636,7 +641,7 @@ function molIsGone(
   if (!wh) return false; // нет склада-получателя — не наш кейс
   if (String(row.mol ?? '').toUpperCase().includes('НЕТ МОЛ')) return true;
   const opts = whMapGet(molByWarehouse, wh) ?? [];
-  return !opts.some((o) => molUntilStatus(o.until) !== 'expired');
+  return !opts.some((o) => isMolAssignableUntil(o.until));
 }
 
 /** Достать новое значение поля из отредактированной ячейки (с учётом типа колонки). */
@@ -696,6 +701,7 @@ function blankLastCmp(a: unknown, b: unknown): number {
 
 /** T-карта складов-получателей (как WF_SORT гугл-скрипта): код «825Т» сортируется как
  *  8025, но СТРОГО ПЕРЕД обычным «8025» (вторичный признак 0<1). Кириллица и латиница «Т». */
+/** Только ключ СОРТИРОВКИ UI (порядок строк). 824Т ≠ 8024 как склады/МОЛы — не мержить. */
 const TO_T_SORT_MAP: Record<string, number> = {
   '821Т': 8021, '825Т': 8025, '824Т': 8024, '823Т': 8023, '806Т': 8006,
   '821T': 8021, '825T': 8025, '824T': 8024, '823T': 8023, '806T': 8006,
@@ -1021,6 +1027,12 @@ export function FlowSandboxGrid(): JSX.Element {
   } = useFlowColLayout('formation', baseActiveColumns);
   const activeColsRef = useRef(activeColumns);
   activeColsRef.current = activeColumns;
+  // Закреп: с первой колонки по TO включительно; PR/DAY/МОЛ/… не pin'им.
+  // Индекс TO в текущем порядке (в т.ч. после перестановки колонок).
+  const freezeColumns = useMemo(() => {
+    const i = activeColumns.findIndex((c) => c.id === 'to_wh');
+    return i >= 0 ? i + 1 : 4;
+  }, [activeColumns]);
   // «Замороженный» порядок показа: правка строки (смена склада/даты/статуса) НЕ
   // пересортировывает таблицу сразу — строка остаётся на месте, с ней можно работать
   // дальше. Пересортировка — явная: кнопка «Сортировка» (или смена уровней сортировки
@@ -2801,7 +2813,8 @@ export function FlowSandboxGrid(): JSX.Element {
     for (const r of rowsRef.current) {
       if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
       const opts = molsForWh(r.to_wh);
-      const valid = opts.filter((o) => molUntilStatus(o.until) !== 'expired');
+      // Назначаемые только: фантом «был» и просроченный договор — не авто-выбор.
+      const valid = opts.filter((o) => isMolAssignableUntil(o.until));
       const only = valid.length === 1 ? valid[0] : undefined;
       const raw = String(r.mol ?? '');
       const trimmed = raw.trim();
@@ -2814,9 +2827,11 @@ export function FlowSandboxGrid(): JSX.Element {
         continue;
       }
       const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
-      if (!sel || molUntilStatus(sel.until) !== 'expired') continue;
+      // Снять/заменить, если выбранный не назначаемый (истёк или «был»).
+      if (!sel || isMolAssignableUntil(sel.until)) continue;
       if (only) changes.set(r.id, { mol: only.fio });
       else if (valid.length >= 2) changes.set(r.id, { mol: '' });
+      else changes.set(r.id, { mol: '' });
     }
     if (changes.size === 0) return;
     writeCells(changes);
@@ -2927,7 +2942,8 @@ export function FlowSandboxGrid(): JSX.Element {
       // конца договора) / null (срока нет, даты нет, либо дата покрывается — дедлайн включителен).
       const checkContract = (until: string | undefined, dayVal: string): 'expired' | 'not-covered' | null => {
         if (!until) return null;
-        if (molUntilStatus(until) === 'expired') return 'expired';
+        // Фантом «был» и просроченный договор — назначить нельзя.
+        if (isMolWasUntil(until) || molUntilStatus(until) === 'expired') return 'expired';
         const dd = parseIsoDate(dayVal);
         const ud = parseRuDate(until);
         return dd && ud && dd.getTime() > ud.getTime() ? 'not-covered' : null;
@@ -4333,7 +4349,7 @@ export function FlowSandboxGrid(): JSX.Element {
             getCellsForSelection
             fillHandle
             rowMarkers="none"
-            freezeColumns={8}
+            freezeColumns={freezeColumns}
             rowSelect="multi"
             columnSelect="multi"
             rangeSelect="multi-rect"

@@ -103,7 +103,13 @@ import {
   useScheduleMonthsMeta,
   monthKey,
 } from '@/lib/schedule/use-schedule-sync';
-import { molStatusKind, formatMobilePhone, molUntilStatus } from '@/lib/mol-format';
+import {
+  molStatusKind,
+  formatMobilePhone,
+  molUntilStatus,
+  isMolAssignableUntil,
+  isMolWasUntil,
+} from '@/lib/mol-format';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import {
   fmtNum3, MONTH_ABBR_RU, parseMol, compactFio, matCardLines, needsWarn, findMolOptionForWh,
@@ -413,7 +419,7 @@ function parseIsoDate(s: string): Date | null {
 
 function checkPersonDate(until: string | undefined, dayVal: string): 'expired' | 'not-covered' | null {
   if (!until) return null;
-  if (molUntilStatus(until) === 'expired') return 'expired';
+  if (isMolWasUntil(until) || molUntilStatus(until) === 'expired') return 'expired';
   const dd = parseIsoDate(dayVal);
   const ud = parseRuDate(until);
   return dd && ud && dd.getTime() > ud.getTime() ? 'not-covered' : null;
@@ -1807,7 +1813,8 @@ export function FlowPlanGrid({
         // строках (как в Формировании). Зафиксированный Отчёт (snapshot) = история отправки:
         // его НЕ перекрашиваем по текущему складу — только явный текст «нет мол».
         const isSnapshot = Number(r.fixation_id) > 0;
-        const hasValidMol = opts.some((o) => molUntilStatus(o.until) !== 'expired');
+        // Назначаемые МОЛы: «был» и просроченные не считаются → «Нет МОЛа».
+        const hasValidMol = opts.some((o) => isMolAssignableUntil(o.until));
         const noMol =
           rawFio.toUpperCase().includes('НЕТ МОЛ') ||
           (!isSnapshot && !!String(r.to_wh ?? '').trim() && !hasValidMol);
@@ -1826,8 +1833,10 @@ export function FlowPlanGrid({
             fio: noMol ? 'Нет МОЛа' : compactFio(fullFio),
             color: noMol ? '#E5484D' : selected?.color ?? resolved?.color ?? parsed?.color ?? '#9AA0A6',
             noMol,
-            // Живые опции склада — при выгрузке молов плашка «Нет МОЛа» снимается, выбор доступен (T3).
-            options: opts.filter((o) => molUntilStatus(o.until) !== 'expired'),
+            // Живые + фантомы «был» (смотр); просроченные даты — наружу. «был» выбрать нельзя.
+            options: opts.filter(
+              (o) => isMolWasUntil(o.until) || molUntilStatus(o.until) !== 'expired',
+            ),
             // R3.1: телефон в ЯЧЕЙКЕ не показываем (только ФИО); телефон есть в выпадашке-карточке.
             phoneDisplay: '',
             // Статус склада против базы — рядом, после плашки (юзер 2026-07-02).
@@ -2210,7 +2219,7 @@ export function FlowPlanGrid({
       if (mode === 'plan' && Number(r.fixation_id) > 0) continue;
 
       const opts = molsForWh(r.to_wh);
-      const valid = opts.filter((o) => molUntilStatus(o.until) !== 'expired');
+      const valid = opts.filter((o) => isMolAssignableUntil(o.until));
       const only = valid.length === 1 ? valid[0] : undefined;
       const raw = String(r.snap_mol ?? '').trim();
 
@@ -2218,7 +2227,7 @@ export function FlowPlanGrid({
         if (!raw || raw.toUpperCase().includes('НЕТ МОЛ')) return false;
         const fio = parseMol(raw)?.fio ?? raw;
         const sel = opts.find((o) => personKey(o.fio) === personKey(fio));
-        return !!sel && molUntilStatus(sel.until) !== 'expired';
+        return !!sel && isMolAssignableUntil(sel.until);
       })();
       if (molOk) continue;
 
@@ -2830,9 +2839,9 @@ export function FlowPlanGrid({
         const flag = flagById.get(r.id) ?? '';
         if (flag === 'ERROR') return { bgCell: '#FBE3E0', textDark: '#8A1F11' };
         if (flag === 'DUPLICATE') return { bgCell: '#FCEFD9', textDark: '#7A4B0F' };
-        // «Нет МОЛа» по факту (ТЗ §3): у склада нет валидных МОЛов → красим строку (живой план).
+        // «Нет МОЛа» по факту: нет назначаемых МОЛов (фантомы «был» не спасают).
         const wh = String(r.to_wh ?? '').trim();
-        if (wh && !molsForWh(wh).some((o) => molUntilStatus(o.until) !== 'expired')) {
+        if (wh && !molsForWh(wh).some((o) => isMolAssignableUntil(o.until))) {
           return { bgCell: '#FBE3E0', textDark: '#7C1812' };
         }
       }

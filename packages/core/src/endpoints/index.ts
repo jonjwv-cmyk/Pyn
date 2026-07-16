@@ -367,5 +367,6 @@ export {
   type OptimizationPayload,
   type OptimizationPositionInput,
   type OptimizationVehicleInput,
+  type OptimizationBreakInput,
   type OptimizationJob,
 } from './optimization';

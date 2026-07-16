@@ -1,33 +1,32 @@
 import * as React from 'react';
 import * as HoverCard from '@radix-ui/react-hover-card';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import { RefreshCw } from 'lucide-react';
+import { Download } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { useSheetsLockStore } from '@pyn/core';
+import { isDeveloper, useSheetsLockStore, type Role } from '@pyn/core';
 import { MOLS_SYNC_ACTION_ID, runMolsBackup, runMolsRestore, runMolsSync } from '@/lib/mols-sync-run';
 import { SheetsPasswordPrompt } from '@/components/tables/SheetsPasswordPrompt';
-
-type SyncItemId = 'mols-db';
-
-type SyncItem = {
-  id: SyncItemId;
-  label: string;
-  hint: string;
-  enabled: boolean;
-};
-
-const SYNC_ITEMS: SyncItem[] = [
-  { id: 'mols-db', label: 'База МОЛов', hint: 'Синхронизация базы МОЛов из SAP', enabled: true },
-];
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 
 interface SyncNavRowProps {
   collapsed: boolean;
+  /** Роль для кнопки отката (только developer). */
+  userRole?: Role | string;
 }
 
-export function SyncNavRow({ collapsed }: SyncNavRowProps) {
+/**
+ * Пункт «Импорт» — как «База»: hover-флайаут справа, не отдельная «выпадашка».
+ * Один лист «МОЛы»: слева запуск импорта, справа «Откат» (developer).
+ * Перед импортом всегда пишется резерв (фиксация текущего состояния).
+ */
+export function SyncNavRow({ collapsed, userRole }: SyncNavRowProps) {
   const [running, setRunning] = React.useState(false);
   const [msg, setMsg] = React.useState<string | null>(null);
   const [pwOpen, setPwOpen] = React.useState(false);
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = React.useState(false);
+  /** 'sync' = пароль макроса SAP; 'restore' = пароль отката */
+  const [pwMode, setPwMode] = React.useState<'sync' | 'restore'>('sync');
+  const canRestore = isDeveloper((userRole as Role) ?? 'user');
   const activeLock = useSheetsLockStore((s) => s.activeLock);
   const blockedByOther = Boolean(
     activeLock && activeLock.actionId !== MOLS_SYNC_ACTION_ID,
@@ -44,30 +43,23 @@ export function SyncNavRow({ collapsed }: SyncNavRowProps) {
       .finally(() => setRunning(false));
   };
 
-  const run = (password?: string) => {
-    runAction(() => runMolsSync(password));
-  };
+  const importDisabled = running || blockedByOther || molsLockedByOther;
+  const restoreDisabled = running || blockedByOther || !canRestore;
 
-  const onPick = (item: SyncItem) => {
-    if (!item.enabled || running || blockedByOther || molsLockedByOther) return;
-    setPwOpen(true);
-  };
+  const importTitle = molsLockedByOther
+    ? `Импорт запустил ${activeLock?.userName}`
+    : blockedByOther
+      ? `Занято: ${activeLock?.actionLabel}`
+      : 'Импорт МОЛ из SAP (сначала сохраняется резерв)';
 
-  const onBackup = () => {
-    if (running || blockedByOther) return;
-    runAction(() => runMolsBackup('manual_before_sync'));
-  };
-
-  const onRestore = () => {
-    if (running || blockedByOther) return;
-    if (!window.confirm('Откатить контакты и МОЛ к последнему резерву?')) return;
-    runAction(() => runMolsRestore());
-  };
+  const restoreTitle = !canRestore
+    ? 'Откат только для разработчика'
+    : 'Откат к последнему резерву';
 
   const trigger = (
-    <SyncTrigger
+    <ImportTrigger
       collapsed={collapsed}
-      label="Synchronization"
+      label="Импорт"
       className={running ? 'animate-pulse' : undefined}
     />
   );
@@ -86,7 +78,7 @@ export function SyncNavRow({ collapsed }: SyncNavRowProps) {
                 sideOffset={20}
                 className="z-50 rounded-md bg-bg-deep px-2 py-1 text-[12px] text-text-strong shadow-lg"
               >
-                Synchronization
+                Импорт
                 <Tooltip.Arrow className="fill-bg-deep" />
               </Tooltip.Content>
             </Tooltip.Portal>
@@ -101,93 +93,107 @@ export function SyncNavRow({ collapsed }: SyncNavRowProps) {
             sideOffset={20}
             collisionPadding={8}
             className={cn(
-              'z-50 flex w-[196px] flex-col',
+              'z-50 flex w-[200px] flex-col',
               'rounded-xl border border-border-default bg-bg-elevated p-1.5 shadow-2xl',
               'data-[state=open]:animate-in data-[state=closed]:animate-out',
               'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
               'data-[side=right]:slide-in-from-left-2',
             )}
           >
-            <p className="px-2 pb-1 text-[10px] font-medium tracking-[-0.01em] text-text-muted/75">
-              Synchronization
-            </p>
             {msg ? (
-              <p className="mx-1 mb-1 line-clamp-3 px-1 text-[10px] text-text-muted/80" title={msg}>
+              <p className="mb-1 line-clamp-3 px-1.5 text-[10px] text-text-muted/80" title={msg}>
                 {msg}
               </p>
             ) : null}
-            <ul className="flex flex-col gap-0.5">
-              {SYNC_ITEMS.map((item) => {
-                const disabled = !item.enabled || running || blockedByOther || molsLockedByOther;
-                const title = molsLockedByOther
-                  ? `Синхронизацию запустил ${activeLock?.userName}`
-                  : blockedByOther
-                    ? `Занято: ${activeLock?.actionLabel}`
-                    : item.hint;
-                return (
-                  <li key={item.id}>
-                    <button
-                      type="button"
-                      disabled={disabled}
-                      title={title}
-                      onClick={() => onPick(item)}
-                      className={cn(
-                        'flex h-8 w-full items-center rounded-md px-2 text-left text-[12.5px] outline-none transition-colors',
-                        disabled
-                          ? 'cursor-not-allowed text-text-muted/45'
-                          : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
-                        running && item.enabled && !blockedByOther && !molsLockedByOther
-                          ? 'text-accent-clay'
-                          : null,
-                      )}
-                    >
-                      <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                      <span className="ml-2 shrink-0 text-[10px] font-medium text-accent-clay/90">
-                        {running ? '…' : 'Обновить МОЛов'}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            <div className="mx-1 mt-1 flex flex-col gap-0.5 border-t border-border-default/60 pt-1">
+
+            {/* Одна плашка: МОЛы | Откат — как лист «База», но split-кнопка */}
+            <div
+              className={cn(
+                'flex h-8 w-full items-stretch overflow-hidden rounded-md',
+                'border border-border-default/70 bg-bg-primary/40',
+              )}
+            >
               <button
                 type="button"
-                disabled={running || blockedByOther}
-                onClick={onBackup}
+                disabled={importDisabled}
+                title={importTitle}
+                onClick={() => {
+                  if (importDisabled) return;
+                  setPwMode('sync');
+                  setPwOpen(true);
+                }}
                 className={cn(
-                  'flex h-7 w-full items-center rounded-md px-2 text-left text-[11px] outline-none transition-colors',
-                  running || blockedByOther
+                  'flex min-w-0 flex-1 items-center px-2.5 text-left text-[12.5px] outline-none transition-colors',
+                  importDisabled
                     ? 'cursor-not-allowed text-text-muted/45'
-                    : 'text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+                    : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+                  running && !blockedByOther && !molsLockedByOther ? 'text-accent-clay' : null,
                 )}
               >
-                Сохранить резерв
+                <span className="truncate font-medium">
+                  {running ? 'МОЛы…' : 'МОЛы'}
+                </span>
               </button>
+              <span className="w-px shrink-0 self-stretch bg-border-default/70" aria-hidden />
               <button
                 type="button"
-                disabled={running || blockedByOther}
-                onClick={onRestore}
+                disabled={restoreDisabled}
+                title={restoreTitle}
+                onClick={() => {
+                  if (restoreDisabled) return;
+                  setRestoreConfirmOpen(true);
+                }}
                 className={cn(
-                  'flex h-7 w-full items-center rounded-md px-2 text-left text-[11px] outline-none transition-colors',
-                  running || blockedByOther
+                  'flex shrink-0 items-center px-2.5 text-[12.5px] outline-none transition-colors',
+                  restoreDisabled
                     ? 'cursor-not-allowed text-text-muted/45'
-                    : 'text-amber-400/85 hover:bg-bg-hover hover:text-amber-300',
+                    : 'text-amber-400/90 hover:bg-bg-hover hover:text-amber-300',
                 )}
               >
-                Откатить резерв
+                Откат
               </button>
             </div>
           </HoverCard.Content>
         </HoverCard.Portal>
       </HoverCard.Root>
 
+      <ConfirmDialog
+        open={restoreConfirmOpen}
+        onOpenChange={setRestoreConfirmOpen}
+        title="Откатить базу контактов?"
+        description="Вернём контакты и МОЛ к последнему резерву (тот, что сохранился перед импортом или вручную). Действие только для разработчика."
+        confirmLabel="Откатить"
+        cancelLabel="Отмена"
+        variant="danger"
+        onConfirm={() => {
+          setPwMode('restore');
+          setPwOpen(true);
+        }}
+      />
+
       <SheetsPasswordPrompt
         open={pwOpen}
-        actionLabel="База МОЛов"
+        actionLabel={pwMode === 'restore' ? 'Откат базы контактов' : 'Импорт МОЛ'}
+        title={pwMode === 'restore' ? 'Пароль отката' : undefined}
         onSubmit={(password) => {
           setPwOpen(false);
-          run(password);
+          if (pwMode === 'restore') {
+            runAction(() => runMolsRestore(password));
+          } else {
+            // Сначала резерв «как есть», потом импорт из SAP.
+            runAction(async () => {
+              const bak = await runMolsBackup('auto_before_import');
+              const sync = await runMolsSync(password);
+              if (!bak.ok && sync.ok) {
+                return { ok: true, msg: `${sync.msg} · резерв: ${bak.msg}` };
+              }
+              if (!sync.ok) return sync;
+              return {
+                ok: true,
+                msg: bak.ok ? `${sync.msg} · ${bak.msg}` : sync.msg,
+              };
+            });
+          }
         }}
         onCancel={() => setPwOpen(false)}
       />
@@ -195,13 +201,14 @@ export function SyncNavRow({ collapsed }: SyncNavRowProps) {
   );
 }
 
-type SyncTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+type ImportTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   collapsed: boolean;
   label: string;
 };
 
-const SyncTrigger = React.forwardRef<HTMLButtonElement, SyncTriggerProps>(
-  function SyncTrigger({ collapsed, label, className, ...rest }, ref) {
+/** Trigger как у «База»: иконка + лейбл, hover-флайаут через Radix. */
+const ImportTrigger = React.forwardRef<HTMLButtonElement, ImportTriggerProps>(
+  function ImportTrigger({ collapsed, label, className, ...rest }, ref) {
     return (
       <button
         ref={ref}
@@ -215,7 +222,7 @@ const SyncTrigger = React.forwardRef<HTMLButtonElement, SyncTriggerProps>(
         )}
       >
         <span className="flex h-7 w-7 shrink-0 items-center justify-start">
-          <RefreshCw
+          <Download
             className="h-[18px] w-[18px] text-teal-400/90 transition-colors group-hover:text-teal-300"
             strokeWidth={1.75}
           />

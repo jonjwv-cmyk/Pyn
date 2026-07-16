@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
-import { parseMolQuery, type ParsedMolQuery, type Warehouse } from '@pyn/core';
+import { parseMolQuery, warehouseCodeKey, type ParsedMolQuery, type Warehouse } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { useScheduleMonthsMeta, monthKey } from '@/lib/schedule/use-schedule-sync';
@@ -37,8 +37,8 @@ function warehouseMatchesParsed(w: Warehouse, parsed: ParsedMolQuery): boolean {
       return true;
     case 'warehouse': {
       if (parsed.tokens.length === 0) return false;
-      const id = w.id.toLowerCase();
-      return parsed.tokens.some((tk) => id === tk.toLowerCase());
+      const idKey = warehouseCodeKey(w.id);
+      return parsed.tokens.some((tk) => warehouseCodeKey(tk) === idKey);
     }
     case 'phone': {
       const qd = parsed.tokens[0] ?? '';

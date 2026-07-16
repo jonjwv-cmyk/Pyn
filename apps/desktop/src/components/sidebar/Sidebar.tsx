@@ -319,7 +319,7 @@ export function Sidebar({
       <div className="relative min-h-0 flex-1">
       <nav className="absolute inset-0 flex flex-col gap-0.5 overflow-y-auto px-1.5">
         {/* Synchronization — подпункты-скрипты (пока «База МОЛов», далее по мере подключения). */}
-        {showFlow && <SyncNavRow collapsed={collapsed} />}
+        {showFlow && <SyncNavRow collapsed={collapsed} userRole={userRole} />}
 
         {/* Секция «Работа». Порядок пунктов (юзер 2026-06-12):
             Поток · Рассылка · Транспорт · База · График · ВГХ · ЛОГ · ОТИФ(серым) · Хранилище.

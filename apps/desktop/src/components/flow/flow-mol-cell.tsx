@@ -1,7 +1,12 @@
 import { GridCellKind, type CustomCell, type CustomRenderer } from '@glideapps/glide-data-grid';
 import { Phone } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { MOL_UNTIL_PILL_CLASS, molUntilStatus } from '@/lib/mol-format';
+import {
+  MOL_UNTIL_PILL_CLASS,
+  isMolAssignableUntil,
+  isMolWasUntil,
+  molUntilStatus,
+} from '@/lib/mol-format';
 import { formatUntilDate } from './flow-sandbox.fixtures';
 import { useFlipUpIfClipped } from './flow-cell-flip';
 
@@ -9,6 +14,7 @@ import { useFlipUpIfClipped } from './flow-cell-flip';
  * Ячейка МОЛ: пилюля ФИО по статусу + выпадающий список молов склада-получателя
  * (TO) из РЕАЛЬНОЙ базы МОЛ (`useMolStore`). Открытие — двойной клик. Выбор меняет
  * МОЛ строки; телефон в опции → звонок через общий диалог (как в Цеха/МОЛ).
+ * Фантом «был» (склад без активного МОЛ) — только просмотр, выбрать нельзя.
  */
 export interface FlowMolOption {
   readonly fio: string;
@@ -57,41 +63,60 @@ function FlowMolEditor({
         ) : (
           ordered.map((o, i) => {
             const selected = o.fio === value;
+            const isWas = isMolWasUntil(o.until);
+            const canSelect = isMolAssignableUntil(o.until);
             return (
               <div
                 key={`${o.fio}-${i}`}
                 className={cn(
                   'rounded-lg border px-2 py-1.5 transition-colors',
-                  selected
-                    ? 'border-accent-clay/40 bg-accent-clay/15'
-                    : 'border-white/[0.06] bg-white/[0.02] hover:bg-accent-clay/10',
+                  isWas
+                    ? 'border-white/[0.04] bg-white/[0.015] opacity-80'
+                    : selected
+                      ? 'border-accent-clay/40 bg-accent-clay/15'
+                      : 'border-white/[0.06] bg-white/[0.02] hover:bg-accent-clay/10',
                 )}
               >
                 <button
                   type="button"
-                  onClick={() => onFinishedEditing({ ...cell, data: { ...cell.data, value: o.fio } })}
-                  className="block w-full text-left"
+                  disabled={!canSelect}
+                  onClick={() => {
+                    if (!canSelect) return;
+                    onFinishedEditing({ ...cell, data: { ...cell.data, value: o.fio } });
+                  }}
+                  className={cn(
+                    'block w-full text-left',
+                    !canSelect && 'cursor-default',
+                  )}
+                  title={isWas ? 'ранее — только просмотр, выбрать нельзя' : undefined}
                 >
                   {/* 1 — ФИО */}
-                  <span className="text-[12px] font-medium leading-snug" style={{ color: o.color }}>
+                  <span
+                    className={cn(
+                      'text-[12px] font-medium leading-snug',
+                      isWas && 'text-text-muted',
+                    )}
+                    style={isWas ? undefined : { color: o.color }}
+                  >
                     {o.fio}
                   </span>
-                  {/* 2 — срок «по дата» ЦВЕТНОЙ ПИЛЮЛЕЙ по близости дедлайна (как в разделе
-                      МОЛ/Цеха): просрочено — красный, ≤2 дней — жёлтый, обычный — clay. */}
+                  {/* 2 — срок «по дата» / фантом «ранее» (не выбирается). */}
                   {o.until && (
                     <span className="mt-1 block">
                       <span
                         className={cn(
                           'inline-flex items-center rounded-md px-1.5 py-0.5 text-[10.5px] font-medium tabular-nums ring-1',
-                          MOL_UNTIL_PILL_CLASS[molUntilStatus(o.until)],
+                          isWas
+                            ? 'bg-text-muted/12 text-text-muted ring-border-default/60'
+                            : MOL_UNTIL_PILL_CLASS[molUntilStatus(o.until)],
                         )}
                       >
-                        по {formatUntilDate(o.until)}
+                        {isWas ? 'ранее' : `по ${formatUntilDate(o.until)}`}
                       </span>
                     </span>
                   )}
                 </button>
-                {/* 3 — телефон (звонок) + статус ЦВЕТОМ (зел/красн/серый). Всё живое — из базы МОЛ. */}
+                {/* 3 — телефон (звонок) + статус. Фантом: телефон можно глянуть/позвонить. */}
                 <div className="mt-0.5 flex items-center gap-2 text-[11px]">
                   {o.phone && (
                     <button
@@ -109,7 +134,9 @@ function FlowMolEditor({
                       {o.phoneDisplay}
                     </button>
                   )}
-                  <span style={{ color: o.color }}>{o.status || '—'}</span>
+                  <span style={isWas ? undefined : { color: o.color }} className={isWas ? 'text-text-muted' : undefined}>
+                    {o.status || '—'}
+                  </span>
                 </div>
               </div>
             );
@@ -186,12 +213,13 @@ export const flowMolRenderer: CustomRenderer<FlowMolCell> = {
       minWidth: '240px',
     },
   }),
-  // Снять МОЛ можно ТОЛЬКО когда у склада несколько молов (есть из кого выбрать заново).
-  // «Нет мола» снимется само при синхронизации; единственного мола склада руками не убираем
-  // (возвращаем клетку без изменений → запись пропускается). Несколько → стираем, как в Excel.
-  onDelete: (cell) =>
-    cell.data.noMol || cell.data.options.length <= 1
+  // Снять МОЛ можно ТОЛЬКО когда у склада несколько НАЗНАЧАЕМЫХ молов.
+  // Фантомы «был» и «Нет мола» не считаются; единственного живого мола руками не убираем.
+  onDelete: (cell) => {
+    const assignable = cell.data.options.filter((o) => isMolAssignableUntil(o.until));
+    return cell.data.noMol || assignable.length <= 1
       ? cell
-      : { ...cell, data: { ...cell.data, value: '' } },
+      : { ...cell, data: { ...cell.data, value: '' } };
+  },
   onPaste: (v, d) => ({ ...d, value: v }),
 };

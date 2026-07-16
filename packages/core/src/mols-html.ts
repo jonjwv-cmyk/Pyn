@@ -152,8 +152,16 @@ export function extractMolsHtmlRows(html: string): RawMolsRow[] {
 }
 
 /**
+ * Код склада в выгрузке: 4 знака — 3 цифры + цифра/буква (кир/лат).
+ * Примеры: `8024`, `824Т`, `824Ц`, `824T`. Только `\d{4}` отбрасывал буквенные
+ * склады → ложное «нет МОЛа» на 824Т/824Ц.
+ */
+const MOL_WAREHOUSE_CODE = /^\d{3}[\dA-Za-zА-Яа-яёЁ]$/;
+
+/**
  * Сгруппировать строки HTML по табельному → записи для persons_import_mols.
- * Логика как в Google-скрипте: завод 1000, склады 4 цифры, фильтр истёкших договоров.
+ * Логика как в Google-скрипте: завод 1000, склады 4-значные (цифры/буква),
+ * фильтр истёкших договоров. Т-пары (824Т↔8024) — разные склады, не сливать.
  */
 export function parseMolsHtml(html: string, now = new Date()): MolsHtmlEntry[] {
   const { entries } = buildMolsFromRows(extractMolsHtmlRows(html), now);
@@ -242,7 +250,7 @@ function buildMolsFromRows(rows: RawMolsRow[], now: Date): {
     for (let i = 0; i < plants.length; i++) {
       if (plants[i] !== '1000') continue;
       const code = (i < whs.length ? (whs[i] ?? '') : '').trim();
-      if (!code || code.length !== 4 || !/^\d{4}$/.test(code)) continue;
+      if (!code || !MOL_WAREHOUSE_CODE.test(code)) continue;
 
       let w = g.warehouses.get(code);
       if (!w) {

@@ -1,5 +1,12 @@
 import type { ApiClient } from '../api/client';
 
+/** Перерыв: обед / форс-мажор (минуты суток). OR-Tools breaks. */
+export interface OptimizationBreakInput {
+  start_min: number;
+  end_min: number;
+  label?: string;
+}
+
 export interface OptimizationVehicleInput {
   id: string;
   type_id: string;
@@ -8,6 +15,8 @@ export interface OptimizationVehicleInput {
   end_node: number;
   shift_start_min: number;
   shift_end_min: number;
+  /** Обед + закрытые форс-мажоры; опционально (старые клиенты/сервер игнорят). */
+  breaks?: OptimizationBreakInput[];
 }
 
 export interface OptimizationPositionInput {

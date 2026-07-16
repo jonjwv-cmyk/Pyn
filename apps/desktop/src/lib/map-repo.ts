@@ -1,13 +1,15 @@
 /**
- * map-repo — персистентность карты. ОБЩИЙ документ на сервере (D1 `map_state`,
- * endpoints map_get/map_set) + локальный зашифрованный кэш `flow-map` как
- * быстрый старт / офлайн-фоллбэк.
+ * map-repo — персистентность карты.
  *
- *   • initMap() — кэш (мгновенно) → дотягивает с сервера; если сервер пуст, а
- *     локально нарисовано — заливает локальное на сервер (миграция).
- *   • любое изменение doc → debounce → cache.save + push на сервер (map_set).
- *   • WS `map_changed` (другой клиент сохранил) → refreshMapFromServer() → у всех
- *     одинаковая карта реалтайм. Эхо своих правок гасим по `version`.
+ * СЕРВЕР = источник правды (D1 map_state). Локальный кэш `flow-map` — только
+ * быстрый старт / офлайн. Писать map_set может только сборка ≥ 1.3.11
+ * (старые EXE сервер отвергает — не затрут карту).
+ *
+ *   • initMap() — кэш мгновенно → всегда дотягивает сервер; пустой сервер +
+ *     локальный контент → push (миграция / recovery).
+ *   • любое изменение doc → debounce → cache.save + map_set на сервер.
+ *   • WS map_changed → refreshMapFromServer().
+ *   • На сервере: утренний суточный бэкап (map_daily) + anti-wipe.
  */
 
 import { mapGet, mapSet } from '@pyn/core';
@@ -30,8 +32,44 @@ import { useMapStore } from './map-store';
 
 const CACHE_NAME = 'flow-map';
 const BACKUP_NAME = 'pyn:flow-map:plain-backup:v1';
-const SAVE_DEBOUNCE_MS = 120;
-const PUSH_DEBOUNCE_MS = 700;
+const SAVE_DEBOUNCE_MS = 80;
+/** Каждое изменение карты сразу уходит на сервер (короткий debounce только
+ *  чтобы схлопнуть пачку вершин при рисовании полилинии). */
+const PUSH_DEBOUNCE_MS = 120;
+/** Не принимать remote / не пушить, если score «схлопнулся» сильнее чем в 2 раза
+ *  относительно уже известной живой карты. */
+const MAP_PROTECT_MIN_SCORE = 500;
+const MAP_SHRINK_RATIO = 0.5;
+/** Совпадает с серверным MAP_MIN_CLIENT_VERSION — ниже не пушим (сервер всё равно 403). */
+const MAP_MIN_CLIENT_VERSION = '1.3.11';
+
+function appClientVersion(): string {
+  try {
+    return String(window.pyn?.appVersion || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function semverGte(a: string, b: string): boolean {
+  const parse = (v: string): [number, number, number] | null => {
+    const m = String(v || '').trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return false;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return true;
+    if (pa[i] < pb[i]) return false;
+  }
+  return true;
+}
+
+/** Можно ли этой сборке писать карту на сервер. */
+export function canWriteMapToServer(): boolean {
+  return semverGte(appClientVersion(), MAP_MIN_CLIENT_VERSION);
+}
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -455,6 +493,11 @@ export async function loadMapFromCache(): Promise<boolean> {
   const backupDoc = loadPlainBackup();
   const doc = scoreDoc(backupDoc) > scoreDoc(encryptedDoc) ? backupDoc : encryptedDoc;
   if (!doc) return false;
+  const sc = scoreDoc(doc);
+  if (sc > 0) {
+    everHadContent = true;
+    if (sc > knownGoodScore) knownGoodScore = sc;
+  }
   applyingRemote = true;
   try {
     lastSavedDoc = doc;
@@ -476,11 +519,14 @@ function applyServerDoc(raw: string, version: number): void {
   } catch {
     return;
   }
-  // 🛡️ Сервер прислал ПУСТО, а у нас локально ЕСТЬ контент → не затираем себя
-  // пустым (общий doc мог быть ошибочно очищен). Запоминаем версию, чтобы не
-  // зациклиться, и ВОССТАНАВЛИВАЕМ сервер своим непустым документом.
+  // 🛡️ Сервер прислал ПУСТО / СИЛЬНО УРЕЗАННОЕ, а у нас локально ЕСТЬ контент
+  // → не затираем себя. Запоминаем версию, чтобы не зациклиться, и
+  // ВОССТАНАВЛИВАЕМ сервер своим непустым документом (сервер теперь сам
+  // отвергает empty/shrink, но клиент — второй рубеж).
   const localDoc = useMapStore.getState().doc;
-  if (scoreDoc(doc) === 0 && scoreDoc(localDoc) > 0) {
+  const remoteScore = scoreDoc(doc);
+  const localScore = scoreDoc(localDoc);
+  if (remoteScore === 0 && localScore > 0) {
     serverVersion = version;
     everHadContent = true;
     // eslint-disable-next-line no-console
@@ -488,6 +534,21 @@ function applyServerDoc(raw: string, version: number): void {
     schedulePush(localDoc);
     return;
   }
+  if (
+    localScore >= MAP_PROTECT_MIN_SCORE &&
+    remoteScore > 0 &&
+    remoteScore < localScore * MAP_SHRINK_RATIO
+  ) {
+    serverVersion = version;
+    everHadContent = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[pyn:map] сервер схлопнут (score ${remoteScore} << local ${localScore}) — не применяю, пушу локальное`,
+    );
+    schedulePush(localDoc);
+    return;
+  }
+  if (remoteScore > 0) everHadContent = true;
   applyingRemote = true;
   try {
     lastSavedDoc = doc;   // не триггерим повторный cache-save / push на этот doc
@@ -501,25 +562,50 @@ function applyServerDoc(raw: string, version: number): void {
 
 /** Видели ли мы за сессию НЕпустой документ (был контент на сервере/локально). */
 let everHadContent = false;
+/** Лучший score, который мы уже видели (локально или с сервера) — baseline anti-shrink. */
+let knownGoodScore = 0;
 
 /** Отправить текущий документ на сервер (admin). Обновляет serverVersion. */
 async function pushNow(doc: MapDoc): Promise<void> {
-  // 🛡️ ЗАЩИТА ОТ ПОТЕРИ ДАННЫХ: не затираем общий документ карты ПУСТЫМ. Если за
-  // сессию был контент (точки/дороги), а теперь doc пуст — это почти наверняка
-  // сбой загрузки/синхронизации, а не «удалили всё». Пустое НЕ пушим — пусть на
-  // сервере останется как было; контент вернётся при следующей успешной загрузке.
-  if (scoreDoc(doc) > 0) everHadContent = true;
-  else if (everHadContent) {
+  // Только 1.3.11+ — старые сборки не должны даже пытаться (сервер всё равно 403).
+  if (!canWriteMapToServer()) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[pyn:map] push пропущен: нужна сборка ≥ ${MAP_MIN_CLIENT_VERSION}, сейчас ${appClientVersion() || '?'}`,
+    );
+    return;
+  }
+  // 🛡️ ЗАЩИТА ОТ ПОТЕРИ ДАННЫХ: не затираем общий документ карты ПУСТЫМ / сильно
+  // урезанным. Если за сессию был контент (точки/дороги), а теперь doc пуст или
+  // score схлопнулся — это почти наверняка сбой, а не «удалили всё». Не пушим.
+  const nextScore = scoreDoc(doc);
+  const baselineScore = Math.max(scoreDoc(lastSavedDoc), knownGoodScore);
+  if (nextScore > 0) {
+    everHadContent = true;
+    if (nextScore > knownGoodScore) knownGoodScore = nextScore;
+  } else if (everHadContent || baselineScore > 0) {
     // eslint-disable-next-line no-console
     console.warn('[pyn:map] пропускаю push ПУСТОГО документа — не затираем общую карту');
     return;
   }
+  if (
+    baselineScore >= MAP_PROTECT_MIN_SCORE &&
+    nextScore > 0 &&
+    nextScore < baselineScore * MAP_SHRINK_RATIO
+  ) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[pyn:map] пропускаю push схлопнутого doc (score ${nextScore} << baseline ${baselineScore})`,
+    );
+    return;
+  }
   try {
-    const res = await mapSet(api, JSON.stringify(doc));
+    const res = await mapSet(api, JSON.stringify(doc), appClientVersion());
     serverVersion = res.version;
     lastSavedDoc = doc;
+    if (nextScore > knownGoodScore) knownGoodScore = nextScore;
   } catch (err) {
-    // Не admin (403) / нет сети — остаёмся на локальном кэше, попробуем позже.
+    // Не admin (403) / old client / нет сети / anti-wipe 409 — локальный кэш остаётся.
     // eslint-disable-next-line no-console
     console.warn('[pyn:map] server push failed:', err);
   }
@@ -541,16 +627,19 @@ export async function refreshMapFromServer(): Promise<void> {
   }
 }
 
-/** Первичная синхронизация: применить серверное ИЛИ залить локальное (миграция). */
+/** Первичная синхронизация: СЕРВЕР = правда. Локальное пушим только если сервер пуст. */
 async function syncFromServerInitial(): Promise<void> {
   try {
     const res = await mapGet(api);
     if (res.doc && res.version > 0) {
-      applyServerDoc(res.doc, res.version);            // сервер = источник правды
+      // Сервер приоритет: всегда применяем (anti-shrink внутри applyServerDoc
+      // защитит, если сервер внезапно «пустой» относительно локального).
+      applyServerDoc(res.doc, res.version);
     } else {
       serverVersion = res.version;
       const localDoc = useMapStore.getState().doc;
-      if (scoreDoc(localDoc) > 0) await pushNow(localDoc); // сервер пуст → заливаем своё
+      // Сервер пуст — единственный случай «залить локальное» (миграция/recovery).
+      if (scoreDoc(localDoc) > 0 && canWriteMapToServer()) await pushNow(localDoc);
     }
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -586,11 +675,17 @@ export async function initMap(): Promise<void> {
   void syncFromServerInitial();
 }
 
-/** Принудительный сброс на диск (например, перед logout/wipe). */
+/** Принудительный сброс на диск + на сервер (visibility hidden / logout). */
 export async function flushMapNow(): Promise<void> {
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  await flush(useMapStore.getState().doc);
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+  const doc = useMapStore.getState().doc;
+  await flush(doc);
+  if (!applyingRemote) await pushNow(doc);
 }

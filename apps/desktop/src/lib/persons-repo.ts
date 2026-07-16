@@ -17,6 +17,7 @@ import {
   personsDownloadUrl,
   personUpdate,
   personCreate,
+  isValidPersonFio,
   parsePersonsSnapshotJson,
   parseBroadcastApprovalWarehouses,
   type Person,
@@ -38,37 +39,71 @@ const CACHE_NAME = 'persons-base';
 // отдельно — выводится из persons на клиенте (МОЛ = подмножество is_mol).
 // Потребители МОЛ (Поток/Цеха/резолв) читают useMolStore как прежде.
 
-/** persons → MolRecord[] (человек × склад; МОЛ без склада → 'МОЛ'). */
+/**
+ * persons → MolRecord[] (человек × склад; МОЛ без склада → 'МОЛ').
+ *
+ * Активные is_mol (не isWas). Фантомы «был» — ТОЛЬКО если на складе после
+ * выгрузки не осталось ни одного активного МОЛ: иначе прошлые связи не
+ * интересны (склад «живой»). Фантом: выбрать нельзя, смотреть можно.
+ */
 function deriveMolFromPersons(persons: Person[]): MolRecord[] {
   const out: MolRecord[] = [];
   let id = 1;
+  const row = (p: Person, warehouseId: string, until: string): MolRecord => ({
+    remoteId: id++,
+    warehouseId,
+    warehouseName: '',
+    warehouseDesc: '',
+    warehouseMark: '',
+    warehouseKeeper: '',
+    warehouseUntil: until,
+    warehouseWorkPhones: '',
+    fio: p.fio,
+    status: p.status,
+    position: p.position,
+    mobile: p.mobile,
+    work: p.work,
+    mail: p.mail,
+    tab: p.tab,
+    searchText: [p.fio, p.mobile, p.mail, p.tab, warehouseId].filter(Boolean).join(' ').toLowerCase(),
+    createdAt: p.updatedAt,
+  });
+
+  // Склады, у которых есть хотя бы один активный (не «был») МОЛ.
+  const activeWh = new Set<string>();
   for (const p of persons) {
-    if (!p.isMol || p.isOrphan) continue;
-    const row = (warehouseId: string, until: string): MolRecord => ({
-      remoteId: id++,
-      warehouseId,
-      warehouseName: '',
-      warehouseDesc: '',
-      warehouseMark: '',
-      warehouseKeeper: '',
-      warehouseUntil: until,
-      warehouseWorkPhones: '',
-      fio: p.fio,
-      status: p.status,
-      position: p.position,
-      mobile: p.mobile,
-      work: p.work,
-      mail: p.mail,
-      tab: p.tab,
-      searchText: [p.fio, p.mobile, p.mail, p.tab, warehouseId].filter(Boolean).join(' ').toLowerCase(),
-      createdAt: p.updatedAt,
-    });
-    if (p.warehouses.length === 0) out.push(row('МОЛ', ''));
-    else {
-      for (const w of p.warehouses) {
-        const until = w.isWas ? 'был' : w.until;
-        out.push(row(w.code, until));
+    if (p.isOrphan || !p.isMol) continue;
+    for (const w of p.warehouses) {
+      if (w.isWas) continue;
+      const code = (w.code || '').trim();
+      if (code && code !== 'МОЛ' && code !== 'MOL') activeWh.add(code.toLowerCase());
+    }
+  }
+
+  for (const p of persons) {
+    if (p.isOrphan) continue;
+    if (p.isMol) {
+      if (p.warehouses.length === 0) out.push(row(p, 'МОЛ', ''));
+      else {
+        for (const w of p.warehouses) {
+          const code = (w.code || '').trim();
+          if (w.isWas) {
+            // «был» только если склад полностью без активного МОЛ.
+            if (!code || activeWh.has(code.toLowerCase())) continue;
+            out.push(row(p, code, 'был'));
+          } else {
+            out.push(row(p, code || 'МОЛ', w.until || ''));
+          }
+        }
       }
+      continue;
+    }
+    // Не МОЛ, но «был» на пустом складе — фантом (без значка МОЛ в контактах).
+    for (const w of p.warehouses) {
+      if (!w.isWas) continue;
+      const code = (w.code || '').trim();
+      if (!code || activeWh.has(code.toLowerCase())) continue;
+      out.push(row(p, code, 'был'));
     }
   }
   return out;
@@ -246,9 +281,11 @@ export async function savePerson(id: number, patch: PersonPatch): Promise<void> 
   }
   if (patch.is_mol !== undefined) {
     optimistic.isMol = patch.is_mol === 1;
-    if (patch.is_mol === 1 && patch.fio !== undefined && patch.fio.trim()) optimistic.isOrphan = false;
   }
-  if (patch.fio !== undefined && patch.fio.trim()) optimistic.isOrphan = false;
+  if (patch.fio !== undefined || patch.is_mol !== undefined) {
+    const fio = (patch.fio !== undefined ? patch.fio : optimistic.fio) ?? '';
+    optimistic.isOrphan = !!(optimistic.isMol && !isValidPersonFio(fio));
+  }
   store.patchLocal(id, optimistic);
   try {
     const res = await personUpdate(api, { id, patch });

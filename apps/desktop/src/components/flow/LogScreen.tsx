@@ -209,13 +209,27 @@ export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Ele
                 );
               }
               if (item.kind === 'mols') {
-                const s = item.run;
+                const s = item.run as typeof item.run & {
+                  action?: string;
+                  contacts_new?: number;
+                  wh_empty_before?: number;
+                  wh_empty_after?: number;
+                  wh_empty_codes?: string;
+                  version_from?: string;
+                  version_to?: string;
+                };
                 const u = users.find((x) => x.login === s.login);
                 const nm = s.full_name || s.login || '—';
                 const pres = presenceByLogin[s.login]?.status ?? 'offline';
                 const dur = fmtDuration(s.started_at, s.finished_at);
+                const isRestore = (s.action || 'import') === 'restore';
                 const delta = s.mol_after - s.mol_before;
                 const deltaStr = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '±0';
+                const cNew = Number(s.contacts_new ?? s.new_count ?? 0);
+                const whB = Number(s.wh_empty_before ?? 0);
+                const whA = Number(s.wh_empty_after ?? 0);
+                const whD = whA - whB;
+                const whDs = whD > 0 ? `+${whD}` : whD < 0 ? `${whD}` : '±0';
                 return (
                   <div
                     key={`mols${s.id}`}
@@ -241,20 +255,32 @@ export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Ele
                         <span className="max-w-[220px] truncate text-[13px] font-medium text-text-strong" title={nm}>
                           {nm}
                         </span>
-                        <span className="text-[12px] text-accent-clay">· База МОЛов</span>
+                        <span className="text-[12px] text-accent-clay">
+                          {isRestore ? '· Откат базы контактов' : '· База МОЛов'}
+                        </span>
                         <span className="text-[11px] text-text-muted/80">{formatFullYek(s.started_at)}</span>
                         {dur && <span className="text-[11px] text-text-secondary">· за {dur}</span>}
                       </div>
                       {s.ok ? (
-                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11.5px] tabular-nums text-text-secondary">
-                          <span>таб. {s.received}</span>
-                          <span>
-                            МОЛ {s.mol_before} → {s.mol_after} ({deltaStr})
-                          </span>
-                          {s.new_count > 0 && (
-                            <span className="text-emerald-700/90">· новых {s.new_count}{s.new_tabs ? `: ${s.new_tabs}` : ''}</span>
-                          )}
-                        </div>
+                        isRestore ? (
+                          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11.5px] tabular-nums text-text-secondary">
+                            <span>
+                              версия {s.version_from || '—'} → {s.version_to || '—'}
+                            </span>
+                            <span>МОЛ {s.mol_after}</span>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11.5px] tabular-nums text-text-secondary">
+                            <span className="text-emerald-700/90">Контакты: +{cNew} новых</span>
+                            <span>
+                              МОЛ: было {s.mol_before} → стало {s.mol_after} ({deltaStr})
+                            </span>
+                            <span title={s.wh_empty_codes || undefined}>
+                              Склады без МОЛ: было {whB} → стало {whA} ({whDs})
+                              {s.wh_empty_codes ? `: ${s.wh_empty_codes}` : ''}
+                            </span>
+                          </div>
+                        )
                       ) : (
                         <div className="text-[11.5px] text-rose-600" title={s.error}>
                           ошибка: {s.error || 'нет данных'}

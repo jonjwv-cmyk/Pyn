@@ -52,9 +52,21 @@ export async function mapGet(client: ApiClient): Promise<MapDocResult> {
   return wireToResult(wire);
 }
 
-/** Сохранить общий документ карты (admin). `doc` — JSON-строка. */
-export async function mapSet(client: ApiClient, doc: string): Promise<MapDocResult> {
-  const wire = await client.call<MapWire>('map_set', { doc });
+/**
+ * Сохранить общий документ карты (admin/developer). `doc` — JSON-строка.
+ * `clientVersion` — semver сборки (сервер пишет карту только с ≥ 1.3.11).
+ */
+export async function mapSet(
+  client: ApiClient,
+  doc: string,
+  clientVersion?: string,
+): Promise<MapDocResult> {
+  const payload: Record<string, unknown> = { doc };
+  if (clientVersion) {
+    payload.client_version = clientVersion;
+    payload.app_version = clientVersion;
+  }
+  const wire = await client.call<MapWire>('map_set', payload);
   return wireToResult(wire);
 }
 
