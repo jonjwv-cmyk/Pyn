@@ -60,8 +60,10 @@ function semverGte(a: string, b: string): boolean {
   const pb = parse(b);
   if (!pa || !pb) return false;
   for (let i = 0; i < 3; i++) {
-    if (pa[i] > pb[i]) return true;
-    if (pa[i] < pb[i]) return false;
+    const ai = pa[i] ?? 0;
+    const bi = pb[i] ?? 0;
+    if (ai > bi) return true;
+    if (ai < bi) return false;
   }
   return true;
 }

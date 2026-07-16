@@ -1942,7 +1942,7 @@ function ProbaStyles() {
         grid-column: 1 / -1;
       }
 
-      /* Day pill — read-only. Редактирование через ShopWarehousesEditor. */
+      /* Day pill — read-only. */
       .proba-day {
         display: inline-flex;
         justify-content: center;
