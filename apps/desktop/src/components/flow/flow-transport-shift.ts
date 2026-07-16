@@ -1,4 +1,6 @@
 import {
+  DAY_SHIFT_END_MONTHU_MIN,
+  DAY_SHIFT_START_MIN,
   SHIFT_START_MIN,
   dayShiftEndMin,
   pickYear,
@@ -53,14 +55,19 @@ export function expectedShiftEndMin(
 ): number {
   if (kind === 'regular') return 20 * 60;
   const dm = /^(\d{4})-(\d{2})-(\d{2})/.exec(tdate || '');
-  if (!dm) return 17 * 60;
+  if (!dm) return DAY_SHIFT_END_MONTHU_MIN;
   const y = Number(dm[1]);
   const mo = Number(dm[2]);
   const d = Number(dm[3]);
-  return dayShiftEndMin(pickYear(calByYear, y), y, mo, d) ?? 17 * 60;
+  return dayShiftEndMin(pickYear(calByYear, y), y, mo, d) ?? DAY_SHIFT_END_MONTHU_MIN;
 }
 
-/** Полная смена = старт 08:00 и конец по норме типа смены на дату. */
+/** Старт смены по типу: обычная 08:00, дневная 08:30. */
+export function expectedShiftStartMin(kind: TransportShiftKind): number {
+  return kind === 'day' ? DAY_SHIFT_START_MIN : SHIFT_START_MIN;
+}
+
+/** Полная смена = старт по норме типа (08:00/08:30) и конец по норме на дату. */
 export function isFullShiftRange(
   timeRange: string,
   work: string,
@@ -72,7 +79,7 @@ export function isFullShiftRange(
   const bounds = parseTimeRangeBounds(timeRange);
   if (!bounds) return true;
   const expectedEnd = expectedShiftEndMin(kind, tdate, calByYear);
-  return bounds.startMin === SHIFT_START_MIN && bounds.endMin === expectedEnd;
+  return bounds.startMin === expectedShiftStartMin(kind) && bounds.endMin === expectedEnd;
 }
 
 /** Нужно жирнить ВРЕМЯ — дали меньше, чем полная смена по правилу префикса. */

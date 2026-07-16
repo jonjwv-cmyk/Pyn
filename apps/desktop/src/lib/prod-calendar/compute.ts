@@ -10,12 +10,14 @@ import type { ProdCalendarByYear, ProdCalendarYear } from './types';
 import { PROD_CALENDAR_FALLBACK_YEAR, PROD_CALENDAR_SEED } from './data';
 
 // ── Константы смен ───────────────────────────────────────────────────────────
-/** Начало любой смены — 08:00. */
+/** Начало ОБЫЧНОЙ смены (08:00–20:00, работы 7.x / 1.1) — 08:00. */
 export const SHIFT_START_MIN = 8 * 60; // 480
-/** Конец дневной смены ПН-ЧТ — 17:00. */
-export const DAY_SHIFT_END_MONTHU_MIN = 17 * 60; // 1020
-/** Конец дневной смены ПТ — 15:45. */
-export const DAY_SHIFT_END_FRI_MIN = 15 * 60 + 45; // 945
+/** Начало ДНЕВНОЙ смены (экспедиция, работы 1.2 / 2.x) — 08:30 (владелец 2026-07-17). */
+export const DAY_SHIFT_START_MIN = 8 * 60 + 30; // 510
+/** Конец дневной смены ПН-ЧТ — 16:30. */
+export const DAY_SHIFT_END_MONTHU_MIN = 16 * 60 + 30; // 990
+/** Конец дневной смены ПТ — 15:00. */
+export const DAY_SHIFT_END_FRI_MIN = 15 * 60; // 900
 /** Сколько минут отнять в предпраздничный день. */
 export const SHORT_DAY_CUT_MIN = 60;
 
@@ -150,8 +152,8 @@ export function shortDaysOfMonth(
 // ── Окно дневной смены ───────────────────────────────────────────────────────
 /**
  * Конец дневной смены (минуты) для конкретной даты, с учётом сокращения:
- *  - ПН-ЧТ: 17:00, ПТ: 15:45
- *  - предпраздничный → минус 60 мин (16:00 / 14:45)
+ *  - ПН-ЧТ: 16:30, ПТ: 15:00
+ *  - предпраздничный → минус 60 мин (15:30 / 14:00)
  *  - нерабочий день → null (смены нет)
  */
 export function dayShiftEndMin(
@@ -176,7 +178,7 @@ export function dayShiftWindow(
 ): { startMin: number; endMin: number } | null {
   const endMin = dayShiftEndMin(cal, year, month, day);
   if (endMin == null) return null;
-  return { startMin: SHIFT_START_MIN, endMin };
+  return { startMin: DAY_SHIFT_START_MIN, endMin };
 }
 
 // ── Форматирование ───────────────────────────────────────────────────────────

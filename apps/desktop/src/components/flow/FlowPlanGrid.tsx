@@ -1709,8 +1709,8 @@ export function FlowPlanGrid({
       if (spec.id === 'delivery') {
         const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
         const value = snapDelivery(r, anchor);
-        // Конец дневной смены — по КОНКРЕТНОЙ дате строки плана/отчёта (ПН-ЧТ 17:00
-        // / ПТ 15:45, −1ч в предпраздничные). Нет даты → дефолт 17:00 в ячейке.
+        // Конец дневной смены — по КОНКРЕТНОЙ дате строки плана/отчёта (ПН-ЧТ 16:30
+        // / ПТ 15:00, −1ч в предпраздничные). Нет даты → дефолт 16:30 в ячейке.
         let endMin: number | undefined;
         const pd = r.plan_date || '';
         if (/^\d{4}-\d{2}-\d{2}/.test(pd)) {

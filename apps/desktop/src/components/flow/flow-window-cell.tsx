@@ -5,34 +5,41 @@ import {
   type CustomRenderer,
 } from '@glideapps/glide-data-grid';
 import { cn } from '@/lib/cn';
+import {
+  DAY_LUNCH_END_MIN,
+  DAY_LUNCH_START_MIN,
+  DAY_SHIFT_END_MONTHU_MIN,
+  DAY_SHIFT_START_MIN,
+} from '@/lib/prod-calendar';
 import { useFlipUpIfClipped } from './flow-cell-flip';
 
 /**
  * Ячейка «Доставка» — окно ДНЕВНОЙ смены (юзер 2026-07-14). Не из САП.
  *
- * Смена: 08:00 → конец дневной смены (ПН-ЧТ 17:00 / ПТ 15:45), в предпраздничные
- * дни −1ч (16:00 / 14:45). Конец приходит per-row в `endMin` (из производственного
- * календаря по дате колонки ГРАФ); дефолт 17:00. Шаг 15 мин.
+ * Смена: 08:30 → конец дневной смены (ПН-ЧТ 16:30 / ПТ 15:00), в предпраздничные
+ * дни −1ч (15:30 / 14:00). Конец приходит per-row в `endMin` (из производственного
+ * календаря по дате колонки ГРАФ); дефолт 16:30. Шаг 15 мин.
+ * Константы смены/обеда — из prod-calendar (единый источник).
  *
  * Обед 12:00–12:45 «мёртвый»: ни начало, ни конец окна не могут лежать внутри
  * блока обеда — только ДО (≤11:45) или ПОСЛЕ (≥12:45). Окно на всю смену
- * (08:00–17:00) спокойно ПЕРЕКРЫВАЕТ обед — запрет только на сами эндпоинты.
+ * спокойно ПЕРЕКРЫВАЕТ обед — запрет только на сами эндпоинты.
  *
  * Значение = «HH:MM–HH:MM». Пусто = стандартное окно всей смены (рисуется приглушённо).
  */
 export interface FlowWindowData {
   readonly kind: 'flow-window';
   readonly value: string;
-  /** Конец дневной смены (мин от полуночи) для даты этой строки. Дефолт 17:00. */
+  /** Конец дневной смены (мин от полуночи) для даты этой строки. Дефолт 16:30. */
   readonly endMin?: number;
 }
 export type FlowWindowCell = CustomCell<FlowWindowData>;
 
-const DAY_START = 8 * 60; // 08:00
-const DEFAULT_END = 17 * 60; // 17:00 (ПН-ЧТ, если endMin не передан)
+const DAY_START = DAY_SHIFT_START_MIN; // 08:30
+const DEFAULT_END = DAY_SHIFT_END_MONTHU_MIN; // 16:30 (ПН-ЧТ, если endMin не передан)
 const STEP = 15;
-const LUNCH_START = 12 * 60; // 12:00
-const LUNCH_END = 12 * 60 + 45; // 12:45
+const LUNCH_START = DAY_LUNCH_START_MIN; // 12:00
+const LUNCH_END = DAY_LUNCH_END_MIN; // 12:45
 
 function fmt(min: number): string {
   const h = Math.floor(min / 60);

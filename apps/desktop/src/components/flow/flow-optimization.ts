@@ -3,8 +3,8 @@
  *
  * Окна доставки + смена машины:
  *  - обычная (7.x / 1.1): 08:00–20:00, обед 12:00–12:30;
- *  - дневная (1.2 / 2.x): 08:00–конец из производственного календаря
- *    (ПН–ЧТ 17:00, ПТ 15:45, предпраздничный −1ч);
+ *  - дневная (1.2 / 2.x): 08:30–конец из производственного календаря
+ *    (ПН–ЧТ 16:30, ПТ 15:00, предпраздничный −1ч);
  *  - факт начала/конца и time_range строки Транспорта;
  *  - открытый форс-мажор → машина не в плане;
  *  - окна получателя clamp'ятся в рамки смены (не шире 08:00–20:00).
@@ -37,6 +37,7 @@ import { deliveryRowEps, parseDeliveryWindow } from './flow-eps';
 import {
   expectedShiftEndMin,
   expectedShiftKind,
+  expectedShiftStartMin,
   parseTimeRangeBounds,
   type TransportShiftKind,
 } from './flow-transport-shift';
@@ -114,6 +115,7 @@ export function vehicleShiftForTransport(
 } {
   const kind = expectedShiftKind(row.work || '');
   const tdate = String(row.tdate || '').slice(0, 10);
+  const baseStart = kind ? expectedShiftStartMin(kind) : SHIFT_START_MIN;
   const expectedEnd = kind
     ? expectedShiftEndMin(kind, tdate, calByYear)
     : 20 * 60;
@@ -130,7 +132,7 @@ export function vehicleShiftForTransport(
       if (isNonWorkingDay(cal, y, mo, d)) {
         return {
           kind,
-          shiftStartMin: SHIFT_START_MIN,
+          shiftStartMin: baseStart,
           shiftEndMin: expectedEnd,
           breaks: [],
           skip: true,
@@ -142,10 +144,10 @@ export function vehicleShiftForTransport(
   }
 
   const plan = parseTimeRangeBounds(row.time_range || '');
-  let startMin = SHIFT_START_MIN;
+  let startMin = baseStart;
   const factStart = hmToMin(row.fact_start);
-  if (factStart != null) startMin = Math.max(SHIFT_START_MIN, factStart);
-  else if (plan) startMin = Math.max(SHIFT_START_MIN, plan.startMin);
+  if (factStart != null) startMin = Math.max(baseStart, factStart);
+  else if (plan) startMin = Math.max(baseStart, plan.startMin);
 
   let endMin = dayEnd ?? expectedEnd;
   const factEnd = hmToMin(row.fact_end);
