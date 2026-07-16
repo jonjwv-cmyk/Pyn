@@ -8,6 +8,7 @@ import { cn } from '@/lib/cn';
 import {
   formatMobilePhone,
   formatMolUntil,
+  MOL_DISMISSED_PILL_CLASS,
   MOL_UNTIL_PILL_CLASS,
   molStatusKind,
   molUntilStatus,
@@ -27,6 +28,8 @@ export interface MolTableRow extends MolRecord {
   /** Материально-ответственное лицо — «Склад» показывает «МОЛ» только у МОЛ. */
   isMol?: boolean;
   isOrphan?: boolean;
+  /** «Уволился»: склады с пилюлей «уволился» вместо дат «по». */
+  isDismissed?: boolean;
 }
 
 interface MolTableProps {
@@ -1244,7 +1247,11 @@ function MolRow({
       </Td>
 
       <Td tdRef={setCellRef(index, 5)} {...cellProps(5)}>
-        <WarehouseCell warehouses={record.warehouses} isMol={record.isMol ?? true} />
+        <WarehouseCell
+          warehouses={record.warehouses}
+          isMol={record.isMol ?? true}
+          isDismissed={record.isDismissed ?? false}
+        />
       </Td>
     </tr>
   );
@@ -1252,12 +1259,29 @@ function MolRow({
 
 /** Колонка «Склад»: склады человека столбиком; у кого есть дата «по» — пилюля
  *  с датой и подсветкой по сроку (red/yellow/clay); нет реального склада → «МОЛ».
+ *  «Уволился» (юзер 2026-07-17): вместо дат «по» — пилюля «код · уволился»,
+ *  без склада — одиночная пилюля «уволился».
  *  pointer-events-none на содержимом: ячейка декоративная (нет кликабельных
  *  элементов), поэтому пилюли «прозрачны» для mouse-событий → drag-выделение и
  *  клик по строке/столбцу попадают прямо в `Td`, а не перехватываются пилюлей. */
-function WarehouseCell({ warehouses, isMol }: { warehouses: Array<{ code: string; until: string }>; isMol: boolean }): JSX.Element {
+function WarehouseCell({ warehouses, isMol, isDismissed }: {
+  warehouses: Array<{ code: string; until: string }>;
+  isMol: boolean;
+  isDismissed: boolean;
+}): JSX.Element {
   const real = warehouses.filter((w) => w.code && w.code !== 'МОЛ' && w.code !== 'MOL');
   if (real.length === 0) {
+    if (isDismissed) {
+      return (
+        <span className={cn(
+          'pointer-events-none inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1',
+          MOL_DISMISSED_PILL_CLASS,
+        )}
+        >
+          уволился
+        </span>
+      );
+    }
     // МОЛ без склада → «МОЛ»; обычный контакт (не МОЛ) → пусто.
     return (
       <span className="pointer-events-none text-[11px] text-text-muted">{isMol ? 'МОЛ' : '—'}</span>
@@ -1266,19 +1290,23 @@ function WarehouseCell({ warehouses, isMol }: { warehouses: Array<{ code: string
   return (
     <div className="pointer-events-none flex flex-col items-start gap-0.5">
       {real.map((w) =>
-        w.until ? (
+        (w.until || isDismissed) ? (
           <span
             key={w.code}
             className={cn(
               'inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium tabular-nums ring-1',
-              w.until === 'был'
-                ? 'bg-text-muted/12 text-text-muted ring-border-default/60'
-                : MOL_UNTIL_PILL_CLASS[molUntilStatus(w.until)],
+              isDismissed
+                ? MOL_DISMISSED_PILL_CLASS
+                : w.until === 'был'
+                  ? 'bg-text-muted/12 text-text-muted ring-border-default/60'
+                  : MOL_UNTIL_PILL_CLASS[molUntilStatus(w.until)],
             )}
           >
-            {w.until === 'был'
-              ? `${w.code} · ранее`
-              : `${w.code} · по ${formatMolUntil(w.until)}`}
+            {isDismissed
+              ? `${w.code} · уволился`
+              : w.until === 'был'
+                ? `${w.code} · ранее`
+                : `${w.code} · по ${formatMolUntil(w.until)}`}
           </span>
         ) : (
           <span key={w.code} className="px-0.5 text-[11.5px] tabular-nums text-text-secondary">

@@ -188,6 +188,7 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
           work,
           mail,
           comment: form.comment.trim(),
+          dismissed: form.dismissed ? 1 : 0,
           ...broadcast,
         };
         await savePerson(personId, patch);
@@ -327,6 +328,28 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
                   onChange={(v) => set('comment', v)}
                   placeholder={t('mol.edit.ph_comment')}
                 />
+              )}
+
+              {/* «Уволился» — только у существующих контактов. Пометка главнее
+                  выгрузки: как МОЛ не выбирается, в Android-базу не идёт. */}
+              {mode !== 'create' && (
+                <div className="mt-1 flex items-start justify-between gap-3 pt-1">
+                  <div className="min-w-0">
+                    <span className={cn(
+                      'text-[12.5px] font-medium',
+                      form.dismissed ? 'text-danger' : 'text-text-primary',
+                    )}
+                    >
+                      {t('mol.edit.field_dismissed')}
+                    </span>
+                    {form.dismissed && target !== null && target.mode !== 'create' && target.person.isMol && (
+                      <div className="mt-0.5 text-[11px] leading-snug text-text-muted">
+                        {t('mol.edit.dismissed_in_dump')}
+                      </div>
+                    )}
+                  </div>
+                  <ClayToggle on={form.dismissed} onChange={(v) => set('dismissed', v)} />
+                </div>
               )}
 
               <BroadcastSection

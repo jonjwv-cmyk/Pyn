@@ -107,6 +107,12 @@ export interface Person {
   isMol: boolean;
   /** Активный МОЛ без ФИО (панель «Новый МОЛ / Новые МОЛы»). */
   isOrphan: boolean;
+  /**
+   * «Уволился» (ручная пометка, главнее выгрузки): склады показываются с отметкой
+   * «уволился», как МОЛ не выбирается, в Android-базу не идёт. isMol при этом может
+   * быть true — договор в SAP ещё не закрыт (сигнал закрыть).
+   */
+  isDismissed: boolean;
   /** sap_mol — заведён выгрузкой МОЛ (табельный впервые); import — прочий импорт; manual — «+ Контакт». */
   source: 'import' | 'manual' | 'sap_mol';
   warehouses: PersonWarehouse[];
@@ -157,6 +163,7 @@ export interface PersonPatch {
   mail?: string;
   comment?: string;
   is_mol?: 0 | 1;
+  dismissed?: 0 | 1;
   broadcast_enabled?: 0 | 1;
   broadcast_group?: string;
   broadcast_purpose?: string;
@@ -209,6 +216,7 @@ interface PersonWire {
   comment?: string;
   is_mol?: number;
   is_orphan?: number;
+  dismissed?: number;
   source?: string;
   warehouses?: Array<{ code?: string; until?: string }>;
   updated_at?: string;
@@ -239,6 +247,7 @@ function wireToPerson(w: PersonWire): Person {
     comment: w.comment ?? '',
     isMol: Number(w.is_mol ?? 0) === 1,
     isOrphan: Number(w.is_orphan ?? 0) === 1,
+    isDismissed: Number(w.dismissed ?? 0) === 1,
     source: w.source === 'manual' ? 'manual' : w.source === 'sap_mol' ? 'sap_mol' : 'import',
     warehouses: (w.warehouses ?? []).map((x) => ({
       code: x.code ?? '',

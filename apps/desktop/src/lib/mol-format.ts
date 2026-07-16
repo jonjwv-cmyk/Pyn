@@ -152,6 +152,9 @@ export const MOL_UNTIL_PILL_CLASS: Record<'expired' | 'soon' | 'ok', string> = {
   ok: 'bg-accent-clay/[0.14] text-accent-clay ring-accent-clay/40',
 };
 
+/** Пилюля «уволился» (ручная пометка, юзер 2026-07-17) — приглушённый danger. */
+export const MOL_DISMISSED_PILL_CLASS = 'bg-danger/[0.10] text-danger/90 ring-danger/30';
+
 /**
  * Несколько work-телефонов в одной строке («49-02-82, 7-14-15» → ['49 02 82',
  * '7 14 15']). Каждый прогоняется через `formatWorkPhone` (strip city +

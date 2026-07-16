@@ -777,6 +777,7 @@ export function FlowPlanGrid({
     const targets = persons.filter((p) =>
       p.isMol &&
       !p.isOrphan &&
+      !p.isDismissed &&
       driverKeys.has(personKey(p.fio)) &&
       (p.broadcastGroup !== DRIVER_EXPEDITOR_ROLE || !p.broadcastEnabled),
     );

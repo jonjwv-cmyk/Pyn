@@ -10,6 +10,8 @@ export interface PersonEditFormState {
   work: string;
   mail: string;
   comment: string;
+  /** «Уволился» — ручная пометка, главнее выгрузки (юзер 2026-07-17). */
+  dismissed: boolean;
   broadcastEnabled: boolean;
   broadcastGroup: string;
   broadcastPurpose: string;
@@ -18,6 +20,7 @@ export interface PersonEditFormState {
 
 export const EMPTY_PERSON_EDIT_FORM: PersonEditFormState = {
   tab: '', fio: '', position: '', status: '', mobile: '', work: '', mail: '', comment: '',
+  dismissed: false,
   broadcastEnabled: false, broadcastGroup: '', broadcastPurpose: '', broadcastApprovalWarehouses: [],
 };
 
@@ -25,6 +28,7 @@ function formFromPerson(p: Person): PersonEditFormState {
   return {
     tab: p.tab, fio: p.fio, position: p.position, status: p.status,
     mobile: p.mobile, work: p.work, mail: p.mail, comment: p.comment,
+    dismissed: p.isDismissed,
     broadcastEnabled: p.broadcastEnabled,
     broadcastGroup: p.broadcastGroup,
     broadcastPurpose: p.broadcastPurpose,

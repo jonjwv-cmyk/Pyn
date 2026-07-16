@@ -282,6 +282,9 @@ export async function savePerson(id: number, patch: PersonPatch): Promise<void> 
   if (patch.is_mol !== undefined) {
     optimistic.isMol = patch.is_mol === 1;
   }
+  if (patch.dismissed !== undefined) {
+    optimistic.isDismissed = patch.dismissed === 1;
+  }
   if (patch.fio !== undefined || patch.is_mol !== undefined) {
     const fio = (patch.fio !== undefined ? patch.fio : optimistic.fio) ?? '';
     optimistic.isOrphan = !!(optimistic.isMol && !isValidPersonFio(fio));

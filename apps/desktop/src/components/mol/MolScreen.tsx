@@ -334,6 +334,7 @@ function personToRow(p: Person): MolTableRow {
     personId: p.id,
     isMol: p.isMol,
     isOrphan: p.isOrphan,
+    isDismissed: p.isDismissed,
   };
 }
 
