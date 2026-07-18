@@ -122,12 +122,17 @@ export function FlowScreen(): JSX.Element {
         </div>
       </div>
       <WorkspaceCard>
+        {/* Формирование — свой грид. План и Отчёт — ОДИН экземпляр FlowPlanGrid:
+            смена этапа только меняет mode (без unmount). Иначе каждый клик
+            «План/Отчёт» заново тянул 0.6+2 МБ, мерял ширины/высоты тысяч строк
+            и таблица «грузилась заново» (П0 скорость, 2026-07-18). */}
         {stage === 'form' ? (
           <FlowSandboxGrid />
-        ) : stage === 'plan' ? (
-          <FlowPlanGrid onSelectedDayChange={setPlanDay} />
         ) : (
-          <FlowPlanGrid mode="report" />
+          <FlowPlanGrid
+            mode={stage === 'report' ? 'report' : 'plan'}
+            onSelectedDayChange={setPlanDay}
+          />
         )}
       </WorkspaceCard>
     </main>

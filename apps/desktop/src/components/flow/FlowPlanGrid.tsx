@@ -947,30 +947,8 @@ export function FlowPlanGrid({
     return m;
   }, [vehicleOptions]);
 
-  // Загрузка: поставки + якоря (строки формирования — МОЛ/коммент/согласовал).
-  useEffect(() => {
-    let alive = true;
-    void Promise.all([flowDeliveriesGet(api), flowWorkflowGet(api)])
-      .then(([dlv, wf]) => {
-        if (!alive) return;
-        planDlvCache = dlv;
-        planAnchorsCache = wf;
-        setRows(dlv);
-        setAnchors(wf);
-        setLoading(false);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        setLoading(false);
-        setMsg(`Ошибка загрузки: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // Дисковый кэш (переживает перезапуск приложения): сессионного кэша нет →
-  // гидрируемся с диска мгновенно, серверный fetch выше догоняет и перезаписывает.
+  // Дисковый кэш СНАЧАЛА (до сети): сессии нет → таблица из кэша, без «Загрузка…».
+  // Сеть ниже догоняет фоном и не гасит UI, если строки уже есть.
   useEffect(() => {
     if (planDlvCache !== null) return;
     let alive = true;
@@ -979,6 +957,9 @@ export function FlowPlanGrid({
     ).then((cached) => {
       if (!alive || !cached || !Array.isArray(cached.dlv) || cached.dlv.length === 0) return;
       if (planDlvCache !== null) return; // сервер/сессия успели раньше — не затираем
+      planDlvCache = cached.dlv;
+      if (Array.isArray(cached.wf)) planAnchorsCache = cached.wf;
+      if (Array.isArray(cached.vehicles)) planVehiclesCache = cached.vehicles;
       setRows((prev) => (prev.length > 0 ? prev : cached.dlv));
       setAnchors((prev) => (prev.length > 0 ? prev : Array.isArray(cached.wf) ? cached.wf : prev));
       if (Array.isArray(cached.vehicles) && cached.vehicles.length > 0) {
@@ -986,6 +967,48 @@ export function FlowPlanGrid({
       }
       setLoading(false);
     });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Загрузка с сервера: поставки и якоря РАЗДЕЛЬНО.
+  // Раньше Promise.all ждал оба (~0.6 МБ deliveries + ~2 МБ workflow) → «План грузит долго».
+  // Теперь: deliveries пришли → таблица сразу; anchors (МОЛ/коммент/точка) догоняют фоном.
+  // Повторный вход (module-cache) / диск — без спиннера; setRows только если данные реально есть.
+  useEffect(() => {
+    let alive = true;
+    if (planDlvCache !== null) setLoading(false);
+
+    void flowDeliveriesGet(api)
+      .then((dlv) => {
+        if (!alive) return;
+        // Пустой ответ при живом кэше не затираем (сбой/гонка).
+        if (dlv.length === 0 && (planDlvCache?.length ?? 0) > 0) {
+          setLoading(false);
+          return;
+        }
+        planDlvCache = dlv;
+        setRows(dlv);
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setLoading(false);
+        if ((planDlvCache?.length ?? 0) === 0) {
+          setMsg(`Ошибка загрузки: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
+        }
+      });
+
+    void flowWorkflowGet(api)
+      .then((wf) => {
+        if (!alive) return;
+        if (wf.length === 0 && (planAnchorsCache?.length ?? 0) > 0) return;
+        planAnchorsCache = wf;
+        setAnchors(wf);
+      })
+      .catch(() => undefined);
+
     return () => {
       alive = false;
     };
@@ -1594,19 +1617,21 @@ export function FlowPlanGrid({
   );
 
   // hasMenu → ▾ меню колонки (фильтр/сорт). Активный фильтр — лёгкая clay-подложка.
-  // Авто-ширина по содержимому (П6, как в Формировании): мерим уникальные значения
-  // колонки в пикселях шрифтом грида. Колонки с переносом (МАТЕРИАЛ/КОММЕНТАРИЙ/ТИП ТС)
-  // клампим, чтобы текст переносился, а не
-  // раздувал колонку. Пересчёт при изменении видимых строк.
+  // Авто-ширина: мерим образец строк (не все 5–7К) — measureText на сотнях×колонок
+  // на главном потоке давал «ступор» при открытии Плана/Отчёта. 120 уникальных
+  // значений хватает для адекватной ширины; точность ±пару px не важна.
+  const COL_WIDTH_SAMPLE = 120;
   const colWidths = useMemo<Record<string, number>>(() => {
     const out: Record<string, number> = {};
+    const n = viewRows.length;
+    const step = n > COL_WIDTH_SAMPLE ? Math.max(1, Math.floor(n / COL_WIDTH_SAMPLE)) : 1;
     for (const c of COLS) {
       const fontPx = planColFontPx(c.id);
       const valFont = `${isPlanBoldCol(c.id) ? '600 ' : ''}${fontPx}px ${GRID_FONT_FAMILY}`;
       const hdrFont = `800 ${fontPx}px ${GRID_FONT_FAMILY}`;
       let px = measurePx(c.title, hdrFont) + 22; // заголовок + место под ▾
       const seen = new Set<string>();
-      for (let i = 0; i < viewRows.length && seen.size < 500; i += 1) {
+      for (let i = 0; i < n && seen.size < COL_WIDTH_SAMPLE; i += step) {
         const r = viewRows[i];
         if (!r) continue;
         for (const line of cellText(c, r).split('\n')) {
@@ -1644,39 +1669,61 @@ export function FlowPlanGrid({
     [COLS, colWidths, colFilters.activeFilterColIds],
   );
 
-  // Переменная высота строки (П6): 2 строки для ПОСТАВКА·ЗАКАЗ / МОЛ+тел; перенос по словам
-  // в МАТЕРИАЛ/КОММЕНТАРИЙ растит строку; несколько экспедиторов — строка под каждого.
-  const getReportRowHeight = useCallback(
-    (row: number): number => {
-      const r = viewRows[row];
-      if (!r) return 40;
-      const LINE = 13;
+  // Высоты строк — ОДИН раз при смене viewRows/ширин, не на каждый tick прокрутки.
+  // getReportRowHeight раньше звал reportWrapLines (measureText) на КАЖДЫЙ вызов Glide
+  // → лаг скролла в Отчёте (юзер 2026-07-18).
+  const reportRowHeights = useMemo(() => {
+    const LINE = 13;
+    const matW = (colWidths.mat ?? 280) - REPORT_HPAD * 2;
+    const noteW = (colWidths.note ?? 230) - REPORT_HPAD * 2;
+    const heights = new Array<number>(viewRows.length);
+    for (let i = 0; i < viewRows.length; i++) {
+      const r = viewRows[i];
+      if (!r) {
+        heights[i] = 40;
+        continue;
+      }
       const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
       const transferLines = transferChainDates(r).length > 1 ? 1 : 0;
-      const matLines = reportWrapLines(r.mat || '', (colWidths.mat ?? 280) - REPORT_HPAD * 2) + transferLines;
+      const matLines = reportWrapLines(r.mat || '', matW) + transferLines;
       const noteText = Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchor?.note || '');
-      const noteLines = reportWrapLines(noteText, (colWidths.note ?? 230) - REPORT_HPAD * 2);
+      const noteLines = reportWrapLines(noteText, noteW);
       const visualPoint = (r as FlowPlanViewRow).__flowPoint;
-      const pointNames = visualPoint ? [visualPoint] : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
+      const pointNames = visualPoint
+        ? [visualPoint]
+        : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
       const pointLines = Math.max(1, pointNames.length);
-      // ТИП ТС — наш маркер (поле vehicle, до 3 через \n); высота по числу выбранных типов.
       const vtypeLines = Math.max(1, splitMultiCell(rowVehicle(r)).length);
-      // ГАРАЖНЫЙ — тоже до 3 через \n: строки видны в ячейке (юзер 2026-07-05).
       const rideLines = Math.max(1, splitMultiCell(rowRide(r)).length);
       const expN = rowExpeditors(r).length;
-      const cands = [
-        32, // база: 2 строки ПОСТАВКА·ЗАКАЗ (телефон в ячейке убран — R3.1)
+      const h = Math.max(
+        32,
         16 + (matLines - 1) * LINE,
         16 + (noteLines - 1) * LINE,
         16 + (vtypeLines - 1) * LINE,
         16 + (rideLines - 1) * LINE,
         16 + (pointLines - 1) * LINE,
-        expN > 1 ? expN * 16 + 4 : 0, // экспедиторы — по строке на каждого (без телефона)
-      ];
-      return Math.max(30, Math.min(150, Math.max(...cands)));
-    },
-    [viewRows, colWidths, anchorByKey, vehicleByGarage, rowVehicle, rowRide, rowExpeditors, transferChainDates, mapPoints],
+        expN > 1 ? expN * 16 + 4 : 0,
+      );
+      heights[i] = Math.max(30, Math.min(150, h));
+    }
+    return heights;
+  }, [viewRows, colWidths, anchorByKey, rowVehicle, rowRide, rowExpeditors, transferChainDates, mapPoints]);
+
+  const getReportRowHeight = useCallback(
+    (row: number): number => reportRowHeights[row] ?? 40,
+    [reportRowHeights],
   );
+
+  // Склады без назначаемого МОЛа — Set один раз (для подсветки строк Плана).
+  // Раньше molsForWh().some(...) на КАЖДОЙ строке при каждой отрисовке темы.
+  const noMolWhSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const [wh, opts] of molByWarehouse) {
+      if (!opts.some((o) => isMolAssignableUntil(o.until))) s.add(wh);
+    }
+    return s;
+  }, [molByWarehouse]);
 
   const gridSearch = useFlowGridSearch<FlowDeliveryRow>({
     columns: searchColumns,
@@ -2876,7 +2923,7 @@ export function FlowPlanGrid({
         if (flag === 'DUPLICATE') return { bgCell: '#FCEFD9', textDark: '#7A4B0F' };
         // «Нет МОЛа» по факту: нет назначаемых МОЛов (фантомы «был» не спасают).
         const wh = String(r.to_wh ?? '').trim();
-        if (wh && !molsForWh(wh).some((o) => isMolAssignableUntil(o.until))) {
+        if (wh && noMolWhSet.has(whKey(wh))) {
           return { bgCell: '#FBE3E0', textDark: '#7C1812' };
         }
       }
@@ -2898,7 +2945,7 @@ export function FlowPlanGrid({
       if (!(r.dlv || '').trim()) return { textDark: '#5A5752' };
       return undefined;
     },
-    [viewRows, flagById, mode, rowLocked, molsForWh],
+    [viewRows, flagById, mode, rowLocked, noMolWhSet],
   );
 
   // ── «Заливка» как в Excel (юзер 2026-07-04): выделил ячейки → кнопка красит ВСЮ
