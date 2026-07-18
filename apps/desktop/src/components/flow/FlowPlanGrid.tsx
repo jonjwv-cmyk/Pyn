@@ -1002,67 +1002,81 @@ export function FlowPlanGrid({
     return m;
   }, [vehicleOptions]);
 
-  // Дисковый кэш СНАЧАЛА (до сети): сессии нет → таблица из кэша, без «Загрузка…».
-  // Сеть ниже догоняет фоном и не гасит UI, если строки уже есть.
-  useEffect(() => {
-    if (planDlvCache !== null) return;
-    let alive = true;
-    void loadFlowDiskCache<{ dlv: FlowDeliveryRow[]; wf: FlowRow[]; vehicles: FlowVehicle[] }>(
-      FLOW_DISK_CACHE_PLAN,
-    ).then((cached) => {
-      if (!alive || !cached || !Array.isArray(cached.dlv) || cached.dlv.length === 0) return;
-      if (planDlvCache !== null) return; // сервер/сессия успели раньше — не затираем
-      planDlvCache = cached.dlv;
-      if (Array.isArray(cached.wf)) planAnchorsCache = cached.wf;
-      if (Array.isArray(cached.vehicles)) planVehiclesCache = cached.vehicles;
-      setRows((prev) => (prev.length > 0 ? prev : cached.dlv));
-      setAnchors((prev) => (prev.length > 0 ? prev : Array.isArray(cached.wf) ? cached.wf : prev));
-      if (Array.isArray(cached.vehicles) && cached.vehicles.length > 0) {
-        setVehicles((prev) => (prev.length > 0 ? prev : cached.vehicles));
-      }
-      setLoading(false);
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // Загрузка с сервера: поставки и якоря РАЗДЕЛЬНО.
-  // Раньше Promise.all ждал оба (~0.6 МБ deliveries + ~2 МБ workflow) → «План грузит долго».
-  // Теперь: deliveries пришли → таблица сразу; anchors (МОЛ/коммент/точка) догоняют фоном.
-  // Повторный вход (module-cache) / диск — без спиннера; setRows только если данные реально есть.
+  // Загрузка Плана: 1) module-cache → мгновенно; 2) диск → почти сразу;
+  // 3) сеть фоном (deliveries + anchors раздельно). Google «летает», потому что
+  // локальный снимок; мы обязаны вести себя так же — НИКОГДА не ждать сеть,
+  // чтобы показать таблицу. replay_detected — transient (coalesce+retry в
+  // ApiClient), в UI не показываем; если кэш есть — остаёмся на нём.
   useEffect(() => {
     let alive = true;
     if (planDlvCache !== null) setLoading(false);
 
-    void flowDeliveriesGet(api)
-      .then((dlv) => {
-        if (!alive) return;
-        // Пустой ответ при живом кэше не затираем (сбой/гонка).
-        if (dlv.length === 0 && (planDlvCache?.length ?? 0) > 0) {
-          setLoading(false);
-          return;
-        }
-        planDlvCache = dlv;
-        setRows(dlv);
-        setLoading(false);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        setLoading(false);
-        if ((planDlvCache?.length ?? 0) === 0) {
-          setMsg(`Ошибка загрузки: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
-        }
-      });
+    const applyDisk = (cached: {
+      dlv: FlowDeliveryRow[];
+      wf?: FlowRow[];
+      vehicles?: FlowVehicle[];
+    }): void => {
+      if (!alive || !Array.isArray(cached.dlv) || cached.dlv.length === 0) return;
+      if (planDlvCache !== null && planDlvCache.length > 0) return;
+      planDlvCache = cached.dlv;
+      if (Array.isArray(cached.wf)) planAnchorsCache = cached.wf;
+      if (Array.isArray(cached.vehicles)) planVehiclesCache = cached.vehicles;
+      setRows(cached.dlv);
+      if (Array.isArray(cached.wf) && cached.wf.length > 0) setAnchors(cached.wf);
+      if (Array.isArray(cached.vehicles) && cached.vehicles.length > 0) {
+        setVehicles((prev) => (prev.length > 0 ? prev : cached.vehicles!));
+      }
+      setLoading(false);
+    };
 
-    void flowWorkflowGet(api)
-      .then((wf) => {
-        if (!alive) return;
-        if (wf.length === 0 && (planAnchorsCache?.length ?? 0) > 0) return;
-        planAnchorsCache = wf;
-        setAnchors(wf);
-      })
-      .catch(() => undefined);
+    void (async () => {
+      // Диск ДО сети (2.8 МБ decrypt) — иначе сеть с replay может «победить» и
+      // показать «Ошибка загрузки / пусто», пока диск ещё крутится.
+      if (planDlvCache === null) {
+        try {
+          const cached = await loadFlowDiskCache<{
+            dlv: FlowDeliveryRow[];
+            wf: FlowRow[];
+            vehicles: FlowVehicle[];
+          }>(FLOW_DISK_CACHE_PLAN);
+          if (cached) applyDisk(cached);
+        } catch {
+          /* диск недоступен — ждём сеть */
+        }
+      }
+      if (!alive) return;
+
+      void flowDeliveriesGet(api)
+        .then((dlv) => {
+          if (!alive) return;
+          if (dlv.length === 0 && (planDlvCache?.length ?? 0) > 0) {
+            setLoading(false);
+            return;
+          }
+          planDlvCache = dlv;
+          setRows(dlv);
+          setLoading(false);
+          setMsg('');
+        })
+        .catch((e) => {
+          if (!alive) return;
+          setLoading(false);
+          // replay/сеть при живом кэше — тихо; только реальная пустота + не-replay.
+          if ((planDlvCache?.length ?? 0) > 0) return;
+          const code = e instanceof Error ? e.message : String(e);
+          if (code === 'replay_detected' || code === 'network' || code === 'timeout') return;
+          setMsg(`Ошибка загрузки: ${code.slice(0, 80)}`);
+        });
+
+      void flowWorkflowGet(api)
+        .then((wf) => {
+          if (!alive) return;
+          if (wf.length === 0 && (planAnchorsCache?.length ?? 0) > 0) return;
+          planAnchorsCache = wf;
+          setAnchors(wf);
+        })
+        .catch(() => undefined);
+    })();
 
     return () => {
       alive = false;

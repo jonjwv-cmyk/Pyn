@@ -1,6 +1,6 @@
 import { computeRequestSig, decryptResponse, encryptRequest } from '../crypto';
 import { ApiError, ERROR_CODES } from './errors';
-import type { ApiCallOptions, ApiEnvelope, ApiTransport } from './transport';
+import type { ApiCallOptions, ApiTransport } from './transport';
 
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
@@ -20,31 +20,50 @@ const DECODER = new TextDecoder();
  *   5. Decrypt response bytes → JSON envelope.
  *   6. Возвращает data или бросает ApiError.
  *
- * Что НЕ делает:
- *   • Routing (direct vs proxy URL) — в transport (Electron main).
- *   • Token persistence — в `@pyn/core/auth/token` (stage 3).
- *   • Permission checks — в UI до вызова.
- */
-/**
- * Глобальный hook, вызываемый при любом auth-failure error code'е от сервера
- * (`unauthorized`, `token_expired`, `token_revoked`, `session_expired_window`,
- * `desktop_kicked`, ...). App.tsx устанавливает его при mount → wipe session +
- * setSession(null), чтобы любой component'у не нужно было лично ловить эти
- * codes в каждом catch'е.
+ * Coalesce + replay:
+ *   Sig = hmac(token, ts + action + bodyHash). В одну секунду два одинаковых
+ *   `*_get` (План+Транспорт keep-alive, оба зовут flow_deliveries_get) →
+ *   server `replay_detected` → «Ошибка загрузки» и пустая таблица.
+ *   • in-flight coalesce: параллельные одинаковые GET делят один Promise;
+ *   • retry на replay_detected: новый ts → новая sig (до 3 попыток).
  */
 export type AuthFailureHandler = (code: string) => void;
+
+/** Чистые чтения: безопасно склеивать параллельные одинаковые вызовы. */
+function isCoalesceableAction(action: string): boolean {
+  return (
+    action.endsWith('_get') ||
+    action.endsWith('_list') ||
+    action === 'me' ||
+    action === 'app_status' ||
+    action === 'board_ver' ||
+    action === 'optimization_status'
+  );
+}
+
+/** Стабильный ключ body без auth (токен не участвует — один на сессию). */
+function coalesceKey(action: string, body: Record<string, unknown>): string {
+  const { _auth_token: _t, action: _a, ...rest } = body as Record<string, unknown> & {
+    _auth_token?: unknown;
+    action?: unknown;
+  };
+  // Сортировка ключей — одинаковый payload в разном порядке = один ключ.
+  const keys = Object.keys(rest).sort();
+  const norm: Record<string, unknown> = {};
+  for (const k of keys) norm[k] = rest[k];
+  return `${action}\0${JSON.stringify(norm)}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 export class ApiClient {
   private token: string | null = null;
   private onAuthFailure: AuthFailureHandler | null = null;
+  /** action+body → in-flight Promise (только coalesceable GET). */
+  private readonly inFlight = new Map<string, Promise<unknown>>();
 
-  /**
-   * §pyn-1.2.49 — appVersion отправляется как HTTP-header `X-Pyn-Version`
-   * каждым request'ом. VPS nginx читает этот header в plaintext (он вне
-   * E2E-конверта, как Authorization) и блокирует устаревшие клиенты на
-   * edge'е до forward'а к CF — это экономит CF request count.
-   * Body остаётся encrypted, никакая чувствительная информация не утекает.
-   */
   constructor(
     private readonly transport: ApiTransport,
     private readonly appVersion?: string,
@@ -58,11 +77,6 @@ export class ApiClient {
     return this.token;
   }
 
-  /**
-   * Устанавливает глобальный handler для auth-failure'ов. Вызывается каждый
-   * раз когда сервер вернул код, относящийся к истечению/отзыву session'а.
-   * Множественные вызовы — последний выигрывает (singleton-like).
-   */
   setOnAuthFailure(handler: AuthFailureHandler | null): void {
     this.onAuthFailure = handler;
   }
@@ -76,23 +90,58 @@ export class ApiClient {
     body: Record<string, unknown> = {},
     opts?: ApiCallOptions,
   ): Promise<T> {
-    // 1. Plaintext payload (с _auth_token если залогинены и action в body).
+    const key = isCoalesceableAction(action) ? coalesceKey(action, body) : null;
+    if (key) {
+      const existing = this.inFlight.get(key);
+      if (existing) return existing as Promise<T>;
+    }
+
+    const run = (async (): Promise<T> => {
+      let lastErr: unknown;
+      // 1 + до 3 повторов при replay (новая секунда / jitter → новая sig).
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          return await this.callOnce<T>(action, body, opts);
+        } catch (err) {
+          lastErr = err;
+          const isReplay =
+            err instanceof ApiError &&
+            (err.code === 'replay_detected' || err.message === 'replay_detected');
+          if (!isReplay || attempt >= 3) throw err;
+          // 50–180ms + attempt: не бить сервер пачкой с тем же ts.
+          await sleep(50 + attempt * 45 + Math.floor(Math.random() * 40));
+        }
+      }
+      throw lastErr;
+    })();
+
+    if (key) {
+      this.inFlight.set(key, run);
+      void run.finally(() => {
+        if (this.inFlight.get(key) === run) this.inFlight.delete(key);
+      });
+    }
+    return run;
+  }
+
+  /** Один сетевой round-trip (без coalesce/retry). */
+  private async callOnce<T>(
+    action: string,
+    body: Record<string, unknown>,
+    opts?: ApiCallOptions,
+  ): Promise<T> {
     const payload: Record<string, unknown> = { ...body, action };
     if (this.token !== null) {
       payload['_auth_token'] = `Bearer ${this.token}`;
     }
     const plaintext = ENCODER.encode(JSON.stringify(payload));
 
-    // 2. HMAC sig (только если есть token — для публичных endpoints типа
-    //    app_status подпись не нужна).
     const ts = Math.floor(Date.now() / 1000);
     const sig =
       this.token !== null ? computeRequestSig(this.token, ts, action, plaintext) : null;
 
-    // 3. E2E encrypt request body.
     const { envelope, session } = encryptRequest(plaintext);
 
-    // 4. Headers.
     const headers: Record<string, string> = {
       'Content-Type': 'application/x-otl-crypto',
       'X-Request-Ts': String(ts),
@@ -101,7 +150,6 @@ export class ApiClient {
     if (sig !== null) headers['X-Request-Sig'] = sig;
     if (this.appVersion) headers['X-Pyn-Version'] = this.appVersion;
 
-    // 5. Transport (bytes → bytes).
     let responseBytes: Uint8Array;
     try {
       responseBytes = await this.transport(envelope, headers, opts);
@@ -113,8 +161,6 @@ export class ApiClient {
       );
     }
 
-    // 6. Decrypt response (same session — responseKey deriveнут из shared
-    //    secret для этого request'a).
     let plaintextResponse: Uint8Array;
     try {
       plaintextResponse = decryptResponse(responseBytes, session);
@@ -126,10 +172,6 @@ export class ApiClient {
       );
     }
 
-    // 7. Parse JSON envelope.
-    //    OTL server возвращает FLAT envelope: `{ ok, error?, ...fields }`.
-    //    Не `{ ok, data: {...} }` — fields лежат на верхнем уровне рядом с ok.
-    //    Поэтому возвращаем весь объект как T, а не env.data.
     let env: { ok: boolean; error?: string; [k: string]: unknown };
     try {
       env = JSON.parse(DECODER.decode(plaintextResponse)) as typeof env;
@@ -139,7 +181,6 @@ export class ApiClient {
 
     // eslint-disable-next-line no-console
     console.log(`[pyn:api] ${action} → keys=${Object.keys(env).join(',')}`, env);
-    // Дублируем в main-stdout через debug bridge (если есть).
     try {
       const dbg = (globalThis as { pyn?: { debugLog?: (t: string, m: string) => void } }).pyn;
       if (dbg?.debugLog) {
@@ -150,13 +191,8 @@ export class ApiClient {
       /* ignore */
     }
 
-    // 8. envelope.ok check.
     if (env.ok === false) {
       const code = env.error ?? 'unknown_error';
-      // Auth-failure'ы пробрасываем в глобальный handler — он wipe'нет
-      // session/cache и переведёт UI на LoginScreen. Делаем ДО throw, чтобы
-      // ловящие catch'и в компонентах могли продолжать стандартное error UX
-      // (тут уже не их забота восстанавливать auth).
       if (this.onAuthFailure !== null && isAuthFailureCode(code)) {
         try {
           this.onAuthFailure(code);
@@ -171,12 +207,6 @@ export class ApiClient {
   }
 }
 
-/**
- * Список error code'ов от сервера, означающих что текущая session больше
- * не валидна — нужно logout + LoginScreen. Дублирует логику клиентского
- * `isAuthFailure` в App.tsx, но живёт в `@pyn/core` чтобы ApiClient мог
- * сам триггерить handler.
- */
 const AUTH_FAILURE_CODES = new Set([
   'unauthorized',
   'token_revoked',
