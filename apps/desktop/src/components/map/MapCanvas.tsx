@@ -35,7 +35,7 @@ import { STATUS_COLOR, STATUS_LABEL, formatGlonassSpeed, type GlonassMarker, typ
 import { computeFastestRoute, isAccessBlocking } from './route-network';
 import { distanceMeters, nearestPointOnPolyline } from './geo';
 import type { RoadNetworkIssue } from './road-quality';
-import { snapToRoadIndex, type RoadSnapIndex } from './glonass-snap';
+import { snapToRoadIndex, stickySnapToRoad, type RoadSnapIndex } from './glonass-snap';
 
 /** Текущее положение оптимума + «призрак» (что-если), что рисуем поверх карты. */
 export interface OptimizeOverlay {
@@ -301,6 +301,10 @@ export function MapCanvas({
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRefs = useRef<Marker[]>([]);
   const glonassMarkerRefs = useRef<Map<number, GlonassMarkerEntry>>(new Map());
+  // Multi-маркеры (без timedPath) едут не по времени, а прыгают в новую точку раз
+  // в poll. Держим отдельно «показанную» и «целевую» позицию, чтобы плавно
+  // догонять цель (ease) и сохранять липкость дороги между опросами.
+  const glonassSmoothRef = useRef<Map<number, { dispLat: number; dispLng: number; tgtLat: number; tgtLng: number }>>(new Map());
   const glonassReplayRef = useRef<GlonassReplayMarkerEntry | null>(null);
   const draftRef = useRef<LatLng[]>([]);
   const restrictPartsRef = useRef<LatLng[][]>([]);
@@ -1155,10 +1159,20 @@ export function MapCanvas({
     let frame = 0;
     let lastTrailAt = 0;
     let lastFollowAt = 0;
+    let lastTickAt = 0;
+    // Плавность multi-маркеров: постоянная времени ease (чем больше — тем мягче,
+    // но ленивее); скачок больше порога = телепорт (первое появление / GPS-сбой /
+    // очень быстрая машина), чтобы не тащить пин через пол-карты долгим проездом.
+    // Дедбенд: цель в пределах DEADBAND от показанной — НЕ двигаем. Иначе GPS-дрожь
+    // стоящей машины проецируется на линию дороги и маркер «ползёт» вдоль неё.
+    const SMOOTH_TAU_MS = 550;
+    const SMOOTH_SNAP_METERS = 240;
+    const SMOOTH_DEADBAND_METERS = 7;
     const tick = (now: number) => {
       const markers = glonassMarkersLiveRef.current;
       const followSet = glonassFollowIdsLiveRef.current ?? new Set<number>();
       const entries = glonassMarkerRefs.current;
+      const smooth = glonassSmoothRef.current;
       const wantTrail = now - lastTrailAt > 220;
       const features: FeatureCollection['features'] = [];
       const followPts: { lng: number; lat: number }[] = [];
@@ -1173,8 +1187,8 @@ export function MapCanvas({
           lat: m.rawLat ?? m.lat,
           lng: m.rawLng ?? m.lng,
         };
-        const rawRoad = snapToRoadIndex(glonassRoadSnapIndex, raw)?.point ?? raw;
         if (timedPath && timedPath.length >= 2) {
+          const rawRoad = snapToRoadIndex(glonassRoadSnapIndex, raw)?.point ?? raw;
           const targetMs = Date.now() - (m.delayMs ?? 0);
           const interpolated = pointAtTimedPath(timedPath, targetMs);
           const along = snapToRoadIndex(glonassRoadSnapIndex, interpolated)?.point ?? interpolated;
@@ -1190,12 +1204,45 @@ export function MapCanvas({
               });
             }
           }
+          // Едет по времени — сглаживание не нужно; убираем возможное старое состояние.
+          smooth.delete(m.id);
         } else {
-          pos = rawRoad;
+          // Multi / без timedPath: липкая посадка на дорогу (не прыгать между
+          // параллельными проездами, не слетать в поле) + плавный ease к цели,
+          // иначе пин телепортируется на каждый poll.
+          const st = smooth.get(m.id);
+          const prevTgt = st ? { lat: st.tgtLat, lng: st.tgtLng } : null;
+          const target = stickySnapToRoad(glonassRoadSnapIndex, raw, prevTgt);
+          if (!st) {
+            smooth.set(m.id, { dispLat: target.lat, dispLng: target.lng, tgtLat: target.lat, tgtLng: target.lng });
+            pos = target;
+          } else {
+            st.tgtLat = target.lat;
+            st.tgtLng = target.lng;
+            const jump = distanceMeters({ lat: st.dispLat, lng: st.dispLng }, target);
+            if (jump > SMOOTH_SNAP_METERS) {
+              // Большой скачок — телепорт, без долгого проезда через карту.
+              st.dispLat = target.lat;
+              st.dispLng = target.lng;
+            } else if (jump >= SMOOTH_DEADBAND_METERS) {
+              // Реальное движение — плавно догоняем; дрожь в пределах дедбенда игнорим.
+              const dt = lastTickAt ? Math.min(64, now - lastTickAt) : 16;
+              const k = 1 - Math.exp(-dt / SMOOTH_TAU_MS);
+              st.dispLat += (target.lat - st.dispLat) * k;
+              st.dispLng += (target.lng - st.dispLng) * k;
+            }
+            pos = { lat: st.dispLat, lng: st.dispLng };
+          }
         }
         entry.marker.setLngLat([pos.lng, pos.lat]);
         if (followSet.has(m.id)) followPts.push({ lng: pos.lng, lat: pos.lat });
       }
+      // Чистим состояние сглаживания у исчезнувших маркеров (снят выбор).
+      if (smooth.size > markers.length) {
+        const alive = new Set(markers.map((mk) => mk.id));
+        for (const id of smooth.keys()) if (!alive.has(id)) smooth.delete(id);
+      }
+      lastTickAt = now;
       // Мульти-слежение: 1 машина — center; несколько — fitBounds.
       if (followPts.length > 0 && now - lastFollowAt > 1200) {
         lastFollowAt = now;

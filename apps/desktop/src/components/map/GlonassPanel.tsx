@@ -72,6 +72,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const setPanelLayout = useGlonassStore((s) => s.setPanelLayout);
   const panelWidthPx = useGlonassStore((s) => s.panelWidthPx);
   const pillWidthPx = useGlonassStore((s) => s.pillWidthPx);
+  const fioWidthPx = useGlonassStore((s) => s.fioWidthPx);
 
   const [query, setQuery] = useState('');
   /**
@@ -161,36 +162,47 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     return { moving, stop, disabled };
   }, [fleet, positions]);
 
-  /** Пилюли статусов → selected. Пустые пилюли НЕ трогают ручной выбор. */
+  /**
+   * Пилюли → selected ТОЛЬКО в момент переключения пилюли (и когда парк
+   * впервые подгрузился). НЕ на каждый poll позиций — иначе:
+   *  • ручной клик по машине сбрасывался;
+   *  • машина, сменившая статус, «слетала» с выбора.
+   * Пустые пилюли ручной выбор не трогают.
+   */
   const applyStatusPillsToMap = useCallback((pills: Set<StatusPillKey>) => {
-    if (pills.size === 0) return; // важно: не clearSelected — иначе сбрасывает клик по машине
+    if (pills.size === 0) return;
     const ids: number[] = [];
-    for (const v of fleet) {
-      const key = statusPillKey(vehicleStatus(positions.get(v.id)));
+    const pos = useGlonassStore.getState().positions;
+    const fl = useGlonassStore.getState().fleet;
+    for (const v of fl) {
+      const key = statusPillKey(vehicleStatus(pos.get(v.id)));
       if (pills.has(key)) ids.push(v.id);
     }
     setSelected(ids);
-  }, [fleet, positions, setSelected]);
+  }, [setSelected]);
 
   const toggleStatusPill = useCallback((key: StatusPillKey) => {
     setStatusPills((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
-      // Сняли последнюю пилюлю — не чистим ручной выбор (только пилюли)
-      if (next.size > 0) {
-        // apply next tick with fresh pills state via effect
-      }
       return next;
     });
   }, []);
 
-  // Только когда есть активные статус-пилюли — синхронизируем карту.
-  // НЕ вызывать при size===0: это убивало ручной выбор при каждом poll позиций.
+  // Ключ набора пилюль — стабильная строка (Set в deps нестабилен по ref).
+  const statusPillsKey = useMemo(
+    () => [...statusPills].sort().join(','),
+    [statusPills],
+  );
+
   useEffect(() => {
-    if (!open || statusPills.size === 0) return;
+    if (!open) return;
+    if (statusPills.size === 0) return;
     applyStatusPillsToMap(statusPills);
-  }, [open, statusPills, positions, fleet, applyStatusPillsToMap]);
+    // fleet.length: повторно применить, когда парк впервые приехал с сервера
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- positions poll НЕ должен сбрасывать выбор
+  }, [open, statusPillsKey, fleet.length, applyStatusPillsToMap]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -209,11 +221,13 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   }, [fleet, query, dayMeta]);
 
   /**
-   * Порядок списка:
-   *  0) отмеченные на карте — впереди (подсветка + наверху);
+   * Порядок списка СТАБИЛЬНЫЙ (не прыгает при выборе — иначе клик
+   * «не фиксируется»: строка уезжает из-под курсора и следующий клик
+   * попадает в другую машину).
    *  1) с ФИО (разнарядка сегодня) → без ФИО;
    *  2) статус: зелёный → синий → жёлтый → красный;
    *  3) гаражный.
+   * Выбранные подсвечиваются на месте (clay), без re-order.
    */
   const ordered = useMemo(() => {
     const statusRank = (st: ReturnType<typeof vehicleStatus>): number => {
@@ -227,10 +241,6 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       return [Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER, (g || '').toUpperCase()];
     };
     return [...filtered].sort((a, b) => {
-      const selA = selected.has(a.id) ? 0 : 1;
-      const selB = selected.has(b.id) ? 0 : 1;
-      if (selA !== selB) return selA - selB;
-
       const ma = dayMeta.get((a.garage || '').toUpperCase());
       const mb = dayMeta.get((b.garage || '').toUpperCase());
       const hasFioA = (ma?.driver || '').trim() ? 0 : 1;
@@ -245,7 +255,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       const [nb, sb] = garageKey(b.garage);
       return na - nb || sa.localeCompare(sb, 'ru', { numeric: true });
     });
-  }, [filtered, dayMeta, positions, selected]);
+  }, [filtered, dayMeta, positions]);
 
   // Ширина панели = пилл(«В движении 999 км/ч») + max ФИО + кнопки; погода сдвигается.
   useEffect(() => {
@@ -256,6 +266,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       panelWidth: layout.panelWidth,
       weatherLeft: layout.weatherLeft,
       pillWidth: layout.pillWidth,
+      fioWidth: layout.fioWidth,
     });
   }, [open, dayMeta, setPanelLayout]);
 
@@ -423,6 +434,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             onFollowToggle={onFollowToggle}
             historyBusy={!!historyLoading}
             pillWidthPx={pillWidthPx}
+            fioWidthPx={fioWidthPx}
           />
         ))}
       </div>
@@ -629,6 +641,7 @@ const VehicleRow = memo(function VehicleRow({
   onFollowToggle,
   historyBusy,
   pillWidthPx,
+  fioWidthPx,
 }: {
   v: GlonassVehicle;
   meta: DayMeta;
@@ -640,6 +653,7 @@ const VehicleRow = memo(function VehicleRow({
   onFollowToggle: (id: number) => void;
   historyBusy: boolean;
   pillWidthPx: number;
+  fioWidthPx: number;
 }) {
   const status = vehicleStatus(position);
   // Статус-цвет для незакрашенного пилла; выбранный — только clay-обводка.
@@ -659,7 +673,7 @@ const VehicleRow = memo(function VehicleRow({
         'grid w-full items-stretch gap-x-1.5 rounded-lg px-1.5 py-0.5 transition-colors ' +
         (checked ? 'bg-accent-clay/[0.1]' : 'hover:bg-white/[0.03]')
       }
-      style={{ gridTemplateColumns: `${pillWidthPx}px minmax(0, 1fr) ${COL_ACTIONS}` }}
+      style={{ gridTemplateColumns: `${pillWidthPx}px ${fioWidthPx}px ${COL_ACTIONS}` }}
     >
       {/* Выбран: тот же пилл, только тонкая clay-рамка (без ring/утолщения — не «уезжает»). */}
       <button
@@ -691,19 +705,26 @@ const VehicleRow = memo(function VehicleRow({
         </span>
       </button>
 
-      {/* ФИО целиком (колонка расширяется под max ФИО); 2-я: гос + марка */}
+      {/* ФИО целиком в фиксированной колонке (ширина = max ФИО); 2-я: гос + марка */}
       <button
         type="button"
-        disabled={!position}
-        title={driver || (position ? 'Перейти к машине на карте' : 'Координат пока нет')}
-        onClick={() => { if (position) onFocus(position); }}
-        className="flex min-w-0 flex-col justify-center gap-px overflow-hidden text-left outline-none disabled:cursor-default"
-        style={{ minHeight: 42 }}
+        title={driver || (position ? 'На карте · перейти' : 'Координат пока нет')}
+        onClick={() => {
+          // Клик по ФИО: зафиксировать на карте (если ещё нет) + фокус.
+          if (!checked) onToggle(v.id);
+          if (position) onFocus(position);
+        }}
+        className="flex w-full min-w-0 flex-col justify-center gap-px text-left outline-none"
+        style={{ minHeight: 42, width: fioWidthPx }}
       >
         <span
-          className="block min-w-0 text-[12px] font-medium leading-snug text-text-strong break-words [overflow-wrap:anywhere]"
+          className="block w-full text-[12px] font-medium leading-snug text-text-strong"
           title={driver || undefined}
           style={{
+            // Перенос только по пробелам (не mid-word); до 2 строк — полное ФИО.
+            whiteSpace: 'normal',
+            overflowWrap: 'normal',
+            wordBreak: 'keep-all',
             display: '-webkit-box',
             WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical',
@@ -712,7 +733,7 @@ const VehicleRow = memo(function VehicleRow({
         >
           {driver || '\u00a0'}
         </span>
-        <span className="flex min-w-0 items-baseline gap-1 overflow-hidden leading-tight">
+        <span className="flex w-full min-w-0 items-baseline gap-1 overflow-hidden leading-tight">
           {gosFmt ? (
             <span className="shrink-0 font-mono text-[11.5px] font-semibold tabular-nums text-text-strong">
               {gosFmt}

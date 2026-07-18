@@ -264,6 +264,58 @@ export function snapToRoadIndex(index: RoadSnapIndex, p: LatLng): { point: LatLn
   return hit ? { point: hit.point, distance: hit.distance } : null;
 }
 
+/**
+ * Live-маркер: посадка на дорогу с «липкостью» к предыдущей точке.
+ * Наивный nearest на каждом poll прыгает между параллельными проездами
+ * (2+ машин «слетают» с дороги). Штраф за разрыв с prev держит полосу;
+ * телепорт >55 м отклоняем, если GPS почти не сдвинулся. Радиус — близко к
+ * базовому: раньше был раздут (+22), из-за чего машины во дворах утаскивало
+ * на дорогу; мелкую дрожь теперь гасит дедбенд у маркера, не радиус.
+ */
+export function stickySnapToRoad(
+  index: RoadSnapIndex,
+  p: LatLng,
+  prev: LatLng | null | undefined,
+  radiusMeters = GLONASS_ROAD_SNAP_METERS + 6,
+): LatLng {
+  const candidates = roadCandidates(index, p, radiusMeters);
+  if (candidates.length === 0) {
+    // Вне сети: если prev ещё рядом с GPS — держим, иначе сырой GPS.
+    if (prev && distanceMeters(prev, p) < 90) return prev;
+    return p;
+  }
+  if (!prev) return candidates[0]!.point;
+
+  let best = candidates[0]!;
+  let bestScore = Infinity;
+  for (const c of candidates) {
+    const continuity = distanceMeters(c.point, prev);
+    const score = c.distance + continuity * 0.9;
+    if (score < bestScore) {
+      bestScore = score;
+      best = c;
+    }
+  }
+
+  const jump = distanceMeters(best.point, prev);
+  const gpsMove = distanceMeters(p, prev);
+  // Телепорт на соседнюю ветку при почти неподвижном GPS — оставляем кандидата
+  // ближе к prev (инерция дороги).
+  if (jump > 55 && jump > gpsMove + 28) {
+    let near = candidates[0]!;
+    let nearD = distanceMeters(near.point, prev);
+    for (const c of candidates) {
+      const d = distanceMeters(c.point, prev);
+      if (d < nearD) {
+        nearD = d;
+        near = c;
+      }
+    }
+    if (nearD < jump * 0.75) return near.point;
+  }
+  return best.point;
+}
+
 /** Позиция машины: точка-пин приоритетнее (стоит у точки), иначе дорога, иначе сырое. */
 export function snapGlonassPosition(p: LatLng, index: RoadSnapIndex, points: MapPoint[]): LatLng {
   let bestPoint: { point: MapPoint; distance: number } | null = null;

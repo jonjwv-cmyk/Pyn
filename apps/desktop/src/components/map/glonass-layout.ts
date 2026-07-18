@@ -7,12 +7,15 @@ const PANEL_LEFT = 12; // left-3
 const WEATHER_GAP = 10;
 const COL_ACTIONS = 28;
 const COL_GAP = 6;
-const PANEL_PAD_X = 12; // px-1.5 * 2 + запас
+// Список: свой px-1.5 (12) + строка px-1.5 (12) + бордер (2) + вертикальный
+// скроллбар (~12). Иначе фикс-колонки не влезают → горизонтальный вылет/«скролл едет».
+const PANEL_PAD_X = 40;
 
 const MIN_PANEL = 320;
-const MAX_PANEL = 560;
-const MIN_FIO = 120;
-const MAX_FIO = 320;
+/** Шире — полное ФИО (Фамилия Имя Отчество) без обрезки «странно». */
+const MAX_PANEL = 680;
+const MIN_FIO = 140;
+const MAX_FIO = 420;
 
 let measureCtx: CanvasRenderingContext2D | null | undefined;
 
@@ -66,6 +69,7 @@ export function computeGlonassLayout(drivers: readonly string[]): GlonassLayout 
   }
   // типовой гос + марка на 2-й строке (не уже чем ФИО min)
   const sampleGosBrand = measure('Т 955 РК КамАЗ', '600 11.5px system-ui, sans-serif');
+  // fioWidth = реальное max ФИО (cap MAX_FIO); панель под него, без clamp mid-word
   const fioWidth = Math.min(MAX_FIO, Math.max(MIN_FIO, maxFio, sampleGosBrand));
 
   const panelWidth = Math.min(

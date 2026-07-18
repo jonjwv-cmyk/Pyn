@@ -202,9 +202,11 @@ type GlonassState = {
   panelWidthPx: number;
   weatherLeftPx: number;
   pillWidthPx: number;
+  /** Колонка ФИО (px) — целиком, без truncate. */
+  fioWidthPx: number;
 
   setOpen: (open: boolean) => void;
-  setPanelLayout: (layout: { panelWidth: number; weatherLeft: number; pillWidth: number }) => void;
+  setPanelLayout: (layout: { panelWidth: number; weatherLeft: number; pillWidth: number; fioWidth: number }) => void;
   loadFleet: () => Promise<void>;
   toggleSelect: (id: number) => void;
   /** Заменить набор выбранных (фильтр по статусу и т.п.). */
@@ -250,6 +252,7 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
   panelWidthPx: 360,
   weatherLeftPx: 382,
   pillWidthPx: 128,
+  fioWidthPx: 150,
 
   setOpen: (open) => {
     set({ open });
@@ -262,11 +265,13 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
       cur.panelWidthPx === layout.panelWidth
       && cur.weatherLeftPx === layout.weatherLeft
       && cur.pillWidthPx === layout.pillWidth
+      && cur.fioWidthPx === layout.fioWidth
     ) return;
     set({
       panelWidthPx: layout.panelWidth,
       weatherLeftPx: layout.weatherLeft,
       pillWidthPx: layout.pillWidth,
+      fioWidthPx: layout.fioWidth,
     });
   },
 
