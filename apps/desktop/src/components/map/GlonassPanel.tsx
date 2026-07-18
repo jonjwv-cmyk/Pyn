@@ -80,9 +80,11 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     }
     void (async () => {
       try {
+        // vehicles → марка; transport ALL → тип ТС как «последний актуальный» (как Транспорт);
+        // driver — только за сегодня (разнарядка).
         const [vehs, trRows] = await Promise.all([
           flowVehiclesGet(api),
-          flowTransportGet(api, day),
+          flowTransportGet(api), // вся база, timeout в клиенте 120с
         ]);
         if (cancelled) return;
         const brandByGarage = new Map<string, string>();
@@ -94,12 +96,24 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
         }
         const driverByGarage = new Map<string, string>();
         const trTypeByGarage = new Map<string, string>();
+        const typeDateByGarage = new Map<string, string>(); // tdate последнего типа
         for (const r of trRows) {
           const g = (r.garage_no || '').trim();
           if (!g) continue;
           const key = g.toUpperCase();
-          if (r.driver?.trim() && !driverByGarage.has(key)) driverByGarage.set(key, r.driver.trim());
-          if (r.vehicle_type?.trim()) trTypeByGarage.set(key, r.vehicle_type.trim());
+          const tdate = (r.tdate || '').slice(0, 10);
+          // ФИО/водитель — только сегодняшний день разнарядки
+          if (tdate === day && r.driver?.trim() && !driverByGarage.has(key)) {
+            driverByGarage.set(key, r.driver.trim());
+          }
+          // Тип ТС — последний по дате (и id), непустой
+          const vtype = (r.vehicle_type || '').trim();
+          if (!vtype) continue;
+          const prevD = typeDateByGarage.get(key) || '';
+          if (tdate >= prevD) {
+            typeDateByGarage.set(key, tdate);
+            trTypeByGarage.set(key, vtype);
+          }
         }
         const next = new Map<string, DayMeta>();
         for (const k of new Set([...brandByGarage.keys(), ...driverByGarage.keys(), ...trTypeByGarage.keys()])) {
@@ -496,8 +510,8 @@ const VehicleRow = memo(function VehicleRow({
   pillWidthPx: number;
 }) {
   const status = vehicleStatus(position);
-  // Выбранный — сразу clay приложения; иначе цвет статуса.
-  const color = checked ? APP_CLAY : STATUS_COLOR[status];
+  // Статус-цвет для незакрашенного пилла; выбранный — только clay-обводка.
+  const statusColor = STATUS_COLOR[status];
   const gosFmt = formatGosPlate(v.gos) || '';
   const speedText = position?.speed == null || !Number.isFinite(position.speed)
     ? '— км/ч'
@@ -511,38 +525,54 @@ const VehicleRow = memo(function VehicleRow({
     <div
       className={
         'grid w-full items-stretch gap-x-1.5 rounded-lg px-1.5 py-0.5 transition-colors ' +
-        (checked ? 'bg-accent-clay/[0.08]' : 'hover:bg-white/[0.03]')
+        (checked
+          ? 'bg-accent-clay/[0.12] ring-1 ring-inset ring-accent-clay/40'
+          : 'hover:bg-white/[0.03]')
       }
       style={{ gridTemplateColumns: `${pillWidthPx}px minmax(0, 1fr) ${COL_ACTIONS}` }}
     >
-      {/* Пилл: выбранный = clay; иначе цвет статуса */}
+      {/* Выбран: пилл только обведён clay, не залит; иначе лёгкая заливка статуса */}
       <button
         type="button"
         aria-pressed={checked}
         onClick={() => onToggle(v.id)}
-        title={`${statusLabel} ${speedText}${checked ? ' · на карте' : ''}`}
-        className={
-          'flex w-full cursor-pointer flex-col items-start justify-center gap-px rounded-md border px-1.5 py-1 text-left outline-none transition-[filter,box-shadow] hover:brightness-110 ' +
-          (checked ? 'ring-1 ring-accent-clay/50' : '')
-        }
+        title={`${statusLabel} ${speedText}${checked ? ' · на карте' : ''}${type ? ` · ${type}` : ''}`}
+        className="flex w-full cursor-pointer flex-col items-start justify-center gap-px rounded-md border px-1.5 py-1 text-left outline-none transition-[filter,box-shadow] hover:brightness-110"
         style={{
           minHeight: 42,
-          borderColor: checked ? APP_CLAY : `${color}99`,
-          backgroundColor: checked ? 'rgba(217,119,87,0.42)' : `${color}40`,
-          boxShadow: checked ? 'inset 0 0 0 1px rgba(217,119,87,0.55)' : undefined,
+          borderColor: checked ? APP_CLAY : `${statusColor}99`,
+          borderWidth: checked ? 2 : 1,
+          backgroundColor: checked ? 'transparent' : `${statusColor}40`,
+          boxShadow: checked ? `0 0 0 1px ${APP_CLAY}88` : undefined,
         }}
       >
         <span className="flex w-full min-w-0 items-baseline gap-1 leading-none">
-          <span className="shrink-0 font-mono text-[12px] font-bold tabular-nums text-white">
+          <span
+            className={
+              'shrink-0 font-mono text-[12px] font-bold tabular-nums ' +
+              (checked ? 'text-accent-clay' : 'text-white')
+            }
+          >
             {v.garage || '—'}
           </span>
           {type ? (
-            <span className="min-w-0 truncate text-[10px] font-semibold text-white/95" title={type}>
+            <span
+              className={
+                'min-w-0 truncate text-[10px] font-semibold ' +
+                (checked ? 'text-accent-clay/90' : 'text-white/95')
+              }
+              title={type}
+            >
               {type}
             </span>
           ) : null}
         </span>
-        <span className="w-full whitespace-nowrap text-[10.5px] font-semibold leading-tight text-white">
+        <span
+          className={
+            'w-full whitespace-nowrap text-[10.5px] font-semibold leading-tight ' +
+            (checked ? 'text-text-strong' : 'text-white')
+          }
+        >
           {statusLabel}{' '}
           <span className="font-mono tabular-nums font-medium">{speedText}</span>
         </span>

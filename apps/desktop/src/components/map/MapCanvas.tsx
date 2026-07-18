@@ -1138,14 +1138,13 @@ export function MapCanvas({
     }
   }, [glonassMarkers, styleReady]);
 
-  // Живое движение: маркер НЕПРЕРЫВНО едет по снапнутому к дорогам пути с
-  // задержкой delayMs (время = сейчас − задержка), след рисуется строго ЗА ним
-  // (хвост ~100 м до текущей позиции), камера слежения ведётся тем же циклом.
+  // Живое движение: ВСЕ отмеченные маркеры каждый кадр — иначе 2-я машина без
+  // timedPath «отлипает» при панорамировании, пока 1-я с timedPath держится (rAF).
+  // С delayMs: едем по пути; без — держим forceRoad(lat,lng) из props.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady) return;
-    const liveMarkers = glonassMarkers.filter((m) => (m.timedPath?.length ?? 0) >= 2);
-    if (liveMarkers.length === 0) {
+    if (glonassMarkers.length === 0) {
       setSourceData(map, 'map-glonass-live-trail', EMPTY_FEATURES);
       return;
     }
@@ -1158,25 +1157,32 @@ export function MapCanvas({
       const wantTrail = now - lastTrailAt > 220;
       const features: FeatureCollection['features'] = [];
       const followPts: { lng: number; lat: number }[] = [];
-      for (const m of liveMarkers) {
+      for (const m of glonassMarkers) {
         const entry = entries.get(m.id);
-        const timedPath = m.timedPath!;
         if (!entry) continue;
-        const targetMs = Date.now() - (m.delayMs ?? 0);
-        const interpolated = pointAtTimedPath(timedPath, targetMs);
-        // Каждая машина — свой snap, без общего «текущего» сегмента.
-        const pos = snapToRoadIndex(glonassRoadSnapIndex, interpolated)?.point ?? interpolated;
-        entry.marker.setLngLat([pos.lng, pos.lat]);
-        if (wantTrail && showGlonassPro) {
-          const trail = liveTrailBehind(timedPath, targetMs, pos, 100);
-          if (trail.length >= 2) {
-            features.push({
-              type: 'Feature',
-              geometry: { type: 'LineString', coordinates: trail.map((p) => [p.lng, p.lat]) },
-              properties: { color: STATUS_COLOR[m.status] },
-            });
+        let pos: { lat: number; lng: number };
+        const timedPath = m.timedPath;
+        if (timedPath && timedPath.length >= 2) {
+          const targetMs = Date.now() - (m.delayMs ?? 0);
+          const interpolated = pointAtTimedPath(timedPath, targetMs);
+          pos = snapToRoadIndex(glonassRoadSnapIndex, interpolated)?.point ?? interpolated;
+          if (wantTrail && showGlonassPro) {
+            const trail = liveTrailBehind(timedPath, targetMs, pos, 100);
+            if (trail.length >= 2) {
+              features.push({
+                type: 'Feature',
+                geometry: { type: 'LineString', coordinates: trail.map((p) => [p.lng, p.lat]) },
+                properties: { color: STATUS_COLOR[m.status] },
+              });
+            }
           }
+        } else {
+          // Нет timedPath: каждый кадр приклеиваем к дороге — иначе при движении
+          // карты «вторая» визуально улетает, а «первая» (с rAF) держится.
+          pos = snapToRoadIndex(glonassRoadSnapIndex, { lat: m.lat, lng: m.lng })?.point
+            ?? { lat: m.lat, lng: m.lng };
         }
+        entry.marker.setLngLat([pos.lng, pos.lat]);
         if (followSet.has(m.id)) followPts.push({ lng: pos.lng, lat: pos.lat });
       }
       // Мульти-слежение: 1 машина — center; несколько — fitBounds.

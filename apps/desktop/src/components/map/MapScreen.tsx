@@ -763,26 +763,32 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
         : [];
       const matched = lastTrackPoint(matchedSegments);
       const rawPosition = { lat: pos.lat, lng: pos.lng };
-      // Live-флот ВСЕГДА на дороге, если GPS в радиусе захвата.
-      // pin-standoff (snapGlonassPosition) давал «вторая машина рядом с дорогой»,
-      // пока у неё ещё нет timedPath, а у первой уже есть.
-      const onRoad = (p: LatLng): LatLng =>
-        snapToRoadIndex(roadSnapIndex, p)?.point
-        ?? snapGlonassPosition(p, roadSnapIndex, doc.points);
+      // Всегда дорога, если в радиусе; pin-standoff не используем для live-флота.
+      const forceRoad = (p: LatLng): LatLng => {
+        const hit = snapToRoadIndex(roadSnapIndex, p);
+        return hit ? hit.point : p; // без pin — иначе «вторая рядом с дорогой»
+      };
+      // Приоритет: delayed → matched → raw, но КАЖДЫЙ вариант прогоняем forceRoad.
+      // Не доверяем delayed/matched «как есть» — у 2-й машины матчинг иногда
+      // отдаёт точку вне видимой жёлтой сети, пока у 1-й уже стабильный путь.
       const candidate = delayed?.point ?? matched ?? rawPosition;
-      const snapped = onRoad(candidate);
+      const snapped = forceRoad(candidate);
+      // Если delayed далеко от сырого GPS (>80 м) — GPS/сайт прыгнул: сажаем raw на дорогу.
+      const rawOnRoad = forceRoad(rawPosition);
+      const useDelayed = delayed != null
+        && distanceMeters(snapped, rawOnRoad) <= 80;
+      const finalPos = useDelayed ? snapped : rawOnRoad;
       const stale = glonassStale.get(id) ?? null;
-      // timedPath тоже жёстко на дороге (каждая точка независимо).
-      const timedPath = delayed && delayed.timed.length >= 2
+      const timedPath = useDelayed && delayed && delayed.timed.length >= 2
         ? delayed.timed.map((p) => {
-            const road = snapToRoadIndex(roadSnapIndex, p)?.point;
-            return road ? { ...p, lat: road.lat, lng: road.lng } : p;
+            const road = forceRoad(p);
+            return { ...p, lat: road.lat, lng: road.lng };
           })
         : undefined;
       out.push({
         id, garage: v?.garage ?? '', gos: v?.gos ?? '',
-        lat: snapped.lat, lng: snapped.lng, course: pos.course, speed: pos.speed,
-        path: delayed?.path ?? lastTrackSegment(matchedSegments) ?? undefined,
+        lat: finalPos.lat, lng: finalPos.lng, course: pos.course, speed: pos.speed,
+        path: useDelayed ? (delayed?.path ?? lastTrackSegment(matchedSegments) ?? undefined) : undefined,
         timedPath,
         delayMs: GLONASS_LIVE_DELAY_MS,
         time: pos.time,
