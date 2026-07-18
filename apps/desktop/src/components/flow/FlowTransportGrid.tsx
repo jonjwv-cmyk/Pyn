@@ -602,6 +602,8 @@ export function FlowTransportGrid(): JSX.Element {
   }, [vehicles]);
 
   // База контактов — кандидаты в водители (должность содержит «водитель»; юзер 2026-06-12 п.4).
+  // Пилюля «МОЛ» — по is_mol (не только должность «водитель»): водитель-кладовщик/МОЛ
+  // тоже помечается (ТЗ 17.07 п.14 — пропало после slim/фильтра по должности).
   const persons = usePersonsStore((s) => s.persons);
   useEffect(() => {
     void initPersons();
@@ -617,7 +619,7 @@ export function FlowTransportGrid(): JSX.Element {
       const phone = p.mobile || p.work || '';
       // Ближайший срок «по дату» из складов (если человек МОЛ).
       let until = '';
-      for (const w of p.warehouses) if (w.until && (!until || w.until < until)) until = w.until;
+      for (const w of p.warehouses) if (w.until && !w.isWas && (!until || w.until < until)) until = w.until;
       out.push({
         fio: p.fio,
         position: p.position || '',
@@ -634,9 +636,28 @@ export function FlowTransportGrid(): JSX.Element {
   }, [persons]);
   const driverByFio = useMemo(() => {
     const m = new Map<string, FlowDriverOption>();
-    for (const o of driverOptions) m.set(o.fio, o);
+    for (const o of driverOptions) m.set(o.fio.toUpperCase(), o);
+    // Точное ФИО как ключ + UPPER — lookup нечувствителен к регистру.
+    for (const o of driverOptions) if (!m.has(o.fio)) m.set(o.fio, o);
     return m;
   }, [driverOptions]);
+  /** is_mol по ФИО (все МОЛы, не только с должностью «водитель»). */
+  const molFlagByFio = useMemo(() => {
+    const COLOR = { ok: '#3FB950', error: '#F85149', neutral: '#9AA0A6' } as const;
+    const m = new Map<string, { isMol: true; until: string; color: string }>();
+    for (const p of persons) {
+      if (!p.isMol || !p.fio.trim()) continue;
+      let until = '';
+      for (const w of p.warehouses) {
+        if (w.isWas) continue;
+        if (w.until && (!until || w.until < until)) until = w.until;
+      }
+      const rec = { isMol: true as const, until, color: COLOR[molStatusKind(p.status || '')] };
+      m.set(p.fio, rec);
+      m.set(p.fio.toUpperCase(), rec);
+    }
+    return m;
+  }, [persons]);
 
   const cellText = useCallback(
     (specId: string, r: FlowTransportRow): string => {
@@ -993,9 +1014,14 @@ export function FlowTransportGrid(): JSX.Element {
       }
       if (spec.id === 'driver') {
         // ВОДИТЕЛЬ: ФИО + СОТ под ним; двойной клик → поиск по базе водителей.
+        // Пилюля МОЛ: lookup по должности-водителю ИЛИ по is_mol (ТЗ 17.07 п.14).
         const veh = vehByGarage.get(r.garage_no);
         const driver = r.driver || (veh?.driver ?? '');
         const phone = r.driver_phone || (veh?.driver_phone ?? '');
+        const fromDrv =
+          driverByFio.get(driver) || driverByFio.get(driver.toUpperCase());
+        const fromMol =
+          molFlagByFio.get(driver) || molFlagByFio.get(driver.toUpperCase());
         const cell: FlowDriverCell = {
           kind: GridCellKind.Custom,
           allowOverlay: !locked,
@@ -1005,9 +1031,9 @@ export function FlowTransportGrid(): JSX.Element {
             driver,
             phone,
             phoneDisplay: phone ? formatMobilePhone(phone) : '',
-            color: driverByFio.get(driver)?.color ?? '',
-            isMol: driverByFio.get(driver)?.isMol ?? false,
-            until: driverByFio.get(driver)?.until ?? '',
+            color: fromDrv?.color || fromMol?.color || '',
+            isMol: Boolean(fromDrv?.isMol || fromMol?.isMol),
+            until: fromDrv?.until || fromMol?.until || '',
             drivers: driverOptions,
           },
         };
@@ -1057,7 +1083,7 @@ export function FlowTransportGrid(): JSX.Element {
         themeOverride: fontOverride,
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked, colEditable, driverOptions, driverByFio, cols, tripKeys, prodCalByYear],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked, colEditable, driverOptions, driverByFio, molFlagByFio, cols, tripKeys, prodCalByYear],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {

@@ -748,44 +748,45 @@ export interface MatCardRow {
   mat_full: string;
 }
 
-/** Read-only строки карточки материала: Создал → Выгружен → (Удалён) → Вывезено% → тех-имя.
- *  Единый источник (ТЗ §7) — данные из ЯКОРЯ (живой расчёт, до фиксации меняется везде).
- *  `pctOnly` (Формирование, юзер 2026-07-04): только «Вывезено N% — X из Y» — Создал/
- *  Выгружен/тех-имя там и так есть отдельными колонками. */
-export function matCardLines(row: MatCardRow, opts?: { pctOnly?: boolean }): FlowCardLine[] | null {
+/** Read-only строки карточки материала: Создал → Выгружен → (Удалён) → [Вывезено%] → тех-имя.
+ *  Единый источник (ТЗ §7) — данные из ЯКОРЯ.
+ *  Формирование (ТЗ 17.07 п.6): **без** % — только история выгрузки (Создал/Выгружен/Удалён/тех-имя);
+ *  % живёт в колонке «%» / карточке %; СЭД — в колонке СЭД.
+ *  `includePct` — добавить строку «Вывезено N%» (План/Отчёт по желанию). */
+export function matCardLines(row: MatCardRow, opts?: { includePct?: boolean }): FlowCardLine[] | null {
   const lines: FlowCardLine[] = [];
-  if (!opts?.pctOnly) {
-    if (row.created_by) {
-      const cd = formatDateRu(row.load_dt);
-      lines.push({ t: `Создал: ${row.created_by}${cd ? ` — ${cd}` : ''}`, muted: true, nowrap: true });
-    }
-    // time_at/off_at — серверные UTC-метки: показ по Екатеринбургу (formatUploadDay).
-    const up = formatUploadDay(row.time_at);
-    if (up) lines.push({ t: `Выгружен: ${up}`, muted: true, nowrap: true });
-    // Дата удаления — для OFF-строк (когда заказ пропал из выгрузки).
-    if (row.day_wk === 'OFF' && row.off_at) {
-      const off = formatUploadDay(row.off_at);
-      if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
-    }
+  if (row.created_by) {
+    const cd = formatDateRu(row.load_dt);
+    lines.push({ t: `Создал: ${row.created_by}${cd ? ` — ${cd}` : ''}`, muted: true, nowrap: true });
   }
-  // В КАРТОЧКЕ показываем вывоз всегда, когда есть данные (в т.ч. 0%); в КОЛОНКЕ 0 не пишем.
-  const p = livePct(row);
-  if (p != null && row.qty != null && row.chg != null) {
-    const uom = row.uom ? ` ${row.uom}` : '';
-    lines.push({
-      t: `Вывезено ${Math.round(p * 100)}% — ${fmtNum3(row.chg - row.qty)} из ${fmtNum3(row.chg)}${uom}`,
-      nowrap: true,
-    });
+  // time_at/off_at — серверные UTC-метки: показ по Екатеринбургу (formatUploadDay).
+  const up = formatUploadDay(row.time_at);
+  if (up) lines.push({ t: `Выгружен: ${up}`, muted: true, nowrap: true });
+  // Дата удаления — для OFF-строк (когда заказ пропал из выгрузки).
+  if (row.day_wk === 'OFF' && row.off_at) {
+    const off = formatUploadDay(row.off_at);
+    if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
+  }
+  if (opts?.includePct) {
+    const p = livePct(row);
+    if (p != null && row.qty != null && row.chg != null) {
+      const uom = row.uom ? ` ${row.uom}` : '';
+      lines.push({
+        t: `Вывезено ${Math.round(p * 100)}% — ${fmtNum3(row.chg - row.qty)} из ${fmtNum3(row.chg)}${uom}`,
+        nowrap: true,
+      });
+    }
   }
   // Тех-имя ПЕРЕНОСИТСЯ, если длиннее стандарта (ширину задаёт шапка карточки).
-  if (!opts?.pctOnly && row.mat_full) lines.push({ t: row.mat_full });
+  if (row.mat_full) lines.push({ t: row.mat_full });
   return lines.length ? lines : null;
 }
 
 export function flowCard(spec: FlowColumnSpec, row: FlowSandboxRow): FlowCardLine[] | null {
   switch (spec.id) {
     case 'mat':
-      return matCardLines(row, { pctOnly: true });
+      // Формирование: без % (ТЗ 17.07 п.6) — история выгрузки + тех-имя; СЭД/История — свои колонки.
+      return matCardLines(row, { includePct: false });
     case 'mol': {
       const m = parseMol(row.mol);
       if (!m) return null;

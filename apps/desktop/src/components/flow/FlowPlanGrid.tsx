@@ -2050,9 +2050,8 @@ export function FlowPlanGrid({
             name: r.mat ?? '',
             prefix: transferPrefix,
             warn: anchor ? needsWarn(anchor) : false,
-            // Как в Формировании (юзер 2026-07-04): только «Вывезено % — X из Y» —
-            // Создал/Выгружен/тех-имя уже разнесены по инфо-колонкам.
-            lines: anchor ? matCardLines(anchor, { pctOnly: true }) ?? [] : [],
+            // История выгрузки + % (План/Отчёт); Формирование — без % (ТЗ 17.07 п.6).
+            lines: anchor ? matCardLines(anchor, { includePct: true }) ?? [] : [],
           },
         };
         return cell;

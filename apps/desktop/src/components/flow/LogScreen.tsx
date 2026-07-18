@@ -126,7 +126,12 @@ export function LogScreen({ active = true }: { active?: boolean } = {}): JSX.Ele
       | { kind: 'mols'; ts: number; run: FlowMolsRun }
     > = [];
     for (const r of runs) items.push({ kind: 'import', ts: parseUtcMs(r.started_at), run: r });
-    for (const r of scriptRuns) items.push({ kind: 'script', ts: parseUtcMs(r.at), run: r });
+    // scriptId «mols» = клик кнопки; полный итог импорта — в molsRuns («База МОЛов»).
+    // Раньше обе строки попадали в ленту: сверху пустая «· МОЛы», ниже с данными (ТЗ 17.07 п.2г).
+    for (const r of scriptRuns) {
+      if (r.scriptId === 'mols') continue;
+      items.push({ kind: 'script', ts: parseUtcMs(r.at), run: r });
+    }
     for (const r of sapRuns) items.push({ kind: 'sap', ts: parseUtcMs(r.started_at), run: r });
     for (const r of molsRuns) items.push({ kind: 'mols', ts: parseUtcMs(r.started_at), run: r });
     items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
