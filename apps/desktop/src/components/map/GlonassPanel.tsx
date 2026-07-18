@@ -161,12 +161,9 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     return { moving, stop, disabled };
   }, [fleet, positions]);
 
-  /** Применить пилюли → selected на карте (объединение активных статусов). */
+  /** Пилюли статусов → selected. Пустые пилюли НЕ трогают ручной выбор. */
   const applyStatusPillsToMap = useCallback((pills: Set<StatusPillKey>) => {
-    if (pills.size === 0) {
-      setSelected([]);
-      return;
-    }
+    if (pills.size === 0) return; // важно: не clearSelected — иначе сбрасывает клик по машине
     const ids: number[] = [];
     for (const v of fleet) {
       const key = statusPillKey(vehicleStatus(positions.get(v.id)));
@@ -180,13 +177,18 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
+      // Сняли последнюю пилюлю — не чистим ручной выбор (только пилюли)
+      if (next.size > 0) {
+        // apply next tick with fresh pills state via effect
+      }
       return next;
     });
   }, []);
 
-  // Пилюли → карта: при клике и при смене статусов/позиций.
+  // Только когда есть активные статус-пилюли — синхронизируем карту.
+  // НЕ вызывать при size===0: это убивало ручной выбор при каждом poll позиций.
   useEffect(() => {
-    if (!open) return;
+    if (!open || statusPills.size === 0) return;
     applyStatusPillsToMap(statusPills);
   }, [open, statusPills, positions, fleet, applyStatusPillsToMap]);
 
@@ -698,7 +700,16 @@ const VehicleRow = memo(function VehicleRow({
         className="flex min-w-0 flex-col justify-center gap-px overflow-hidden text-left outline-none disabled:cursor-default"
         style={{ minHeight: 42 }}
       >
-        <span className="block min-w-0 truncate text-[12px] font-medium leading-tight text-text-strong">
+        <span
+          className="block min-w-0 text-[12px] font-medium leading-snug text-text-strong break-words [overflow-wrap:anywhere]"
+          title={driver || undefined}
+          style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+          }}
+        >
           {driver || '\u00a0'}
         </span>
         <span className="flex min-w-0 items-baseline gap-1 overflow-hidden leading-tight">

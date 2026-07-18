@@ -763,27 +763,20 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
         : [];
       const matched = lastTrackPoint(matchedSegments);
       const rawPosition = { lat: pos.lat, lng: pos.lng };
-      // Только посадка на жёлтую сеть — без pin-standoff (он «сажал» рядом с дорогой).
       const forceRoad = (p: LatLng): LatLng =>
         snapToRoadIndex(roadSnapIndex, p)?.point ?? p;
-
-      // Корень бага «2-я слетает, 1-я держится»:
-      //  • 1-я давно в selected → длинный track → delayed/timedPath + rAF;
-      //  • 2-я / красная (disabled) → короткий/шумный track → delayed строит
-      //    кривой путь → маркер уезжает; сняли 1-ю → 2-я без delayed → raw на дороге.
-      // Лечение: delayed только для «живых» с достаточным треком и близко к GPS.
       const rawOnRoad = forceRoad(rawPosition);
-      const trackRich = track.length >= 6;
-      const allowDelayed = (status === 'moving' || status === 'stop') && trackRich;
+
+      // Мультивыбор / multi-follow: ТОЛЬКО raw→дорога. delayed/timedPath у 2+ машин
+      // даёт рассинхрон (1-я «держит» path, 2-я уезжает по кривому матчингу).
+      const multi = glonassSelected.size > 1;
+      const trackRich = track.length >= 8;
+      const allowDelayed = !multi
+        && (status === 'moving' || status === 'stop')
+        && trackRich;
       const delayedOk = allowDelayed && delayed != null
-        && distanceMeters(forceRoad(delayed.point), rawOnRoad) <= 55;
-      const matchedOk = !delayedOk && matched != null
-        && distanceMeters(forceRoad(matched), rawOnRoad) <= 55;
-      const finalPos = delayedOk
-        ? forceRoad(delayed!.point)
-        : matchedOk
-          ? forceRoad(matched!)
-          : rawOnRoad;
+        && distanceMeters(forceRoad(delayed.point), rawOnRoad) <= 45;
+      const finalPos = delayedOk ? forceRoad(delayed!.point) : rawOnRoad;
 
       const timedPath = delayedOk && delayed && delayed.timed.length >= 2
         ? delayed.timed.map((p) => {
@@ -791,7 +784,6 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
             return { ...p, lat: road.lat, lng: road.lng };
           })
         : undefined;
-      // path только если timedPath есть (иначе след из кривого matched путает)
       const path = timedPath
         ? (delayed?.path ?? lastTrackSegment(matchedSegments) ?? undefined)
         : undefined;
@@ -805,7 +797,6 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
         delayMs: GLONASS_LIVE_DELAY_MS,
         time: pos.time,
         status,
-        // raw всегда в props — rAF без timedPath берёт свежий raw, не stale closure
         rawLat: rawPosition.lat,
         rawLng: rawPosition.lng,
         badSince: status === 'moving' && stale != null && Date.now() - stale >= GLONASS_BAD_SIGNAL_AFTER_MS ? stale : null,

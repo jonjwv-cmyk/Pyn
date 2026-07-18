@@ -1167,19 +1167,20 @@ export function MapCanvas({
         if (!entry) continue;
         let pos: { lat: number; lng: number };
         const timedPath = m.timedPath;
+        // multi: markers без timedPath (см. MapScreen) → всегда raw→дорога.
+        // single + timedPath: плавный путь, но не дальше 45 м от GPS.
+        const raw = {
+          lat: m.rawLat ?? m.lat,
+          lng: m.rawLng ?? m.lng,
+        };
+        const rawRoad = snapToRoadIndex(glonassRoadSnapIndex, raw)?.point ?? raw;
         if (timedPath && timedPath.length >= 2) {
           const targetMs = Date.now() - (m.delayMs ?? 0);
           const interpolated = pointAtTimedPath(timedPath, targetMs);
-          pos = snapToRoadIndex(glonassRoadSnapIndex, interpolated)?.point ?? interpolated;
-          // Не уезжаем далеко от текущего GPS (сырого) — иначе 2-я «улетает».
-          const raw = {
-            lat: m.rawLat ?? m.lat,
-            lng: m.rawLng ?? m.lng,
-          };
-          const rawRoad = snapToRoadIndex(glonassRoadSnapIndex, raw)?.point ?? raw;
-          const dx = distanceMeters(pos, rawRoad);
-          if (dx > 55) pos = rawRoad;
-          if (wantTrail && showGlonassPro && dx <= 55) {
+          const along = snapToRoadIndex(glonassRoadSnapIndex, interpolated)?.point ?? interpolated;
+          const dx = distanceMeters(along, rawRoad);
+          pos = dx > 45 ? rawRoad : along;
+          if (wantTrail && showGlonassPro && dx <= 45) {
             const trail = liveTrailBehind(timedPath, targetMs, pos, 100);
             if (trail.length >= 2) {
               features.push({
@@ -1190,12 +1191,7 @@ export function MapCanvas({
             }
           }
         } else {
-          // Нет timedPath / disabled: всегда raw → дорога (свежий m из ref).
-          const raw = {
-            lat: m.rawLat ?? m.lat,
-            lng: m.rawLng ?? m.lng,
-          };
-          pos = snapToRoadIndex(glonassRoadSnapIndex, raw)?.point ?? raw;
+          pos = rawRoad;
         }
         entry.marker.setLngLat([pos.lng, pos.lat]);
         if (followSet.has(m.id)) followPts.push({ lng: pos.lng, lat: pos.lat });

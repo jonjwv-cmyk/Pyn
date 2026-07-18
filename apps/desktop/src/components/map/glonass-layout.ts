@@ -10,9 +10,9 @@ const COL_GAP = 6;
 const PANEL_PAD_X = 12; // px-1.5 * 2 + запас
 
 const MIN_PANEL = 320;
-const MAX_PANEL = 480;
-const MIN_FIO = 108;
-const MAX_FIO = 260;
+const MAX_PANEL = 560;
+const MIN_FIO = 120;
+const MAX_FIO = 320;
 
 let measureCtx: CanvasRenderingContext2D | null | undefined;
 
