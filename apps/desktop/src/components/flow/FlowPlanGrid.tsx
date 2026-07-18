@@ -1738,11 +1738,12 @@ export function FlowPlanGrid({
     [COLS, colWidths, colFilters.activeFilterColIds],
   );
 
-  // Высоты строк — ОДИН раз при смене viewRows/ширин, не на каждый tick прокрутки.
-  // approxWrapLines (без canvas measureText) — иначе тысячи строк = ступор при
-  // открытии/смене дня; Формирование быстрее как раз потому что не меряет canvas
-  // на каждую ячейку при precompute (юзер 2026-07-18).
-  const reportRowHeights = useMemo(() => {
+  // ОТЧЁТ: фикс. высота строки (как Google Sheets / Транспорт) — variable height
+  // в Glide = лаг скролла на тысячах строк (юзер 2026-07-18). Текст MAT/NOTE
+  // обрежется ellipsis; План (меньше строк/день) — переменная высота.
+  // ПЛАН: precompute высот (approxWrapLines), O(1) на scroll.
+  const planRowHeights = useMemo(() => {
+    if (mode === 'report') return null;
     const LINE = 13;
     const matW = (colWidths.mat ?? 280) - REPORT_HPAD * 2;
     const noteW = (colWidths.note ?? 230) - REPORT_HPAD * 2;
@@ -1759,8 +1760,6 @@ export function FlowPlanGrid({
       const noteText = Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchor?.note || '');
       const noteLines = approxWrapLines(noteText, noteW);
       const visualPoint = (r as FlowPlanViewRow).__flowPoint;
-      // Высота точки: без mapPoints lookup на каждую строку — хватает \n в snap/якоре
-      // + visual split; effectivePointNames дороже (карта) и для высоты избыточен.
       const pointSrc = visualPoint || snapPoint(r, anchor) || '';
       const pointLines = Math.max(1, pointSrc ? pointSrc.split('\n').filter(Boolean).length : 1);
       const vtypeLines = Math.max(1, splitMultiCell(rowVehicle(r)).length);
@@ -1778,12 +1777,14 @@ export function FlowPlanGrid({
       heights[i] = Math.max(30, Math.min(150, h));
     }
     return heights;
-  }, [viewRows, colWidths, anchorByKey, rowVehicle, rowRide, rowExpeditors, transferChainDates]);
+  }, [mode, viewRows, colWidths, anchorByKey, rowVehicle, rowRide, rowExpeditors, transferChainDates]);
 
-  const getReportRowHeight = useCallback(
-    (row: number): number => reportRowHeights[row] ?? 40,
-    [reportRowHeights],
+  const getPlanRowHeight = useCallback(
+    (row: number): number => planRowHeights?.[row] ?? 40,
+    [planRowHeights],
   );
+  /** Отчёт: константа — Glide не зовёт per-row measure на scroll. */
+  const REPORT_ROW_H = 36;
 
   // Склады без назначаемого МОЛа — Set один раз (для подсветки строк Плана).
   // Раньше molsForWh().some(...) на КАЖДОЙ строке при каждой отрисовке темы.
@@ -3678,7 +3679,7 @@ export function FlowPlanGrid({
             rowSelect="multi"
             columnSelect="none"
             rangeSelect="multi-rect"
-            rowHeight={getReportRowHeight}
+            rowHeight={mode === 'report' ? REPORT_ROW_H : getPlanRowHeight}
             headerHeight={24}
             highlightRegions={gridSearch.highlightRegions}
             onVisibleRegionChanged={gridSearch.onVisibleRegionChanged}
@@ -3690,7 +3691,8 @@ export function FlowPlanGrid({
             // Backspace = Delete и на Windows (дефолт Glide даёт Backspace только на Mac).
             keybindings={{ search: false, delete: 'Backspace|Delete' }}
             smoothScrollX
-            smoothScrollY
+            // smoothScrollY на Отчёте с custom-cells = лишние paint; План — ок.
+            smoothScrollY={mode !== 'report'}
           />
         )}
         </div>

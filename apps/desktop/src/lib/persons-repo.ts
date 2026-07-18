@@ -33,11 +33,43 @@ import { useMolStore } from './stores';
 
 const CACHE_NAME = 'persons-base';
 
+// ── Runtime slim (юзер 2026-07-18): Потоку нужны МОЛы (~1k) + экспедиторы/водители,
+// НЕ 19k всех контактов. На диске — полный слепок (Контакты). В RAM после login —
+// только flow-actors; полный список подгружается при открытии «Контакты».
+// WS/импорт МОЛ → refresh full → again slim (если Контакты не открыты).
+type PersonsRuntimeMode = 'slim' | 'full';
+let personsRuntimeMode: PersonsRuntimeMode = 'full';
+/** Роли потока (как в FlowPlanGrid / PersonEditDialog). */
+const FLOW_ROLE_GROUPS = new Set(['Экспедиторы', 'Водители-экспедиторы']);
+
+/** Кто нужен Потоку/Транспорту в RAM (не вся книга контактов). */
+export function isFlowActor(p: Person): boolean {
+  if (p.isMol) return true;
+  // Орфан-МОЛ без ФИО — нужен нормализации/плашке.
+  if (p.isOrphan) return true;
+  if (p.broadcastEnabled && FLOW_ROLE_GROUPS.has(p.broadcastGroup || '')) return true;
+  return false;
+}
+
+/** Сжать store до flow-actors. Диск (полный) НЕ трогаем. */
+function slimPersonsToFlowActors(): void {
+  const s = usePersonsStore.getState();
+  if (s.persons.length === 0) return;
+  const slim = s.persons.filter(isFlowActor);
+  // Не сжимаем, если уже slim или почти все нужны.
+  if (slim.length === 0 || slim.length >= s.persons.length * 0.85) {
+    personsRuntimeMode = slim.length >= s.persons.length ? 'full' : personsRuntimeMode;
+    return;
+  }
+  personsRuntimeMode = 'slim';
+  // setState напрямую — не saveCache (полный кэш на диске сохраняем только из full).
+  usePersonsStore.setState({ persons: slim, status: 'loaded' });
+}
+
 // ── МОЛ как производное от базы ПЕРСОН (одна база «Контакты») ──────────────
-// «База Контакты» (persons) — единственный источник: качается целиком,
-// расшифровывается, кэшируется. МОЛ-справочник (useMolStore) НЕ качается
-// отдельно — выводится из persons на клиенте (МОЛ = подмножество is_mol).
-// Потребители МОЛ (Поток/Цеха/резолв) читают useMolStore как прежде.
+// «База Контакты» (persons) — единственный источник: качается целиком на диск,
+// расшифровывается. В RAM для Потока — slim (МОЛ+роли). МОЛ-справочник
+// (useMolStore) выводится из persons на клиенте.
 
 /**
  * persons → MolRecord[] (человек × склад; МОЛ без склада → 'МОЛ').
@@ -146,6 +178,8 @@ interface CachePayload {
 }
 
 async function saveCache(): Promise<void> {
+  // Никогда не пишем slim (1–2k) поверх полного слепка 19k на диске.
+  if (personsRuntimeMode !== 'full') return;
   const s = usePersonsStore.getState();
   try {
     await window.pyn?.cache?.save(
@@ -164,6 +198,7 @@ export async function loadPersonsFromCache(): Promise<boolean> {
     if (!raw) return false;
     const parsed = JSON.parse(raw) as CachePayload;
     if (!Array.isArray(parsed.persons) || parsed.persons.length === 0) return false;
+    personsRuntimeMode = 'full';
     usePersonsStore.getState().setLoaded({ persons: parsed.persons, meta: parsed.meta ?? null });
     return true;
   } catch (err) {
@@ -175,6 +210,8 @@ export async function loadPersonsFromCache(): Promise<boolean> {
 
 const REFRESH_TOAST_MS = 3_500;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
+/** true, пока открыт раздел Контакты — не сжимать store в slim. */
+let fullPersonsHoldRequested = false;
 
 export async function refreshPersonsFromServer(opts: { force?: boolean } = {}): Promise<boolean> {
   const store = usePersonsStore.getState();
@@ -227,9 +264,13 @@ export async function refreshPersonsFromServer(opts: { force?: boolean } = {}): 
     if (!persons) {
       persons = (await personsDownload(api)).persons;
     }
+    personsRuntimeMode = 'full';
     usePersonsStore.getState().setLoaded({ persons, meta: serverMeta });
     usePersonsStore.getState().setRefreshOutcome('updated');
-    await saveCache();
+    await saveCache(); // full → диск
+    // Поток не держит 19k в RAM — сжимаем после записи полного кэша.
+    // Контакты (ensureFullPersons) снова развернут из диска.
+    if (!fullPersonsHoldRequested) slimPersonsToFlowActors();
     scheduleToastReset();
     return true;
   } catch (err) {
@@ -245,13 +286,41 @@ export async function refreshPersonsFromServer(opts: { force?: boolean } = {}): 
 }
 
 /**
- * Кэш сразу (МОЛ доступен мгновенно из persons-кэша) + refresh в фоне.
- * Вызывается eager после логина (App.tsx) — «База Контакты» нужна и вкладке
- * «Контакты», и потребителям МОЛ (Поток/Цеха) с первого экрана.
+ * Полная база в RAM (вкладка «Контакты»). С диска или force-refresh.
+ * Пока hold=true, refresh не сжимает store.
+ */
+export async function ensureFullPersons(): Promise<void> {
+  fullPersonsHoldRequested = true;
+  if (personsRuntimeMode === 'full' && usePersonsStore.getState().persons.length > 3000) {
+    return;
+  }
+  // Сначала диск (полный слепок) — без сети.
+  const ok = await loadPersonsFromCache();
+  if (ok && usePersonsStore.getState().persons.length > 3000) {
+    personsRuntimeMode = 'full';
+    return;
+  }
+  await refreshPersonsFromServer({ force: true });
+  personsRuntimeMode = 'full';
+}
+
+/** Уход с Контактов — можно снова slim для 8 ГБ / скорости Потока. */
+export function releaseFullPersonsHold(): void {
+  fullPersonsHoldRequested = false;
+  slimPersonsToFlowActors();
+}
+
+/**
+ * Login: кэш → slim (МОЛ+роли в RAM) → фоновый version-check.
+ * Полные 19k только на диске + при открытии Контактов (ensureFullPersons).
  */
 export async function initPersons(): Promise<void> {
   await loadPersonsFromCache();
-  await refreshPersonsFromServer();
+  slimPersonsToFlowActors();
+  // Фон: если версия сменилась — скачает full, сохранит диск, снова slim.
+  void refreshPersonsFromServer().then(() => {
+    if (!fullPersonsHoldRequested) slimPersonsToFlowActors();
+  });
 }
 
 /**

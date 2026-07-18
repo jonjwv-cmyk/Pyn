@@ -7,6 +7,7 @@ import { usePersonsStore } from '@/lib/persons-store';
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { distinctStatuses, matchesPersonQuery, sortPersons } from '@/lib/persons-view';
 import { isValidPersonFio, parseMolQuery, warehouseCodeKey, type Person } from '@pyn/core';
+import { ensureFullPersons, releaseFullPersonsHold } from '@/lib/persons-repo';
 import { ContactActionDialog, type ContactActionRequest } from './ContactActionDialog';
 import { MolEmptyView, type MolEmptyState } from './MolEmptyView';
 import { MolTable, type MolTableRow } from './MolTable';
@@ -42,8 +43,20 @@ export function MolScreen() {
   const [normalizeMode, setNormalizeMode] = useState(false);
   const openPersonEdit = usePersonEditStore((s) => s.open);
 
-  // База «Контакты» (persons) грузится eager после логина (App.tsx) — она же
-  // питает производный МОЛ для Потока/Цеха. Здесь только читаем.
+  // Полные 19k — только когда раздел База/Контакты ВИДЕН. Иначе в RAM slim
+  // (МОЛ+роли ~1–2k) для Потока. Always-mounted shell → смотрим activeSection.
+  const activeSection = useUiStateStore((s) => s.activeSection);
+  useEffect(() => {
+    if (activeSection !== 'mol') {
+      releaseFullPersonsHold();
+      return;
+    }
+    void ensureFullPersons();
+    return () => {
+      releaseFullPersonsHold();
+    };
+  }, [activeSection]);
+
   const parsed = useMemo(() => parseMolQuery(query), [query]);
 
   // Счётчик контактов = все с табельным (ключ) + ручные без tab, но с ФИО.
