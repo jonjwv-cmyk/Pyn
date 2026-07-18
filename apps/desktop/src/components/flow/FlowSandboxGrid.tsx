@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   CompactSelection,
-  DataEditor,
   type DataEditorRef,
   GridCellKind,
   type DrawCellCallback,
@@ -20,6 +19,9 @@ import { AlertTriangle, ArrowDownUp, CheckCircle2, ChevronDown, Redo2, Trash2, U
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
 import '@glideapps/glide-data-grid/dist/index.css';
+import { FlowGridEditor, EMPTY_GRID_SELECTION, type FlowGridEditorHandle } from './FlowGridEditor';
+import { createLiveValue, useLiveValue, type LiveValue } from './flow-live-value';
+import { loadFlowDiskCache, saveFlowDiskCacheDebounced } from '@/lib/flow-disk-cache';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
 import { flowScoreRenderer, type FlowScoreCell } from './flow-score-cell';
@@ -98,6 +100,8 @@ import {
   clearPersonalView,
   readViewMode,
   writeViewMode,
+  readSharedViewCache,
+  writeSharedViewCache,
   EMPTY_FLOW_VIEW,
   EMPTY_FLOW_VIEW_JSON,
   type FlowViewMode,
@@ -449,11 +453,6 @@ type FlowRowPatch = Partial<FlowSandboxRow>;
 type FlowUndoEntry =
   | { kind: 'cells'; before: Map<number, FlowRowPatch>; after: Map<number, FlowRowPatch> }
   | { kind: 'delete'; removed: { index: number; row: FlowSandboxRow }[] };
-
-/** Пустое выделение (строки/колонки/диапазон сброшены). */
-function emptySelection(): GridSelection {
-  return { columns: CompactSelection.empty(), rows: CompactSelection.empty(), current: undefined };
-}
 
 /** Glob-шаблон (с `*`) → анкоренный case-insensitive RegExp (для внутренних `*`). */
 function globToRegExp(glob: string): RegExp {
@@ -845,6 +844,8 @@ function statFilterRank(stat: string): number {
  * спиннера), затем фоновый refetch + реалтайм догоняют. Живёт на время сессии.
  */
 let flowRowsCache: FlowSandboxRow[] | null = null;
+/** Имя дискового кэша строк Формирования (pyn:cache, шифрованный). */
+const FLOW_DISK_CACHE_ROWS = 'flow_rows_workflow';
 // Кэш карты поставок (id→инфо) на время сессии: без него dlvInfoById на каждом входе пуст →
 // «занято-планом» ещё не посчитано → строки-якоря с уже созданной поставкой ПОКАЗЫВАЮТСЯ, а
 // через миг (поставки загрузились) ПРЯЧУТСЯ — видимый прыжок. С кэшем на повторных входах
@@ -1004,7 +1005,17 @@ export function FlowSandboxGrid(): JSX.Element {
   useWsEvent<VghChangedEvent>('vgh_changed', (e) => {
     if (Array.isArray(e.rows)) applyVghChanged(e.rows as unknown as VghRow[]);
   });
-  const [selection, setSelection] = useState<GridSelection>(emptySelection);
+  // Выделение живёт ВНУТРИ FlowGridEditor (анти-лаг: протяжка не ре-рендерит этот
+  // монолит). Здесь — ref-хэндл для императивной установки/сброса + LiveValue для
+  // мелких подписчиков (статус-бар агрегатов, кнопки «Выбрано строк»).
+  const editorRef = useRef<FlowGridEditorHandle | null>(null);
+  const selLive = useRef(createLiveValue<GridSelection>(EMPTY_GRID_SELECTION)).current;
+  const applySelection = useCallback((sel: GridSelection) => {
+    editorRef.current?.setSelection(sel);
+  }, []);
+  const clearSelection = useCallback(() => {
+    editorRef.current?.setSelection(EMPTY_GRID_SELECTION);
+  }, []);
   const [sortLevels, setSortLevels] = useState<SortLevel[]>([]);
   // §4 (юзер 2026-07-03): служебные инфо-колонки (DAY выг./Дата ORD/ORD созд./TECH NAME)
   // по умолчанию скрыты, показываются кнопками-тогглами. activeColumns = базовые +
@@ -1134,7 +1145,7 @@ export function FlowSandboxGrid(): JSX.Element {
     setOrdFilter(live.ordFilter);
     setSortLevels(live.sortLevels);
     setZoom(live.zoom);
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
 
   // Сохранить общий вид на сервер (debounce — лишние записи на CF free tier дороги). На
@@ -1144,6 +1155,7 @@ export function FlowSandboxGrid(): JSX.Element {
     sharedSaveTimerRef.current = window.setTimeout(() => {
       sharedSaveTimerRef.current = null;
       const value = isEmptyFlowViewJson(json) ? '' : json;
+      writeSharedViewCache(value); // мгновенный старт после перезапуска — кэш всегда свежий
       void flowViewSet(api, value)
         .then((res) => {
           sharedValueRef.current = res.value;
@@ -1172,23 +1184,33 @@ export function FlowSandboxGrid(): JSX.Element {
       viewModeRef.current = mode;
       const personal = readPersonalView(login);
       setHasPersonalView(personal != null);
-      // Общий вид грузим всегда (нужен для аватара + переключения); применяем — если активен он.
-      let sharedState: FlowViewState | null = null;
+      // МГНОВЕННО применяем локального кандидата: личный вид (localStorage) либо
+      // кэш последнего общего — фильтр/сорт встают сразу, не дожидаясь сети
+      // («фильтр встаёт потом» — жалоба юзера 2026-07-18).
+      const cachedShared = readSharedViewCache();
+      const instant = mode === 'personal' ? personal : cachedShared ? parseFlowView(cachedShared) : null;
+      if (instant) applyFlowView(instant);
+      else lastViewJsonRef.current = EMPTY_FLOW_VIEW_JSON;
+      viewHydratedRef.current = true;
+      const instantJson = lastViewJsonRef.current;
+      // Общий вид с сервера — сверка ФОНОМ (нужен и для аватара/переключения).
+      // Применяем ответ только если (а) активен «Общий», (б) юзер ещё ничего не
+      // менял после мгновенной гидрации, (в) вид реально отличается от кэша.
       try {
         const sv = await flowViewGet(api);
         if (!alive) return;
         sharedValueRef.current = sv.value;
+        writeSharedViewCache(sv.value);
         setHasSharedView(sv.value !== '');
         setSharedAuthor({ updatedBy: sv.updatedBy, updatedByName: sv.updatedByName, updatedAt: sv.updatedAt });
-        sharedState = sv.value ? parseFlowView(sv.value) : null;
+        if (viewModeRef.current === 'shared' && lastViewJsonRef.current === instantJson) {
+          const state = sv.value ? parseFlowView(sv.value) : EMPTY_FLOW_VIEW;
+          const incomingJson = canonicalFlowViewJson(serializeFlowView(deserializeFlowView(state)));
+          if (incomingJson !== lastViewJsonRef.current) applyFlowView(state);
+        }
       } catch {
-        /* сервер недоступен — общий вид пустой */
+        /* сервер недоступен — остаёмся на кэше/пустом виде */
       }
-      if (!alive) return;
-      const active = mode === 'personal' ? personal : sharedState;
-      if (active) applyFlowView(active);
-      else lastViewJsonRef.current = EMPTY_FLOW_VIEW_JSON;
-      viewHydratedRef.current = true;
     })();
     return () => {
       alive = false;
@@ -1224,6 +1246,7 @@ export function FlowSandboxGrid(): JSX.Element {
     const value = String(e.value ?? '');
     const by = e.updated_by ?? '';
     sharedValueRef.current = value;
+    writeSharedViewCache(value);
     setHasSharedView(value !== '');
     setSharedAuthor({ updatedBy: by, updatedByName: e.updated_by_name ?? '', updatedAt: e.updated_at ?? '' });
     if (viewModeRef.current !== 'shared' || by === myLoginRef.current) return;
@@ -1267,6 +1290,7 @@ export function FlowSandboxGrid(): JSX.Element {
           sharedSaveTimerRef.current = null;
         }
         if (viewModeRef.current === 'shared') applyFlowView(EMPTY_FLOW_VIEW);
+        writeSharedViewCache('');
         void flowViewSet(api, '')
           .then((res) => {
             sharedValueRef.current = res.value;
@@ -1303,13 +1327,9 @@ export function FlowSandboxGrid(): JSX.Element {
     );
     return Math.max(NOTE_MIN_WIDTH, layoutWidth - marker - others - 12); // -12: полоса/зазор
   }, [layoutWidth, colWidths, markerWidth, zoom]);
-  // Всплывающая подсказка (полная дата / расчёт % / телефон-срок МОЛ / тех-имя).
-  const [tooltip, setTooltip] = useState<{
-    y: number;
-    leftPx?: number;
-    rightPx?: number;
-    lines: FlowCardLine[];
-  } | null>(null);
+  // Всплывающая подсказка — LiveValue (hover шлёт значение на каждую смену ячейки;
+  // рендерит его FlowHoverTooltip, монолит не перерисовывается).
+  const tooltipLive = useRef(createLiveValue<FlowHoverTip | null>(null)).current;
   const lastHoverRef = useRef<string>('');
   const hoverCellRef = useRef<[number, number] | null>(null);
   // Звонок по телефону МОЛ — через общий диалог-подтверждение (как в Цеха/МОЛ).
@@ -1407,7 +1427,7 @@ export function FlowSandboxGrid(): JSX.Element {
   const cellAnchorRef = useRef<[number, number] | null>(null);
   const cellFocusRef = useRef<[number, number] | null>(null);
   // Зеркала состояния для глобального слушателя copy (читает актуальное без переподписки).
-  const selectionRef = useRef<GridSelection>(selection);
+  const selectionRef = useRef<GridSelection>(EMPTY_GRID_SELECTION);
   const viewRowsRef = useRef<FlowSandboxRow[]>([]);
   const rowsRef = useRef<FlowSandboxRow[]>(rows);
   // Активная сортировка по id колонки — drawHeader читает ref и рисует стрелку
@@ -2036,7 +2056,7 @@ export function FlowSandboxGrid(): JSX.Element {
   const applySortNow = useCallback(() => {
     orderMapRef.current = null;
     setOrderEpoch((e) => e + 1);
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
 
   // Активен ли «умный» фильтр MAT (любое под-поле) — для индикатора заголовка + funnel.
@@ -2054,8 +2074,8 @@ export function FlowSandboxGrid(): JSX.Element {
   // и не сбивает фильтр/выделение в гриде (общее правило, см. modal-guard).
   useBlockingModal(molError !== null);
 
-  // Зеркала для глобального слушателя copy (см. выше).
-  selectionRef.current = selection;
+  // Зеркала для глобального слушателя copy (см. выше). selectionRef обновляет
+  // handleSelectionChange (живёт вне рендера — выделение больше не state листа).
   viewRowsRef.current = viewRows;
   rowsRef.current = rows;
   gridPxWidthRef.current = size.width; // диапазон «вжуха» = ширина видимого листа
@@ -2068,107 +2088,8 @@ export function FlowSandboxGrid(): JSX.Element {
     ...(ordFilterActive ? ['ord'] : []),
   ]);
 
-  // Агрегаты выделения для строки-счётчика: кол-во / сумма / среднее / мин / макс.
-  // Тяжёлые агрегаты считаем только до STAT_CAP ячеек (защита от лагов).
-  const selStats = useMemo(() => {
-    const colCount = activeColsRef.current.length;
-    const rowCount = viewRows.length;
-    const cur = selection.current;
-    let count = 0;
-    if (cur) {
-      count = cur.range.width * cur.range.height;
-      for (const r of cur.rangeStack) count += r.width * r.height;
-    } else if (selection.columns.length > 0) {
-      count = selection.columns.length * rowCount;
-    } else if (selection.rows.length > 0) {
-      count = selection.rows.length * colCount;
-    }
-    if (count === 0) return null;
-
-    // Агрегаты ГРУППИРУЕМ ПО ЕДИНИЦЕ ИЗМЕРЕНИЯ — нельзя складывать тонны со штуками или
-    // комплектами! QTY → ЕИ строки (шт/т/кмп/…); КГ → «кг»; V → «м³». Каждая ЕИ — свой счёт.
-    const byUnit = new Map<string, { count: number; sum: number; min: number; max: number }>();
-    if (count <= STAT_CAP) {
-      const add = (c: number, r: number) => {
-        const spec = activeColsRef.current[c];
-        const row = viewRows[r];
-        if (!spec || !row || spec.kind !== 'number') return;
-        const v = row[spec.id];
-        const n = typeof v === 'number' ? v : Number(v);
-        if (!Number.isFinite(n)) return;
-        const unit =
-          spec.id === 'qty'
-            ? (row.uom || '').trim() || '—'
-            : spec.id === 'kg'
-              ? 'кг'
-              : spec.id === 'v'
-                ? 'м³'
-                : '—';
-        let g = byUnit.get(unit);
-        if (!g) {
-          g = { count: 0, sum: 0, min: Infinity, max: -Infinity };
-          byUnit.set(unit, g);
-        }
-        g.count++;
-        g.sum += n;
-        if (n < g.min) g.min = n;
-        if (n > g.max) g.max = n;
-      };
-      if (cur) {
-        for (const rect of [cur.range, ...cur.rangeStack]) {
-          for (let r = rect.y; r < rect.y + rect.height; r++) {
-            for (let c = rect.x; c < rect.x + rect.width; c++) add(c, r);
-          }
-        }
-      } else if (selection.columns.length > 0) {
-        for (const c of selection.columns) for (let r = 0; r < rowCount; r++) add(c, r);
-      } else if (selection.rows.length > 0) {
-        for (const r of selection.rows) for (let c = 0; c < colCount; c++) add(c, r);
-      }
-    }
-    const units = [...byUnit.entries()]
-      .map(([unit, g]) => ({ unit, count: g.count, sum: g.sum, avg: g.sum / g.count, min: g.min, max: g.max }))
-      .sort((a, b) => b.count - a.count);
-    return { count, units };
-  }, [selection, viewRows]);
-
-  // Транспортная норма по выделению: если выделены ячейки колонки QTY строк ОДНОЙ
-  // номенклатуры в рамках ОДНОГО отправителя+получателя — сколько кол-ва НЕ ХВАТАЕТ до
-  // нормы (просто = MIN QTY − Σ) и с учётом толеранса (MIN QTY/1.5 − Σ, порог снятия «мало»).
-  const selNorm = useMemo(() => {
-    const cur = selection.current;
-    if (!cur) return null;
-    const qtyCol = activeColsRef.current.findIndex((c) => c.id === 'qty');
-    if (qtyCol < 0) return null;
-    const rowsSet = new Set<number>();
-    for (const rect of [cur.range, ...cur.rangeStack]) {
-      if (qtyCol < rect.x || qtyCol >= rect.x + rect.width) continue;
-      for (let r = rect.y; r < rect.y + rect.height; r++) rowsSet.add(r);
-    }
-    if (rowsSet.size === 0) return null;
-    let fr = '', to = '', noKey = '', uom = '', sum = 0, n = 0;
-    for (const r of rowsSet) {
-      const row = viewRows[r];
-      if (!row || String(row.day_wk ?? '').toUpperCase() === 'OFF') continue;
-      const q = typeof row.qty === 'number' ? row.qty : Number(row.qty);
-      if (!Number.isFinite(q)) continue;
-      const k = normVghKey(row.no_num);
-      if (n === 0) { fr = row.fr; to = row.to_wh; noKey = k; uom = (row.uom || '').trim(); }
-      else if (row.fr !== fr || row.to_wh !== to || k !== noKey) return null; // разные связки — норма не применима
-      sum += q; n++;
-    }
-    if (n === 0 || !noKey) return null;
-    const minQty = vghByKey.get(noKey)?.min_qty;
-    if (minQty == null || !Number.isFinite(minQty)) return null;
-    // needPlain — добрать до MIN QTY напрямую; needTol — добрать так, чтобы (Σ+need)×1.5 = MIN QTY
-    // (порог снятия «мало»): need = MIN QTY/1.5 − Σ. Юзер 2026-06-07.
-    return {
-      uom: uom || '—',
-      minQty,
-      needPlain: Math.max(0, minQty - sum),
-      needTol: Math.max(0, minQty / MIN_QTY_TOLERANCE - sum),
-    };
-  }, [selection, viewRows, vghByKey]);
+  // Агрегаты выделения (счётчик/суммы/норма) считает и рендерит ОТДЕЛЬНЫЙ мелкий
+  // компонент FlowSelStatsBar (подписан на selLive) — протяжка мыши не трогает монолит.
 
   // Уникальные значения колонки открытого меню (для чек-листа фильтра). Порядок чек-листа
   // = порядок В ТАБЛИЦЕ, а не алфавит, для семантических колонок: CLST (Нет→дни→кластер
@@ -2838,6 +2759,23 @@ export function FlowSandboxGrid(): JSX.Element {
     syncEdits(changes);
   }, [molByWarehouse, rows, molsForWh, writeCells, syncEdits]);
 
+  // Дисковый кэш строк (переживает перезапуск приложения): сессионного кэша нет →
+  // гидрируемся с диска мгновенно (таблица видна сразу, стабильная и с МОЛами —
+  // persons-кэш грузится параллельно), сервер догоняет фоновым fetch'ем ниже.
+  useEffect(() => {
+    if (flowRowsCache !== null) return; // в сессии уже были данные — диск не нужен
+    let alive = true;
+    void loadFlowDiskCache<FlowSandboxRow[]>(FLOW_DISK_CACHE_ROWS).then((cached) => {
+      if (!alive || !cached || cached.length === 0) return;
+      if (rowsRef.current.length > 0) return; // сервер успел раньше — не затираем
+      setRows(cached);
+      setLoading(false);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Живое чтение базы формирования при монтировании. Если кэш есть — грид уже
   // показан из него, спиннера нет; всё равно тянем свежее в фоне (refetch догоняет
   // правки, пропущенные пока раздел был закрыт), затем реалтайм.
@@ -2864,9 +2802,12 @@ export function FlowSandboxGrid(): JSX.Element {
   }, []);
 
   // Держим модульный кэш в актуальном состоянии (fetch / правки / WS) — для мгновенного
-  // повторного входа в раздел.
+  // повторного входа в раздел; диск — для мгновенного старта после перезапуска.
   useEffect(() => {
-    if (rows.length > 0) flowRowsCache = rows;
+    if (rows.length > 0) {
+      flowRowsCache = rows;
+      saveFlowDiskCacheDebounced(FLOW_DISK_CACHE_ROWS, () => rowsRef.current);
+    }
   }, [rows]);
 
   // Реалтайм: правки других клиентов прилетают строками — применяем по версии; + удалённые
@@ -3142,7 +3083,7 @@ export function FlowSandboxGrid(): JSX.Element {
   const handlePaste = useCallback(
     (_target: Item, values: readonly (readonly string[])[]): boolean => {
       const single = values.length === 1 && values[0]?.length === 1 ? values[0][0] : undefined;
-      const range = selection.current?.range;
+      const range = selectionRef.current.current?.range;
       if (single !== undefined && range && (range.width > 1 || range.height > 1)) {
         const edits: { location: Item; value: EditableGridCell }[] = [];
         for (let r = range.y; r < range.y + range.height; r++) {
@@ -3158,10 +3099,8 @@ export function FlowSandboxGrid(): JSX.Element {
       }
       return true;
     },
-    [selection, applyEdits],
+    [applyEdits],
   );
-
-  const selectedRowCount = selection.rows.length;
 
   // Удалить строки источника по id (чистая операция без истории — общий путь
   // для удаления и для повтора удаления).
@@ -3198,14 +3137,14 @@ export function FlowSandboxGrid(): JSX.Element {
       if (ids.length === 0) return false;
       const gone = new Set(ids);
       setRows((prev) => prev.filter((row) => !gone.has(row.id))); // оптимистично
-      setSelection(emptySelection());
+      clearSelection();
       void flowWorkflowDelete(api, ids).catch(() => { /* офлайн — WS/перезагрузка догонит */ });
       return true;
     },
     [viewRows],
   );
 
-  const deleteSelectedRows = useCallback(() => { deleteOffRows(selection.rows); }, [selection, deleteOffRows]);
+  const deleteSelectedRows = useCallback(() => { deleteOffRows(selectionRef.current.rows); }, [deleteOffRows]);
 
   // Клавиша Delete/Backspace: выделены СТРОКИ — удаляем OFF на сервере; иначе —
   // стандартная очистка ячеек Glide, которая идёт через applyEdits (в истории).
@@ -3291,13 +3230,11 @@ export function FlowSandboxGrid(): JSX.Element {
     syncHistory();
   }, [writeCells, syncEdits, removeRowsByIds, syncHistory]);
 
-  // Glide шлёт сюда изменения выделения (клик/Shift/Ctrl). Запоминаем якорь+фокус
-  // одиночно выбранной колонки/строки/ячейки (для drag и Shift+стрелок) и снимаем рамку
-  // «скопировано» при любой смене выделения.
-  const handleSelectionChange = useCallback((sel: GridSelection) => {
-    // Клик/протяжка по колонке КЛАСТЕРА (col 0) → выделяем ЦЕЛЫЕ строки, но ТОЛЬКО OFF
-    // (их можно удалить с сервера). Не-OFF в диапазоне игнорируем → колонка CLST работает
-    // как «номера строк» для удаления OFF. (Выделение строго в col 0: width 1, x 0.)
+  // Преобразование выделения ДО применения внутри FlowGridEditor: клик/протяжка по
+  // колонке КЛАСТЕРА (col 0) → выделяем ЦЕЛЫЕ строки, но ТОЛЬКО OFF (их можно удалить
+  // с сервера). Не-OFF в диапазоне игнорируем → колонка CLST работает как «номера
+  // строк» для удаления OFF. Трогает ТОЛЬКО refs (не state) — вызывается на tick мыши.
+  const transformSelection = useCallback((sel: GridSelection): GridSelection => {
     const cur = sel.current;
     if (cur && sel.columns.length === 0 && sel.rows.length === 0 && cur.range.x === 0 && cur.range.width === 1) {
       const y = cur.range.y;
@@ -3314,12 +3251,19 @@ export function FlowSandboxGrid(): JSX.Element {
         const first = rowsSel.first();
         rowAnchorRef.current = h === 1 && first != null ? first : null;
         rowFocusRef.current = rowAnchorRef.current;
-        setCopiedRegions([]);
-        setSelection({ columns: CompactSelection.empty(), rows: rowsSel, current: undefined });
-        return;
+        return { columns: CompactSelection.empty(), rows: rowsSel, current: undefined };
       }
-      // нет OFF в выделении кластера → обычное выделение ячейки (ниже).
+      // нет OFF в выделении кластера → обычное выделение ячейки.
     }
+    return sel;
+  }, []);
+
+  // Применённое выделение из FlowGridEditor (после transformSelection). Запоминаем
+  // якорь+фокус одиночно выбранной колонки/строки/ячейки (для drag и Shift+стрелок),
+  // снимаем рамку «скопировано», зеркалим в ref (действия) и LiveValue (статус-бар).
+  // СТАБИЛЬНЫЙ и БЕЗ тяжёлого state — вызывается на каждый tick протяжки.
+  const handleSelectionChange = useCallback((sel: GridSelection) => {
+    const cur = sel.current;
     if (sel.columns.length === 1 && sel.rows.length === 0) {
       const c = sel.columns.first() ?? null;
       colAnchorRef.current = c;
@@ -3348,10 +3292,12 @@ export function FlowSandboxGrid(): JSX.Element {
       cellFocusRef.current = null;
     }
     // Снимаем подсветку «скопировано» при ЛЮБОЙ смене выделения — после ухода
-    // не должно оставаться помеченной области (правка юзера).
-    setCopiedRegions([]);
-    setSelection(sel);
-  }, []);
+    // не должно оставаться помеченной области (правка юзера). Бейл на пустом
+    // массиве — иначе каждый tick протяжки ре-рендерил бы монолит новым [].
+    setCopiedRegions((prev) => (prev.length === 0 ? prev : []));
+    selectionRef.current = sel;
+    selLive.set(sel);
+  }, [selLive]);
 
   // Наша надстройка над Glide: перетаскивание курсором по ЗАГОЛОВКАМ выделяет
   // колонки (как строки слева). Glide сам колонки drag'ом не тянет — расширяем
@@ -3383,7 +3329,7 @@ export function FlowSandboxGrid(): JSX.Element {
             // края листа — влево.
             const cw = measureRef.current?.clientWidth ?? 0;
             const toLeft = args.bounds.x + args.bounds.width / 2 > cw / 2;
-            setTooltip({
+            tooltipLive.set({
               y: args.bounds.y,
               lines,
               ...(toLeft
@@ -3391,7 +3337,7 @@ export function FlowSandboxGrid(): JSX.Element {
                 : { leftPx: args.bounds.x + args.bounds.width + 8 }),
             });
           } else {
-            setTooltip(null);
+            tooltipLive.set(null);
           }
         }
       } else {
@@ -3401,7 +3347,7 @@ export function FlowSandboxGrid(): JSX.Element {
         }
         if (lastHoverRef.current !== '') {
           lastHoverRef.current = '';
-          setTooltip(null);
+          tooltipLive.set(null);
         }
       }
       // Надстройка над Glide: перетаскивание по ЗАГОЛОВКАМ выделяет колонки.
@@ -3410,7 +3356,7 @@ export function FlowSandboxGrid(): JSX.Element {
       const anchor = colAnchorRef.current;
       if (col < 0 || anchor === null) return;
       colFocusRef.current = col;
-      setSelection({
+      applySelection({
         columns: CompactSelection.fromSingleSelection([
           Math.min(anchor, col),
           Math.max(anchor, col) + 1,
@@ -3459,7 +3405,7 @@ export function FlowSandboxGrid(): JSX.Element {
       const focus = Math.max(0, Math.min(lastCol, colFocusRef.current + (e.key === 'ArrowRight' ? 1 : -1)));
       colFocusRef.current = focus;
       const a = colAnchorRef.current;
-      setSelection({
+      applySelection({
         columns: CompactSelection.fromSingleSelection([Math.min(a, focus), Math.max(a, focus) + 1]),
         rows: CompactSelection.empty(),
         current: undefined,
@@ -3476,7 +3422,7 @@ export function FlowSandboxGrid(): JSX.Element {
       const focus = Math.max(0, Math.min(lastRow, rowFocusRef.current + (e.key === 'ArrowDown' ? 1 : -1)));
       rowFocusRef.current = focus;
       const a = rowAnchorRef.current;
-      setSelection({
+      applySelection({
         columns: CompactSelection.empty(),
         rows: CompactSelection.fromSingleSelection([Math.min(a, focus), Math.max(a, focus) + 1]),
         current: undefined,
@@ -3500,7 +3446,7 @@ export function FlowSandboxGrid(): JSX.Element {
       else if (e.key === 'ArrowRight') fc = Math.min(lastCol, fc + 1);
       else fc = Math.max(0, fc - 1);
       cellFocusRef.current = [fc, fr];
-      setSelection({
+      applySelection({
         columns: CompactSelection.empty(),
         rows: CompactSelection.empty(),
         current: {
@@ -3540,19 +3486,19 @@ export function FlowSandboxGrid(): JSX.Element {
       }
       return [...prev, { colId, dir }];
     });
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
   /** Убрать сортировку конкретной колонки (остальные уровни сохраняются). */
   const clearColumnSort = useCallback((colId: string) => {
     orderMapRef.current = null;
     setSortLevels((prev) => prev.filter((l) => l.colId !== colId));
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
   /** Сбросить ВСЮ умную сортировку — возврат к порядку WF_SORT (кнопка «×» в панели). */
   const clearAllSorts = useCallback(() => {
     orderMapRef.current = null;
     setSortLevels([]);
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
 
   const handleSort = useCallback(
@@ -3583,7 +3529,7 @@ export function FlowSandboxGrid(): JSX.Element {
         ...prev,
         [colId]: updater(prev[colId] ?? { search: '', excluded: new Set<string>() }),
       }));
-      setSelection(emptySelection());
+      clearSelection();
     },
     [],
   );
@@ -3630,7 +3576,7 @@ export function FlowSandboxGrid(): JSX.Element {
         ...prev,
         [sub]: updater(prev[sub] ?? { search: '', excluded: new Set<string>() }),
       }));
-      setSelection(emptySelection());
+      clearSelection();
     },
     [],
   );
@@ -3660,7 +3606,7 @@ export function FlowSandboxGrid(): JSX.Element {
   );
   const handleMatClearAll = useCallback(() => {
     setMatFilter({});
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
 
   // — «умный» фильтр ORD (заказы целиком + отдельные позиции) —
@@ -3677,7 +3623,7 @@ export function FlowSandboxGrid(): JSX.Element {
       }
       return { orders, positions };
     });
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
   const handleOrdTogglePosition = useCallback((ord: string, it: string) => {
     const key = `${ord}|${it}`;
@@ -3687,11 +3633,11 @@ export function FlowSandboxGrid(): JSX.Element {
       else positions.add(key);
       return { orders: prev.orders, positions };
     });
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
   const handleOrdClearAll = useCallback(() => {
     setOrdFilter({ orders: new Set(), positions: new Set() });
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
   const handleOrdSelectAllPositions = useCallback((ord: string) => {
     // «Все» позиции заказа = весь заказ: убираем точечные ограничения, заказ выбран.
@@ -3702,7 +3648,7 @@ export function FlowSandboxGrid(): JSX.Element {
       orders.add(ord);
       return { orders, positions };
     });
-    setSelection(emptySelection());
+    clearSelection();
   }, []);
 
   // Масштаб: единый множитель для шрифтов, отступов и высоты строки.
@@ -4070,7 +4016,7 @@ export function FlowSandboxGrid(): JSX.Element {
       // кадрах, после перерисовки — точное приземление за один клик. Если уже на месте —
       // повторы безвредны (no-op).
       fly();
-      setSelection({
+      applySelection({
         columns: CompactSelection.empty(),
         rows: CompactSelection.empty(),
         current: { cell: [colIndex, vr], range: { x: colIndex, y: vr, width: 1, height: 1 }, rangeStack: [] },
@@ -4263,29 +4209,7 @@ export function FlowSandboxGrid(): JSX.Element {
           reorderOn={colReorderOn}
           onToggleReorder={toggleColReorder}
         />
-        {selectedRowCount > 0 && (
-          <div className="ml-auto flex items-center gap-2 text-[12px] text-[#6B6862]">
-            <span className="tabular-nums text-[#2A2925]">Выбрано строк: {selectedRowCount}</span>
-            {/* §15: отметить выделенные «отправлено на согласование» (галочка + дата сегодня). */}
-            <button
-              type="button"
-              onClick={markApproved}
-              title="Отметить выделенные отправленными на согласование (ставит галочку и сегодняшнюю дату в СОГЛ.)"
-              className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#1F7A33] transition-colors hover:border-[#1F7A33]/50"
-            >
-              <CheckCircle2 size={13} strokeWidth={1.75} />
-              Согласование
-            </button>
-            <button
-              type="button"
-              onClick={deleteSelectedRows}
-              className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
-            >
-              <Trash2 size={13} strokeWidth={1.75} />
-              Удалить
-            </button>
-          </div>
-        )}
+        <FlowSelRowsActions selLive={selLive} onApprove={markApproved} onDelete={deleteSelectedRows} />
       </div>
 
       <div
@@ -4297,7 +4221,7 @@ export function FlowSandboxGrid(): JSX.Element {
             hoverCellRef.current = null;
           }
           lastHoverRef.current = '';
-          setTooltip(null);
+          tooltipLive.set(null);
         }}
       >
         {loading && (
@@ -4321,8 +4245,9 @@ export function FlowSandboxGrid(): JSX.Element {
           />
         )}
         {size.width > 0 && size.height > 0 && !USE_HTML_GRID && (
-          <DataEditor
-            ref={gridRef}
+          <FlowGridEditor
+            ref={editorRef}
+            gridRef={gridRef}
             theme={gridTheme}
             width={Math.min(size.width, contentWidth)}
             height={size.height}
@@ -4337,8 +4262,8 @@ export function FlowSandboxGrid(): JSX.Element {
             onHeaderMenuClick={handleHeaderMenuClick}
             drawCell={drawCell}
             drawHeader={drawHeader}
-            gridSelection={selection}
-            onGridSelectionChange={handleSelectionChange}
+            transformSelection={transformSelection}
+            onSelectionChange={handleSelectionChange}
             onItemHovered={handleItemHovered}
             onKeyDown={handleKeyDown}
             onVisibleRegionChanged={handleVisibleRegionChanged}
@@ -4362,70 +4287,14 @@ export function FlowSandboxGrid(): JSX.Element {
             keybindings={{ search: false, delete: 'Backspace|Delete' }}
           />
         )}
-        {tooltip && (
-          <div
-            className="pointer-events-none absolute z-30 max-w-[300px] rounded-md border border-white/10 bg-[#302F2D] px-2.5 py-1.5 text-[12px] leading-relaxed shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
-            style={{ top: tooltip.y, left: tooltip.leftPx, right: tooltip.rightPx }}
-          >
-            <CardLines lines={tooltip.lines} />
-          </div>
-        )}
+        <FlowHoverTooltip live={tooltipLive} />
       </div>
 
       {/* Статус-строка снизу (Excel-style) — ВСЕГДА видна. Слева — агрегаты выделения
-          (как было), справа — объём: «Показано X из Y» при фильтре, иначе «Y строк». */}
+          (отдельный компонент на LiveValue — протяжка не трогает монолит), справа —
+          объём: «Показано X из Y» при фильтре, иначе «Y строк». */}
       <div className="flex shrink-0 items-center gap-3 border-t border-black/[0.06] px-4 py-1.5 text-[12px] text-[#6B6862]">
-        {selStats && (
-          <>
-            <span>
-              Выделено:{' '}
-              <span className="tabular-nums text-[#2A2925]">{selStats.count.toLocaleString('ru-RU')}</span>
-            </span>
-            {/* Одна ЕИ — агрегаты в строку; несколько ЕИ — стрелка → табличка по каждой ЕИ
-                (как в Google), чтобы тонны/штуки/комплекты не смешивались и всё влезло. */}
-            {selStats.units.length === 1 && (
-              <>
-                <span className="text-black/25">·</span>
-                <span className="rounded bg-black/[0.06] px-1.5 py-px text-[11px] font-semibold text-[#2A2925]">
-                  {selStats.units[0]!.unit}
-                </span>
-                <FlowStat label="Сумма" value={selStats.units[0]!.sum} unit={selStats.units[0]!.unit} />
-                <FlowStat label="Среднее" value={selStats.units[0]!.avg} unit={selStats.units[0]!.unit} />
-                <FlowStat label="Мин" value={selStats.units[0]!.min} unit={selStats.units[0]!.unit} />
-                <FlowStat label="Макс" value={selStats.units[0]!.max} unit={selStats.units[0]!.unit} />
-              </>
-            )}
-            {selStats.units.length >= 2 && (
-              <>
-                <span className="text-black/25">·</span>
-                <FlowUnitStatsPopover units={selStats.units} />
-              </>
-            )}
-          </>
-        )}
-        {/* Транспортная норма по выделению (одна номенклатура + один отправитель/получатель):
-            сколько кол-ва не хватает до нормы — просто и с толерансом ×1.5. */}
-        {selNorm && (
-          <>
-            <span className="text-black/25">·</span>
-            <span className="rounded bg-accent-clay/15 px-1.5 py-px text-[11px] font-semibold text-[#8A4B2E]">
-              норма {selNorm.minQty.toLocaleString('ru-RU', { maximumFractionDigits: 3 })} {selNorm.uom}
-            </span>
-            <span>
-              не хватает{' '}
-              <span className="tabular-nums font-semibold text-[#2A2925]">
-                {selNorm.needPlain.toLocaleString('ru-RU', { maximumFractionDigits: 3 })} {selNorm.uom}
-              </span>
-            </span>
-            <span className="text-black/25">·</span>
-            <span>
-              с толерансом{' '}
-              <span className="tabular-nums font-semibold text-[#2A2925]">
-                {selNorm.needTol.toLocaleString('ru-RU', { maximumFractionDigits: 3 })} {selNorm.uom}
-              </span>
-            </span>
-          </>
-        )}
+        <FlowSelStatsBar selLive={selLive} viewRows={viewRows} cols={activeColumns} vghByKey={vghByKey} />
         {/* Объём — справа: «Показано X из Y» где Y = АКТИВНЫЕ (не-OFF) строки (юзер 2026-06-14).
             OFF не входят (их счётчик — на тумблере «OFF» вверху). */}
         <span className="ml-auto">
@@ -4570,6 +4439,251 @@ export function FlowSandboxGrid(): JSX.Element {
     </div>
   );
 }
+
+// ── Анти-лаг: выделение/hover-зависимые куски UI — отдельные мелкие компоненты ──
+// Подписаны на LiveValue (flow-live-value) — tick мыши ре-рендерит только их,
+// лист-монолит стоит неподвижно (тот же принцип, что FlowGridEditor).
+
+/** Кол-во выделенных ячеек + агрегаты ПО ЕДИНИЦЕ ИЗМЕРЕНИЯ (нельзя складывать
+ *  тонны со штуками: QTY → ЕИ строки, КГ → «кг», V → «м³»). Тяжёлые агрегаты —
+ *  только до STAT_CAP ячеек (защита от лагов). */
+function buildSelStats(
+  selection: GridSelection,
+  viewRows: readonly FlowSandboxRow[],
+  cols: readonly FlowColumnSpec[],
+): { count: number; units: FlowUnitStat[] } | null {
+  const colCount = cols.length;
+  const rowCount = viewRows.length;
+  const cur = selection.current;
+  let count = 0;
+  if (cur) {
+    count = cur.range.width * cur.range.height;
+    for (const r of cur.rangeStack) count += r.width * r.height;
+  } else if (selection.columns.length > 0) {
+    count = selection.columns.length * rowCount;
+  } else if (selection.rows.length > 0) {
+    count = selection.rows.length * colCount;
+  }
+  if (count === 0) return null;
+
+  const byUnit = new Map<string, { count: number; sum: number; min: number; max: number }>();
+  if (count <= STAT_CAP) {
+    const add = (c: number, r: number) => {
+      const spec = cols[c];
+      const row = viewRows[r];
+      if (!spec || !row || spec.kind !== 'number') return;
+      const v = row[spec.id];
+      const n = typeof v === 'number' ? v : Number(v);
+      if (!Number.isFinite(n)) return;
+      const unit =
+        spec.id === 'qty'
+          ? (row.uom || '').trim() || '—'
+          : spec.id === 'kg'
+            ? 'кг'
+            : spec.id === 'v'
+              ? 'м³'
+              : '—';
+      let g = byUnit.get(unit);
+      if (!g) {
+        g = { count: 0, sum: 0, min: Infinity, max: -Infinity };
+        byUnit.set(unit, g);
+      }
+      g.count++;
+      g.sum += n;
+      if (n < g.min) g.min = n;
+      if (n > g.max) g.max = n;
+    };
+    if (cur) {
+      for (const rect of [cur.range, ...cur.rangeStack]) {
+        for (let r = rect.y; r < rect.y + rect.height; r++) {
+          for (let c = rect.x; c < rect.x + rect.width; c++) add(c, r);
+        }
+      }
+    } else if (selection.columns.length > 0) {
+      for (const c of selection.columns) for (let r = 0; r < rowCount; r++) add(c, r);
+    } else if (selection.rows.length > 0) {
+      for (const r of selection.rows) for (let c = 0; c < colCount; c++) add(c, r);
+    }
+  }
+  const units = [...byUnit.entries()]
+    .map(([unit, g]) => ({ unit, count: g.count, sum: g.sum, avg: g.sum / g.count, min: g.min, max: g.max }))
+    .sort((a, b) => b.count - a.count);
+  return { count, units };
+}
+
+/** Транспортная норма по выделению: ячейки QTY строк ОДНОЙ номенклатуры в рамках
+ *  ОДНОГО отправителя+получателя — сколько НЕ ХВАТАЕТ до нормы (просто = MIN QTY − Σ)
+ *  и с толерансом (MIN QTY/1.5 − Σ, порог снятия «мало»). Юзер 2026-06-07. */
+function buildSelNorm(
+  selection: GridSelection,
+  viewRows: readonly FlowSandboxRow[],
+  cols: readonly FlowColumnSpec[],
+  vghByKey: ReadonlyMap<string, VghRow>,
+): { uom: string; minQty: number; needPlain: number; needTol: number } | null {
+  const cur = selection.current;
+  if (!cur) return null;
+  const qtyCol = cols.findIndex((c) => c.id === 'qty');
+  if (qtyCol < 0) return null;
+  const rowsSet = new Set<number>();
+  for (const rect of [cur.range, ...cur.rangeStack]) {
+    if (qtyCol < rect.x || qtyCol >= rect.x + rect.width) continue;
+    for (let r = rect.y; r < rect.y + rect.height; r++) rowsSet.add(r);
+  }
+  if (rowsSet.size === 0) return null;
+  let fr = '', to = '', noKey = '', uom = '', sum = 0, n = 0;
+  for (const r of rowsSet) {
+    const row = viewRows[r];
+    if (!row || String(row.day_wk ?? '').toUpperCase() === 'OFF') continue;
+    const q = typeof row.qty === 'number' ? row.qty : Number(row.qty);
+    if (!Number.isFinite(q)) continue;
+    const k = normVghKey(row.no_num);
+    if (n === 0) { fr = row.fr; to = row.to_wh; noKey = k; uom = (row.uom || '').trim(); }
+    else if (row.fr !== fr || row.to_wh !== to || k !== noKey) return null; // разные связки — норма не применима
+    sum += q; n++;
+  }
+  if (n === 0 || !noKey) return null;
+  const minQty = vghByKey.get(noKey)?.min_qty;
+  if (minQty == null || !Number.isFinite(minQty)) return null;
+  return {
+    uom: uom || '—',
+    minQty,
+    needPlain: Math.max(0, minQty - sum),
+    needTol: Math.max(0, minQty / MIN_QTY_TOLERANCE - sum),
+  };
+}
+
+/** Левая часть статус-строки: агрегаты выделения + транспортная норма. */
+const FlowSelStatsBar = memo(function FlowSelStatsBar({
+  selLive,
+  viewRows,
+  cols,
+  vghByKey,
+}: {
+  selLive: LiveValue<GridSelection>;
+  viewRows: readonly FlowSandboxRow[];
+  cols: readonly FlowColumnSpec[];
+  vghByKey: ReadonlyMap<string, VghRow>;
+}) {
+  const selection = useLiveValue(selLive);
+  const selStats = useMemo(() => buildSelStats(selection, viewRows, cols), [selection, viewRows, cols]);
+  const selNorm = useMemo(
+    () => buildSelNorm(selection, viewRows, cols, vghByKey),
+    [selection, viewRows, cols, vghByKey],
+  );
+  if (!selStats && !selNorm) return null;
+  return (
+    <>
+      {selStats && (
+        <>
+          <span>
+            Выделено:{' '}
+            <span className="tabular-nums text-[#2A2925]">{selStats.count.toLocaleString('ru-RU')}</span>
+          </span>
+          {/* Одна ЕИ — агрегаты в строку; несколько ЕИ — стрелка → табличка по каждой ЕИ
+              (как в Google), чтобы тонны/штуки/комплекты не смешивались и всё влезло. */}
+          {selStats.units.length === 1 && (
+            <>
+              <span className="text-black/25">·</span>
+              <span className="rounded bg-black/[0.06] px-1.5 py-px text-[11px] font-semibold text-[#2A2925]">
+                {selStats.units[0]!.unit}
+              </span>
+              <FlowStat label="Сумма" value={selStats.units[0]!.sum} unit={selStats.units[0]!.unit} />
+              <FlowStat label="Среднее" value={selStats.units[0]!.avg} unit={selStats.units[0]!.unit} />
+              <FlowStat label="Мин" value={selStats.units[0]!.min} unit={selStats.units[0]!.unit} />
+              <FlowStat label="Макс" value={selStats.units[0]!.max} unit={selStats.units[0]!.unit} />
+            </>
+          )}
+          {selStats.units.length >= 2 && (
+            <>
+              <span className="text-black/25">·</span>
+              <FlowUnitStatsPopover units={selStats.units} />
+            </>
+          )}
+        </>
+      )}
+      {/* Транспортная норма по выделению (одна номенклатура + один отправитель/получатель). */}
+      {selNorm && (
+        <>
+          <span className="text-black/25">·</span>
+          <span className="rounded bg-accent-clay/15 px-1.5 py-px text-[11px] font-semibold text-[#8A4B2E]">
+            норма {selNorm.minQty.toLocaleString('ru-RU', { maximumFractionDigits: 3 })} {selNorm.uom}
+          </span>
+          <span>
+            не хватает{' '}
+            <span className="tabular-nums font-semibold text-[#2A2925]">
+              {selNorm.needPlain.toLocaleString('ru-RU', { maximumFractionDigits: 3 })} {selNorm.uom}
+            </span>
+          </span>
+          <span className="text-black/25">·</span>
+          <span>
+            с толерансом{' '}
+            <span className="tabular-nums font-semibold text-[#2A2925]">
+              {selNorm.needTol.toLocaleString('ru-RU', { maximumFractionDigits: 3 })} {selNorm.uom}
+            </span>
+          </span>
+        </>
+      )}
+    </>
+  );
+});
+
+/** Кнопки действий по выделенным СТРОКАМ («Выбрано строк: N · Согласование · Удалить»). */
+const FlowSelRowsActions = memo(function FlowSelRowsActions({
+  selLive,
+  onApprove,
+  onDelete,
+}: {
+  selLive: LiveValue<GridSelection>;
+  onApprove: () => void;
+  onDelete: () => void;
+}) {
+  const selection = useLiveValue(selLive);
+  const n = selection.rows.length;
+  if (n === 0) return null;
+  return (
+    <div className="ml-auto flex items-center gap-2 text-[12px] text-[#6B6862]">
+      <span className="tabular-nums text-[#2A2925]">Выбрано строк: {n}</span>
+      {/* §15: отметить выделенные «отправлено на согласование» (галочка + дата сегодня). */}
+      <button
+        type="button"
+        onClick={onApprove}
+        title="Отметить выделенные отправленными на согласование (ставит галочку и сегодняшнюю дату в СОГЛ.)"
+        className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#1F7A33] transition-colors hover:border-[#1F7A33]/50"
+      >
+        <CheckCircle2 size={13} strokeWidth={1.75} />
+        Согласование
+      </button>
+      <button
+        type="button"
+        onClick={onDelete}
+        className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
+      >
+        <Trash2 size={13} strokeWidth={1.75} />
+        Удалить
+      </button>
+    </div>
+  );
+});
+
+/** Hover-подсказка ячейки (полная дата / расчёт % / телефон-срок МОЛ / тех-имя). */
+interface FlowHoverTip {
+  y: number;
+  leftPx?: number;
+  rightPx?: number;
+  lines: FlowCardLine[];
+}
+const FlowHoverTooltip = memo(function FlowHoverTooltip({ live }: { live: LiveValue<FlowHoverTip | null> }) {
+  const tooltip = useLiveValue(live);
+  if (!tooltip) return null;
+  return (
+    <div
+      className="pointer-events-none absolute z-30 max-w-[300px] rounded-md border border-white/10 bg-[#302F2D] px-2.5 py-1.5 text-[12px] leading-relaxed shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+      style={{ top: tooltip.y, left: tooltip.leftPx, right: tooltip.rightPx }}
+    >
+      <CardLines lines={tooltip.lines} />
+    </div>
+  );
+});
 
 /** Строки карточки/подсказки: пилюля МОЛ (статус) либо текст (тех-имя без переноса). */
 function CardLines({ lines }: { lines: FlowCardLine[] }) {

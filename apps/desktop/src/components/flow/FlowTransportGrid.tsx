@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   CompactSelection,
-  DataEditor,
   GridCellKind,
   type DataEditorRef,
   type DrawCellCallback,
@@ -40,6 +39,7 @@ import { cn } from '@/lib/cn';
 import { useWsEvent } from '@/lib/ws';
 import { sessionStore } from '@/lib/token-store';
 import { formatMobilePhone, molStatusKind } from '@/lib/mol-format';
+import { loadFlowDiskCache, saveFlowDiskCacheDebounced } from '@/lib/flow-disk-cache';
 import { usePersonsStore } from '@/lib/persons-store';
 import { initPersons } from '@/lib/persons-repo';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
@@ -48,6 +48,8 @@ import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from '
 import { flowStackRenderer, type FlowStackCell } from './flow-stack-cell';
 import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
 import { colRowSelection } from './flow-grid-selection';
+import { FlowGridEditor, EMPTY_GRID_SELECTION, type FlowGridEditorHandle } from './FlowGridEditor';
+import { createLiveValue, useLiveValue, type LiveValue } from './flow-live-value';
 import { useProdCalendarStore } from '@/lib/prod-calendar';
 import { isShiftUndershoot } from './flow-transport-shift';
 import { FlowSearchPanel } from './FlowSearchPanel';
@@ -399,6 +401,8 @@ export function workIsSixPlus(w: string): boolean {
 
 // Кэш на сессию (мгновенный повторный вход, потом refetch + реалтайм).
 let trRowsCache: FlowTransportRow[] | null = null;
+/** Имя дискового кэша строк Транспорта (pyn:cache, шифрованный). */
+const FLOW_DISK_CACHE_TR = 'flow_rows_transport';
 let trVehCache: FlowVehicle[] | null = null;
 /** Позиция скролла грида + фильтр дней — восстанавливаем при возврате в раздел (ТЗ п.4). */
 let trScrollCache: { col: number; row: number } | null = null;
@@ -437,10 +441,22 @@ export function FlowTransportGrid(): JSX.Element {
   }, []);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
-  const [selection, setSelection] = useState<GridSelection>({
-    columns: CompactSelection.empty(),
-    rows: CompactSelection.empty(),
-  });
+  // Выделение живёт ВНУТРИ FlowGridEditor (анти-лаг, паттерн Плана/Формирования):
+  // протяжка мыши не ре-рендерит этот монолит. Действия читают selectionRef,
+  // счётчики «Выбрано» — мелкие компоненты на LiveValue.
+  const editorRef = useRef<FlowGridEditorHandle | null>(null);
+  const selLive = useRef(createLiveValue<GridSelection>(EMPTY_GRID_SELECTION)).current;
+  const selectionRef = useRef<GridSelection>(EMPTY_GRID_SELECTION);
+  const applySelection = useCallback((sel: GridSelection) => {
+    editorRef.current?.setSelection(sel);
+  }, []);
+  const clearSelection = useCallback(() => {
+    editorRef.current?.setSelection(EMPTY_GRID_SELECTION);
+  }, []);
+  const handleSelectionChange = useCallback((sel: GridSelection) => {
+    selectionRef.current = sel;
+    selLive.set(sel);
+  }, [selLive]);
   // Фильтр дней. Статус — только колоночный фильтр грида. Поиск — отдельная панель.
   // Выбор дней — МНОЖЕСТВО (юзер 2026-06-12): клик-тогл + протяжка по дням (range).
   // Пусто = все дни. Ровно один день — колонку ДАТА прячем (она в фильтре).
@@ -495,7 +511,7 @@ export function FlowTransportGrid(): JSX.Element {
   useEffect(() => {
     let alive = true;
     const load = async () => {
-      setLoading(true);
+      if (trRowsCache === null) setLoading(true); // при живом кэше грид виден — без оверлея
       setMsg('');
       try {
         const veh = trVehCache ?? await flowVehiclesGet(api);
@@ -528,6 +544,26 @@ export function FlowTransportGrid(): JSX.Element {
     void load();
     return () => { alive = false; };
   }, []);
+
+  // Дисковый кэш строк (переживает перезапуск): гидрируемся мгновенно, сервер догоняет.
+  useEffect(() => {
+    if (trRowsCache !== null) return;
+    let alive = true;
+    void loadFlowDiskCache<FlowTransportRow[]>(FLOW_DISK_CACHE_TR).then((cached) => {
+      if (!alive || !cached || cached.length === 0) return;
+      if (trRowsCache !== null) return; // сервер/сессия успели раньше
+      setRows((prev) => (prev.length > 0 ? prev : cached));
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  // Снимок для дискового кэша (правки/WS сыпятся часто — debounce, getter из ref).
+  const trDiskRowsRef = useRef<FlowTransportRow[]>([]);
+  useEffect(() => {
+    trDiskRowsRef.current = rows;
+    if (rows.length > 0) saveFlowDiskCacheDebounced(FLOW_DISK_CACHE_TR, () => trDiskRowsRef.current);
+  }, [rows]);
 
   useWsEvent<FlowTransportChangedEvent>('flow_transport_changed', (e) => {
     setRows((prev) => {
@@ -676,6 +712,13 @@ export function FlowTransportGrid(): JSX.Element {
     [showDate, showOrder],
   );
   const rowSelectCol = useMemo(() => rowSelectColIndex(cols), [cols]);
+  // Зеркало для стабильного transformSelection (клик по колонке-«номеру» → строки).
+  const rowSelectColRef = useRef(rowSelectCol);
+  rowSelectColRef.current = rowSelectCol;
+  const transformSelection = useCallback(
+    (sel: GridSelection): GridSelection => colRowSelection(sel, rowSelectColRef.current) ?? sel,
+    [],
+  );
 
   // База показа: день (свободный поиск НЕ прячет строки — он подсвечивает).
   // Свежий день сверху, внутри дня — по номеру работы. Дни НЕ выбраны → ТЕКУЩИЙ МЕСЯЦ
@@ -841,7 +884,7 @@ export function FlowTransportGrid(): JSX.Element {
     gridRef,
     getRaw: searchRaw,
     getDisplay: searchDisplay,
-    setSelection,
+    setSelection: applySelection,
   });
 
   // Высота строки фиксирована и выше обычной: вмещает ВОДИТЕЛЬ (ФИО + СОТ под ним) и
@@ -1227,7 +1270,7 @@ export function FlowTransportGrid(): JSX.Element {
   const handlePaste = useCallback(
     (_target: Item, values: readonly (readonly string[])[]): boolean => {
       const single = values.length === 1 && values[0]?.length === 1 ? values[0][0] : undefined;
-      const range = selection.current?.range;
+      const range = selectionRef.current.current?.range;
       if (single === undefined || !range || (range.width <= 1 && range.height <= 1)) return true;
       const fieldByCol: Record<string, string> = {
         garage: 'garage_no',
@@ -1263,7 +1306,7 @@ export function FlowTransportGrid(): JSX.Element {
       pushHistory({ kind: 'fill', edits: fillEdits });
       return false;
     },
-    [selection, cols, viewRows, rowLocked, colEditable, applyFieldsBatch, pushHistory],
+    [cols, viewRows, rowLocked, colEditable, applyFieldsBatch, pushHistory],
   );
 
   // Del/Backspace: ФАКТ НАЧ/ФАКТ КОН — readonly-ячейки (правятся поповером), штатное
@@ -1399,11 +1442,11 @@ export function FlowTransportGrid(): JSX.Element {
       .finally(() => setBusy(false));
   }, []);
 
-  const selectedCount = selection.rows.length;
   const deleteSelected = useCallback(() => {
+    const selRows = selectionRef.current.rows;
     const ids: number[] = [];
     let lockedHit = false;
-    for (const idx of selection.rows.toArray()) {
+    for (const idx of selRows.toArray()) {
       const r = viewRows[idx];
       if (!r) continue;
       if (rowLocked(r)) {
@@ -1415,7 +1458,7 @@ export function FlowTransportGrid(): JSX.Element {
     if (lockedHit && !isDev) setMsg('Часть строк старше 7 дней — они не удаляются (архив)');
     if (ids.length === 0) {
       if (lockedHit && !isDev) return;
-      if (selection.rows.length > 0) setMsg('Нет строк для удаления');
+      if (selRows.length > 0) setMsg('Нет строк для удаления');
       return;
     }
     setRows((prev) => {
@@ -1424,18 +1467,18 @@ export function FlowTransportGrid(): JSX.Element {
       trRowsCache = next;
       return next;
     });
-    setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
+    clearSelection();
     void flowTransportDelete(api, ids).catch(() => undefined);
-  }, [selection, viewRows, rowLocked, isDev]);
+  }, [viewRows, rowLocked, isDev, clearSelection]);
 
   const selectAllRows = useCallback(() => {
     if (viewRows.length === 0) return;
-    setSelection({
+    applySelection({
       columns: CompactSelection.empty(),
       rows: CompactSelection.fromSingleSelection([0, viewRows.length]),
       current: undefined,
     });
-  }, [viewRows.length]);
+  }, [viewRows.length, applySelection]);
 
   const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
@@ -1899,19 +1942,7 @@ export function FlowTransportGrid(): JSX.Element {
             {msg}
           </span>
         )}
-        {selectedCount > 0 && (
-          <div className="ml-auto flex items-center gap-2">
-            <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
-            <button
-              type="button"
-              onClick={deleteSelected}
-              className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
-            >
-              <Trash2 size={13} strokeWidth={1.75} />
-              Удалить
-            </button>
-          </div>
-        )}
+        <TrSelRowsActions selLive={selLive} onDelete={deleteSelected} />
       </div>
       {/* Обёртка relative + измеряемый слой `absolute inset-0` (тот же приём, что у
           скролла сайдбара). КРИТИЧНО: канвас-грид меряется ResizeObserver'ом по этому
@@ -1934,8 +1965,9 @@ export function FlowTransportGrid(): JSX.Element {
             </div>
           )}
           {size.width > 0 && size.height > 0 && (
-            <DataEditor
-              ref={gridRef}
+            <FlowGridEditor
+              ref={editorRef}
+              gridRef={gridRef}
               theme={gridTheme}
               width={size.width}
               height={size.height}
@@ -1945,10 +1977,8 @@ export function FlowTransportGrid(): JSX.Element {
               onCellEdited={onCellEdited}
               onCellActivated={onCellActivated}
               onDelete={onGridDelete}
-              gridSelection={selection}
-              onGridSelectionChange={(sel) => {
-                setSelection(colRowSelection(sel, rowSelectCol) ?? sel);
-              }}
+              transformSelection={transformSelection}
+              onSelectionChange={handleSelectionChange}
               onPaste={handlePaste}
               getRowThemeOverride={getRowThemeOverride}
               drawCell={drawCell}
@@ -1976,8 +2006,8 @@ export function FlowTransportGrid(): JSX.Element {
                 }
                 if (
                   (e.key === 'Delete' || e.key === 'Backspace') &&
-                  selection.rows.length > 0 &&
-                  selection.columns.length === 0
+                  selectionRef.current.rows.length > 0 &&
+                  selectionRef.current.columns.length === 0
                 ) {
                   e.cancel();
                   deleteSelected();
@@ -2011,11 +2041,7 @@ export function FlowTransportGrid(): JSX.Element {
           Машин (уникальный гаражный); справа — всего в базе работ и дней. flex-wrap, чтобы
           в узком окне переносилось, а не обрывалось. «Строка = заказ = работа». */}
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-black/[0.06] px-4 py-1.5 text-[12px] text-[#6B6862]">
-        {selectedCount > 0 && (
-          <span>
-            Выбрано: <span className="tabular-nums text-[#2A2925]">{selectedCount}</span>
-          </span>
-        )}
+        <TrSelCountLabel selLive={selLive} />
         <span className="tabular-nums">
           Показано: работ <span className="text-[#2A2925]">{viewRows.length}</span> · машин{' '}
           <span className="text-[#2A2925]">{shownVehicles}</span>
@@ -2757,3 +2783,44 @@ function VehicleSpecCard({
 }
 
 void whKey; // (резерв: ключ склада для будущих сортировок)
+
+// ── Анти-лаг: счётчики выделения — мелкие подписчики LiveValue (tick протяжки
+// ре-рендерит только их, монолит Транспорта стоит неподвижно). ──
+
+/** Тулбар: «Выбрано: N» + кнопка удаления выделенных строк. */
+const TrSelRowsActions = memo(function TrSelRowsActions({
+  selLive,
+  onDelete,
+}: {
+  selLive: LiveValue<GridSelection>;
+  onDelete: () => void;
+}) {
+  const selection = useLiveValue(selLive);
+  const n = selection.rows.length;
+  if (n === 0) return null;
+  return (
+    <div className="ml-auto flex items-center gap-2">
+      <span className="tabular-nums text-[#2A2925]">Выбрано: {n}</span>
+      <button
+        type="button"
+        onClick={onDelete}
+        className="flex items-center gap-1 rounded-md border border-black/10 px-2 py-0.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
+      >
+        <Trash2 size={13} strokeWidth={1.75} />
+        Удалить
+      </button>
+    </div>
+  );
+});
+
+/** Нижняя строка-метрика: «Выбрано: N» (слева от «Показано»). */
+const TrSelCountLabel = memo(function TrSelCountLabel({ selLive }: { selLive: LiveValue<GridSelection> }) {
+  const selection = useLiveValue(selLive);
+  const n = selection.rows.length;
+  if (n === 0) return null;
+  return (
+    <span>
+      Выбрано: <span className="tabular-nums text-[#2A2925]">{n}</span>
+    </span>
+  );
+});

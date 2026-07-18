@@ -46,19 +46,27 @@ export interface FlowGridEditorProps
   onSelectionChange?: (sel: GridSelection) => void;
   /** Протяжка по колонке-0 → выделение целых строк (поведение План/Отчёт). */
   colZeroRowSelect?: boolean;
+  /**
+   * Преобразовать выделение ДО применения (напр. Формирование: колонка CLST →
+   * целые строки, но только OFF). Читается через ref — стабильность не критична,
+   * но колбэк не должен трогать state родителя (только refs).
+   */
+  transformSelection?: (sel: GridSelection) => GridSelection;
 }
 
 export const FlowGridEditor = memo(
   forwardRef<FlowGridEditorHandle, FlowGridEditorProps>(function FlowGridEditor(
-    { gridRef, onSelectionChange, colZeroRowSelect, ...editorProps },
+    { gridRef, onSelectionChange, colZeroRowSelect, transformSelection, ...editorProps },
     ref,
   ) {
     const [selection, setSelection] = useState<GridSelection>(EMPTY_GRID_SELECTION);
 
-    // onSelectionChange через ref — колбэк остаётся стабильным (apply не пересоздаётся),
-    // даже если родитель передал новую ссылку.
+    // onSelectionChange/transformSelection через ref — колбэки остаются стабильными
+    // (apply не пересоздаётся), даже если родитель передал новую ссылку.
     const changeCb = useRef(onSelectionChange);
     changeCb.current = onSelectionChange;
+    const transformCb = useRef(transformSelection);
+    transformCb.current = transformSelection;
 
     const apply = useCallback((sel: GridSelection) => {
       setSelection(sel);
@@ -88,7 +96,8 @@ export const FlowGridEditor = memo(
             const rowsSel = colZeroRowSelection(sel);
             apply(rowsSel ? { ...rowsSel, current: sel.current } : sel);
           } else {
-            apply(sel);
+            const t = transformCb.current;
+            apply(t ? t(sel) : sel);
           }
         }}
       />

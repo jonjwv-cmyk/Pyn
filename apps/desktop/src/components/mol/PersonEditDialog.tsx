@@ -176,7 +176,7 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
           comment: form.comment.trim(),
           ...broadcastPatchFromForm(form),
         };
-        await createPerson(input);
+        await createPerson(input); // create ждёт сервер: нужен id + защита от дублей
       } else if (personId !== null) {
         const broadcast = broadcastPatchFromForm(form);
         // edit и orphan: ФИО + должность + контакты (табельный не меняем).
@@ -191,7 +191,13 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
           dismissed: form.dismissed ? 1 : 0,
           ...broadcast,
         };
-        await savePerson(personId, patch);
+        // Оптимистично: savePerson патчит стор СИНХРОННО (валидация уже прошла —
+        // canSave), карточку закрываем СРАЗУ, сервер догоняет фоном. Ошибка →
+        // savePerson сам откатывает через refresh (изменение «вернётся назад»).
+        void savePerson(personId, patch).catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn('[pyn:persons] save failed, rolled back:', err);
+        });
       }
       close();
     } catch (err) {

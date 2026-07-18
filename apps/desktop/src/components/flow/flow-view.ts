@@ -183,6 +183,30 @@ export function parseFlowView(value: string | null | undefined): FlowViewState {
 
 const PERSONAL_PREFIX = 'flow_view_personal:';
 const MODE_PREFIX = 'flow_view_mode:';
+const SHARED_CACHE_KEY = 'flow_view_shared_cache';
+
+/**
+ * Кэш ПОСЛЕДНЕГО известного общего вида (сырое серверное value). Нужен, чтобы при
+ * старте фильтр/сорт вставали МГНОВЕННО из кэша, не дожидаясь сети; серверный ответ
+ * потом сверяется строкой и применяется только если вид реально изменился.
+ */
+export function readSharedViewCache(): string | null {
+  try {
+    return localStorage.getItem(SHARED_CACHE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Обновить кэш общего вида (пустая строка — вид сброшен, кэш чистим). */
+export function writeSharedViewCache(value: string): void {
+  try {
+    if (value) localStorage.setItem(SHARED_CACHE_KEY, value);
+    else localStorage.removeItem(SHARED_CACHE_KEY);
+  } catch {
+    /* no-op */
+  }
+}
 
 /** Прочитать личный вид пользователя (null — не сохранён). */
 export function readPersonalView(login: string): FlowViewState | null {

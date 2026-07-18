@@ -52,6 +52,7 @@ import {
 import { useWarehousesStore } from '@/lib/warehouses-store';
 import { useProdCalendarStore, pickYear, dayShiftEndMin } from '@/lib/prod-calendar';
 import { useMapStore } from '@/lib/map-store';
+import { loadFlowDiskCache, saveFlowDiskCacheDebounced } from '@/lib/flow-disk-cache';
 import { initMap } from '@/lib/map-repo';
 import { sessionStore } from '@/lib/token-store';
 import {
@@ -537,6 +538,8 @@ function wrapWordsMaxLines(text: string, maxW: number, maxLines: number): string
 
 // Кэш на сессию: мгновенный повторный вход (как у формирования), потом refetch.
 let planDlvCache: FlowDeliveryRow[] | null = null;
+/** Имя дискового кэша Плана/Отчёта (pyn:cache, шифрованный). */
+const FLOW_DISK_CACHE_PLAN = 'flow_rows_plan';
 let planAnchorsCache: FlowRow[] | null = null;
 let planVehiclesCache: FlowVehicle[] | null = null;
 
@@ -964,6 +967,37 @@ export function FlowPlanGrid({
       alive = false;
     };
   }, []);
+
+  // Дисковый кэш (переживает перезапуск приложения): сессионного кэша нет →
+  // гидрируемся с диска мгновенно, серверный fetch выше догоняет и перезаписывает.
+  useEffect(() => {
+    if (planDlvCache !== null) return;
+    let alive = true;
+    void loadFlowDiskCache<{ dlv: FlowDeliveryRow[]; wf: FlowRow[]; vehicles: FlowVehicle[] }>(
+      FLOW_DISK_CACHE_PLAN,
+    ).then((cached) => {
+      if (!alive || !cached || !Array.isArray(cached.dlv) || cached.dlv.length === 0) return;
+      if (planDlvCache !== null) return; // сервер/сессия успели раньше — не затираем
+      setRows((prev) => (prev.length > 0 ? prev : cached.dlv));
+      setAnchors((prev) => (prev.length > 0 ? prev : Array.isArray(cached.wf) ? cached.wf : prev));
+      if (Array.isArray(cached.vehicles) && cached.vehicles.length > 0) {
+        setVehicles((prev) => (prev.length > 0 ? prev : cached.vehicles));
+      }
+      setLoading(false);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Снимок для дискового кэша: getter читает ref — на диск всегда уходит свежее.
+  const planDiskSnapRef = useRef<{ dlv: FlowDeliveryRow[]; wf: FlowRow[]; vehicles: FlowVehicle[] }>(
+    { dlv: [], wf: [], vehicles: [] },
+  );
+  useEffect(() => {
+    planDiskSnapRef.current = { dlv: rows, wf: anchors, vehicles };
+    if (rows.length > 0) saveFlowDiskCacheDebounced(FLOW_DISK_CACHE_PLAN, () => planDiskSnapRef.current);
+  }, [rows, anchors, vehicles]);
 
   // Реалтайм: поставки (план сформирован / правка / резерв).
   useWsEvent<FlowDeliveriesChangedEvent>('flow_deliveries_changed', (e) => {
