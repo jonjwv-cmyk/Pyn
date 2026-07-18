@@ -31,6 +31,8 @@ const EMPTY_META: DayMeta = { vehicleType: '', brand: '', driver: '' };
 /** @deprecated use store weatherLeftPx */
 export const GLONASS_WEATHER_LEFT_PX = 382;
 const COL_ACTIONS = '1.65rem';
+/** Акцент приложения (clay) — подсветка выбранного пилла. */
+const APP_CLAY = '#D97757';
 
 /**
  * Панель «Глонасс» — поиск/выбор машин для слежения на карте. Плитка поверх
@@ -195,14 +197,24 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       className="absolute left-3 top-3 z-[6] flex max-h-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-2xl border border-border-default bg-bg-surface shadow-[0_18px_58px_rgba(0,0,0,0.46)]"
       style={{ width: panelWidthPx }}
     >
-      {/* Шапка — компактнее */}
+      {/* Шапка — счётчик выбранных + сброс сразу рядом */}
       <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border-subtle px-2.5">
         <Satellite className="h-3.5 w-3.5 text-emerald-400" />
         <span className="text-[12.5px] font-semibold text-text-strong">Глонасс</span>
         {selected.size > 0 && (
-          <span className="rounded-full border border-emerald-400/30 bg-emerald-500/12 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
-            {selected.size}
-          </span>
+          <div className="flex items-center gap-0.5 rounded-full border border-accent-clay/45 bg-accent-clay/15 pl-2 pr-0.5">
+            <span className="text-[10.5px] font-semibold tabular-nums text-accent-clay">
+              {selected.size}
+            </span>
+            <button
+              type="button"
+              title="Сбросить выбор"
+              onClick={clearSelected}
+              className="flex h-5 w-5 items-center justify-center rounded-full text-accent-clay/90 outline-none transition-colors hover:bg-accent-clay/25 hover:text-accent-clay"
+            >
+              <X className="h-3 w-3" strokeWidth={2.25} />
+            </button>
+          </div>
         )}
         <div className="ml-auto flex items-center gap-0.5">
           <button
@@ -242,15 +254,9 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
         </div>
       </div>
 
-      {/* Статус-строка опроса */}
-      {selected.size > 0 && (
-        <div className="shrink-0 px-3 pb-1 text-[10.5px] text-text-muted">
-          {offline ? 'Парк не на связи — позиций сейчас нет' : 'Ведём на карте: ' + selected.size}
-          {selected.size > 0 && (
-            <button type="button" onClick={clearSelected} className="ml-2 text-text-muted underline-offset-2 hover:text-text-strong hover:underline">
-              снять все
-            </button>
-          )}
+      {offline && (
+        <div className="shrink-0 px-2.5 pb-1 text-[10.5px] text-rose-300/90">
+          Парк не на связи — позиций сейчас нет
         </div>
       )}
 
@@ -490,7 +496,8 @@ const VehicleRow = memo(function VehicleRow({
   pillWidthPx: number;
 }) {
   const status = vehicleStatus(position);
-  const color = STATUS_COLOR[status];
+  // Выбранный — сразу clay приложения; иначе цвет статуса.
+  const color = checked ? APP_CLAY : STATUS_COLOR[status];
   const gosFmt = formatGosPlate(v.gos) || '';
   const speedText = position?.speed == null || !Number.isFinite(position.speed)
     ? '— км/ч'
@@ -504,21 +511,25 @@ const VehicleRow = memo(function VehicleRow({
     <div
       className={
         'grid w-full items-stretch gap-x-1.5 rounded-lg px-1.5 py-0.5 transition-colors ' +
-        (checked ? 'bg-white/[0.07]' : 'hover:bg-white/[0.03]')
+        (checked ? 'bg-accent-clay/[0.08]' : 'hover:bg-white/[0.03]')
       }
       style={{ gridTemplateColumns: `${pillWidthPx}px minmax(0, 1fr) ${COL_ACTIONS}` }}
     >
-      {/* Пилл: стр.1 гаражный+тип · стр.2 «В движении 999 км/ч» без переноса */}
+      {/* Пилл: выбранный = clay; иначе цвет статуса */}
       <button
         type="button"
         aria-pressed={checked}
         onClick={() => onToggle(v.id)}
-        title={`${statusLabel} ${speedText} · эталон ширины: ${GLONASS_STATUS_SAMPLE}`}
-        className="flex w-full cursor-pointer flex-col items-start justify-center gap-px rounded-md border px-1.5 py-1 text-left outline-none transition-[filter] hover:brightness-110"
+        title={`${statusLabel} ${speedText}${checked ? ' · на карте' : ''}`}
+        className={
+          'flex w-full cursor-pointer flex-col items-start justify-center gap-px rounded-md border px-1.5 py-1 text-left outline-none transition-[filter,box-shadow] hover:brightness-110 ' +
+          (checked ? 'ring-1 ring-accent-clay/50' : '')
+        }
         style={{
           minHeight: 42,
-          borderColor: `${color}${checked ? 'ee' : '99'}`,
-          backgroundColor: `${color}${checked ? '5c' : '40'}`,
+          borderColor: checked ? APP_CLAY : `${color}99`,
+          backgroundColor: checked ? 'rgba(217,119,87,0.42)' : `${color}40`,
+          boxShadow: checked ? 'inset 0 0 0 1px rgba(217,119,87,0.55)' : undefined,
         }}
       >
         <span className="flex w-full min-w-0 items-baseline gap-1 leading-none">
