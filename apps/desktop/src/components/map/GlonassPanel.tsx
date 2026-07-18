@@ -45,8 +45,8 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const selected = useGlonassStore((s) => s.selected);
   const positions = useGlonassStore((s) => s.positions);
   const offline = useGlonassStore((s) => s.offline);
-  const followId = useGlonassStore((s) => s.followId);
-  const setFollow = useGlonassStore((s) => s.setFollow);
+  const followIds = useGlonassStore((s) => s.followIds);
+  const toggleFollow = useGlonassStore((s) => s.toggleFollow);
   const historyLoading = useGlonassStore((s) => s.historyLoading);
   const setOpen = useGlonassStore((s) => s.setOpen);
   const toggleSelect = useGlonassStore((s) => s.toggleSelect);
@@ -134,22 +134,27 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
 
   /**
    * Порядок списка:
-   *  1) с ФИО (в разнарядке сегодня) → без ФИО;
+   *  0) отмеченные на карте — впереди (подсветка + наверху);
+   *  1) с ФИО (разнарядка сегодня) → без ФИО;
    *  2) статус: зелёный → синий → жёлтый → красный;
-   *  3) гаражный (число / строка).
+   *  3) гаражный.
    */
   const ordered = useMemo(() => {
     const statusRank = (st: ReturnType<typeof vehicleStatus>): number => {
-      if (st === 'moving') return 0;   // зелёный
-      if (st === 'stop') return 1;     // синий
-      if (st === 'parking') return 2;  // жёлтый (стоянка)
-      return 3;                       // красный / нет данных
+      if (st === 'moving') return 0;
+      if (st === 'stop') return 1;
+      if (st === 'parking') return 2;
+      return 3;
     };
     const garageKey = (g: string): [number, string] => {
       const n = Number(String(g).replace(/\D/g, ''));
       return [Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER, (g || '').toUpperCase()];
     };
     return [...filtered].sort((a, b) => {
+      const selA = selected.has(a.id) ? 0 : 1;
+      const selB = selected.has(b.id) ? 0 : 1;
+      if (selA !== selB) return selA - selB;
+
       const ma = dayMeta.get((a.garage || '').toUpperCase());
       const mb = dayMeta.get((b.garage || '').toUpperCase());
       const hasFioA = (ma?.driver || '').trim() ? 0 : 1;
@@ -164,7 +169,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       const [nb, sb] = garageKey(b.garage);
       return na - nb || sa.localeCompare(sb, 'ru', { numeric: true });
     });
-  }, [filtered, dayMeta, positions]);
+  }, [filtered, dayMeta, positions, selected]);
 
   // Ширина панели = пилл(«В движении 999 км/ч») + max ФИО + кнопки; погода сдвигается.
   useEffect(() => {
@@ -180,8 +185,8 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
 
   const onToggle = useCallback((id: number) => toggleSelect(id), [toggleSelect]);
   const onFollowToggle = useCallback((id: number) => {
-    setFollow(followId === id ? null : id);
-  }, [followId, setFollow]);
+    toggleFollow(id);
+  }, [toggleFollow]);
 
   if (!open) return null;
 
@@ -303,7 +308,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             v={v}
             meta={dayMeta.get((v.garage || '').toUpperCase()) ?? EMPTY_META}
             checked={selected.has(v.id)}
-            following={followId === v.id}
+            following={followIds.has(v.id)}
             position={positions.get(v.id)}
             onToggle={onToggle}
             onFocus={onFocusVehicle}

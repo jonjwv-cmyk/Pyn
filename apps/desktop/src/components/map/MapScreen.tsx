@@ -701,7 +701,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
   const glonassPositions = useGlonassStore((s) => s.positions);
   const glonassTracks = useGlonassStore((s) => s.tracks);
   const glonassStale = useGlonassStore((s) => s.staleSince);
-  const glonassFollowId = useGlonassStore((s) => s.followId);
+  const glonassFollowIds = useGlonassStore((s) => s.followIds);
   const glonassHistoryLayers = useGlonassStore((s) => s.historyLayers);
   const activeHistoryLayerId = useGlonassStore((s) => s.activeHistoryLayerId);
   const playbackIndex = useGlonassStore((s) => s.playbackIndex);
@@ -744,7 +744,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
     setLastMerge(summary);
   }, [beginBrushEdit, commitBrushEdit, mergeRoadOverlaps]);
 
-  // Точки выбранных машин (только тех, у кого есть позиция) — на карту.
+  // Точки отмеченных машин — каждая независимо сажается на жёлтую сеть.
   const glonassMarkers = useMemo<GlonassMarker[]>(() => {
     const byId = new Map(glonassFleet.map((v) => [v.id, v]));
     const out: GlonassMarker[] = [];
@@ -754,8 +754,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
       const v = byId.get(id);
       const status = vehicleStatus(pos);
       const track = glonassTracks.get(id) ?? [];
-      // По СВЕЖЕСТИ трека, не по статусу: короткая остановка не должна
-      // телепортировать маркер на сырую позицию — машина доезжает по дороге.
+      // Каждая машина — свой трек/матчинг. Не шарим состояние между id.
       const delayed = liveTrackUsable(track)
         ? delayedLiveRoadTrack(track, roadSnapIndex, doc.roads, GLONASS_LIVE_DELAY_MS)
         : null;
@@ -764,20 +763,27 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
         : [];
       const matched = lastTrackPoint(matchedSegments);
       const rawPosition = { lat: pos.lat, lng: pos.lng };
-      // A newly selected moving vehicle has only one fix and no timed path yet.
-      // Put it on the road immediately; point-pin standoff is for a stopped
-      // vehicle at a destination and made the second selected vehicle appear
-      // parallel to the road until the next poll.
-      const immediateRoad = status === 'moving' ? snapToRoadIndex(roadSnapIndex, rawPosition) : null;
-      const snapped = delayed?.point ?? matched ?? immediateRoad?.point ?? snapGlonassPosition(rawPosition, roadSnapIndex, doc.points);
-      // «Нет сигнала» пишем только когда машина «в работе», а координаты РЕАЛЬНО
-      // стоят дольше 30 секунд. Короткие паузы между GPS-фиксами — норма, не ⚠.
+      // Live-флот ВСЕГДА на дороге, если GPS в радиусе захвата.
+      // pin-standoff (snapGlonassPosition) давал «вторая машина рядом с дорогой»,
+      // пока у неё ещё нет timedPath, а у первой уже есть.
+      const onRoad = (p: LatLng): LatLng =>
+        snapToRoadIndex(roadSnapIndex, p)?.point
+        ?? snapGlonassPosition(p, roadSnapIndex, doc.points);
+      const candidate = delayed?.point ?? matched ?? rawPosition;
+      const snapped = onRoad(candidate);
       const stale = glonassStale.get(id) ?? null;
+      // timedPath тоже жёстко на дороге (каждая точка независимо).
+      const timedPath = delayed && delayed.timed.length >= 2
+        ? delayed.timed.map((p) => {
+            const road = snapToRoadIndex(roadSnapIndex, p)?.point;
+            return road ? { ...p, lat: road.lat, lng: road.lng } : p;
+          })
+        : undefined;
       out.push({
         id, garage: v?.garage ?? '', gos: v?.gos ?? '',
         lat: snapped.lat, lng: snapped.lng, course: pos.course, speed: pos.speed,
         path: delayed?.path ?? lastTrackSegment(matchedSegments) ?? undefined,
-        timedPath: delayed && delayed.timed.length >= 2 ? delayed.timed : undefined,
+        timedPath,
         delayMs: GLONASS_LIVE_DELAY_MS,
         time: pos.time,
         status,
@@ -787,16 +793,17 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
     return out;
   }, [glonassFleet, glonassSelected, glonassPositions, glonassTracks, glonassStale, roadSnapIndex, doc.points, doc.roads]);
 
-  // Слежение: камера едет за выбранной машиной по её ОТОБРАЖАЕМОЙ позиции.
-  // Для живого движения (timedPath) камеру ведёт анимационный цикл MapCanvas —
-  // здесь null, чтобы два механизма не дёргали карту одновременно.
-  const glonassFollowTarget = useMemo<LatLng | null>(() => {
-    if (glonassFollowId == null) return null;
-    const m = glonassMarkers.find((x) => x.id === glonassFollowId);
-    if (!m) return null;
-    if ((m.timedPath?.length ?? 0) >= 2) return null;
-    return { lat: m.lat, lng: m.lng };
-  }, [glonassFollowId, glonassMarkers]);
+  // Слежение (мульти): статичные цели для машин без timedPath (rAF ведёт живые).
+  const glonassFollowTargets = useMemo<LatLng[]>(() => {
+    if (glonassFollowIds.size === 0) return [];
+    const pts: LatLng[] = [];
+    for (const m of glonassMarkers) {
+      if (!glonassFollowIds.has(m.id)) continue;
+      if ((m.timedPath?.length ?? 0) >= 2) continue; // камеру ведёт rAF
+      pts.push({ lat: m.lat, lng: m.lng });
+    }
+    return pts;
+  }, [glonassFollowIds, glonassMarkers]);
 
   const glonassTrackLines = useMemo(() => {
     const out: Array<{ id: string; color: string; segments: LatLng[][]; mode: 'pro' | 'raw' }> = [];
@@ -1009,8 +1016,8 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               onCommitBrushEdit={commitBrushEdit}
               glonassMarkers={glonassMarkers}
               glonassRoadSnapIndex={roadSnapIndex}
-              glonassFollowTarget={glonassFollowTarget}
-              glonassFollowId={glonassFollowId}
+              glonassFollowTargets={glonassFollowTargets}
+              glonassFollowIds={glonassFollowIds}
               glonassTracks={glonassTrackLines}
               glonassHistoryTracks={glonassHistoryLines}
 

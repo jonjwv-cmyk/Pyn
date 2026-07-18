@@ -123,10 +123,10 @@ interface MapCanvasProps {
   glonassMarkers: GlonassMarker[];
   /** Общий неизменяемый индекс жёлтой сети для финальной live-проекции. */
   glonassRoadSnapIndex: RoadSnapIndex;
-  /** id машины под слежением: живой цикл ведёт камеру за её едущим маркером. */
-  glonassFollowId?: number | null;
-  /** Слежение: камера едет за этой точкой (позиция машины), сохраняя зум. */
-  glonassFollowTarget: LatLng | null;
+  /** id машин под слежением (несколько сразу). */
+  glonassFollowIds?: ReadonlySet<number>;
+  /** Статичные цели слежения (без timedPath); живые ведёт rAF. */
+  glonassFollowTargets: LatLng[];
   /** Live-следы выбранных машин, накопленные из realtime-опроса. */
   glonassTracks: Array<{ id: string; color: string; points?: LatLng[]; segments?: LatLng[][]; mode: 'pro' | 'raw' }>;
   /** Исторические маршруты/годовые следы ГЛОНАСС. */
@@ -266,8 +266,8 @@ export function MapCanvas({
   onCommitBrushEdit,
   glonassMarkers,
   glonassRoadSnapIndex,
-  glonassFollowId,
-  glonassFollowTarget,
+  glonassFollowIds,
+  glonassFollowTargets,
   glonassTracks,
   glonassHistoryTracks,
   showGlonassPro,
@@ -1152,19 +1152,19 @@ export function MapCanvas({
     let frame = 0;
     let lastTrailAt = 0;
     let lastFollowAt = 0;
+    const followSet = glonassFollowIds ?? new Set<number>();
     const tick = (now: number) => {
       const entries = glonassMarkerRefs.current;
       const wantTrail = now - lastTrailAt > 220;
       const features: FeatureCollection['features'] = [];
+      const followPts: { lng: number; lat: number }[] = [];
       for (const m of liveMarkers) {
         const entry = entries.get(m.id);
         const timedPath = m.timedPath!;
         if (!entry) continue;
         const targetMs = Date.now() - (m.delayMs ?? 0);
         const interpolated = pointAtTimedPath(timedPath, targetMs);
-        // Each marker is projected independently at the final rendering step.
-        // This prevents interpolation between duplicate/turn vertices from
-        // leaving the second selected vehicle beside the visible yellow road.
+        // Каждая машина — свой snap, без общего «текущего» сегмента.
         const pos = snapToRoadIndex(glonassRoadSnapIndex, interpolated)?.point ?? interpolated;
         entry.marker.setLngLat([pos.lng, pos.lat]);
         if (wantTrail && showGlonassPro) {
@@ -1177,9 +1177,28 @@ export function MapCanvas({
             });
           }
         }
-        if (glonassFollowId === m.id && now - lastFollowAt > 1200) {
-          lastFollowAt = now;
-          map.easeTo({ center: [pos.lng, pos.lat], duration: 1180, essential: true });
+        if (followSet.has(m.id)) followPts.push({ lng: pos.lng, lat: pos.lat });
+      }
+      // Мульти-слежение: 1 машина — center; несколько — fitBounds.
+      if (followPts.length > 0 && now - lastFollowAt > 1200) {
+        lastFollowAt = now;
+        if (followPts.length === 1) {
+          map.easeTo({ center: [followPts[0]!.lng, followPts[0]!.lat], duration: 1180, essential: true });
+        } else {
+          let minLng = followPts[0]!.lng;
+          let maxLng = followPts[0]!.lng;
+          let minLat = followPts[0]!.lat;
+          let maxLat = followPts[0]!.lat;
+          for (const p of followPts) {
+            if (p.lng < minLng) minLng = p.lng;
+            if (p.lng > maxLng) maxLng = p.lng;
+            if (p.lat < minLat) minLat = p.lat;
+            if (p.lat > maxLat) maxLat = p.lat;
+          }
+          map.fitBounds(
+            [[minLng, minLat], [maxLng, maxLat]],
+            { padding: 80, duration: 1180, maxZoom: Math.max(map.getZoom(), 15), essential: true },
+          );
         }
       }
       if (wantTrail) {
@@ -1190,14 +1209,34 @@ export function MapCanvas({
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [glonassMarkers, glonassFollowId, glonassRoadSnapIndex, showGlonassPro, styleReady]);
+  }, [glonassMarkers, glonassFollowIds, glonassRoadSnapIndex, showGlonassPro, styleReady]);
 
-  // Слежение за машиной: плавно ведём камеру за её позицией, СОХРАНЯЯ зум/наклон.
+  // Слежение: статичные цели (без timedPath) — центр / fitBounds.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !styleReady || !glonassFollowTarget) return;
-    map.easeTo({ center: toCoord(glonassFollowTarget), duration: 900, essential: true });
-  }, [glonassFollowTarget?.lat, glonassFollowTarget?.lng, styleReady]);
+    if (!map || !styleReady || glonassFollowTargets.length === 0) return;
+    if (glonassFollowTargets.length === 1) {
+      map.easeTo({ center: toCoord(glonassFollowTargets[0]!), duration: 900, essential: true });
+      return;
+    }
+    let minLng = glonassFollowTargets[0]!.lng;
+    let maxLng = glonassFollowTargets[0]!.lng;
+    let minLat = glonassFollowTargets[0]!.lat;
+    let maxLat = glonassFollowTargets[0]!.lat;
+    for (const p of glonassFollowTargets) {
+      if (p.lng < minLng) minLng = p.lng;
+      if (p.lng > maxLng) maxLng = p.lng;
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+    }
+    map.fitBounds(
+      [[minLng, minLat], [maxLng, maxLat]],
+      { padding: 80, duration: 900, maxZoom: Math.max(map.getZoom(), 15), essential: true },
+    );
+  }, [
+    glonassFollowTargets.map((p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`).join('|'),
+    styleReady,
+  ]);
 
   useEffect(() => {
     const map = mapRef.current;

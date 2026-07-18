@@ -190,8 +190,11 @@ type GlonassState = {
   /** true — последний опрос вернул «парк офлайн» (нет онлайн-данных). */
   offline: boolean;
   lastPollAt: number;
-  /** Слежение: id машины, за которой камера едет (null — не следим). */
-  followId: number | null;
+  /**
+   * Слежение: можно за несколькими сразу (камера держит их в кадре).
+   * Пустой Set — ни за кем.
+   */
+  followIds: Set<number>;
   /** Динамическая ширина панели / сдвиг погоды (считает GlonassPanel). */
   panelWidthPx: number;
   weatherLeftPx: number;
@@ -202,7 +205,8 @@ type GlonassState = {
   loadFleet: () => Promise<void>;
   toggleSelect: (id: number) => void;
   clearSelected: () => void;
-  setFollow: (id: number | null) => void;
+  /** Вкл/выкл слежение за машиной (мультивыбор). */
+  toggleFollow: (id: number) => void;
   refreshPositions: () => Promise<void>;
   createHistoryLayer: (vehicleId: number, from: string, to: string) => Promise<void>;
   createYearRoadLayer: (vehicleIds: number[], from: string, to: string) => Promise<void>;
@@ -237,7 +241,7 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
   showRaw: false,
   offline: false,
   lastPollAt: 0,
-  followId: null,
+  followIds: new Set(),
   panelWidthPx: 360,
   weatherLeftPx: 382,
   pillWidthPx: 128,
@@ -287,15 +291,36 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
     for (const key of tracks.keys()) {
       if (!next.has(key)) tracks.delete(key);
     }
-    // Сняли машину с карты — перестаём за ней следить.
-    const followId = next.has(get().followId ?? -1) ? get().followId : null;
-    set({ selected: next, tracks, followId });
+    // Сняли с карты — снять и слежение.
+    const followIds = new Set([...get().followIds].filter((fid) => next.has(fid)));
+    set({ selected: next, tracks, followIds });
     void get().refreshPositions();
   },
 
-  clearSelected: () => set({ selected: new Set(), positions: new Map(), tracks: new Map(), staleSince: new Map(), followId: null }),
+  clearSelected: () => set({
+    selected: new Set(),
+    positions: new Map(),
+    tracks: new Map(),
+    staleSince: new Map(),
+    followIds: new Set(),
+  }),
 
-  setFollow: (id) => set({ followId: id }),
+  toggleFollow: (id) => {
+    const next = new Set(get().followIds);
+    if (next.has(id)) next.delete(id);
+    else {
+      next.add(id);
+      // Следить можно только за отмеченными на карте.
+      if (!get().selected.has(id)) {
+        const selected = new Set(get().selected);
+        selected.add(id);
+        set({ selected, followIds: next });
+        void get().refreshPositions();
+        return;
+      }
+    }
+    set({ followIds: next });
+  },
 
   refreshPositions: async () => {
     const api = window.pyn?.glonass;
