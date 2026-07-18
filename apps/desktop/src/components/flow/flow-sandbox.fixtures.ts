@@ -27,7 +27,8 @@ export type FlowColumnKind =
   | 'to' // склад-получатель: выпадашка складов того же цеха
   | 'score' // Балл (EPS) — бейдж на canvas + попап-обоснование по клику
   | 'window' // Доставка — окно времени 08:30–19:30 (наш пикер, правила обеда)
-  | 'loadinfo'; // Погрузка/Выгрузка — производное от точки (типы ТС / оснастка с карты)
+  | 'loadinfo' // Погрузка/Выгрузка — производное от точки (типы ТС / оснастка с карты)
+  | 'check'; // галочка 0/1 (Согл)
 
 /** Строка листа WORKFLOW (снимок 1:1). Коды складов — текст (ведущий ноль важен). */
 export interface FlowSandboxRow {
@@ -64,6 +65,7 @@ export interface FlowSandboxRow {
   chg: number | null; // Y CHG — исходное количество
   approved_by?: string; // «кто согласовал» — поле якоря (правится из любого вида: план/отчёт)
   approved_dates?: string; // §15 — даты отправки на согласование (CSV ISO); кнопка «Согласование»
+  sogl?: number; // П1.12 «Согл» — 0/1 галочка (серверное поле)
   off_schedule?: number; // доставка вне графика (0/1)
   split_level?: number; // уровень дробления поставки (0=основная; 1..3 — отдельные внутри fr+to)
   row_version?: number; // версия строки (оптимистичная блокировка, реалтайм)
@@ -164,7 +166,8 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'note', title: 'NOTE', width: 150, kind: 'text', editable: true },
   { id: 'delivery', title: 'ОКНО', width: 118, kind: 'window', editable: true },
   { id: 'mol', title: 'МОЛ', width: 172, kind: 'mol', editable: true },
-  { id: 'approved_dates', title: 'СОГЛ.', width: 132, kind: 'text' },
+  // П1.12: галочка «Согл» (поле sogl 0/1). approved_dates — след дат у кнопки «Согласование».
+  { id: 'sogl', title: 'Согл', width: 48, kind: 'check', editable: true },
 ];
 
 /**
@@ -594,6 +597,7 @@ export function flowComposed(
 
 /** Полная строка показа колонки (для авто-ширины и копирования). */
 export function flowDisplayText(spec: FlowColumnSpec, row: FlowSandboxRow): string {
+  if (spec.id === 'sogl' || spec.kind === 'check') return Number(row.sogl) === 1 ? '✓' : '';
   if (spec.id === 'approved_dates') return formatApprovedDates(row.approved_dates);
   if (spec.id === 'time_at') return formatUploadDay(row.time_at); // §4 «DAY выг.»
   switch (spec.kind) {
@@ -652,6 +656,7 @@ export function formatApprovedDates(csv: string | undefined): string {
 }
 
 export function flowFilterText(spec: FlowColumnSpec, row: FlowSandboxRow): string {
+  if (spec.id === 'sogl' || spec.kind === 'check') return Number(row.sogl) === 1 ? 'да' : 'нет';
   if (spec.id === 'approved_dates') return formatApprovedDates(row.approved_dates);
   if (spec.id === 'time_at') return formatUploadDay(row.time_at); // §4 инфо: как в показе
   if (spec.kind === 'info') {

@@ -649,6 +649,15 @@ function extractValue(
   value: EditableGridCell,
   fallback: string | number | null,
 ): string | number | null {
+  if (spec.kind === 'check' || spec.id === 'sogl') {
+    if (value.kind === GridCellKind.Boolean) return value.data ? 1 : 0;
+    if (value.kind === GridCellKind.Text) {
+      const t = String(value.data ?? '').trim().toLowerCase();
+      if (t === '1' || t === 'да' || t === 'true' || t === '✓') return 1;
+      if (t === '0' || t === 'нет' || t === 'false' || t === '') return 0;
+    }
+    return fallback;
+  }
   if (spec.kind === 'number') {
     if (value.kind === GridCellKind.Number) return value.data ?? 0;
     if (value.kind === GridCellKind.Text) {
@@ -659,6 +668,7 @@ function extractValue(
   }
   if (value.kind === GridCellKind.Text || value.kind === GridCellKind.Uri) return value.data;
   if (value.kind === GridCellKind.Number) return value.data != null ? String(value.data) : '';
+  if (value.kind === GridCellKind.Boolean) return value.data ? 1 : 0;
   if (value.kind === GridCellKind.Custom) {
     const data = value.data as { kind?: string; value?: string | null };
     if (
@@ -2249,8 +2259,17 @@ export function FlowSandboxGrid(): JSX.Element {
       if (!spec || !rowData) return { kind: GridCellKind.Loading, allowOverlay: false };
 
       const raw = rowData[spec.id];
+      if (spec.id === 'sogl' || spec.kind === 'check') {
+        // П1.12 «Согл»: галочка 0/1 (сервер). Клик переключает; кнопка «Согласование» ставит 1.
+        return {
+          kind: GridCellKind.Boolean,
+          data: Number(rowData.sogl) === 1,
+          allowOverlay: false,
+          readonly: false,
+        };
+      }
       if (spec.id === 'approved_dates') {
-        // §15: галочка + даты согласования по месяцам (read-only, ставит кнопка).
+        // След дат (если остался в layout) — read-only.
         const txt = formatApprovedDates(rowData.approved_dates);
         return {
           kind: GridCellKind.Text,
@@ -2856,9 +2875,7 @@ export function FlowSandboxGrid(): JSX.Element {
     [syncHistory],
   );
 
-  // §15 «Согласование» (юзер 2026-07-03): выделенным строкам ставим галочку + дописываем
-  // СЕГОДНЯШНЮЮ дату в approved_dates (дедуп; копятся «июль 6, 9, 15», разные месяцы —
-  // отдельными строками в показе). Кнопка «подтвердить»/файл — на будущее (не делаем).
+  // §15 + П1.12 «Согласование»: выделенным — sogl=1 + сегодняшняя дата в approved_dates.
   const markApproved = useCallback(() => {
     const sel = selectionRef.current;
     const ids = new Set<number>();
@@ -2872,13 +2889,14 @@ export function FlowSandboxGrid(): JSX.Element {
     const before = new Map<number, FlowRowPatch>();
     for (const row of rowsRef.current) {
       if (!ids.has(row.id)) continue;
-      const cur = String(row.approved_dates ?? '');
-      const set = new Set(cur.split(/[,\n]/).map((s) => s.trim()).filter(Boolean));
-      if (set.has(today)) continue; // уже согласовано сегодня — не дублируем
+      const curDates = String(row.approved_dates ?? '');
+      const set = new Set(curDates.split(/[,\n]/).map((s) => s.trim()).filter(Boolean));
       set.add(today);
-      const next = [...set].sort().join(',');
-      before.set(row.id, { approved_dates: cur });
-      after.set(row.id, { approved_dates: next });
+      const nextDates = [...set].sort().join(',');
+      const curSogl = Number(row.sogl) === 1 ? 1 : 0;
+      if (curSogl === 1 && nextDates === curDates) continue;
+      before.set(row.id, { approved_dates: curDates, sogl: curSogl });
+      after.set(row.id, { approved_dates: nextDates, sogl: 1 });
     }
     if (after.size === 0) return;
     writeCells(after);
