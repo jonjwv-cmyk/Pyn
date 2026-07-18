@@ -23,12 +23,18 @@ import {
 
 type DayMeta = { vehicleType: string; brand: string; driver: string };
 
-/** Единые колонки описания (тип · гос · марка) — и список, и история. */
+/**
+ * Пилл: ширина под самый длинный статус + «999 км/ч» целиком (без обрезки).
+ * Высота = 2 строки (гаражный + статус/скорость) — справа ровно те же 2 строки.
+ */
+const PILL_W = '7.1rem';
+const PILL_MIN_H = '2.55rem';
+/** Описание: тип · гос · марка — ровные колонки. */
 const COL_TYPE = 'minmax(0, 1fr)';
-const COL_GOS = '5.5rem';
-const COL_BRAND = 'minmax(2.6rem, 3.6rem)';
-const COL_FOLLOW = '1.6rem';
-const COL_PILL = '3.55rem';
+const COL_GOS = '5.4rem';
+const COL_BRAND = 'minmax(2.4rem, 3.4rem)';
+const COL_FOLLOW = '1.55rem';
+const DESC_COLS = `${COL_TYPE} ${COL_GOS} ${COL_BRAND}`;
 
 /**
  * Панель «Глонасс» — поиск/выбор машин для слежения на карте. Плитка поверх
@@ -336,15 +342,14 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           <div className="px-2 py-3 text-[11.5px] text-text-muted">Ничего не найдено</div>
         )}
         {ordered.length > 0 && (
-          <div
-            className="grid items-center gap-x-1.5 px-2 pb-1 pt-0.5 text-[9px] uppercase tracking-wide text-text-muted/70"
-            style={{ gridTemplateColumns: `${COL_PILL} ${COL_TYPE} ${COL_GOS} ${COL_BRAND} ${COL_FOLLOW}` }}
-          >
-            <span>Гар.</span>
-            <span>Тип</span>
-            <span>Гос</span>
-            <span>Марка</span>
-            <span />
+          <div className="flex items-center gap-1.5 px-2 pb-1 pt-0.5 text-[9px] uppercase tracking-wide text-text-muted/70">
+            <span className="shrink-0" style={{ width: PILL_W }}>Гар.</span>
+            <div className="grid min-w-0 flex-1 items-center gap-x-1.5" style={{ gridTemplateColumns: DESC_COLS }}>
+              <span>Тип</span>
+              <span>Гос</span>
+              <span>Марка</span>
+            </div>
+            <span className="shrink-0" style={{ width: COL_FOLLOW }} />
           </div>
         )}
         {ordered.map((v) => (
@@ -534,14 +539,16 @@ function yearStartIso(): string {
 }
 
 /**
- * Единая карточка машины (список отслеживания и история):
+ * Единая строка (список = история):
  *
- *  ┌──────────┐  тип ТС   |  Т 955 РК  |  КамАЗ   [⊙]
- *  │   398    │  ФИО водителя на сегодня
- *  │В дв 12км │
- *  └──────────┘
- *  Пилл закрашен цветом статуса; внутри — гаражный + статус/скорость 2-й строкой.
- *  Выравнивание: левый край, по вертикали середина блока.
+ *  ┌────────────────┐  тип     Т 955 РК   КамАЗ    [⊙]
+ *  │      398       │  ФИО (если есть)
+ *  │В движении 999… │
+ *  └────────────────┘
+ *
+ * Пилл фиксирован по «В движении 999 км/ч» — статус/скорость видны целиком.
+ * Справа в той же высоте 1–2 строки; без типа/ФИО — пусто (без «—»).
+ * Без ФИО первая строка по центру высоты пилла.
  */
 function VehicleEntry({
   garage,
@@ -577,74 +584,85 @@ function VehicleEntry({
   followDisabled?: boolean;
 }) {
   const color = STATUS_COLOR[status];
-  const gosFmt = formatGosPlate(gos) || gos || '—';
-  const speedText = formatGlonassSpeed(speed);
-  const statusLine = `${STATUS_LABEL[status]} ${speedText}`;
-  const cols = showFollow
-    ? `${COL_PILL} ${COL_TYPE} ${COL_GOS} ${COL_BRAND} ${COL_FOLLOW}`
-    : `${COL_PILL} ${COL_TYPE} ${COL_GOS} ${COL_BRAND}`;
+  const gosFmt = formatGosPlate(gos) || gos || '';
+  // Скорость всегда в формате «N км/ч» / «— км/ч» — пилл рассчитан на «999 км/ч»
+  const speedText = speed == null || !Number.isFinite(speed)
+    ? '— км/ч'
+    : `${Math.min(999, Math.round(speed))} км/ч`;
+  const statusLabel = STATUS_LABEL[status];
+  const statusLine = `${statusLabel} ${speedText}`;
+  const hasDriver = Boolean(driver.trim());
+  const type = vehicleType.trim();
+  const brandTxt = brand.trim();
 
   const PillTag = onPillClick ? 'button' : 'div';
+  const bodyClickable = Boolean(onBodyClick) && !bodyDisabled;
 
   return (
     <div
       className={
-        'grid w-full items-center gap-x-1.5 gap-y-0.5 rounded-xl border px-1.5 py-1 transition-colors ' +
-        (active ? 'border-white/20 bg-white/[0.06]' : 'border-transparent')
+        'flex w-full items-center gap-1.5 rounded-xl px-1.5 py-1 transition-colors ' +
+        (active ? 'bg-white/[0.06]' : '')
       }
-      style={{ gridTemplateColumns: cols }}
     >
-      {/* Пилл: гаражный + статус/скорость; заливка цветом статуса */}
+      {/* Пилл: ширина под max статус+скорость; текст не обрезается */}
       <PillTag
         type={onPillClick ? 'button' : undefined}
         onClick={onPillClick}
         aria-pressed={onPillClick ? active : undefined}
         title={statusLine}
         className={
-          'flex min-h-[2.35rem] w-full flex-col items-start justify-center rounded-lg border px-1.5 py-1 text-left outline-none transition-[filter,box-shadow] ' +
-          (onPillClick ? 'hover:brightness-110' : '')
+          'flex shrink-0 flex-col items-start justify-center rounded-lg border px-1.5 py-1 text-left outline-none transition-[filter] ' +
+          (onPillClick ? 'cursor-pointer hover:brightness-110' : '')
         }
         style={{
-          borderColor: `${color}${active ? 'dd' : '88'}`,
-          backgroundColor: `${color}${active ? '55' : '38'}`,
-          boxShadow: active ? `0 0 0 1px ${color}55, inset 0 0 0 1px ${color}33` : `inset 0 0 0 1px ${color}22`,
+          width: PILL_W,
+          minHeight: PILL_MIN_H,
+          borderColor: `${color}${active ? 'ee' : '99'}`,
+          backgroundColor: `${color}${active ? '5c' : '40'}`,
         }}
       >
-        <span className="w-full font-mono text-[12px] font-bold tabular-nums leading-none text-white">
+        <span className="font-mono text-[12px] font-bold tabular-nums leading-none text-white">
           {garage || '—'}
         </span>
-        <span className="mt-0.5 w-full truncate text-[8px] font-semibold leading-tight text-white/95">
-          {STATUS_LABEL[status]}{' '}
-          <span className="font-mono tabular-nums font-medium opacity-95">{speedText}</span>
+        <span className="mt-0.5 whitespace-nowrap text-[8px] font-semibold leading-tight text-white/95">
+          {statusLabel}{' '}
+          <span className="font-mono tabular-nums font-medium">{speedText}</span>
         </span>
       </PillTag>
 
-      {/* Стр.1 напротив гаражного: тип ТС · гос · марка */}
+      {/* Описание: высота = пилл; 1–2 строки, симметрия по центру */}
       <button
         type="button"
-        disabled={bodyDisabled || !onBodyClick}
+        disabled={!bodyClickable}
         onClick={onBodyClick}
-        className="min-w-0 truncate text-left text-[11px] font-medium leading-tight text-text-secondary outline-none disabled:cursor-default"
-        title={vehicleType || undefined}
+        className={
+          'flex min-w-0 flex-1 flex-col gap-0.5 text-left outline-none disabled:cursor-default ' +
+          (hasDriver ? 'justify-center' : 'justify-center')
+        }
+        style={{ minHeight: PILL_MIN_H }}
       >
-        {vehicleType || '—'}
+        <div
+          className="grid w-full items-center gap-x-1.5"
+          style={{ gridTemplateColumns: DESC_COLS }}
+        >
+          <span className="min-w-0 truncate text-[11px] font-medium leading-tight text-text-secondary">
+            {type}
+          </span>
+          <span className="min-w-0 truncate font-mono text-[11.5px] font-semibold tabular-nums leading-tight text-text-strong">
+            {gosFmt}
+          </span>
+          <span className="min-w-0 truncate text-[11.5px] font-medium leading-tight text-text-strong">
+            {brandTxt}
+          </span>
+        </div>
+        {hasDriver && (
+          <span className="min-w-0 truncate text-[11px] leading-snug text-text-muted">
+            {driver.trim()}
+          </span>
+        )}
       </button>
-      <button
-        type="button"
-        disabled={bodyDisabled || !onBodyClick}
-        onClick={onBodyClick}
-        className="min-w-0 truncate text-left font-mono text-[11.5px] font-semibold tabular-nums leading-tight text-text-strong outline-none disabled:cursor-default"
-      >
-        {gosFmt}
-      </button>
-      <button
-        type="button"
-        disabled={bodyDisabled || !onBodyClick}
-        onClick={onBodyClick}
-        className="min-w-0 truncate text-left text-[11.5px] font-medium leading-tight text-text-strong outline-none disabled:cursor-default"
-      >
-        {brand || '—'}
-      </button>
+
       {showFollow && (
         <button
           type="button"
@@ -654,29 +672,16 @@ function VehicleEntry({
           disabled={followDisabled}
           onClick={onFollow}
           className={
-            'flex h-7 w-7 items-center justify-center justify-self-end rounded-lg border outline-none transition-colors disabled:cursor-default disabled:opacity-35 ' +
+            'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border outline-none transition-colors disabled:cursor-default disabled:opacity-35 ' +
             (following
               ? 'border-accent-clay/60 bg-accent-clay/18 text-accent-clay'
               : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-bg-hover hover:text-text-strong')
           }
+          style={{ width: COL_FOLLOW }}
         >
           <Crosshair className="h-3.5 w-3.5" />
         </button>
       )}
-
-      {/* Стр.2 напротив статуса: ФИО водителя */}
-      <button
-        type="button"
-        disabled={bodyDisabled || !onBodyClick}
-        onClick={onBodyClick}
-        title={driver || undefined}
-        className={
-          'col-start-2 min-w-0 truncate text-left text-[11px] leading-snug text-text-muted outline-none disabled:cursor-default ' +
-          (showFollow ? 'col-end-5' : 'col-end-5')
-        }
-      >
-        {driver || '—'}
-      </button>
     </div>
   );
 }
@@ -767,14 +772,13 @@ function HistoryVehiclePicker({
           sideOffset={4}
           className="z-[760] max-h-[300px] w-[min(400px,var(--radix-popover-trigger-width))] overflow-y-auto rounded-xl border border-border-default bg-bg-elevated p-1 shadow-[0_18px_58px_rgba(0,0,0,0.5)] outline-none"
         >
-          <div
-            className="sticky top-0 z-[1] grid items-center gap-x-1.5 border-b border-border-subtle bg-bg-elevated px-1.5 py-1 text-[9px] uppercase tracking-wide text-text-muted/70"
-            style={{ gridTemplateColumns: `${COL_PILL} ${COL_TYPE} ${COL_GOS} ${COL_BRAND}` }}
-          >
-            <span>Гар.</span>
-            <span>Тип</span>
-            <span>Гос</span>
-            <span>Марка</span>
+          <div className="sticky top-0 z-[1] flex items-center gap-1.5 border-b border-border-subtle bg-bg-elevated px-1.5 py-1 text-[9px] uppercase tracking-wide text-text-muted/70">
+            <span className="shrink-0" style={{ width: PILL_W }}>Гар.</span>
+            <div className="grid min-w-0 flex-1 items-center gap-x-1.5" style={{ gridTemplateColumns: DESC_COLS }}>
+              <span>Тип</span>
+              <span>Гос</span>
+              <span>Марка</span>
+            </div>
           </div>
           {fleet.length === 0 && (
             <div className="px-2 py-2 text-[11px] text-text-muted">Парк пуст</div>
