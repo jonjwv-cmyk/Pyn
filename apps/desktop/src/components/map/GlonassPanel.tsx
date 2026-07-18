@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Crosshair, Loader2, RotateCw, Route, Satellite, Search, Square, X } from 'lucide-react';
+import { CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, Crosshair, Loader2, RotateCw, Route, Satellite, Search, Square, X } from 'lucide-react';
 import { flowTransportGet, flowVehiclesGet } from '@pyn/core';
 import { api } from '@/lib/api';
+import { vehicleBrand } from '@/components/flow/FlowTransportGrid';
 import {
   useGlonassStore,
   vehicleStatus,
@@ -12,13 +13,17 @@ import {
   GLONASS_PRO_COLOR,
   GLONASS_RAW_COLOR,
   type GlonassPosition,
+  type GlonassStatus,
   type GlonassVehicle,
 } from './glonass-store';
 import {
-  formatGlonassPickLine,
+  formatGlonassHistoryLine,
+  formatGlonassListTitle,
   formatGosPlate,
   todayYmdYekaterinburg,
 } from './glonass-format';
+
+type DayMeta = { vehicleType: string; brand: string; driver: string };
 
 /**
  * Панель «Глонасс» — поиск/выбор машин для слежения на карте. Плитка поверх
@@ -51,8 +56,8 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const [query, setQuery] = useState('');
   const [historyVehicleId, setHistoryVehicleId] = useState<number | ''>('');
   const [historyDay, setHistoryDay] = useState(() => toLocalDateValue(new Date()));
-  /** Гаражный → тип ТС + водитель на сегодня (из flow_vehicles / flow_transport). */
-  const [dayMeta, setDayMeta] = useState<Map<string, { vehicleType: string; driver: string }>>(() => new Map());
+  /** Гаражный → тип ТС / марка / водитель на сегодня. */
+  const [dayMeta, setDayMeta] = useState<Map<string, DayMeta>>(() => new Map());
 
   useEffect(() => {
     if (!open) return;
@@ -65,13 +70,16 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           flowTransportGet(api, day),
         ]);
         if (cancelled) return;
-        const typeByGarage = new Map<string, string>();
+        const brandByGarage = new Map<string, string>();
+        const modelTypeByGarage = new Map<string, string>();
         for (const v of vehs) {
           const g = (v.garage_no || '').trim();
           if (!g) continue;
-          // model часто «Пульман 9м» / тип кузова; vtype — класс.
-          const t = (v.model || v.vtype || '').trim();
-          if (t) typeByGarage.set(g.toUpperCase(), t);
+          const key = g.toUpperCase();
+          const brand = vehicleBrand(v.model || '') || '';
+          if (brand) brandByGarage.set(key, brand);
+          // model целиком — fallback типа, если в транспорте нет vehicle_type
+          if ((v.model || '').trim()) modelTypeByGarage.set(key, v.model.trim());
         }
         const driverByGarage = new Map<string, string>();
         const trTypeByGarage = new Map<string, string>();
@@ -82,11 +90,20 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           if (r.driver?.trim() && !driverByGarage.has(key)) driverByGarage.set(key, r.driver.trim());
           if (r.vehicle_type?.trim()) trTypeByGarage.set(key, r.vehicle_type.trim());
         }
-        const next = new Map<string, { vehicleType: string; driver: string }>();
-        const keys = new Set([...typeByGarage.keys(), ...driverByGarage.keys(), ...trTypeByGarage.keys()]);
+        const next = new Map<string, DayMeta>();
+        const keys = new Set([
+          ...brandByGarage.keys(),
+          ...modelTypeByGarage.keys(),
+          ...driverByGarage.keys(),
+          ...trTypeByGarage.keys(),
+        ]);
         for (const k of keys) {
+          const brand = brandByGarage.get(k) || '';
+          const vtype = trTypeByGarage.get(k) || '';
+          // Тип ТС = vehicle_type из транспорта; марка отдельно (КамАЗ). Не дублировать.
           next.set(k, {
-            vehicleType: trTypeByGarage.get(k) || typeByGarage.get(k) || '',
+            vehicleType: vtype,
+            brand,
             driver: driverByGarage.get(k) || '',
           });
         }
@@ -98,13 +115,24 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     return () => { cancelled = true; };
   }, [open, fleet.length]);
 
-  const pickLine = (v: GlonassVehicle): string => {
-    const meta = dayMeta.get((v.garage || '').toUpperCase());
-    return formatGlonassPickLine({
+  const metaOf = (v: GlonassVehicle): DayMeta =>
+    dayMeta.get((v.garage || '').toUpperCase()) ?? { vehicleType: '', brand: '', driver: '' };
+
+  const listTitle = (v: GlonassVehicle): string =>
+    formatGlonassListTitle({
+      gos: v.gos,
+      brand: metaOf(v).brand,
+      fallbackName: v.name,
+    });
+
+  const historyLine = (v: GlonassVehicle): string => {
+    const m = metaOf(v);
+    return formatGlonassHistoryLine({
       garage: v.garage,
       gos: v.gos,
-      vehicleType: meta?.vehicleType,
-      driver: meta?.driver,
+      vehicleType: m.vehicleType,
+      brand: m.brand,
+      driver: m.driver,
       fallbackName: v.name,
     });
   };
@@ -113,20 +141,29 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     const q = query.trim().toLowerCase();
     if (!q) return fleet;
     return fleet.filter((v) => {
-      const meta = dayMeta.get((v.garage || '').toUpperCase());
-      const line = formatGlonassPickLine({
+      const m = dayMeta.get((v.garage || '').toUpperCase());
+      const title = formatGlonassListTitle({
+        gos: v.gos,
+        brand: m?.brand,
+        fallbackName: v.name,
+      }).toLowerCase();
+      const hist = formatGlonassHistoryLine({
         garage: v.garage,
         gos: v.gos,
-        vehicleType: meta?.vehicleType,
-        driver: meta?.driver,
+        vehicleType: m?.vehicleType,
+        brand: m?.brand,
+        driver: m?.driver,
         fallbackName: v.name,
       }).toLowerCase();
       return (
         v.garage.toLowerCase().includes(q) ||
         v.gos.toLowerCase().includes(q) ||
+        formatGosPlate(v.gos).toLowerCase().includes(q) ||
         v.name.toLowerCase().includes(q) ||
-        line.includes(q) ||
-        (meta?.driver || '').toLowerCase().includes(q)
+        title.includes(q) ||
+        hist.includes(q) ||
+        (m?.driver || '').toLowerCase().includes(q) ||
+        (m?.brand || '').toLowerCase().includes(q)
       );
     });
   }, [fleet, query, dayMeta]);
@@ -244,16 +281,13 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
               onClick={() => setShowRaw(!showRaw)}
             />
           </div>
-          <select
+          <HistoryVehiclePicker
+            fleet={fleet}
+            positions={positions}
             value={historyVehicleId}
-            onChange={(e) => setHistoryVehicleId(Number(e.target.value) || '')}
-            className="h-8 min-w-0 rounded-lg border border-border-subtle bg-bg-surface px-2 text-[11.5px] text-text-strong outline-none focus:border-accent-clay/50"
-          >
-            <option value="">Выберите машину</option>
-            {fleet.map((v) => (
-              <option key={v.id} value={v.id}>{pickLine(v)}</option>
-            ))}
-          </select>
+            onChange={setHistoryVehicleId}
+            lineFor={historyLine}
+          />
           <HistoryDateField value={historyDay} onChange={setHistoryDay} />
           <div className="grid grid-cols-[1fr_1fr_1fr] gap-1.5">
             <button
@@ -329,9 +363,9 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           <div className="px-2 py-3 text-[11.5px] text-text-muted">Ничего не найдено</div>
         )}
         {ordered.length > 0 && (
-          <div className="grid grid-cols-[54px_minmax(0,1fr)_84px_24px] items-center gap-2 px-2 pb-1 pt-0.5 text-[9.5px] uppercase tracking-wide text-text-muted/75">
+          <div className="grid grid-cols-[54px_minmax(0,1fr)_72px_24px] items-center gap-2 px-2 pb-1 pt-0.5 text-[9.5px] uppercase tracking-wide text-text-muted/75">
             <span>Гар.</span>
-            <span>Машина</span>
+            <span>Гос · марка</span>
             <span>Статус</span>
             <span />
           </div>
@@ -340,7 +374,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           <VehicleRow
             key={v.id}
             v={v}
-            label={pickLine(v)}
+            title={listTitle(v)}
             checked={selected.has(v.id)}
             following={followId === v.id}
             position={positions.get(v.id)}
@@ -522,10 +556,14 @@ function yearStartIso(): string {
   return new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0).toISOString();
 }
 
-function VehicleRow({ v, label, checked, following, position, onToggle, onFocus, onFollow }: {
+/**
+ * Список машин (не история):
+ *  гар. | «Х 905 КВ КамАЗ» | кружок статуса + скорость | следить.
+ * Без полной строки тип/водитель — только гос + марка после него.
+ */
+function VehicleRow({ v, title: machineTitle, checked, following, position, onToggle, onFocus, onFollow }: {
   v: GlonassVehicle;
-  /** `гар | гос | тип | водитель` (ТЗ п.10). */
-  label: string;
+  title: string;
   checked: boolean;
   following: boolean;
   position: GlonassPosition | undefined;
@@ -535,13 +573,12 @@ function VehicleRow({ v, label, checked, following, position, onToggle, onFocus,
 }) {
   const status = vehicleStatus(position);
   const statusColor = STATUS_COLOR[status];
-  const title = position ? 'Перейти к машине на карте' : 'Координат пока нет';
-  const gosFmt = formatGosPlate(v.gos) || v.gos;
+  const mapTip = position ? 'Перейти к машине на карте' : 'Координат пока нет';
 
   return (
     <div
       className={
-        'grid w-full grid-cols-[54px_minmax(0,1fr)_84px_24px] items-center gap-2 rounded-xl border px-2 py-1.5 transition-colors ' +
+        'grid w-full grid-cols-[54px_minmax(0,1fr)_72px_24px] items-center gap-2 rounded-xl border px-2 py-1.5 transition-colors ' +
         (checked ? 'border-emerald-400/35 bg-emerald-500/12' : 'border-transparent hover:border-border-subtle hover:bg-bg-elevated')
       }
     >
@@ -563,34 +600,29 @@ function VehicleRow({ v, label, checked, following, position, onToggle, onFocus,
 
       <button
         type="button"
-        title={label || title}
+        title={machineTitle || mapTip}
         disabled={!position}
         onClick={() => { if (position) onFocus(position); }}
         className="min-w-0 rounded-lg px-1 py-0.5 text-left outline-none transition-colors hover:bg-bg-hover disabled:cursor-default disabled:hover:bg-transparent"
       >
         <span className="block whitespace-normal break-words text-[12px] font-medium leading-[1.18] text-text-strong">
-          {gosFmt || v.name}
+          {machineTitle}
         </span>
-        {label.includes('|') && (
-          <span className="mt-0.5 block whitespace-normal break-words text-[10px] leading-[1.2] text-text-muted">
-            {label}
-          </span>
-        )}
       </button>
 
       <button
         type="button"
-        title={title}
+        title={`${STATUS_LABEL[status]} · ${formatGlonassSpeed(position?.speed)}`}
         disabled={!position}
         onClick={() => { if (position) onFocus(position); }}
-        className="grid min-w-0 grid-cols-[11px_minmax(0,1fr)] items-center gap-1.5 rounded-lg px-1 py-0.5 text-left text-[10.5px] leading-[1.1] text-text-muted outline-none transition-colors hover:bg-bg-hover disabled:cursor-default disabled:hover:bg-transparent"
+        className="flex min-w-0 items-center gap-1.5 rounded-lg px-1 py-0.5 text-left outline-none transition-colors hover:bg-bg-hover disabled:cursor-default disabled:hover:bg-transparent"
       >
-        <span className="h-2.5 w-2.5 rounded-full shadow-[0_0_0_2px_rgba(255,255,255,0.08)]" style={{ backgroundColor: statusColor }} />
-        <span className="min-w-0">
-          <span className="block whitespace-normal break-words">{STATUS_LABEL[status]}</span>
-          <span className="block whitespace-nowrap font-mono text-[9.5px] tabular-nums text-text-muted/75">
-            {formatGlonassSpeed(position?.speed)}
-          </span>
+        <span
+          className="h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_0_2px_rgba(255,255,255,0.08)]"
+          style={{ backgroundColor: statusColor }}
+        />
+        <span className="min-w-0 truncate font-mono text-[10px] tabular-nums text-text-muted">
+          {formatGlonassSpeed(position?.speed)}
         </span>
       </button>
 
@@ -611,5 +643,95 @@ function VehicleRow({ v, label, checked, following, position, onToggle, onFocus,
         <Crosshair className="h-3.5 w-3.5" />
       </button>
     </div>
+  );
+}
+
+/** История: пилюля статуса + «гар | гос | тип | марка | водитель». */
+function HistoryVehiclePicker({
+  fleet,
+  positions,
+  value,
+  onChange,
+  lineFor,
+}: {
+  fleet: GlonassVehicle[];
+  positions: Map<number, GlonassPosition>;
+  value: number | '';
+  onChange: (id: number | '') => void;
+  lineFor: (v: GlonassVehicle) => string;
+}) {
+  const selected = fleet.find((v) => v.id === value) ?? null;
+  const selectedStatus = vehicleStatus(selected ? positions.get(selected.id) : undefined);
+
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className="flex h-auto min-h-8 w-full min-w-0 items-center gap-1.5 rounded-lg border border-border-subtle bg-bg-surface px-2 py-1.5 text-left text-[11.5px] text-text-strong outline-none transition-colors hover:border-accent-clay/45 data-[state=open]:border-accent-clay/55"
+        >
+          {selected ? (
+            <>
+              <StatusPill status={selectedStatus} />
+              <span className="min-w-0 flex-1 whitespace-normal break-words leading-[1.25]">
+                {lineFor(selected)}
+              </span>
+            </>
+          ) : (
+            <span className="flex-1 text-text-muted">Выберите машину</span>
+          )}
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          sideOffset={4}
+          className="z-[760] max-h-[280px] w-[var(--radix-popover-trigger-width)] overflow-y-auto rounded-xl border border-border-default bg-bg-elevated p-1 shadow-[0_18px_58px_rgba(0,0,0,0.5)] outline-none"
+        >
+          {fleet.length === 0 && (
+            <div className="px-2 py-2 text-[11px] text-text-muted">Парк пуст</div>
+          )}
+          {fleet.map((v) => {
+            const st = vehicleStatus(positions.get(v.id));
+            const on = v.id === value;
+            return (
+              <Popover.Close asChild key={v.id}>
+                <button
+                  type="button"
+                  onClick={() => onChange(v.id)}
+                  className={
+                    'flex w-full items-start gap-1.5 rounded-lg px-2 py-1.5 text-left transition-colors ' +
+                    (on ? 'bg-emerald-500/14 text-text-strong' : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong')
+                  }
+                >
+                  <StatusPill status={st} />
+                  <span className="min-w-0 flex-1 whitespace-normal break-words text-[11.5px] leading-[1.25]">
+                    {lineFor(v)}
+                  </span>
+                </button>
+              </Popover.Close>
+            );
+          })}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function StatusPill({ status }: { status: GlonassStatus }) {
+  const color = STATUS_COLOR[status];
+  return (
+    <span
+      className="mt-0.5 inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[9.5px] font-semibold leading-none"
+      style={{
+        color,
+        backgroundColor: `${color}22`,
+        boxShadow: `inset 0 0 0 1px ${color}55`,
+      }}
+      title={STATUS_LABEL[status]}
+    >
+      {STATUS_LABEL[status]}
+    </span>
   );
 }

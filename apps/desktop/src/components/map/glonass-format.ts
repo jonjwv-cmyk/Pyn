@@ -1,43 +1,105 @@
 /**
- * Формат строки выбора Глонасс (ТЗ 17.07 п.10):
- * `398 | Х 905 КВ | Пульман 9м | Тимофеев Александр Борисович`
- * (гаражный · гос «А 982 НК» · тип ТС · водитель на ТЕКУЩИЙ день из Транспорта).
+ * Форматы подписей Глонасс (ТЗ 17.07 п.10 + уточнение 2026-07-18):
+ *
+ * Список машин (не история):
+ *   «Х 905 КВ КамАЗ»  — гос с пробелами + марка после; статус = кружок + скорость.
+ *
+ * История (выбор машины):
+ *   пилюля статуса · гаражный · гос · тип ТС · марка · водитель (сегодня из Транспорта).
  */
 
-/** Госномер → «Х 905 КВ» / «А 982 НК 96» (буквы-цифры-буквы, пробелы). */
-export function formatGosPlate(raw: string): string {
-  const compact = String(raw || '')
+/** Латиница-двойники букв РФ-номеров → кириллица (Глонасс часто отдаёт латиницу). */
+const PLATE_LAT_TO_CYR: Record<string, string> = {
+  A: 'А', B: 'В', E: 'Е', K: 'К', M: 'М', H: 'Н', O: 'О',
+  P: 'Р', C: 'С', T: 'Т', Y: 'У', X: 'Х',
+};
+
+function plateUpper(raw: string): string {
+  return String(raw || '')
     .trim()
     .toLocaleUpperCase('ru-RU')
-    .replace(/\s+/g, '')
     .replace(/Ё/g, 'Е');
-  if (!compact) return '';
-  // A123BC96 / A123BC / A123BC196
-  const m = /^([A-ZА-Я])(\d{3})([A-ZА-Я]{2})(\d{2,3})?$/.exec(compact);
-  if (!m) {
-    // уже с пробелами — нормализуем кратно
-    const spaced = String(raw || '').trim().replace(/\s+/g, ' ');
-    return spaced;
-  }
-  const base = `${m[1]} ${m[2]} ${m[3]}`;
-  return m[4] ? `${base} ${m[4]}` : base;
 }
 
-/** Сборка подписи: гар. | гос | тип | водитель(если есть). */
-export function formatGlonassPickLine(parts: {
+/** Сжать и привести буквы номера к кириллице. */
+export function normalizePlateCompact(raw: string): string {
+  const upper = plateUpper(raw).replace(/\s+/g, '');
+  let out = '';
+  for (const ch of upper) {
+    out += PLATE_LAT_TO_CYR[ch] ?? ch;
+  }
+  return out;
+}
+
+/**
+ * Госномер → «Х 905 КВ» / «А 982 НК 96».
+ * Всегда разделяет буквы и цифры; латиницу-двойники приводит к кириллице.
+ */
+export function formatGosPlate(raw: string): string {
+  const compact = normalizePlateCompact(raw);
+  if (!compact) return '';
+
+  // Стандарт РФ: L DDD LL [RR]
+  const m = /^([А-ЯA-Z])(\d{3})([А-ЯA-Z]{2})(\d{2,3})?$/.exec(compact);
+  if (m) {
+    const base = `${m[1]} ${m[2]} ${m[3]}`;
+    return m[4] ? `${base} ${m[4]}` : base;
+  }
+
+  // Fallback: вставить пробел на каждой границе буква↔цифра.
+  return compact
+    .replace(/([А-ЯA-Z])(\d)/g, '$1 $2')
+    .replace(/(\d)([А-ЯA-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Список машин: «Х 905 КВ КамАЗ» (гос + марка после). */
+export function formatGlonassListTitle(parts: {
+  gos?: string;
+  brand?: string;
+  fallbackName?: string;
+}): string {
+  const gos = formatGosPlate(parts.gos || '') || String(parts.gos || '').trim();
+  const brand = String(parts.brand || '').trim();
+  if (gos && brand) return `${gos} ${brand}`;
+  if (gos) return gos;
+  if (brand) return brand;
+  return String(parts.fallbackName || '').trim() || '—';
+}
+
+/**
+ * История — текстовая часть после пилюли статуса:
+ * `398 | Х 905 КВ | Пульман 9м | КамАЗ | Тимофеев …`
+ */
+export function formatGlonassHistoryLine(parts: {
   garage?: string;
   gos?: string;
   vehicleType?: string;
+  brand?: string;
   driver?: string;
   fallbackName?: string;
 }): string {
   const garage = String(parts.garage || '').trim();
   const gos = formatGosPlate(parts.gos || '') || String(parts.gos || '').trim();
   const vtype = String(parts.vehicleType || '').trim();
+  const brand = String(parts.brand || '').trim();
   const driver = String(parts.driver || '').trim();
-  const chunks = [garage, gos, vtype, driver].filter(Boolean);
+  const chunks = [garage, gos, vtype, brand, driver].filter(Boolean);
   if (chunks.length > 0) return chunks.join(' | ');
   return String(parts.fallbackName || 'машина').trim() || 'машина';
+}
+
+/** @deprecated use formatGlonassHistoryLine */
+export function formatGlonassPickLine(parts: {
+  garage?: string;
+  gos?: string;
+  vehicleType?: string;
+  brand?: string;
+  driver?: string;
+  fallbackName?: string;
+}): string {
+  return formatGlonassHistoryLine(parts);
 }
 
 /** Сегодня YYYY-MM-DD по Екатеринбургу (как на сервере Транспорта). */

@@ -643,8 +643,7 @@ function findVehicle(fleet: GlonassVehicle[], id: number): GlonassVehicle | null
 
 function vehicleLabel(vehicle: GlonassVehicle | null | undefined): string {
   if (!vehicle) return 'машина';
-  // Базовый ярлык (без типа/водителя — их подмешивает панель выбора).
-  // Гос в формате «Х 905 КВ».
+  // Ярлык слоя истории: гаражный + гос с пробелами (тип/марка/водитель — в пикере).
   const gos = formatGosPlate(vehicle.gos) || vehicle.gos;
   return [vehicle.garage, gos].filter(Boolean).join(' | ') || vehicle.name || 'машина';
 }
