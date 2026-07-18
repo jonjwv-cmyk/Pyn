@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Clock, Crosshair, Loader2, RotateCw, Route, Satellite, Search, Square, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Crosshair, History, Loader2, RotateCw, Satellite, Search, Square, X } from 'lucide-react';
 import { flowTransportGet, flowVehiclesGet } from '@pyn/core';
 import { api } from '@/lib/api';
 import { vehicleBrand } from '@/components/flow/FlowTransportGrid';
@@ -23,18 +23,9 @@ import {
 
 type DayMeta = { vehicleType: string; brand: string; driver: string };
 
-/**
- * Пилл: ширина под самый длинный статус + «999 км/ч» целиком (без обрезки).
- * Высота = 2 строки (гаражный + статус/скорость) — справа ровно те же 2 строки.
- */
+/** Пилл: ширина под «В движении 999 км/ч» целиком. */
 const PILL_W = '7.1rem';
 const PILL_MIN_H = '2.55rem';
-/** Описание: тип · гос · марка — ровные колонки. */
-const COL_TYPE = 'minmax(0, 1fr)';
-const COL_GOS = '5.4rem';
-const COL_BRAND = 'minmax(2.4rem, 3.4rem)';
-const COL_FOLLOW = '1.55rem';
-const DESC_COLS = `${COL_TYPE} ${COL_GOS} ${COL_BRAND}`;
 
 /**
  * Панель «Глонасс» — поиск/выбор машин для слежения на карте. Плитка поверх
@@ -56,8 +47,6 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const toggleSelect = useGlonassStore((s) => s.toggleSelect);
   const clearSelected = useGlonassStore((s) => s.clearSelected);
   const loadFleet = useGlonassStore((s) => s.loadFleet);
-  const createHistoryLayer = useGlonassStore((s) => s.createHistoryLayer);
-  const createYearRoadLayer = useGlonassStore((s) => s.createYearRoadLayer);
   const cancelHistoryLoading = useGlonassStore((s) => s.cancelHistoryLoading);
   const showPro = useGlonassStore((s) => s.showPro);
   const showRaw = useGlonassStore((s) => s.showRaw);
@@ -65,8 +54,6 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const setShowRaw = useGlonassStore((s) => s.setShowRaw);
 
   const [query, setQuery] = useState('');
-  const [historyVehicleId, setHistoryVehicleId] = useState<number | ''>('');
-  const [historyDay, setHistoryDay] = useState(() => toLocalDateValue(new Date()));
   /** Гаражный → тип ТС / марка / водитель на сегодня. */
   const [dayMeta, setDayMeta] = useState<Map<string, DayMeta>>(() => new Map());
 
@@ -156,27 +143,6 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     });
   }, [filtered, selected]);
 
-  const firstSelectedId = useMemo(() => Array.from(selected)[0] ?? null, [selected]);
-  useEffect(() => {
-    const fallback = firstSelectedId ?? fleet[0]?.id ?? '';
-    setHistoryVehicleId((cur) => (cur && fleet.some((v) => v.id === cur) ? cur : fallback));
-  }, [firstSelectedId, fleet]);
-
-  const createDayHistory = () => {
-    if (!historyVehicleId) return;
-    const [from, to] = localDayRangeToIso(historyDay);
-    void createHistoryLayer(Number(historyVehicleId), from, to);
-  };
-
-  const createSelectedYearHistory = () => {
-    const ids = selected.size > 0 ? Array.from(selected) : (historyVehicleId ? [Number(historyVehicleId)] : []);
-    void createYearRoadLayer(ids, yearStartIso(), new Date().toISOString());
-  };
-
-  const createFleetYearHistory = () => {
-    void createYearRoadLayer(fleet.map((v) => v.id), yearStartIso(), new Date().toISOString());
-  };
-
   if (!open) return null;
 
   return (
@@ -240,95 +206,42 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
         </div>
       )}
 
-      <div className="shrink-0 border-y border-border-subtle bg-bg-elevated px-3 py-2.5">
-        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-          <Clock className="h-3.5 w-3.5" />
-          История движения
-        </div>
-        <div className="grid gap-1.5">
-          <div className="grid grid-cols-2 gap-1.5" aria-label="Отображение маршрута">
-            <HistoryModeToggle
-              label="PRO"
-              color={GLONASS_PRO_COLOR}
-              on={showPro}
-              onClick={() => setShowPro(!showPro)}
-            />
-            <HistoryModeToggle
-              label="ГЛОНАСС"
-              color={GLONASS_RAW_COLOR}
-              on={showRaw}
-              onClick={() => setShowRaw(!showRaw)}
-            />
-          </div>
-          <HistoryVehiclePicker
-            fleet={fleet}
-            positions={positions}
-            value={historyVehicleId}
-            onChange={setHistoryVehicleId}
-            metaOf={metaOf}
+      {/* PRO / сырой ГЛОНАСС — компактно */}
+      <div className="shrink-0 border-y border-border-subtle bg-bg-elevated px-3 py-2">
+        <div className="grid grid-cols-2 gap-1.5" aria-label="Отображение маршрута">
+          <HistoryModeToggle
+            label="PRO"
+            color={GLONASS_PRO_COLOR}
+            on={showPro}
+            onClick={() => setShowPro(!showPro)}
           />
-          <HistoryDateField value={historyDay} onChange={setHistoryDay} />
-          <div className="grid grid-cols-[1fr_1fr_1fr] gap-1.5">
-            <button
-              type="button"
-              disabled={!historyVehicleId || !!historyLoading}
-              onClick={createDayHistory}
-              className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-sky-400/35 bg-sky-500/12 px-2 text-[11px] font-semibold text-sky-200 outline-none transition-colors hover:bg-sky-500/18 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <Route className="h-3.5 w-3.5" />
-              День
-            </button>
-            <button
-              type="button"
-              disabled={(!historyVehicleId && selected.size === 0) || !!historyLoading}
-              onClick={createSelectedYearHistory}
-              className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-pink-400/35 bg-pink-500/12 px-2 text-[11px] font-semibold text-pink-200 outline-none transition-colors hover:bg-pink-500/18 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <span className="h-2.5 w-4 rounded-full bg-[#F472D0]" />
-              Выбран.
-            </button>
-            <button
-              type="button"
-              disabled={fleet.length === 0 || !!historyLoading}
-              onClick={createFleetYearHistory}
-              className="flex h-8 items-center justify-center gap-1 rounded-lg border border-pink-400/35 bg-pink-500/12 px-2 text-[11px] font-semibold text-pink-200 outline-none transition-colors hover:bg-pink-500/18 disabled:cursor-not-allowed disabled:opacity-45"
-              title="Розовые следы с 01.01.2026 по всему парку"
-            >
-              Весь парк
-            </button>
-          </div>
-          {historyLoading && (
-            <div className="rounded-lg border border-border-subtle bg-bg-surface px-2 py-1.5">
-              <div className="flex items-center gap-2 text-[10.5px] text-text-muted">
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-pink-300" />
-                <span className="min-w-0 flex-1 truncate">{historyLoading.label}</span>
-                <span className="font-mono tabular-nums">{historyLoading.done}/{historyLoading.total}</span>
-                {(historyLoading.failed ?? 0) > 0 && (
-                  <span className="rounded bg-rose-500/12 px-1 font-mono text-[9.5px] text-rose-300">
-                    −{historyLoading.failed}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  title="Остановить загрузку"
-                  onClick={cancelHistoryLoading}
-                  className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:bg-bg-hover hover:text-text-strong"
-                >
-                  <Square className="h-3 w-3" />
-                </button>
-              </div>
-              <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="h-full rounded-full bg-pink-400 transition-[width]"
-                  style={{ width: `${historyLoading.total > 0 ? Math.round((historyLoading.done / historyLoading.total) * 100) : 0}%` }}
-                />
-              </div>
-            </div>
-          )}
+          <HistoryModeToggle
+            label="ГЛОНАСС"
+            color={GLONASS_RAW_COLOR}
+            on={showRaw}
+            onClick={() => setShowRaw(!showRaw)}
+          />
         </div>
+        {historyLoading && (
+          <div className="mt-2 rounded-lg border border-border-subtle bg-bg-surface px-2 py-1.5">
+            <div className="flex items-center gap-2 text-[10.5px] text-text-muted">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-300" />
+              <span className="min-w-0 flex-1 truncate">{historyLoading.label}</span>
+              <span className="font-mono tabular-nums">{historyLoading.done}/{historyLoading.total}</span>
+              <button
+                type="button"
+                title="Остановить"
+                onClick={cancelHistoryLoading}
+                className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:bg-bg-hover hover:text-text-strong"
+              >
+                <Square className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Список парка */}
+      {/* Список парка — история: иконка у строки → календарь → «История» */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 pt-1.5">
         {loading && fleet.length === 0 && (
           <div className="flex items-center justify-center gap-2 py-6 text-[12px] text-text-muted">
@@ -340,17 +253,6 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
         )}
         {!loading && !error && filtered.length === 0 && fleet.length > 0 && (
           <div className="px-2 py-3 text-[11.5px] text-text-muted">Ничего не найдено</div>
-        )}
-        {ordered.length > 0 && (
-          <div className="flex items-center gap-1.5 px-2 pb-1 pt-0.5 text-[9px] uppercase tracking-wide text-text-muted/70">
-            <span className="shrink-0" style={{ width: PILL_W }}>Гар.</span>
-            <div className="grid min-w-0 flex-1 items-center gap-x-1.5" style={{ gridTemplateColumns: DESC_COLS }}>
-              <span>Тип</span>
-              <span>Гос</span>
-              <span>Марка</span>
-            </div>
-            <span className="shrink-0" style={{ width: COL_FOLLOW }} />
-          </div>
         )}
         {ordered.map((v) => (
           <VehicleRow
@@ -398,7 +300,8 @@ function HistoryModeToggle({ label, color, on, onClick }: {
   );
 }
 
-function HistoryDateField({ value, onChange }: {
+/** Календарь дня (inline) — для попапа «История» у строки. */
+function InlineDayCalendar({ value, onChange }: {
   value: string;
   onChange: (value: string) => void;
 }) {
@@ -422,68 +325,48 @@ function HistoryDateField({ value, onChange }: {
   };
 
   return (
-    <Popover.Root>
-      <Popover.Trigger asChild>
+    <div className="w-[272px]">
+      <div className="flex h-7 items-center justify-between">
         <button
           type="button"
-          className="flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-border-subtle bg-bg-surface px-2 text-left text-[11px] text-text-secondary outline-none transition-colors hover:border-accent-clay/45 hover:bg-bg-hover data-[state=open]:border-accent-clay/55 data-[state=open]:text-text-strong"
+          onClick={() => moveMonth(-1)}
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
         >
-          <CalendarDays className="h-3.5 w-3.5 shrink-0 text-text-muted" />
-          <span className="shrink-0 font-semibold text-text-muted">День</span>
-          <span className="min-w-0 truncate font-mono tabular-nums text-text-strong">{formatDateButton(selected)}</span>
+          <ChevronLeft className="h-4 w-4" />
         </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          align="start"
-          sideOffset={6}
-          className="z-[760] w-[292px] rounded-2xl border border-border-default bg-bg-elevated p-3 text-text-primary shadow-[0_18px_58px_rgba(0,0,0,0.5)] outline-none"
+        <div className="text-[12px] font-semibold text-text-strong first-letter:uppercase">{monthTitle}</div>
+        <button
+          type="button"
+          onClick={() => moveMonth(1)}
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
         >
-          <div className="flex h-7 items-center justify-between">
+          <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="mt-2 grid grid-cols-7 gap-1 text-center text-[9.5px] font-semibold uppercase tracking-wide text-text-muted">
+        {['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map((d) => <span key={d}>{d}</span>)}
+      </div>
+      <div className="mt-1 grid grid-cols-7 gap-1">
+        {days.map((day, index) => {
+          const selectedDay = day && day.year === selected.year && day.month === selected.month && day.day === selected.day;
+          return day ? (
             <button
+              key={`${day.year}-${day.month}-${day.day}`}
               type="button"
-              onClick={() => moveMonth(-1)}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
+              onClick={() => setDate(day.year, day.month, day.day)}
+              className={[
+                'h-7 rounded-lg text-[11.5px] tabular-nums outline-none transition-colors',
+                selectedDay
+                  ? 'bg-accent-clay-bg font-semibold text-accent-clay ring-1 ring-inset ring-accent-clay/45'
+                  : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
+              ].join(' ')}
             >
-              <ChevronLeft className="h-4 w-4" />
+              {day.day}
             </button>
-            <div className="text-[12px] font-semibold text-text-strong first-letter:uppercase">{monthTitle}</div>
-            <button
-              type="button"
-              onClick={() => moveMonth(1)}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted outline-none transition-colors hover:bg-bg-hover hover:text-text-strong"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-
-          <div className="mt-2 grid grid-cols-7 gap-1 text-center text-[9.5px] font-semibold uppercase tracking-wide text-text-muted">
-            {['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map((d) => <span key={d}>{d}</span>)}
-          </div>
-          <div className="mt-1 grid grid-cols-7 gap-1">
-            {days.map((day, index) => {
-              const selectedDay = day && day.year === selected.year && day.month === selected.month && day.day === selected.day;
-              return day ? (
-                <button
-                  key={`${day.year}-${day.month}-${day.day}`}
-                  type="button"
-                  onClick={() => setDate(day.year, day.month, day.day)}
-                  className={[
-                    'h-7 rounded-lg text-[11.5px] tabular-nums outline-none transition-colors',
-                    selectedDay
-                      ? 'bg-accent-clay-bg font-semibold text-accent-clay ring-1 ring-inset ring-accent-clay/45'
-                      : 'text-text-secondary hover:bg-bg-hover hover:text-text-strong',
-                  ].join(' ')}
-                >
-                  {day.day}
-                </button>
-              ) : <span key={`blank-${index}`} />;
-            })}
-          </div>
-          <Popover.Arrow className="fill-bg-elevated" />
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+          ) : <span key={`blank-${index}`} />;
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -517,11 +400,6 @@ function formatLocalDate(parts: { year: number; month: number; day: number }): s
   return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
 }
 
-function formatDateButton(parts: { year: number; month: number; day: number }): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(parts.day)}.${pad(parts.month)}.${parts.year}`;
-}
-
 function buildMonthDays(year: number, month: number): Array<{ year: number; month: number; day: number } | null> {
   const first = new Date(year, month - 1, 1);
   const firstWeekday = (first.getDay() + 6) % 7; // Monday first.
@@ -533,160 +411,14 @@ function buildMonthDays(year: number, month: number): Array<{ year: number; mont
   return out;
 }
 
-function yearStartIso(): string {
-  const now = new Date();
-  return new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0).toISOString();
-}
-
 /**
- * Единая строка (список = история):
+ * Строка списка:
+ *  [пилл]  тип ТС целиком · Т 955 РК · КамАЗ
+ *          ФИО (если есть)
+ *          [⊙ следить] [ downstream история]
  *
- *  ┌────────────────┐  тип     Т 955 РК   КамАЗ    [⊙]
- *  │      398       │  ФИО (если есть)
- *  │В движении 999… │
- *  └────────────────┘
- *
- * Пилл фиксирован по «В движении 999 км/ч» — статус/скорость видны целиком.
- * Справа в той же высоте 1–2 строки; без типа/ФИО — пусто (без «—»).
- * Без ФИО первая строка по центру высоты пилла.
+ * Гос без truncate (…); тип целиком (может переноситься).
  */
-function VehicleEntry({
-  garage,
-  gos,
-  brand,
-  vehicleType,
-  driver,
-  status,
-  speed,
-  active = false,
-  showFollow = false,
-  following = false,
-  onPillClick,
-  onBodyClick,
-  onFollow,
-  bodyDisabled = false,
-  followDisabled = false,
-}: {
-  garage: string;
-  gos: string;
-  brand: string;
-  vehicleType: string;
-  driver: string;
-  status: GlonassStatus;
-  speed: number | null | undefined;
-  active?: boolean;
-  showFollow?: boolean;
-  following?: boolean;
-  onPillClick?: () => void;
-  onBodyClick?: () => void;
-  onFollow?: () => void;
-  bodyDisabled?: boolean;
-  followDisabled?: boolean;
-}) {
-  const color = STATUS_COLOR[status];
-  const gosFmt = formatGosPlate(gos) || gos || '';
-  // Скорость всегда в формате «N км/ч» / «— км/ч» — пилл рассчитан на «999 км/ч»
-  const speedText = speed == null || !Number.isFinite(speed)
-    ? '— км/ч'
-    : `${Math.min(999, Math.round(speed))} км/ч`;
-  const statusLabel = STATUS_LABEL[status];
-  const statusLine = `${statusLabel} ${speedText}`;
-  const hasDriver = Boolean(driver.trim());
-  const type = vehicleType.trim();
-  const brandTxt = brand.trim();
-
-  const PillTag = onPillClick ? 'button' : 'div';
-  const bodyClickable = Boolean(onBodyClick) && !bodyDisabled;
-
-  return (
-    <div
-      className={
-        'flex w-full items-center gap-1.5 rounded-xl px-1.5 py-1 transition-colors ' +
-        (active ? 'bg-white/[0.06]' : '')
-      }
-    >
-      {/* Пилл: ширина под max статус+скорость; текст не обрезается */}
-      <PillTag
-        type={onPillClick ? 'button' : undefined}
-        onClick={onPillClick}
-        aria-pressed={onPillClick ? active : undefined}
-        title={statusLine}
-        className={
-          'flex shrink-0 flex-col items-start justify-center rounded-lg border px-1.5 py-1 text-left outline-none transition-[filter] ' +
-          (onPillClick ? 'cursor-pointer hover:brightness-110' : '')
-        }
-        style={{
-          width: PILL_W,
-          minHeight: PILL_MIN_H,
-          borderColor: `${color}${active ? 'ee' : '99'}`,
-          backgroundColor: `${color}${active ? '5c' : '40'}`,
-        }}
-      >
-        <span className="font-mono text-[12px] font-bold tabular-nums leading-none text-white">
-          {garage || '—'}
-        </span>
-        <span className="mt-0.5 whitespace-nowrap text-[8px] font-semibold leading-tight text-white/95">
-          {statusLabel}{' '}
-          <span className="font-mono tabular-nums font-medium">{speedText}</span>
-        </span>
-      </PillTag>
-
-      {/* Описание: высота = пилл; 1–2 строки, симметрия по центру */}
-      <button
-        type="button"
-        disabled={!bodyClickable}
-        onClick={onBodyClick}
-        className={
-          'flex min-w-0 flex-1 flex-col gap-0.5 text-left outline-none disabled:cursor-default ' +
-          (hasDriver ? 'justify-center' : 'justify-center')
-        }
-        style={{ minHeight: PILL_MIN_H }}
-      >
-        <div
-          className="grid w-full items-center gap-x-1.5"
-          style={{ gridTemplateColumns: DESC_COLS }}
-        >
-          <span className="min-w-0 truncate text-[11px] font-medium leading-tight text-text-secondary">
-            {type}
-          </span>
-          <span className="min-w-0 truncate font-mono text-[11.5px] font-semibold tabular-nums leading-tight text-text-strong">
-            {gosFmt}
-          </span>
-          <span className="min-w-0 truncate text-[11.5px] font-medium leading-tight text-text-strong">
-            {brandTxt}
-          </span>
-        </div>
-        {hasDriver && (
-          <span className="min-w-0 truncate text-[11px] leading-snug text-text-muted">
-            {driver.trim()}
-          </span>
-        )}
-      </button>
-
-      {showFollow && (
-        <button
-          type="button"
-          aria-label={following ? 'Перестать следить' : 'Следить за машиной'}
-          aria-pressed={following}
-          title={following ? 'Слежу — камера едет за машиной' : 'Следить: камера едет за машиной'}
-          disabled={followDisabled}
-          onClick={onFollow}
-          className={
-            'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border outline-none transition-colors disabled:cursor-default disabled:opacity-35 ' +
-            (following
-              ? 'border-accent-clay/60 bg-accent-clay/18 text-accent-clay'
-              : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-bg-hover hover:text-text-strong')
-          }
-          style={{ width: COL_FOLLOW }}
-        >
-          <Crosshair className="h-3.5 w-3.5" />
-        </button>
-      )}
-    </div>
-  );
-}
-
-/** Список отслеживания: пилл + описание + ⊙ */
 function VehicleRow({ v, meta, checked, following, position, onToggle, onFocus, onFollow }: {
   v: GlonassVehicle;
   meta: DayMeta;
@@ -698,120 +430,146 @@ function VehicleRow({ v, meta, checked, following, position, onToggle, onFocus, 
   onFollow: () => void;
 }) {
   const status = vehicleStatus(position);
+  const color = STATUS_COLOR[status];
+  const gosFmt = formatGosPlate(v.gos) || v.gos || '';
+  const speedText = position?.speed == null || !Number.isFinite(position.speed)
+    ? '— км/ч'
+    : `${Math.min(999, Math.round(position.speed))} км/ч`;
+  const statusLabel = STATUS_LABEL[status];
+  const type = meta.vehicleType.trim();
+  const brand = meta.brand.trim();
+  const driver = meta.driver.trim();
+  const mapTip = position ? 'Перейти к машине на карте' : 'Координат пока нет';
+
   return (
-    <div className={checked ? 'rounded-xl bg-white/[0.03]' : undefined}>
-      <VehicleEntry
-        garage={v.garage}
-        gos={v.gos}
-        brand={meta.brand}
-        vehicleType={meta.vehicleType}
-        driver={meta.driver}
-        status={status}
-        speed={position?.speed}
-        active={checked}
-        showFollow
-        following={following}
-        onPillClick={onToggle}
-        onBodyClick={position ? () => onFocus(position) : undefined}
-        onFollow={onFollow}
-        bodyDisabled={!position}
-        followDisabled={!position}
-      />
+    <div
+      className={
+        'flex w-full items-center gap-1.5 rounded-xl px-1.5 py-1 transition-colors ' +
+        (checked ? 'bg-white/[0.06]' : 'hover:bg-white/[0.03]')
+      }
+    >
+      <button
+        type="button"
+        aria-pressed={checked}
+        onClick={onToggle}
+        title={`${statusLabel} ${speedText}`}
+        className="flex shrink-0 cursor-pointer flex-col items-start justify-center rounded-lg border px-1.5 py-1 text-left outline-none transition-[filter] hover:brightness-110"
+        style={{
+          width: PILL_W,
+          minHeight: PILL_MIN_H,
+          borderColor: `${color}${checked ? 'ee' : '99'}`,
+          backgroundColor: `${color}${checked ? '5c' : '40'}`,
+        }}
+      >
+        <span className="font-mono text-[12px] font-bold tabular-nums leading-none text-white">
+          {v.garage || '—'}
+        </span>
+        <span className="mt-0.5 whitespace-nowrap text-[8px] font-semibold leading-tight text-white/95">
+          {statusLabel}{' '}
+          <span className="font-mono tabular-nums font-medium">{speedText}</span>
+        </span>
+      </button>
+
+      <button
+        type="button"
+        disabled={!position}
+        title={mapTip}
+        onClick={() => { if (position) onFocus(position); }}
+        className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 text-left outline-none disabled:cursor-default"
+        style={{ minHeight: PILL_MIN_H }}
+      >
+        {/* тип целиком · гос целиком · марка — без «…» на госе */}
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0">
+          {type ? (
+            <span className="text-[11px] font-medium leading-snug text-text-secondary">
+              {type}
+            </span>
+          ) : null}
+          {gosFmt ? (
+            <span className="shrink-0 font-mono text-[11.5px] font-semibold tabular-nums leading-snug text-text-strong">
+              {gosFmt}
+            </span>
+          ) : null}
+          {brand ? (
+            <span className="shrink-0 text-[11.5px] font-medium leading-snug text-text-strong">
+              {brand}
+            </span>
+          ) : null}
+        </div>
+        {driver ? (
+          <span className="min-w-0 truncate text-[11px] leading-snug text-text-muted">
+            {driver}
+          </span>
+        ) : null}
+      </button>
+
+      <button
+        type="button"
+        aria-label={following ? 'Перестать следить' : 'Следить за машиной'}
+        aria-pressed={following}
+        title={position ? (following ? 'Слежу' : 'Следить') : 'Координат пока нет'}
+        disabled={!position}
+        onClick={onFollow}
+        className={
+          'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border outline-none transition-colors disabled:cursor-default disabled:opacity-35 ' +
+          (following
+            ? 'border-accent-clay/60 bg-accent-clay/18 text-accent-clay'
+            : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-bg-hover hover:text-text-strong')
+        }
+      >
+        <Crosshair className="h-3.5 w-3.5" />
+      </button>
+
+      <VehicleHistoryButton vehicleId={v.id} garage={v.garage} />
     </div>
   );
 }
 
-/** История: тот же layout в выпадающем списке. */
-function HistoryVehiclePicker({
-  fleet,
-  positions,
-  value,
-  onChange,
-  metaOf,
-}: {
-  fleet: GlonassVehicle[];
-  positions: Map<number, GlonassPosition>;
-  value: number | '';
-  onChange: (id: number | '') => void;
-  metaOf: (v: GlonassVehicle) => DayMeta;
-}) {
-  const selected = fleet.find((v) => v.id === value) ?? null;
-  const selectedMeta = selected ? metaOf(selected) : null;
-  const selectedPos = selected ? positions.get(selected.id) : undefined;
-  const selectedStatus = vehicleStatus(selectedPos);
+/** Иконка истории → календарь → кнопка «История». */
+function VehicleHistoryButton({ vehicleId, garage }: { vehicleId: number; garage: string }) {
+  const createHistoryLayer = useGlonassStore((s) => s.createHistoryLayer);
+  const historyLoading = useGlonassStore((s) => s.historyLoading);
+  const [open, setOpen] = useState(false);
+  const [day, setDay] = useState(() => toLocalDateValue(new Date()));
+  const busy = !!historyLoading;
+
+  const run = () => {
+    const [from, to] = localDayRangeToIso(day);
+    void createHistoryLayer(vehicleId, from, to).then(() => setOpen(false));
+  };
 
   return (
-    <Popover.Root>
+    <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="flex h-auto min-h-9 w-full min-w-0 items-center gap-1 rounded-lg border border-border-subtle bg-bg-surface py-0.5 pl-0.5 pr-2 text-left outline-none transition-colors hover:border-accent-clay/45 data-[state=open]:border-accent-clay/55"
+          title={`История · ${garage || vehicleId}`}
+          disabled={busy}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-transparent text-text-muted outline-none transition-colors hover:border-border-subtle hover:bg-bg-hover hover:text-sky-300 disabled:opacity-40"
         >
-          {selected ? (
-            <div className="min-w-0 flex-1">
-              <VehicleEntry
-                garage={selected.garage}
-                gos={selected.gos}
-                brand={selectedMeta?.brand || ''}
-                vehicleType={selectedMeta?.vehicleType || ''}
-                driver={selectedMeta?.driver || ''}
-                status={selectedStatus}
-                speed={selectedPos?.speed}
-                active
-              />
-            </div>
-          ) : (
-            <span className="flex-1 px-2 text-[11.5px] text-text-muted">Выберите машину</span>
-          )}
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+          <History className="h-3.5 w-3.5" />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
-          align="start"
-          sideOffset={4}
-          className="z-[760] max-h-[300px] w-[min(400px,var(--radix-popover-trigger-width))] overflow-y-auto rounded-xl border border-border-default bg-bg-elevated p-1 shadow-[0_18px_58px_rgba(0,0,0,0.5)] outline-none"
+          align="end"
+          sideOffset={6}
+          className="z-[760] rounded-2xl border border-border-default bg-bg-elevated p-3 text-text-primary shadow-[0_18px_58px_rgba(0,0,0,0.5)] outline-none"
         >
-          <div className="sticky top-0 z-[1] flex items-center gap-1.5 border-b border-border-subtle bg-bg-elevated px-1.5 py-1 text-[9px] uppercase tracking-wide text-text-muted/70">
-            <span className="shrink-0" style={{ width: PILL_W }}>Гар.</span>
-            <div className="grid min-w-0 flex-1 items-center gap-x-1.5" style={{ gridTemplateColumns: DESC_COLS }}>
-              <span>Тип</span>
-              <span>Гос</span>
-              <span>Марка</span>
-            </div>
+          <div className="mb-2 text-[11px] font-semibold text-text-strong">
+            История · {garage || vehicleId}
           </div>
-          {fleet.length === 0 && (
-            <div className="px-2 py-2 text-[11px] text-text-muted">Парк пуст</div>
-          )}
-          {fleet.map((v) => {
-            const pos = positions.get(v.id);
-            const st = vehicleStatus(pos);
-            const m = metaOf(v);
-            const on = v.id === value;
-            return (
-              <Popover.Close asChild key={v.id}>
-                <button
-                  type="button"
-                  onClick={() => onChange(v.id)}
-                  className={
-                    'w-full rounded-lg text-left transition-colors ' +
-                    (on ? 'bg-white/[0.08]' : 'hover:bg-bg-hover')
-                  }
-                >
-                  <VehicleEntry
-                    garage={v.garage}
-                    gos={v.gos}
-                    brand={m.brand}
-                    vehicleType={m.vehicleType}
-                    driver={m.driver}
-                    status={st}
-                    speed={pos?.speed}
-                    active={on}
-                  />
-                </button>
-              </Popover.Close>
-            );
-          })}
+          <InlineDayCalendar value={day} onChange={setDay} />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={run}
+            className="mt-3 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-sky-400/40 bg-sky-500/15 text-[12px] font-semibold text-sky-200 outline-none transition-colors hover:bg-sky-500/22 disabled:opacity-45"
+          >
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <History className="h-3.5 w-3.5" />}
+            История
+          </button>
+          <Popover.Arrow className="fill-bg-elevated" />
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

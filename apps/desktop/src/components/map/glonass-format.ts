@@ -112,3 +112,39 @@ export function todayYmdYekaterinburg(now = new Date()): string {
   const day = String(d.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
+
+const MONTH_RU = [
+  'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
+] as const;
+
+/**
+ * Чип истории на карте: `401 июль 19` или `401 июль 19 2025`,
+ * если год отличается от текущего.
+ */
+export function formatHistoryChipTitle(
+  garage: string,
+  dayYmdOrIso: string,
+  now = new Date(),
+): string {
+  const g = String(garage || '').trim() || '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dayYmdOrIso || '').slice(0, 10));
+  let y: number;
+  let mo: number;
+  let d: number;
+  if (m) {
+    y = Number(m[1]);
+    mo = Number(m[2]);
+    d = Number(m[3]);
+  } else {
+    const dt = new Date(dayYmdOrIso);
+    if (!Number.isFinite(dt.getTime())) return g;
+    y = dt.getFullYear();
+    mo = dt.getMonth() + 1;
+    d = dt.getDate();
+  }
+  const month = MONTH_RU[mo - 1] ?? '';
+  const curY = now.getFullYear();
+  if (y !== curY) return `${g} ${month} ${d} ${y}`.trim();
+  return `${g} ${month} ${d}`.trim();
+}

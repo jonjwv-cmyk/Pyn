@@ -1,6 +1,6 @@
 import { createZustandStore as create } from '@pyn/core';
 import type { LatLng } from './map-types';
-import { formatGosPlate } from './glonass-format';
+import { formatGosPlate, formatHistoryChipTitle } from './glonass-format';
 
 /**
  * Состояние раздела «Глонасс» (спутниковый мониторинг транспорта на карте).
@@ -360,7 +360,8 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
       const layer: GlonassHistoryLayer = {
         id: layerId,
         kind: 'replay',
-        title: `${vehicle.garage || vehicle.gos} · маршрут`,
+        // На карте: «401 июль 19» / «401 июль 19 2025»
+        title: formatHistoryChipTitle(vehicle.garage || vehicle.gos, from),
         subtitle: `${formatPeriodShort(from, to)} · ${pointCount} т.`,
         color: HISTORY_REPLAY_COLOR,
         visible: true,

@@ -1227,7 +1227,7 @@ function GlonassHistoryChips({ shiftLeft = 0 }: { shiftLeft?: number }) {
         <div
           key={layer.id}
           className={cn(
-            'pointer-events-auto flex h-9 w-[148px] items-center gap-0.5 overflow-hidden rounded-lg border bg-bg-surface/95 pl-1.5 pr-0.5 text-[10.5px] text-text-secondary shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-sm',
+            'pointer-events-auto flex h-9 max-w-[220px] items-center gap-0.5 overflow-hidden rounded-lg border bg-bg-surface/95 pl-1.5 pr-0.5 text-[10.5px] text-text-secondary shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-sm',
             activeId === layer.id ? 'border-accent-clay/50 text-text-strong' : 'border-border-subtle/80',
           )}
         >
@@ -1235,10 +1235,10 @@ function GlonassHistoryChips({ shiftLeft = 0 }: { shiftLeft?: number }) {
             type="button"
             onClick={() => setActive(layer.id)}
             className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-0.5 text-left outline-none transition-colors hover:bg-bg-hover"
-            title={layer.subtitle}
+            title={layer.subtitle || layer.title}
           >
             <span className="h-2 w-4 shrink-0 rounded-full" style={{ backgroundColor: layer.color }} />
-            <span className="min-w-0 truncate font-medium">{layer.title}</span>
+            <span className="min-w-0 truncate font-medium tabular-nums">{layer.title}</span>
           </button>
           <button
             type="button"
