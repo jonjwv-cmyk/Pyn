@@ -516,6 +516,29 @@ function reportWrapLines(text: string, maxW: number): number {
   }
   return Math.max(1, total);
 }
+
+/**
+ * Быстрая оценка числа строк переноса БЕЗ measureText (O(длина текста)).
+ * Нужна для precompute высот тысяч строк Отчёта/Плана: canvas-measure на
+ * каждой строке давал лаг при открытии/смене дня. Погрешность ±1 строка —
+ * для высоты ячейки приемлемо; точный measure оставлен в reportWrapLines
+ * (xlsx/экспорт/редкие пути).
+ */
+function approxWrapLines(text: string, maxW: number, fontPx = REPORT_FONT_PX): number {
+  if (!text) return 1;
+  if (maxW <= 0) return text.includes('\n') ? text.split('\n').length : 1;
+  // ~0.55×px — средняя ширина кириллицы Inter; с запасом не занижаем высоту.
+  const charsPerLine = Math.max(6, Math.floor(maxW / (fontPx * 0.55)));
+  let total = 0;
+  for (const para of text.split('\n')) {
+    if (para === '') {
+      total += 1;
+      continue;
+    }
+    total += Math.max(1, Math.ceil(para.length / charsPerLine));
+  }
+  return total;
+}
 function wrapWordsMaxLines(text: string, maxW: number, maxLines: number): string {
   if (!text || !MEASURE_CTX || maxW <= 0) return text;
   MEASURE_CTX.font = `${REPORT_FONT_PX}px ${GRID_FONT_FAMILY}`;
@@ -543,6 +566,14 @@ let planDlvCache: FlowDeliveryRow[] | null = null;
 const FLOW_DISK_CACHE_PLAN = 'flow_rows_plan';
 let planAnchorsCache: FlowRow[] | null = null;
 let planVehiclesCache: FlowVehicle[] | null = null;
+/**
+ * Выбранный день — РАЗДЕЛЬНО для Плана и Отчёта (сессия).
+ * undefined = ещё ни разу не выбирали (План → auto-default; Отчёт → весь месяц).
+ * null на Отчёте = «весь месяц» осознанно; на Плане null недопустим (auto-select).
+ * Не путать: раньше один selectedDay слетал при form↔plan unmount и mode-switch.
+ */
+let planDayCache: string | null | undefined = undefined;
+let reportDayCache: string | null | undefined = undefined;
 
 type PendingTransfer = {
   /** Строка-инициатор. */
@@ -618,8 +649,25 @@ export function FlowPlanGrid({
   const measureRef = useRef<HTMLDivElement | null>(null);
   const autoDriverRoleSigRef = useRef('');
   const [msg, setMsg] = useState('');
-  // Календарь выбора дня (P7): null — все дни; иначе фильтр по plan_date.
-  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  // Календарь дня: План и Отчёт хранят РАЗНЫЕ значения (module-cache).
+  // null на Отчёте = весь месяц; на Плане null → auto-default (см. effect ниже).
+  const [selectedDay, setSelectedDay] = useState<string | null>(() => {
+    if (mode === 'report') {
+      return reportDayCache === undefined ? null : reportDayCache;
+    }
+    return planDayCache === undefined ? null : planDayCache;
+  });
+  // Смена mode (План↔Отчёт) без unmount: подставить кэш ЭТОГО режима, не чужой день.
+  const modeRef = useRef(mode);
+  useEffect(() => {
+    if (modeRef.current === mode) return;
+    modeRef.current = mode;
+    if (mode === 'report') {
+      setSelectedDay(reportDayCache === undefined ? null : reportDayCache);
+    } else {
+      setSelectedDay(planDayCache === undefined ? null : planDayCache);
+    }
+  }, [mode]);
   const matTitle = useMemo(
     () => planMatTitle(selectedDay || isoTodayLocal()),
     [selectedDay],
@@ -643,6 +691,7 @@ export function FlowPlanGrid({
   // ПЛАН — всегда КОНКРЕТНЫЙ день (юзер 2026-07-02): «все дни» не показываем и не редактируем.
   // Дефолт = ближайший день с черновиками (сегодня и вперёд), иначе сегодня/последний день с данными.
   // Зафиксированные дни — read-only история: по ним можно ходить в календаре и смотреть слепок.
+  // Только если для Плана ещё нет сохранённого дня (cache undefined/null после сброса).
   useEffect(() => {
     if (mode !== 'plan' || selectedDay) return;
     const today = isoTodayLocal();
@@ -659,9 +708,15 @@ export function FlowPlanGrid({
     const futureDays = allDays.filter((d) => d >= today);
     setSelectedDay(futureDraftDays[0] ?? futureDays[0] ?? allDays[allDays.length - 1] ?? today);
   }, [mode, selectedDay, rows]);
+  // Пишем в кэш РЕЖИМА; наружу (кнопка «Создание поставок») — только день Плана.
   useEffect(() => {
-    onSelectedDayChange?.(selectedDay);
-  }, [selectedDay, onSelectedDayChange]);
+    if (mode === 'plan') {
+      planDayCache = selectedDay;
+      onSelectedDayChange?.(selectedDay);
+    } else {
+      reportDayCache = selectedDay;
+    }
+  }, [selectedDay, mode, onSelectedDayChange]);
   useEffect(() => {
     const day = selectedDay || isoTodayLocal();
     // Маршрутизация считается СЕРВЕРОМ по крону (каждые 5 мин, 07:00–20:00 Екб).
@@ -1670,8 +1725,9 @@ export function FlowPlanGrid({
   );
 
   // Высоты строк — ОДИН раз при смене viewRows/ширин, не на каждый tick прокрутки.
-  // getReportRowHeight раньше звал reportWrapLines (measureText) на КАЖДЫЙ вызов Glide
-  // → лаг скролла в Отчёте (юзер 2026-07-18).
+  // approxWrapLines (без canvas measureText) — иначе тысячи строк = ступор при
+  // открытии/смене дня; Формирование быстрее как раз потому что не меряет canvas
+  // на каждую ячейку при precompute (юзер 2026-07-18).
   const reportRowHeights = useMemo(() => {
     const LINE = 13;
     const matW = (colWidths.mat ?? 280) - REPORT_HPAD * 2;
@@ -1685,14 +1741,14 @@ export function FlowPlanGrid({
       }
       const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
       const transferLines = transferChainDates(r).length > 1 ? 1 : 0;
-      const matLines = reportWrapLines(r.mat || '', matW) + transferLines;
+      const matLines = approxWrapLines(r.mat || '', matW) + transferLines;
       const noteText = Number(r.fixation_id) > 0 ? r.snap_note || '' : (anchor?.note || '');
-      const noteLines = reportWrapLines(noteText, noteW);
+      const noteLines = approxWrapLines(noteText, noteW);
       const visualPoint = (r as FlowPlanViewRow).__flowPoint;
-      const pointNames = visualPoint
-        ? [visualPoint]
-        : effectivePointNames(snapPoint(r, anchor), mapPoints, r.to_wh, FLOW_WAREHOUSE_POINT_PURPOSE);
-      const pointLines = Math.max(1, pointNames.length);
+      // Высота точки: без mapPoints lookup на каждую строку — хватает \n в snap/якоре
+      // + visual split; effectivePointNames дороже (карта) и для высоты избыточен.
+      const pointSrc = visualPoint || snapPoint(r, anchor) || '';
+      const pointLines = Math.max(1, pointSrc ? pointSrc.split('\n').filter(Boolean).length : 1);
       const vtypeLines = Math.max(1, splitMultiCell(rowVehicle(r)).length);
       const rideLines = Math.max(1, splitMultiCell(rowRide(r)).length);
       const expN = rowExpeditors(r).length;
@@ -1708,7 +1764,7 @@ export function FlowPlanGrid({
       heights[i] = Math.max(30, Math.min(150, h));
     }
     return heights;
-  }, [viewRows, colWidths, anchorByKey, rowVehicle, rowRide, rowExpeditors, transferChainDates, mapPoints]);
+  }, [viewRows, colWidths, anchorByKey, rowVehicle, rowRide, rowExpeditors, transferChainDates]);
 
   const getReportRowHeight = useCallback(
     (row: number): number => reportRowHeights[row] ?? 40,

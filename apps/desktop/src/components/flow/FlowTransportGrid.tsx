@@ -1532,6 +1532,8 @@ export function FlowTransportGrid(): JSX.Element {
   }, []);
 
   // Гидрация: режим + личный вид (localStorage) + общий вид (сервер) → применяем активный.
+  // ВАЖНО: выбор дней в ЭТОЙ сессии (trDaySelCache) не затираем пустым/чужим видом —
+  // иначе при возврате в раздел «слетает» выбранный день (юзер 2026-07-18).
   useEffect(() => {
     let alive = true;
     void (async () => {
@@ -1561,9 +1563,21 @@ export function FlowTransportGrid(): JSX.Element {
         /* сервер недоступен — общий вид пустой */
       }
       if (!alive) return;
+      const sessionDays = trDaySelCache && trDaySelCache.size > 0 ? [...trDaySelCache] : null;
       const active = mode === 'personal' ? personal : sharedState;
-      if (active) applyView(active);
-      else lastViewJsonRef.current = EMPTY_TRANSPORT_VIEW_JSON;
+      if (sessionDays) {
+        // Сессия главнее: пользователь уже выбрал дни в этом запуске.
+        const view: TransportView = {
+          search: active?.search ?? '',
+          statuses: active?.statuses ?? [],
+          days: sessionDays,
+        };
+        applyView(view);
+      } else if (active) {
+        applyView(active);
+      } else {
+        lastViewJsonRef.current = EMPTY_TRANSPORT_VIEW_JSON;
+      }
       viewHydratedRef.current = true;
     })();
     return () => {
@@ -1602,7 +1616,8 @@ export function FlowTransportGrid(): JSX.Element {
   }, [loading, viewRows.length]);
 
   // Реалтайм: кто-то изменил ОБЩИЙ вид. Автора/наличие обновляем всегда; ПРИМЕНЯЕМ только
-  // если я в «Общем» и это не моё эхо.
+  // если я в «Общем» и это не моё эхо. Дни чужого вида не сносят локальный выбор сессии
+  // (trDaySelCache) — иначе «выбрал день → пришёл WS → слетел».
   useWsEvent<FlowTransportViewChangedEvent>('flow_transport_view_changed', (e) => {
     const value = String(e.value ?? '');
     const by = e.updated_by ?? '';
@@ -1612,6 +1627,10 @@ export function FlowTransportGrid(): JSX.Element {
     if (viewModeRef.current !== 'shared' || by === myLoginRef.current) return;
     const v = value ? parseTransportView(value) : EMPTY_TRANSPORT_VIEW;
     if (canonicalTransportViewJson(v) === lastViewJsonRef.current) return;
+    if (trDaySelCache && trDaySelCache.size > 0) {
+      applyView({ ...v, days: [...trDaySelCache] });
+      return;
+    }
     applyView(v);
   });
 

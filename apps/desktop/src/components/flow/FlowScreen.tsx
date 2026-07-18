@@ -122,18 +122,27 @@ export function FlowScreen(): JSX.Element {
         </div>
       </div>
       <WorkspaceCard>
-        {/* Формирование — свой грид. План и Отчёт — ОДИН экземпляр FlowPlanGrid:
-            смена этапа только меняет mode (без unmount). Иначе каждый клик
-            «План/Отчёт» заново тянул 0.6+2 МБ, мерял ширины/высоты тысяч строк
-            и таблица «грузилась заново» (П0 скорость, 2026-07-18). */}
-        {stage === 'form' ? (
+        {/* ALWAYS-MOUNTED (display-toggle), как МОЛ/Новости в App:
+            • Формирование и План/Отчёт не размонтируются при смене этапа →
+              выбранный день, скролл, фильтры, кэш строк живут в DOM;
+            • План/Отчёт — один FlowPlanGrid (mode), без повторной сети;
+            • данные Плана подгружаются уже на «Формировании» → вход мгновенный.
+            (П0 скорость 2026-07-18: «слетает день / грузит заново».) */}
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          style={{ display: stage === 'form' ? 'flex' : 'none' }}
+        >
           <FlowSandboxGrid />
-        ) : (
+        </div>
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          style={{ display: stage !== 'form' ? 'flex' : 'none' }}
+        >
           <FlowPlanGrid
             mode={stage === 'report' ? 'report' : 'plan'}
             onSelectedDayChange={setPlanDay}
           />
-        )}
+        </div>
       </WorkspaceCard>
     </main>
   );
