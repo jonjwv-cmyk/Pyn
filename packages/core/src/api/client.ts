@@ -108,8 +108,10 @@ export class ApiClient {
             err instanceof ApiError &&
             (err.code === 'replay_detected' || err.message === 'replay_detected');
           if (!isReplay || attempt >= 3) throw err;
-          // 50–180ms + attempt: не бить сервер пачкой с тем же ts.
-          await sleep(50 + attempt * 45 + Math.floor(Math.random() * 40));
+          // Sig = f(ts_seconds, action, body). Повтор в ту же секунду → та же sig →
+          // снова replay. Ждём границу следующей секунды (+ jitter).
+          const msIntoSec = Date.now() % 1000;
+          await sleep(1000 - msIntoSec + 30 + attempt * 40 + Math.floor(Math.random() * 40));
         }
       }
       throw lastErr;
