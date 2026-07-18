@@ -39,7 +39,7 @@ import { distanceMeters } from './geo';
 import { MapDetailPanel } from './MapDetailPanel';
 import { MapWarehouseOverlay } from './MapWarehouseOverlay';
 import { VehiclePurposeAccessGrid } from './VehiclePurposeAccessGrid';
-import { GlonassPanel } from './GlonassPanel';
+import { GlonassPanel, GLONASS_WEATHER_LEFT_PX } from './GlonassPanel';
 import {
   PLAYBACK_SPEEDS,
   STATUS_COLOR,
@@ -2520,8 +2520,9 @@ function WeatherChip({ weather, shifted = false }: { weather: WeatherSummary | n
           type="button"
           className={cn(
             'absolute top-3 z-[450] flex min-h-10 min-w-[238px] max-w-[320px] items-center gap-2 rounded-xl border border-accent-clay/30 bg-bg-elevated px-3 py-2 text-left text-[11.5px] text-text-secondary shadow-[0_10px_34px_rgba(0,0,0,0.58)] outline-none transition-all duration-150 hover:border-accent-clay/50 hover:bg-bg-hover hover:text-text-strong',
-            shifted ? 'left-[398px]' : 'left-3',
+            !shifted && 'left-3',
           )}
+          style={shifted ? { left: GLONASS_WEATHER_LEFT_PX } : undefined}
           title="Погода по часам"
         >
           <CloudRain size={16} strokeWidth={1.8} className={display.isPrecip ? 'shrink-0 text-sky-300' : 'shrink-0 text-text-muted'} />

@@ -28,6 +28,22 @@ const DAY_META_TTL_MS = 90_000;
 const EMPTY_META: DayMeta = { vehicleType: '', brand: '', driver: '' };
 
 /**
+ * Ширина панели Глонасс (px). Погода и оверлеи сдвигаются на left-3 + WIDTH + gap.
+ * Плотно, как узкий рабочий сайдбар карты (~360).
+ */
+export const GLONASS_PANEL_WIDTH_PX = 360;
+const GLONASS_PANEL_LEFT_PX = 12; // left-3
+const GLONASS_WEATHER_GAP_PX = 10;
+/** left для чипа погоды, когда Глонасс открыт. */
+export const GLONASS_WEATHER_LEFT_PX =
+  GLONASS_PANEL_LEFT_PX + GLONASS_PANEL_WIDTH_PX + GLONASS_WEATHER_GAP_PX;
+
+/** Колонки строки: пилл | ФИО/гос | кнопки (фиксировано — не наезжают). */
+const COL_PILL = '7.5rem';
+const COL_ACTIONS = '1.65rem';
+const ROW_H = '2.55rem';
+
+/**
  * Панель «Глонасс» — поиск/выбор машин для слежения на карте. Плитка поверх
  * карты (лево-верх). Весь парк скопом НЕ показываем на карте: здесь ищем/отмечаем
  * нужные — отмеченные рисуются точками и опрашиваются по позиции.
@@ -142,11 +158,14 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   if (!open) return null;
 
   return (
-    <div className="absolute left-3 top-3 z-[6] flex max-h-[calc(100%-1.5rem)] w-[440px] flex-col overflow-hidden rounded-2xl border border-border-default bg-bg-surface shadow-[0_18px_58px_rgba(0,0,0,0.46)]">
-      {/* Шапка */}
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
+    <div
+      className="absolute left-3 top-3 z-[6] flex max-h-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-2xl border border-border-default bg-bg-surface shadow-[0_18px_58px_rgba(0,0,0,0.46)]"
+      style={{ width: GLONASS_PANEL_WIDTH_PX }}
+    >
+      {/* Шапка — компактнее */}
+      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border-subtle px-2.5">
         <Satellite className="h-3.5 w-3.5 text-emerald-400" />
-        <span className="text-[13px] font-semibold text-text-strong">Глонасс</span>
+        <span className="text-[12.5px] font-semibold text-text-strong">Глонасс</span>
         {selected.size > 0 && (
           <span className="rounded-full border border-emerald-400/30 bg-emerald-500/12 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
             {selected.size}
@@ -157,7 +176,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             type="button"
             title="Обновить парк"
             onClick={() => loadFleet()}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
           >
             <RotateCw className="h-3.5 w-3.5" />
           </button>
@@ -165,7 +184,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             type="button"
             title="Закрыть"
             onClick={() => setOpen(false)}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -173,8 +192,8 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       </div>
 
       {/* Поиск */}
-      <div className="shrink-0 px-3 pb-2 pt-3">
-        <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border-subtle bg-bg-elevated px-2">
+      <div className="shrink-0 px-2.5 pb-1.5 pt-2">
+        <div className="flex h-7 items-center gap-1.5 rounded-lg border border-border-subtle bg-bg-elevated px-2">
           <Search className="h-3.5 w-3.5 text-text-muted" />
           <input
             value={query}
@@ -203,8 +222,8 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       )}
 
       {/* PRO / сырой ГЛОНАСС — компактно */}
-      <div className="shrink-0 border-y border-border-subtle bg-bg-elevated px-3 py-2">
-        <div className="grid grid-cols-2 gap-1.5" aria-label="Отображение маршрута">
+      <div className="shrink-0 border-y border-border-subtle bg-bg-elevated px-2.5 py-1.5">
+        <div className="grid grid-cols-2 gap-1" aria-label="Отображение маршрута">
           <HistoryModeToggle
             label="PRO"
             color={GLONASS_PRO_COLOR}
@@ -219,7 +238,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           />
         </div>
         {historyLoading && (
-          <div className="mt-2 rounded-lg border border-border-subtle bg-bg-surface px-2 py-1.5">
+          <div className="mt-1.5 rounded-lg border border-border-subtle bg-bg-surface px-2 py-1">
             <div className="flex items-center gap-2 text-[10.5px] text-text-muted">
               <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-300" />
               <span className="min-w-0 flex-1 truncate">{historyLoading.label}</span>
@@ -238,7 +257,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
       </div>
 
       {/* Список парка — история: иконка у строки → календарь → «История» */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 pt-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1.5 pt-1">
         {loading && fleet.length === 0 && (
           <div className="flex items-center justify-center gap-2 py-6 text-[12px] text-text-muted">
             <Loader2 className="h-4 w-4 animate-spin" /> Загрузка парка…
@@ -283,14 +302,14 @@ function HistoryModeToggle({ label, color, on, onClick }: {
       aria-checked={on}
       onClick={onClick}
       className={[
-        'flex h-8 items-center gap-2 rounded-lg border px-2 text-[11.5px] font-semibold outline-none transition-colors',
+        'flex h-7 items-center gap-1.5 rounded-md border px-1.5 text-[11px] font-semibold outline-none transition-colors',
         on ? 'border-white/25 bg-white/10 text-text-strong' : 'border-border-subtle bg-bg-surface text-text-muted hover:bg-bg-hover',
       ].join(' ')}
     >
-      <span className="h-[3px] w-7 shrink-0 rounded-full" style={{ backgroundColor: color, opacity: on ? 1 : 0.38 }} />
+      <span className="h-[3px] w-5 shrink-0 rounded-full" style={{ backgroundColor: color, opacity: on ? 1 : 0.38 }} />
       <span className="min-w-0 flex-1 text-left">{label}</span>
       <span
-        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border text-[10px]"
+        className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border text-[9px]"
         style={on ? { borderColor: color, backgroundColor: `${color}24`, color } : undefined}
       >{on ? '✓' : ''}</span>
     </button>
@@ -409,15 +428,9 @@ function buildMonthDays(year: number, month: number): Array<{ year: number; mont
 }
 
 /**
- * Строка списка (2+2, одна высота):
- *
- *  ┌─────────────────────┐  ФИО водителя          [⊙] [🕘]
- *  │ 398  Пульман 9м     │  Н 528 АР  КамАЗ
- *  │ В движении  45 км/ч │
- *  └─────────────────────┘
- *
- * Пилл: стр.1 гаражный + тип ТС; стр.2 статус + скорость — читаемый кегль.
- * Справа: стр.1 ФИО, стр.2 гос (без марки в номере) + марка.
+ * Строка — CSS grid, кнопки не наезжают на ФИО:
+ *  [пилл 7.5rem] [ФИО / гос+марка 1fr] [⊙+🕘 1.65rem]
+ * Плотно, без лишней пустоты в пилле.
  */
 const VehicleRow = memo(function VehicleRow({
   v,
@@ -454,67 +467,69 @@ const VehicleRow = memo(function VehicleRow({
   return (
     <div
       className={
-        'flex w-full items-stretch gap-2 rounded-xl px-2 py-1.5 transition-colors ' +
+        'grid w-full items-stretch gap-x-1.5 rounded-lg px-1.5 py-0.5 transition-colors ' +
         (checked ? 'bg-white/[0.07]' : 'hover:bg-white/[0.03]')
       }
+      style={{ gridTemplateColumns: `${COL_PILL} minmax(0, 1fr) ${COL_ACTIONS}` }}
     >
-      {/* Пилл: 2 строки, крупнее, тип рядом с гаражным */}
+      {/* Пилл: 2 строки, плотно, без «воздуха» */}
       <button
         type="button"
         aria-pressed={checked}
         onClick={() => onToggle(v.id)}
         title={`${statusLabel} ${speedText}`}
-        className="flex w-[9.6rem] shrink-0 cursor-pointer flex-col items-start justify-center gap-0.5 rounded-lg border px-2 py-1.5 text-left outline-none transition-[filter] hover:brightness-110"
+        className="flex h-full min-h-[2.55rem] w-full cursor-pointer flex-col items-start justify-center gap-px rounded-md border px-1.5 py-1 text-left outline-none transition-[filter] hover:brightness-110"
         style={{
-          minHeight: '3.15rem',
+          height: ROW_H,
           borderColor: `${color}${checked ? 'ee' : '99'}`,
           backgroundColor: `${color}${checked ? '5c' : '40'}`,
         }}
       >
-        <span className="flex w-full min-w-0 items-baseline gap-1 leading-tight">
-          <span className="shrink-0 font-mono text-[13px] font-bold tabular-nums text-white">
+        <span className="flex w-full min-w-0 items-baseline gap-1 leading-none">
+          <span className="shrink-0 font-mono text-[12px] font-bold tabular-nums text-white">
             {v.garage || '—'}
           </span>
           {type ? (
-            <span className="min-w-0 truncate text-[11px] font-semibold text-white/95" title={type}>
+            <span className="min-w-0 truncate text-[10px] font-semibold text-white/95" title={type}>
               {type}
             </span>
           ) : null}
         </span>
-        <span className="w-full text-[11px] font-semibold leading-snug text-white">
+        <span className="w-full text-[10.5px] font-semibold leading-tight text-white">
           {statusLabel}{' '}
           <span className="font-mono tabular-nums font-medium">{speedText}</span>
         </span>
       </button>
 
-      {/* 2 строки = высота пилла: ФИО / гос + марка */}
+      {/* ФИО / гос + марка — minmax(0,1fr), truncate, не лезет под кнопки */}
       <button
         type="button"
         disabled={!position}
         title={position ? 'Перейти к машине на карте' : 'Координат пока нет'}
         onClick={() => { if (position) onFocus(position); }}
-        className="flex min-h-[3.15rem] min-w-0 flex-1 flex-col justify-center gap-0.5 text-left outline-none disabled:cursor-default"
+        className="flex min-w-0 flex-col justify-center gap-px overflow-hidden text-left outline-none disabled:cursor-default"
+        style={{ height: ROW_H }}
       >
-        <span className="min-w-0 truncate text-[12.5px] font-medium leading-snug text-text-strong">
+        <span className="block min-w-0 truncate text-[12px] font-medium leading-tight text-text-strong">
           {driver || '\u00a0'}
         </span>
-        <span className="flex min-w-0 items-baseline gap-1.5 leading-snug">
+        <span className="flex min-w-0 items-baseline gap-1 overflow-hidden leading-tight">
           {gosFmt ? (
-            <span className="shrink-0 font-mono text-[12.5px] font-semibold tabular-nums text-text-strong">
+            <span className="shrink-0 font-mono text-[11.5px] font-semibold tabular-nums text-text-strong">
               {gosFmt}
             </span>
           ) : null}
           {brand ? (
-            <span className="min-w-0 truncate text-[12.5px] font-medium text-text-secondary">
+            <span className="min-w-0 truncate text-[11.5px] font-medium text-text-secondary">
               {brand}
             </span>
           ) : null}
-          {!gosFmt && !brand ? <span className="text-[12.5px] text-text-muted/40">{'\u00a0'}</span> : null}
+          {!gosFmt && !brand ? <span className="text-[11.5px]">{'\u00a0'}</span> : null}
         </span>
       </button>
 
-      {/* 3-я колонка: найти + история */}
-      <div className="flex shrink-0 flex-col items-center justify-center gap-0.5">
+      {/* Кнопки — отдельная колонка, не перекрывают ФИО */}
+      <div className="flex flex-col items-center justify-center gap-0.5 self-center">
         <button
           type="button"
           aria-label={following ? 'Перестать следить' : 'Следить за машиной'}
@@ -523,7 +538,7 @@ const VehicleRow = memo(function VehicleRow({
           disabled={!position}
           onClick={() => onFollowToggle(v.id)}
           className={
-            'flex h-7 w-7 items-center justify-center rounded-lg border outline-none transition-colors disabled:cursor-default disabled:opacity-35 ' +
+            'flex h-6 w-6 items-center justify-center rounded-md border outline-none transition-colors disabled:cursor-default disabled:opacity-35 ' +
             (following
               ? 'border-accent-clay/60 bg-accent-clay/18 text-accent-clay'
               : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-bg-hover hover:text-text-strong')
@@ -562,7 +577,7 @@ function VehicleHistoryButton({
           type="button"
           title={`История · ${garage || vehicleId}`}
           disabled={busy}
-          className="flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-text-muted outline-none transition-colors hover:border-border-subtle hover:bg-bg-hover hover:text-sky-300 disabled:opacity-40"
+          className="flex h-6 w-6 items-center justify-center rounded-md border border-transparent text-text-muted outline-none transition-colors hover:border-border-subtle hover:bg-bg-hover hover:text-sky-300 disabled:opacity-40"
         >
           <History className="h-3.5 w-3.5" />
         </button>
