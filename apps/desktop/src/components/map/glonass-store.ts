@@ -91,6 +91,9 @@ export type GlonassMarker = {
   gos: string;
   lat: number;
   lng: number;
+  /** Сырой GPS (до delayed) — rAF без timedPath всегда сажает raw→дорога. */
+  rawLat?: number;
+  rawLng?: number;
   path?: LatLng[];
   /** Живое движение: снапнутый к дорогам путь с таймингом. MapCanvas ведёт маркер
    *  по нему НЕПРЕРЫВНО (rAF, время = сейчас − delayMs) — машина едет по дороге

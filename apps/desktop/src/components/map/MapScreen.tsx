@@ -763,41 +763,56 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
         : [];
       const matched = lastTrackPoint(matchedSegments);
       const rawPosition = { lat: pos.lat, lng: pos.lng };
-      // Всегда дорога, если в радиусе; pin-standoff не используем для live-флота.
-      const forceRoad = (p: LatLng): LatLng => {
-        const hit = snapToRoadIndex(roadSnapIndex, p);
-        return hit ? hit.point : p; // без pin — иначе «вторая рядом с дорогой»
-      };
-      // Приоритет: delayed → matched → raw, но КАЖДЫЙ вариант прогоняем forceRoad.
-      // Не доверяем delayed/matched «как есть» — у 2-й машины матчинг иногда
-      // отдаёт точку вне видимой жёлтой сети, пока у 1-й уже стабильный путь.
-      const candidate = delayed?.point ?? matched ?? rawPosition;
-      const snapped = forceRoad(candidate);
-      // Если delayed далеко от сырого GPS (>80 м) — GPS/сайт прыгнул: сажаем raw на дорогу.
+      // Только посадка на жёлтую сеть — без pin-standoff (он «сажал» рядом с дорогой).
+      const forceRoad = (p: LatLng): LatLng =>
+        snapToRoadIndex(roadSnapIndex, p)?.point ?? p;
+
+      // Корень бага «2-я слетает, 1-я держится»:
+      //  • 1-я давно в selected → длинный track → delayed/timedPath + rAF;
+      //  • 2-я / красная (disabled) → короткий/шумный track → delayed строит
+      //    кривой путь → маркер уезжает; сняли 1-ю → 2-я без delayed → raw на дороге.
+      // Лечение: delayed только для «живых» с достаточным треком и близко к GPS.
       const rawOnRoad = forceRoad(rawPosition);
-      const useDelayed = delayed != null
-        && distanceMeters(snapped, rawOnRoad) <= 80;
-      const finalPos = useDelayed ? snapped : rawOnRoad;
-      const stale = glonassStale.get(id) ?? null;
-      const timedPath = useDelayed && delayed && delayed.timed.length >= 2
+      const trackRich = track.length >= 6;
+      const allowDelayed = (status === 'moving' || status === 'stop') && trackRich;
+      const delayedOk = allowDelayed && delayed != null
+        && distanceMeters(forceRoad(delayed.point), rawOnRoad) <= 55;
+      const matchedOk = !delayedOk && matched != null
+        && distanceMeters(forceRoad(matched), rawOnRoad) <= 55;
+      const finalPos = delayedOk
+        ? forceRoad(delayed!.point)
+        : matchedOk
+          ? forceRoad(matched!)
+          : rawOnRoad;
+
+      const timedPath = delayedOk && delayed && delayed.timed.length >= 2
         ? delayed.timed.map((p) => {
             const road = forceRoad(p);
             return { ...p, lat: road.lat, lng: road.lng };
           })
         : undefined;
+      // path только если timedPath есть (иначе след из кривого matched путает)
+      const path = timedPath
+        ? (delayed?.path ?? lastTrackSegment(matchedSegments) ?? undefined)
+        : undefined;
+
+      const stale = glonassStale.get(id) ?? null;
       out.push({
         id, garage: v?.garage ?? '', gos: v?.gos ?? '',
         lat: finalPos.lat, lng: finalPos.lng, course: pos.course, speed: pos.speed,
-        path: useDelayed ? (delayed?.path ?? lastTrackSegment(matchedSegments) ?? undefined) : undefined,
+        path,
         timedPath,
         delayMs: GLONASS_LIVE_DELAY_MS,
         time: pos.time,
         status,
+        // raw всегда в props — rAF без timedPath берёт свежий raw, не stale closure
+        rawLat: rawPosition.lat,
+        rawLng: rawPosition.lng,
         badSince: status === 'moving' && stale != null && Date.now() - stale >= GLONASS_BAD_SIGNAL_AFTER_MS ? stale : null,
       });
     }
     return out;
-  }, [glonassFleet, glonassSelected, glonassPositions, glonassTracks, glonassStale, roadSnapIndex, doc.points, doc.roads]);
+  }, [glonassFleet, glonassSelected, glonassPositions, glonassTracks, glonassStale, roadSnapIndex, doc.roads]);
 
   // Слежение (мульти): статичные цели для машин без timedPath (rAF ведёт живые).
   const glonassFollowTargets = useMemo<LatLng[]>(() => {

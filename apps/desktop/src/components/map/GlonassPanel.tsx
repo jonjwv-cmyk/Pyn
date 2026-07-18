@@ -446,11 +446,10 @@ function StatusCountPill({
       type="button"
       onClick={onClick}
       title={active ? `Скрыть с карты: ${label}` : `Показать на карте: ${label}`}
-      className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border px-1 py-1 outline-none transition-colors"
+      className="flex min-w-0 flex-1 items-center gap-1 rounded-md border py-1 pl-1.5 pr-1.5 outline-none transition-colors"
       style={{
         borderColor: active ? color : `${color}55`,
-        backgroundColor: active ? `${color}33` : `${color}12`,
-        boxShadow: active ? `inset 0 0 0 1px ${color}66` : undefined,
+        backgroundColor: active ? `${color}28` : `${color}10`,
       }}
     >
       <span
@@ -458,10 +457,10 @@ function StatusCountPill({
         style={{ backgroundColor: color }}
       />
       <span
-        className="truncate text-[9.5px] font-semibold leading-none"
-        style={{ color: active ? color : 'var(--color-text-muted, #9CA3AF)' }}
+        className="min-w-0 flex-1 truncate text-left text-[9.5px] font-semibold leading-none"
+        style={{ color: active ? color : undefined }}
       >
-        {label}
+        <span className={active ? undefined : 'text-text-muted'}>{label}</span>
       </span>
       <span
         className="shrink-0 font-mono text-[10.5px] font-bold tabular-nums leading-none"
@@ -656,54 +655,35 @@ const VehicleRow = memo(function VehicleRow({
     <div
       className={
         'grid w-full items-stretch gap-x-1.5 rounded-lg px-1.5 py-0.5 transition-colors ' +
-        (checked
-          ? 'bg-accent-clay/[0.12] ring-1 ring-inset ring-accent-clay/40'
-          : 'hover:bg-white/[0.03]')
+        (checked ? 'bg-accent-clay/[0.1]' : 'hover:bg-white/[0.03]')
       }
       style={{ gridTemplateColumns: `${pillWidthPx}px minmax(0, 1fr) ${COL_ACTIONS}` }}
     >
-      {/* Выбран: пилл только обведён clay, не залит; иначе лёгкая заливка статуса */}
+      {/* Выбран: тот же пилл, только тонкая clay-рамка (без ring/утолщения — не «уезжает»). */}
       <button
         type="button"
         aria-pressed={checked}
         onClick={() => onToggle(v.id)}
         title={`${statusLabel} ${speedText}${checked ? ' · на карте' : ''}${type ? ` · ${type}` : ''}`}
-        className="flex w-full cursor-pointer flex-col items-start justify-center gap-px rounded-md border px-1.5 py-1 text-left outline-none transition-[filter,box-shadow] hover:brightness-110"
+        className="box-border flex w-full cursor-pointer flex-col items-start justify-center gap-px rounded-md border px-1.5 py-1 text-left outline-none transition-colors hover:brightness-110"
         style={{
           minHeight: 42,
+          // border 1px always — layout не прыгает
           borderColor: checked ? APP_CLAY : `${statusColor}99`,
-          borderWidth: checked ? 2 : 1,
-          backgroundColor: checked ? 'transparent' : `${statusColor}40`,
-          boxShadow: checked ? `0 0 0 1px ${APP_CLAY}88` : undefined,
+          backgroundColor: checked ? `${statusColor}18` : `${statusColor}40`,
         }}
       >
         <span className="flex w-full min-w-0 items-baseline gap-1 leading-none">
-          <span
-            className={
-              'shrink-0 font-mono text-[12px] font-bold tabular-nums ' +
-              (checked ? 'text-accent-clay' : 'text-white')
-            }
-          >
+          <span className="shrink-0 font-mono text-[12px] font-bold tabular-nums text-white">
             {v.garage || '—'}
           </span>
           {type ? (
-            <span
-              className={
-                'min-w-0 truncate text-[10px] font-semibold ' +
-                (checked ? 'text-accent-clay/90' : 'text-white/95')
-              }
-              title={type}
-            >
+            <span className="min-w-0 truncate text-[10px] font-semibold text-white/95" title={type}>
               {type}
             </span>
           ) : null}
         </span>
-        <span
-          className={
-            'w-full whitespace-nowrap text-[10.5px] font-semibold leading-tight ' +
-            (checked ? 'text-text-strong' : 'text-white')
-          }
-        >
+        <span className="w-full whitespace-nowrap text-[10.5px] font-semibold leading-tight text-white">
           {statusLabel}{' '}
           <span className="font-mono tabular-nums font-medium">{speedText}</span>
         </span>

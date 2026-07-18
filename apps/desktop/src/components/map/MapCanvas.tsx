@@ -1138,9 +1138,13 @@ export function MapCanvas({
     }
   }, [glonassMarkers, styleReady]);
 
-  // Живое движение: ВСЕ отмеченные маркеры каждый кадр — иначе 2-я машина без
-  // timedPath «отлипает» при панорамировании, пока 1-я с timedPath держится (rAF).
-  // С delayMs: едем по пути; без — держим forceRoad(lat,lng) из props.
+  // rAF: читаем markers из ref (свежие lat/raw при каждом poll), не из closure.
+  // Иначе 2-я без timedPath «застывает» на старых coords, пока 1-я едет по path.
+  const glonassMarkersLiveRef = useRef(glonassMarkers);
+  glonassMarkersLiveRef.current = glonassMarkers;
+  const glonassFollowIdsLiveRef = useRef(glonassFollowIds);
+  glonassFollowIdsLiveRef.current = glonassFollowIds;
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady) return;
@@ -1151,13 +1155,14 @@ export function MapCanvas({
     let frame = 0;
     let lastTrailAt = 0;
     let lastFollowAt = 0;
-    const followSet = glonassFollowIds ?? new Set<number>();
     const tick = (now: number) => {
+      const markers = glonassMarkersLiveRef.current;
+      const followSet = glonassFollowIdsLiveRef.current ?? new Set<number>();
       const entries = glonassMarkerRefs.current;
       const wantTrail = now - lastTrailAt > 220;
       const features: FeatureCollection['features'] = [];
       const followPts: { lng: number; lat: number }[] = [];
-      for (const m of glonassMarkers) {
+      for (const m of markers) {
         const entry = entries.get(m.id);
         if (!entry) continue;
         let pos: { lat: number; lng: number };
@@ -1166,7 +1171,15 @@ export function MapCanvas({
           const targetMs = Date.now() - (m.delayMs ?? 0);
           const interpolated = pointAtTimedPath(timedPath, targetMs);
           pos = snapToRoadIndex(glonassRoadSnapIndex, interpolated)?.point ?? interpolated;
-          if (wantTrail && showGlonassPro) {
+          // Не уезжаем далеко от текущего GPS (сырого) — иначе 2-я «улетает».
+          const raw = {
+            lat: m.rawLat ?? m.lat,
+            lng: m.rawLng ?? m.lng,
+          };
+          const rawRoad = snapToRoadIndex(glonassRoadSnapIndex, raw)?.point ?? raw;
+          const dx = distanceMeters(pos, rawRoad);
+          if (dx > 55) pos = rawRoad;
+          if (wantTrail && showGlonassPro && dx <= 55) {
             const trail = liveTrailBehind(timedPath, targetMs, pos, 100);
             if (trail.length >= 2) {
               features.push({
@@ -1177,10 +1190,12 @@ export function MapCanvas({
             }
           }
         } else {
-          // Нет timedPath: каждый кадр приклеиваем к дороге — иначе при движении
-          // карты «вторая» визуально улетает, а «первая» (с rAF) держится.
-          pos = snapToRoadIndex(glonassRoadSnapIndex, { lat: m.lat, lng: m.lng })?.point
-            ?? { lat: m.lat, lng: m.lng };
+          // Нет timedPath / disabled: всегда raw → дорога (свежий m из ref).
+          const raw = {
+            lat: m.rawLat ?? m.lat,
+            lng: m.rawLng ?? m.lng,
+          };
+          pos = snapToRoadIndex(glonassRoadSnapIndex, raw)?.point ?? raw;
         }
         entry.marker.setLngLat([pos.lng, pos.lat]);
         if (followSet.has(m.id)) followPts.push({ lng: pos.lng, lat: pos.lat });
@@ -1215,7 +1230,8 @@ export function MapCanvas({
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [glonassMarkers, glonassFollowIds, glonassRoadSnapIndex, showGlonassPro, styleReady]);
+    // markers/follow — через ref; рестарт только при появлении/исчезновении маркеров или индексе
+  }, [glonassMarkers.length, glonassRoadSnapIndex, showGlonassPro, styleReady]);
 
   // Слежение: статичные цели (без timedPath) — центр / fitBounds.
   useEffect(() => {
