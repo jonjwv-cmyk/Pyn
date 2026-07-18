@@ -232,6 +232,21 @@ export function App() {
   const setActiveSection = useUiStateStore((s) => s.setActiveSection);
   const activeChatId = useUiStateStore((s) => s.activeChatId);
   const setActiveChatId = useUiStateStore((s) => s.setActiveChatId);
+  // Тяжёлые гриды: mount ТОЛЬКО после первого захода в раздел, потом keep-alive.
+  // Раньше admin при login сразу поднимал Поток+План+Транспорт+ВГХ (мегабайты
+  // JSON, thrash на 8 ГБ, каскад «граф → МОЛ → …»). SF-паттерн 2026: lazy first
+  // paint, warm after visit (display:none, не unmount).
+  const [heavyVisited, setHeavyVisited] = useState({ flow: false, transport: false, vgh: false });
+  useEffect(() => {
+    setHeavyVisited((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      if (activeSection === 'flow' && !prev.flow) { next.flow = true; changed = true; }
+      if (activeSection === 'transport' && !prev.transport) { next.transport = true; changed = true; }
+      if (activeSection === 'vgh' && !prev.vgh) { next.vgh = true; changed = true; }
+      return changed ? next : prev;
+    });
+  }, [activeSection]);
 
   // §fix-gray — persons + статусы для PersonEditDialog. ОБЯЗАТЕЛЬНО здесь, наверху:
   // это хуки, и если их вызвать ниже ранних return (hydrating / !session), порядок
@@ -1261,21 +1276,19 @@ export function App() {
                 storage-store держит currentPath между mount'ами. */}
             {displaySection === 'vault' && <StorageScreen />}
 
-            {/* §flow/vgh/log — собственный табличный контур. ALWAYS-MOUNTED (display-toggle)
-                как Новости/Таблицы/МОЛ: гриды не пересоздаются при возврате в раздел —
-                мгновенный switch, scroll/состояние держатся в DOM, реалтайм-WS держит
-                свежесть (как График/Чаты/Новости). Только admin/developer (isAdminLike). */}
-            {isAdminLike(session.role) && (
+            {/* §flow/vgh/transport — тяжёлые гриды: first-visit mount, затем keep-alive
+                (display-toggle). Не грузим 2–8 МБ таблиц при каждом login admin. */}
+            {isAdminLike(session.role) && heavyVisited.flow && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'flow' ? 'flex' : 'none' }}>
                 <FlowScreen />
               </div>
             )}
-            {isAdminLike(session.role) && (
+            {isAdminLike(session.role) && heavyVisited.vgh && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'vgh' ? 'flex' : 'none' }}>
                 <VghScreen />
               </div>
             )}
-            {isAdminLike(session.role) && (
+            {isAdminLike(session.role) && heavyVisited.transport && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'transport' ? 'flex' : 'none' }}>
                 <TransportScreen />
               </div>

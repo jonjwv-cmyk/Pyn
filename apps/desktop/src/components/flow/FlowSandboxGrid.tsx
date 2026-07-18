@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   CompactSelection,
   type DataEditorRef,
@@ -851,6 +851,18 @@ const FLOW_DISK_CACHE_ROWS = 'flow_rows_workflow';
 // через миг (поставки загрузились) ПРЯЧУТСЯ — видимый прыжок. С кэшем на повторных входах
 // расчёт сразу верный, мигания нет.
 let flowDlvInfoCache: Map<number, ReturnType<typeof dlvInfoOf>> | null = null;
+
+/** Дешёвый отпечаток набора строк (id+version) — skip setRows, если сервер вернул то же. */
+function rowsFingerprint(rows: readonly { id: number; row_version?: number }[]): string {
+  let h = rows.length | 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
+    h = (Math.imul(h, 31) + (r.id | 0)) | 0;
+    h = (Math.imul(h, 17) + ((r.row_version ?? 0) | 0)) | 0;
+  }
+  return `${rows.length}:${h}`;
+}
+let flowRowsFp = '';
 
 export function FlowSandboxGrid(): JSX.Element {
   // Стартуем из кэша (мгновенно) если он есть; иначе пусто + спиннер до первой загрузки.
@@ -1812,6 +1824,14 @@ export function FlowSandboxGrid(): JSX.Element {
     return changed ? next : rows;
   }, [rows, whById, planMeta, planYear, planMonth, vghByKey, statMetaById, transferPendingByAnchor]);
 
+  // Session-warm: после того как CLST/KG посчитались — кладём в module-cache
+  // снимок liveRows (только если есть wh/vgh). Следующий mount стартует «готовым».
+  useEffect(() => {
+    if (liveRows.length === 0) return;
+    if (whById.size === 0 && vghByKey.size === 0) return;
+    flowRowsCache = liveRows;
+  }, [liveRows, whById.size, vghByKey.size]);
+
   // «Формирование = только позиции БЕЗ активной поставки» (модель якорь+поставки):
   // позиция, попавшая в план («Сформировать план» / ручная вставка), из формирования
   // исчезает — это ВИД, строка-якорь не удаляется. Удалили поставку (резерв) →
@@ -1824,7 +1844,10 @@ export function FlowSandboxGrid(): JSX.Element {
     void flowDeliveriesGet(api, { includeReserved: true })
       .then((dlv) => {
         if (!alive) return;
-        setDlvInfoById(new Map(dlv.map((d) => [d.id, dlvInfoOf(d)] as const)));
+        // startTransition — карта поставок тяжёлая; не рвать скролл/paint.
+        startTransition(() => {
+          setDlvInfoById(new Map(dlv.map((d) => [d.id, dlvInfoOf(d)] as const)));
+        });
       })
       .catch(() => undefined);
     return () => {
@@ -2721,42 +2744,38 @@ export function FlowSandboxGrid(): JSX.Element {
     syncEdits(changes);
   }, [mapPoints, rows, writeCells, syncEdits]);
 
-  // Авто-обработка МОЛ по живой базе (P1, юзер 2026-06-14). Относительно сегодня:
-  //  • пустой МОЛ + ровно ОДИН валидный на складе → подставляем его (авто-выбор);
-  //  • выбранный ПРОСРОЧЕН: остался один валидный → меняем на него; валидных 2+ → снимаем
-  //    (нужен ручной выбор); валидных нет → оставляем (покажется «Нет МОЛа»).
-  // OFF-фантомы НЕ трогаем. Изменения ПЕРСИСТЯТСЯ (writeCells+syncEdits) — иначе авто-МОЛ
-  // не дошёл бы до Плана/Отчёта (они читают МОЛ с якоря). Идемпотентно: повторный проход
-  // ничего не находит → changes пуст → стоп. Был баг: эффект пропускал пустые ячейки, и
-  // единственный МОЛ не вставал на новые/сеяные строки.
+  // Авто-МОЛ (P1). DEBOUNCE 400ms: при загрузке molByWarehouse + rows приходят
+  // волнами → без debounce каждый тик писал N правок + syncEdits → «МОЛы по новой»
+  // (юзер 2026-07-18). После тишины — один проход.
   useEffect(() => {
-    const changes = new Map<number, FlowRowPatch>();
-    for (const r of rowsRef.current) {
-      if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
-      const opts = molsForWh(r.to_wh);
-      // Назначаемые только: фантом «был» и просроченный договор — не авто-выбор.
-      const valid = opts.filter((o) => isMolAssignableUntil(o.until));
-      const only = valid.length === 1 ? valid[0] : undefined;
-      const raw = String(r.mol ?? '');
-      const trimmed = raw.trim();
-      if (trimmed === '') {
+    if (molByWarehouse.size === 0) return;
+    const t = window.setTimeout(() => {
+      const changes = new Map<number, FlowRowPatch>();
+      for (const r of rowsRef.current) {
+        if (String(r.day_wk ?? '').toUpperCase() === 'OFF') continue;
+        const opts = molsForWh(r.to_wh);
+        const valid = opts.filter((o) => isMolAssignableUntil(o.until));
+        const only = valid.length === 1 ? valid[0] : undefined;
+        const raw = String(r.mol ?? '');
+        const trimmed = raw.trim();
+        if (trimmed === '') {
+          if (only) changes.set(r.id, { mol: only.fio });
+          continue;
+        }
+        if (trimmed.toUpperCase().includes('НЕТ МОЛ')) {
+          if (only) changes.set(r.id, { mol: only.fio });
+          continue;
+        }
+        const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
+        if (!sel || isMolAssignableUntil(sel.until)) continue;
         if (only) changes.set(r.id, { mol: only.fio });
-        continue;
+        else changes.set(r.id, { mol: '' });
       }
-      if (trimmed.toUpperCase().includes('НЕТ МОЛ')) {
-        if (only) changes.set(r.id, { mol: only.fio });
-        continue;
-      }
-      const sel = opts.find((o) => molKey(o.fio) === molKey(parseMol(raw)?.fio ?? raw));
-      // Снять/заменить, если выбранный не назначаемый (истёк или «был»).
-      if (!sel || isMolAssignableUntil(sel.until)) continue;
-      if (only) changes.set(r.id, { mol: only.fio });
-      else if (valid.length >= 2) changes.set(r.id, { mol: '' });
-      else changes.set(r.id, { mol: '' });
-    }
-    if (changes.size === 0) return;
-    writeCells(changes);
-    syncEdits(changes);
+      if (changes.size === 0) return;
+      writeCells(changes);
+      syncEdits(changes);
+    }, 400);
+    return () => window.clearTimeout(t);
   }, [molByWarehouse, rows, molsForWh, writeCells, syncEdits]);
 
   // Дисковый кэш строк (переживает перезапуск приложения): сессионного кэша нет →
@@ -2776,24 +2795,28 @@ export function FlowSandboxGrid(): JSX.Element {
     };
   }, []);
 
-  // Живое чтение базы формирования при монтировании. Если кэш есть — грид уже
-  // показан из него, спиннера нет; всё равно тянем свежее в фоне (refetch догоняет
-  // правки, пропущенные пока раздел был закрыт), затем реалтайм.
+  // Живое чтение базы при mount. Кэш/диск уже на экране; сервер — фоном.
+  // startTransition: не блокировать ввод; fingerprint: skip, если те же id/version
+  // (иначе «всё мигнуло заново» при каждом входе в Поток).
   useEffect(() => {
     let alive = true;
     void flowWorkflowGet(api)
       .then((serverRows) => {
-        // CLST и % в БД нет — виртуальные поля-ключи колонок: clst посчитает liveRows из
-        // графика, % считается livePct из qty/chg (значение pct не используется).
-        // Пустой ответ при живом кэше не затираем (иначе грид «моргает» в ноль при сбое/гонке).
         if (!alive) return;
         if (serverRows.length === 0 && rowsRef.current.length > 0) return;
-        setRows(serverRows.map((r) => ({ ...r, clst: '', pct: null }) as FlowSandboxRow));
+        const mapped = serverRows.map((r) => ({ ...r, clst: '', pct: null }) as FlowSandboxRow);
+        const fp = rowsFingerprint(mapped);
+        if (fp === flowRowsFp && rowsRef.current.length === mapped.length) {
+          setLoading(false);
+          return;
+        }
+        flowRowsFp = fp;
+        startTransition(() => {
+          setRows(mapped);
+          setLoading(false);
+        });
       })
       .catch(() => {
-        /* ошибка сети — остаёмся на кэше (или пусто) */
-      })
-      .finally(() => {
         if (alive) setLoading(false);
       });
     return () => {
@@ -2801,11 +2824,12 @@ export function FlowSandboxGrid(): JSX.Element {
     };
   }, []);
 
-  // Держим модульный кэш в актуальном состоянии (fetch / правки / WS) — для мгновенного
-  // повторного входа в раздел; диск — для мгновенного старта после перезапуска.
+  // Session-cache: сырые rows + fingerprint. liveRows (CLST) кэшируем отдельно
+  // после стабилизации (ниже) — повторный вход без «граф считается».
   useEffect(() => {
     if (rows.length > 0) {
       flowRowsCache = rows;
+      flowRowsFp = rowsFingerprint(rows);
       saveFlowDiskCacheDebounced(FLOW_DISK_CACHE_ROWS, () => rowsRef.current);
     }
   }, [rows]);

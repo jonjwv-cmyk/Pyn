@@ -31,6 +31,13 @@ export function FlowScreen(): JSX.Element {
   const { t } = useTranslation();
   const users = useUsersStore((s) => s.users);
   const [stage, setStage] = useState<FlowStage>('form');
+  // План/Отчёт — mount после первого захода (не вместе с Формированием при входе
+  // в Поток). Иначе сразу 2 МБ workflow + 0.6 МБ deliveries + liveRows×2. После
+  // визита keep-alive (display), дни — module-cache.
+  const [planVisited, setPlanVisited] = useState(false);
+  useEffect(() => {
+    if (stage === 'plan' || stage === 'report') setPlanVisited(true);
+  }, [stage]);
   // Выбранный день календаря Плана — для кнопки «Создание поставок» (черновики+SAP сразу).
   const [planDay, setPlanDay] = useState<string | null>(null);
   // Окно-блокировка на время выгрузки заказов (пароль — у самой кнопки). Инициатор держит
@@ -134,15 +141,17 @@ export function FlowScreen(): JSX.Element {
         >
           <FlowSandboxGrid />
         </div>
-        <div
-          className="flex min-h-0 flex-1 flex-col"
-          style={{ display: stage !== 'form' ? 'flex' : 'none' }}
-        >
-          <FlowPlanGrid
-            mode={stage === 'report' ? 'report' : 'plan'}
-            onSelectedDayChange={setPlanDay}
-          />
-        </div>
+        {planVisited && (
+          <div
+            className="flex min-h-0 flex-1 flex-col"
+            style={{ display: stage !== 'form' ? 'flex' : 'none' }}
+          >
+            <FlowPlanGrid
+              mode={stage === 'report' ? 'report' : 'plan'}
+              onSelectedDayChange={setPlanDay}
+            />
+          </div>
+        )}
       </WorkspaceCard>
     </main>
   );
