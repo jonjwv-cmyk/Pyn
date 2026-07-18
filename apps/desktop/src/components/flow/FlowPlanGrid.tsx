@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   type DataEditorRef,
   GridCellKind,
@@ -35,6 +35,7 @@ import { VghEditCard } from '@/components/vgh/VghEditCard';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { flowVehicleRenderer, type FlowVehicleCell, type FlowVehicleOption } from './flow-vehicle-cell';
 import { FlowGridEditor, EMPTY_GRID_SELECTION, type FlowGridEditorHandle } from './FlowGridEditor';
+import { createLiveValue, useLiveValue, type LiveValue } from './flow-live-value';
 import { useFlowColLayout } from './use-flow-col-layout';
 import { FlowSearchPanel } from './FlowSearchPanel';
 import { FlowDayPicker } from './FlowDayPicker';
@@ -594,10 +595,10 @@ export function FlowPlanGrid({
     void initMap();
   }, []);
   // Выделение живёт ВНУТРИ FlowGridEditor (Фаза 1: протяжка не ре-рендерит этот
-  // 3000-строчный компонент). Здесь — только лёгкий счётчик для тулбара «Выбрано: N»
-  // и императивный handle, чтобы задавать выделение извне (поиск/очистка).
-  const [selectedCount, setSelectedCount] = useState(0);
+  // 3000-строчный компонент). «Выбрано: N» + кнопки масс-действий — мелкий
+  // подписчик LiveValue (как Формирование/Транспорт), монолит Плана не дёргается.
   const editorRef = useRef<FlowGridEditorHandle | null>(null);
+  const selLive = useRef(createLiveValue(0)).current;
   const gridRef = useRef<DataEditorRef | null>(null);
   // §7-B: карточка ИЗМЕНЕНИЯ материала (вес/объём/норма) — двойной клик по NO.№ (как в
   // Формировании). Правка пересчитывает KG/V live (подписка vgh_changed). Для Плана действует
@@ -1523,13 +1524,12 @@ export function FlowPlanGrid({
   // Живое выделение из FlowGridEditor (обновляется его колбэком). Все действия
   // (заливка/копирование/удаление/вставка/статус) читают ОТСЮДА — без ре-рендера.
   const selectionRef = useRef<GridSelection>(EMPTY_GRID_SELECTION);
-  // Стабильный (deps []) колбэк: пишем свежее выделение в ref + двигаем лёгкий
-  // счётчик. setSelectedCount с тем же числом — no-op (React бейлит), поэтому
-  // протяжка внутри одной строки родителя не трогает.
+  // Стабильный (deps []) колбэк: ref для действий + LiveValue для тулбара.
+  // Монолит Плана/Отчёта НЕ подписан — протяжка по строкам не ре-рендерит лист.
   const handleSelectionChange = useCallback((sel: GridSelection) => {
     selectionRef.current = sel;
-    setSelectedCount(sel.rows.length);
-  }, []);
+    selLive.set(sel.rows.length);
+  }, [selLive]);
   // Задать выделение извне (поиск-переход) и очистить (после удаления/переноса).
   const applyGridSelection = useCallback((sel: GridSelection) => {
     editorRef.current?.setSelection(sel);
@@ -3499,65 +3499,15 @@ export function FlowPlanGrid({
           dimmed={gridSearch.dimmed}
           allowReplace={false}
         />
-        {!pendingTransfer && selectedCount > 0 && mode === 'report' && (
-          <div className="ml-auto flex items-center gap-2">
-            <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
-            <button
-              type="button"
-              onClick={() => massMark('выполнено', '')}
-              className="rounded-md border border-black/10 px-2 py-0.5 text-[#1F7A33] transition-colors hover:border-[#1F7A33]/50"
-            >
-              Выполнено
-            </button>
-            <select
-              defaultValue=""
-              onChange={(e) => {
-                if (e.target.value) {
-                  if (e.target.value === 'перенос') setMsg('Перенос делается через ячейку статуса конкретной строки');
-                  else massMark('не увезли', REASON_CANON[e.target.value] ?? e.target.value);
-                  e.target.value = '';
-                }
-              }}
-              className="h-6 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#8A1F11] outline-none"
-              title="Причина (не увезено) — выбрать и протянуть на все выделенные"
-            >
-              <option value="" disabled>
-                Причина…
-              </option>
-              {FAIL_REASONS.map((fr) => (
-                <option key={fr} value={fr}>
-                  {fr}
-                </option>
-              ))}
-            </select>
-            {/* П.4 «Корзина» (юзер 2026-07-02): строка в резерв; позиция вернётся в
-                формирование с данными, выгрузка заказов её актуализирует. */}
-            <button
-              type="button"
-              onClick={deleteSelected}
-              title="Удалить выделенные из отчёта (в резерв) — позиция вернётся в формирование, выгрузка актуализирует"
-              className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
-            >
-              <Trash2 size={13} strokeWidth={1.75} />
-              Корзина
-            </button>
-          </div>
-        )}
-        {!pendingTransfer && selectedCount > 0 && mode === 'plan' && (
-          <div className="ml-auto flex items-center gap-2">
-            <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
-            {/* Перенос — НЕ по выделению (п.2): через ячейку статуса «перенос на другой день»
-                в Отчёте. Здесь только «Корзина» (резерв). */}
-            <button
-              type="button"
-              onClick={deleteSelected}
-              title="Убрать выделенные из плана в резерв — позиции вернутся в формирование"
-              className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
-            >
-              <Trash2 size={13} strokeWidth={1.75} />
-              Корзина
-            </button>
-          </div>
+        {!pendingTransfer && (
+          <PlanSelToolbar
+            selLive={selLive}
+            mode={mode}
+            onMassMark={massMark}
+            onMassFail={(reason) => massMark('не увезли', reason)}
+            onTransferHint={() => setMsg('Перенос делается через ячейку статуса конкретной строки')}
+            onDelete={deleteSelected}
+          />
         )}
       </div>
       {/* Обёртка relative + измеряемый слой `absolute inset-0` (как в Транспорте): абсолютный
@@ -3787,3 +3737,85 @@ export function FlowPlanGrid({
     </div>
   );
 }
+
+// ── Анти-лаг: тулбар «Выбрано: N» — отдельный подписчик LiveValue ────────────
+// Протяжка по строкам Плана/Отчёта меняет только этот кусок, не 3700-строчный лист.
+
+const PlanSelToolbar = memo(function PlanSelToolbar({
+  selLive,
+  mode,
+  onMassMark,
+  onMassFail,
+  onTransferHint,
+  onDelete,
+}: {
+  selLive: LiveValue<number>;
+  mode: 'plan' | 'report';
+  onMassMark: (done: 'выполнено' | 'не увезли', reason: string) => void;
+  onMassFail: (reason: string) => void;
+  onTransferHint: () => void;
+  onDelete: () => void;
+}) {
+  const selectedCount = useLiveValue(selLive);
+  if (selectedCount <= 0) return null;
+
+  if (mode === 'report') {
+    return (
+      <div className="ml-auto flex items-center gap-2">
+        <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
+        <button
+          type="button"
+          onClick={() => onMassMark('выполнено', '')}
+          className="rounded-md border border-black/10 px-2 py-0.5 text-[#1F7A33] transition-colors hover:border-[#1F7A33]/50"
+        >
+          Выполнено
+        </button>
+        <select
+          defaultValue=""
+          onChange={(e) => {
+            if (e.target.value) {
+              if (e.target.value === 'перенос') onTransferHint();
+              else onMassFail(REASON_CANON[e.target.value] ?? e.target.value);
+              e.target.value = '';
+            }
+          }}
+          className="h-6 rounded-md border border-black/10 bg-transparent px-1 text-[12px] text-[#8A1F11] outline-none"
+          title="Причина (не увезено) — выбрать и протянуть на все выделенные"
+        >
+          <option value="" disabled>
+            Причина…
+          </option>
+          {FAIL_REASONS.map((fr) => (
+            <option key={fr} value={fr}>
+              {fr}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={onDelete}
+          title="Удалить выделенные из отчёта (в резерв) — позиция вернётся в формирование, выгрузка актуализирует"
+          className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
+        >
+          <Trash2 size={13} strokeWidth={1.75} />
+          Корзина
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ml-auto flex items-center gap-2">
+      <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
+      <button
+        type="button"
+        onClick={onDelete}
+        title="Убрать выделенные из плана в резерв — позиции вернутся в формирование"
+        className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[#6B6862] transition-colors hover:border-danger/50 hover:text-danger"
+      >
+        <Trash2 size={13} strokeWidth={1.75} />
+        Корзина
+      </button>
+    </div>
+  );
+});
