@@ -192,8 +192,13 @@ type GlonassState = {
   lastPollAt: number;
   /** Слежение: id машины, за которой камера едет (null — не следим). */
   followId: number | null;
+  /** Динамическая ширина панели / сдвиг погоды (считает GlonassPanel). */
+  panelWidthPx: number;
+  weatherLeftPx: number;
+  pillWidthPx: number;
 
   setOpen: (open: boolean) => void;
+  setPanelLayout: (layout: { panelWidth: number; weatherLeft: number; pillWidth: number }) => void;
   loadFleet: () => Promise<void>;
   toggleSelect: (id: number) => void;
   clearSelected: () => void;
@@ -233,10 +238,27 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
   offline: false,
   lastPollAt: 0,
   followId: null,
+  panelWidthPx: 360,
+  weatherLeftPx: 382,
+  pillWidthPx: 128,
 
   setOpen: (open) => {
     set({ open });
     if (open && !get().fleetLoaded && !get().loading) void get().loadFleet();
+  },
+
+  setPanelLayout: (layout) => {
+    const cur = get();
+    if (
+      cur.panelWidthPx === layout.panelWidth
+      && cur.weatherLeftPx === layout.weatherLeft
+      && cur.pillWidthPx === layout.pillWidth
+    ) return;
+    set({
+      panelWidthPx: layout.panelWidth,
+      weatherLeftPx: layout.weatherLeft,
+      pillWidthPx: layout.pillWidth,
+    });
   },
 
   loadFleet: async () => {

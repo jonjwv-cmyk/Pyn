@@ -18,6 +18,7 @@ import {
   formatGosPlate,
   todayYmdYekaterinburg,
 } from './glonass-format';
+import { computeGlonassLayout, GLONASS_STATUS_SAMPLE } from './glonass-layout';
 
 type DayMeta = { vehicleType: string; brand: string; driver: string };
 
@@ -27,21 +28,9 @@ const DAY_META_TTL_MS = 90_000;
 
 const EMPTY_META: DayMeta = { vehicleType: '', brand: '', driver: '' };
 
-/**
- * Ширина панели Глонасс (px). Погода и оверлеи сдвигаются на left-3 + WIDTH + gap.
- * Плотно, как узкий рабочий сайдбар карты (~360).
- */
-export const GLONASS_PANEL_WIDTH_PX = 360;
-const GLONASS_PANEL_LEFT_PX = 12; // left-3
-const GLONASS_WEATHER_GAP_PX = 10;
-/** left для чипа погоды, когда Глонасс открыт. */
-export const GLONASS_WEATHER_LEFT_PX =
-  GLONASS_PANEL_LEFT_PX + GLONASS_PANEL_WIDTH_PX + GLONASS_WEATHER_GAP_PX;
-
-/** Колонки строки: пилл | ФИО/гос | кнопки (фиксировано — не наезжают). */
-const COL_PILL = '7.5rem';
+/** @deprecated use store weatherLeftPx */
+export const GLONASS_WEATHER_LEFT_PX = 382;
 const COL_ACTIONS = '1.65rem';
-const ROW_H = '2.55rem';
 
 /**
  * Панель «Глонасс» — поиск/выбор машин для слежения на карте. Плитка поверх
@@ -68,6 +57,9 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const showRaw = useGlonassStore((s) => s.showRaw);
   const setShowPro = useGlonassStore((s) => s.setShowPro);
   const setShowRaw = useGlonassStore((s) => s.setShowRaw);
+  const setPanelLayout = useGlonassStore((s) => s.setPanelLayout);
+  const panelWidthPx = useGlonassStore((s) => s.panelWidthPx);
+  const pillWidthPx = useGlonassStore((s) => s.pillWidthPx);
 
   const [query, setQuery] = useState('');
   /** Гаражный → тип ТС / марка / водитель (кэш 90с, без FlowTransportGrid). */
@@ -150,6 +142,18 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     });
   }, [filtered, selected]);
 
+  // Ширина панели = пилл(«В движении 999 км/ч») + max ФИО + кнопки; погода сдвигается.
+  useEffect(() => {
+    if (!open) return;
+    const drivers = [...dayMeta.values()].map((m) => m.driver);
+    const layout = computeGlonassLayout(drivers);
+    setPanelLayout({
+      panelWidth: layout.panelWidth,
+      weatherLeft: layout.weatherLeft,
+      pillWidth: layout.pillWidth,
+    });
+  }, [open, dayMeta, setPanelLayout]);
+
   const onToggle = useCallback((id: number) => toggleSelect(id), [toggleSelect]);
   const onFollowToggle = useCallback((id: number) => {
     setFollow(followId === id ? null : id);
@@ -160,7 +164,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   return (
     <div
       className="absolute left-3 top-3 z-[6] flex max-h-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-2xl border border-border-default bg-bg-surface shadow-[0_18px_58px_rgba(0,0,0,0.46)]"
-      style={{ width: GLONASS_PANEL_WIDTH_PX }}
+      style={{ width: panelWidthPx }}
     >
       {/* Шапка — компактнее */}
       <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border-subtle px-2.5">
@@ -281,6 +285,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             onFocus={onFocusVehicle}
             onFollowToggle={onFollowToggle}
             historyBusy={!!historyLoading}
+            pillWidthPx={pillWidthPx}
           />
         ))}
       </div>
@@ -442,6 +447,7 @@ const VehicleRow = memo(function VehicleRow({
   onFocus,
   onFollowToggle,
   historyBusy,
+  pillWidthPx,
 }: {
   v: GlonassVehicle;
   meta: DayMeta;
@@ -452,6 +458,7 @@ const VehicleRow = memo(function VehicleRow({
   onFocus: (pos: GlonassPosition) => void;
   onFollowToggle: (id: number) => void;
   historyBusy: boolean;
+  pillWidthPx: number;
 }) {
   const status = vehicleStatus(position);
   const color = STATUS_COLOR[status];
@@ -470,17 +477,17 @@ const VehicleRow = memo(function VehicleRow({
         'grid w-full items-stretch gap-x-1.5 rounded-lg px-1.5 py-0.5 transition-colors ' +
         (checked ? 'bg-white/[0.07]' : 'hover:bg-white/[0.03]')
       }
-      style={{ gridTemplateColumns: `${COL_PILL} minmax(0, 1fr) ${COL_ACTIONS}` }}
+      style={{ gridTemplateColumns: `${pillWidthPx}px minmax(0, 1fr) ${COL_ACTIONS}` }}
     >
-      {/* Пилл: 2 строки, плотно, без «воздуха» */}
+      {/* Пилл: стр.1 гаражный+тип · стр.2 «В движении 999 км/ч» без переноса */}
       <button
         type="button"
         aria-pressed={checked}
         onClick={() => onToggle(v.id)}
-        title={`${statusLabel} ${speedText}`}
-        className="flex h-full min-h-[2.55rem] w-full cursor-pointer flex-col items-start justify-center gap-px rounded-md border px-1.5 py-1 text-left outline-none transition-[filter] hover:brightness-110"
+        title={`${statusLabel} ${speedText} · эталон ширины: ${GLONASS_STATUS_SAMPLE}`}
+        className="flex w-full cursor-pointer flex-col items-start justify-center gap-px rounded-md border px-1.5 py-1 text-left outline-none transition-[filter] hover:brightness-110"
         style={{
-          height: ROW_H,
+          minHeight: 42,
           borderColor: `${color}${checked ? 'ee' : '99'}`,
           backgroundColor: `${color}${checked ? '5c' : '40'}`,
         }}
@@ -495,20 +502,20 @@ const VehicleRow = memo(function VehicleRow({
             </span>
           ) : null}
         </span>
-        <span className="w-full text-[10.5px] font-semibold leading-tight text-white">
+        <span className="w-full whitespace-nowrap text-[10.5px] font-semibold leading-tight text-white">
           {statusLabel}{' '}
           <span className="font-mono tabular-nums font-medium">{speedText}</span>
         </span>
       </button>
 
-      {/* ФИО / гос + марка — minmax(0,1fr), truncate, не лезет под кнопки */}
+      {/* ФИО целиком (колонка расширяется под max ФИО); 2-я: гос + марка */}
       <button
         type="button"
         disabled={!position}
-        title={position ? 'Перейти к машине на карте' : 'Координат пока нет'}
+        title={driver || (position ? 'Перейти к машине на карте' : 'Координат пока нет')}
         onClick={() => { if (position) onFocus(position); }}
         className="flex min-w-0 flex-col justify-center gap-px overflow-hidden text-left outline-none disabled:cursor-default"
-        style={{ height: ROW_H }}
+        style={{ minHeight: 42 }}
       >
         <span className="block min-w-0 truncate text-[12px] font-medium leading-tight text-text-strong">
           {driver || '\u00a0'}
@@ -528,7 +535,6 @@ const VehicleRow = memo(function VehicleRow({
         </span>
       </button>
 
-      {/* Кнопки — отдельная колонка, не перекрывают ФИО */}
       <div className="flex flex-col items-center justify-center gap-0.5 self-center">
         <button
           type="button"

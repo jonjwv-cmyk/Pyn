@@ -39,7 +39,7 @@ import { distanceMeters } from './geo';
 import { MapDetailPanel } from './MapDetailPanel';
 import { MapWarehouseOverlay } from './MapWarehouseOverlay';
 import { VehiclePurposeAccessGrid } from './VehiclePurposeAccessGrid';
-import { GlonassPanel, GLONASS_WEATHER_LEFT_PX } from './GlonassPanel';
+import { GlonassPanel } from './GlonassPanel';
 import {
   PLAYBACK_SPEEDS,
   STATUS_COLOR,
@@ -1059,8 +1059,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
             />
           )}
 
-          {/* Редактор карты: карандаш всегда виден, инструменты раскрываются
-              СТОЛБЦОМ вниз под ним (вертикальная панель справа). */}
+          {/* Редактор: полупрозрачный как зум/поворот; при раскрытии — полный opacity. */}
           {canEdit && (
             <button
               type="button"
@@ -1071,10 +1070,10 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
               }}
               title="Редактор карты"
               className={cn(
-                'absolute right-3 top-3 z-[453] flex h-9 w-9 items-center justify-center rounded-xl border shadow-[0_10px_28px_rgba(0,0,0,0.42)] outline-none transition-colors',
+                'absolute right-3 top-3 z-[453] flex h-9 w-9 items-center justify-center rounded-xl border shadow-[0_10px_28px_rgba(0,0,0,0.42)] outline-none transition-all duration-200',
                 editorToolsOpen
-                  ? 'border-accent-clay/60 bg-accent-clay/15 text-accent-clay'
-                  : 'border-border-default bg-bg-elevated text-text-muted hover:border-accent-clay/50 hover:bg-bg-hover hover:text-text-strong',
+                  ? 'border-accent-clay/60 bg-accent-clay/15 text-accent-clay opacity-100'
+                  : 'border-border-default bg-bg-elevated text-text-muted opacity-[0.72] hover:border-accent-clay/50 hover:bg-bg-hover hover:text-text-strong hover:opacity-100',
               )}
             >
               <Pencil size={16} strokeWidth={1.8} />
@@ -1138,7 +1137,7 @@ export function MapScreen({ canEdit }: MapScreenProps): JSX.Element {
           )}
 
           {/* Чип сводки погоды (когда слой включён). При открытом Глонассе
-              уезжает вправо, чтобы не перекрывать панель мониторинга слева. */}
+              уезжает вправо на weatherLeftPx (динамическая ширина панели). */}
           {showWeather && <WeatherChip weather={weather} shifted={glonassOpen} />}
 
           {/* Панель «Глонасс» (поиск/выбор машин) */}
@@ -2508,21 +2507,24 @@ function VehicleFilter({ active, onChange }: { active: VehicleType | null; onCha
   );
 }
 
-/** Чип сводки погоды по площадке: клик открывает ближайшие часы. */
+/** Чип погоды: opacity как у зума/поворота; при открытом попапе — 100% до закрытия. */
 function WeatherChip({ weather, shifted = false }: { weather: WeatherSummary | null; shifted?: boolean }) {
   const rows = weather?.hourly.slice(0, 16) ?? [];
   const display = buildWeatherDisplay(weather, rows);
+  const weatherLeftPx = useGlonassStore((s) => s.weatherLeftPx);
+  const [open, setOpen] = useState(false);
   const grid = 'grid grid-cols-[56px_minmax(74px,1fr)_64px_58px_54px_60px] items-center gap-1.5';
   return (
-    <Popover.Root>
+    <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
         <button
           type="button"
           className={cn(
-            'absolute top-3 z-[450] flex min-h-10 min-w-[238px] max-w-[320px] items-center gap-2 rounded-xl border border-accent-clay/30 bg-bg-elevated px-3 py-2 text-left text-[11.5px] text-text-secondary shadow-[0_10px_34px_rgba(0,0,0,0.58)] outline-none transition-all duration-150 hover:border-accent-clay/50 hover:bg-bg-hover hover:text-text-strong',
+            'absolute top-3 z-[450] flex min-h-10 min-w-[238px] max-w-[320px] items-center gap-2 rounded-xl border border-accent-clay/30 bg-bg-elevated px-3 py-2 text-left text-[11.5px] text-text-secondary shadow-[0_10px_34px_rgba(0,0,0,0.58)] outline-none transition-all duration-200 hover:border-accent-clay/50 hover:bg-bg-hover hover:text-text-strong',
             !shifted && 'left-3',
+            open ? 'opacity-100' : 'opacity-[0.72] hover:opacity-100',
           )}
-          style={shifted ? { left: GLONASS_WEATHER_LEFT_PX } : undefined}
+          style={shifted ? { left: weatherLeftPx } : undefined}
           title="Погода по часам"
         >
           <CloudRain size={16} strokeWidth={1.8} className={display.isPrecip ? 'shrink-0 text-sky-300' : 'shrink-0 text-text-muted'} />
