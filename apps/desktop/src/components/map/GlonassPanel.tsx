@@ -22,6 +22,15 @@ import { computeGlonassLayout, GLONASS_STATUS_SAMPLE } from './glonass-layout';
 
 type DayMeta = { vehicleType: string; brand: string; driver: string };
 
+/** Три статуса фильтра-пилюль (parking → stop). */
+type StatusPillKey = 'moving' | 'stop' | 'disabled';
+
+function statusPillKey(st: ReturnType<typeof vehicleStatus>): StatusPillKey {
+  if (st === 'moving') return 'moving';
+  if (st === 'disabled') return 'disabled';
+  return 'stop'; // stop + parking
+}
+
 /** Кэш meta на день — не дёргаем transport/vehicles на каждый ре-рендер/fleet.length. */
 let dayMetaCache: { day: string; at: number; map: Map<string, DayMeta> } | null = null;
 const DAY_META_TTL_MS = 90_000;
@@ -52,6 +61,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const historyLoading = useGlonassStore((s) => s.historyLoading);
   const setOpen = useGlonassStore((s) => s.setOpen);
   const toggleSelect = useGlonassStore((s) => s.toggleSelect);
+  const setSelected = useGlonassStore((s) => s.setSelected);
   const clearSelected = useGlonassStore((s) => s.clearSelected);
   const loadFleet = useGlonassStore((s) => s.loadFleet);
   const cancelHistoryLoading = useGlonassStore((s) => s.cancelHistoryLoading);
@@ -64,6 +74,11 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const pillWidthPx = useGlonassStore((s) => s.pillWidthPx);
 
   const [query, setQuery] = useState('');
+  /**
+   * Фильтр-пилюли статусов на карте (можно несколько).
+   * moving | stop | disabled — parking считается stop.
+   */
+  const [statusPills, setStatusPills] = useState<Set<StatusPillKey>>(() => new Set());
   /** Гаражный → тип ТС / марка / водитель (кэш 90с, без FlowTransportGrid). */
   const [dayMeta, setDayMeta] = useState<Map<string, DayMeta>>(
     () => dayMetaCache?.map ?? new Map(),
@@ -131,6 +146,49 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     })();
     return () => { cancelled = true; };
   }, [open]);
+
+  /** Счётчики по статусу всего парка (для пилюль). */
+  const statusCounts = useMemo(() => {
+    let moving = 0;
+    let stop = 0;
+    let disabled = 0;
+    for (const v of fleet) {
+      const key = statusPillKey(vehicleStatus(positions.get(v.id)));
+      if (key === 'moving') moving += 1;
+      else if (key === 'stop') stop += 1;
+      else disabled += 1;
+    }
+    return { moving, stop, disabled };
+  }, [fleet, positions]);
+
+  /** Применить пилюли → selected на карте (объединение активных статусов). */
+  const applyStatusPillsToMap = useCallback((pills: Set<StatusPillKey>) => {
+    if (pills.size === 0) {
+      setSelected([]);
+      return;
+    }
+    const ids: number[] = [];
+    for (const v of fleet) {
+      const key = statusPillKey(vehicleStatus(positions.get(v.id)));
+      if (pills.has(key)) ids.push(v.id);
+    }
+    setSelected(ids);
+  }, [fleet, positions, setSelected]);
+
+  const toggleStatusPill = useCallback((key: StatusPillKey) => {
+    setStatusPills((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // Пилюли → карта: при клике и при смене статусов/позиций.
+  useEffect(() => {
+    if (!open) return;
+    applyStatusPillsToMap(statusPills);
+  }, [open, statusPills, positions, fleet, applyStatusPillsToMap]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -223,7 +281,10 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             <button
               type="button"
               title="Сбросить выбор"
-              onClick={clearSelected}
+              onClick={() => {
+                setStatusPills(new Set());
+                clearSelected();
+              }}
               className="flex h-5 w-5 items-center justify-center rounded-full text-accent-clay/90 outline-none transition-colors hover:bg-accent-clay/25 hover:text-accent-clay"
             >
               <X className="h-3 w-3" strokeWidth={2.25} />
@@ -266,6 +327,31 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
             </button>
           )}
         </div>
+      </div>
+
+      {/* Счётчики статусов: клик → на карту все с этим статусом (можно несколько). */}
+      <div className="flex shrink-0 items-center gap-1 px-2.5 pb-1.5">
+        <StatusCountPill
+          label="В движении"
+          count={statusCounts.moving}
+          color={STATUS_COLOR.moving}
+          active={statusPills.has('moving')}
+          onClick={() => toggleStatusPill('moving')}
+        />
+        <StatusCountPill
+          label="Остановка"
+          count={statusCounts.stop}
+          color={STATUS_COLOR.stop}
+          active={statusPills.has('stop')}
+          onClick={() => toggleStatusPill('stop')}
+        />
+        <StatusCountPill
+          label="Отключен"
+          count={statusCounts.disabled}
+          color={STATUS_COLOR.disabled}
+          active={statusPills.has('disabled')}
+          onClick={() => toggleStatusPill('disabled')}
+        />
       </div>
 
       {offline && (
@@ -339,6 +425,51 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
         ))}
       </div>
     </div>
+  );
+}
+
+function StatusCountPill({
+  label,
+  count,
+  color,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  color: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={active ? `Скрыть с карты: ${label}` : `Показать на карте: ${label}`}
+      className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border px-1 py-1 outline-none transition-colors"
+      style={{
+        borderColor: active ? color : `${color}55`,
+        backgroundColor: active ? `${color}33` : `${color}12`,
+        boxShadow: active ? `inset 0 0 0 1px ${color}66` : undefined,
+      }}
+    >
+      <span
+        className="h-1.5 w-1.5 shrink-0 rounded-full"
+        style={{ backgroundColor: color }}
+      />
+      <span
+        className="truncate text-[9.5px] font-semibold leading-none"
+        style={{ color: active ? color : 'var(--color-text-muted, #9CA3AF)' }}
+      >
+        {label}
+      </span>
+      <span
+        className="shrink-0 font-mono text-[10.5px] font-bold tabular-nums leading-none"
+        style={{ color }}
+      >
+        {count}
+      </span>
+    </button>
   );
 }
 

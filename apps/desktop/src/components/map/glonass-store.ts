@@ -204,6 +204,8 @@ type GlonassState = {
   setPanelLayout: (layout: { panelWidth: number; weatherLeft: number; pillWidth: number }) => void;
   loadFleet: () => Promise<void>;
   toggleSelect: (id: number) => void;
+  /** Заменить набор выбранных (фильтр по статусу и т.п.). */
+  setSelected: (ids: Iterable<number>) => void;
   clearSelected: () => void;
   /** Вкл/выкл слежение за машиной (мультивыбор). */
   toggleFollow: (id: number) => void;
@@ -295,6 +297,22 @@ export const useGlonassStore = create<GlonassState>((set, get) => ({
     const followIds = new Set([...get().followIds].filter((fid) => next.has(fid)));
     set({ selected: next, tracks, followIds });
     void get().refreshPositions();
+  },
+
+  setSelected: (ids) => {
+    const next = new Set<number>();
+    for (const id of ids) {
+      if (Number.isFinite(id)) next.add(Number(id));
+    }
+    const tracks = new Map(get().tracks);
+    for (const key of tracks.keys()) {
+      if (!next.has(key)) tracks.delete(key);
+    }
+    const followIds = new Set([...get().followIds].filter((fid) => next.has(fid)));
+    const prev = get().selected;
+    const same = prev.size === next.size && [...next].every((id) => prev.has(id));
+    set({ selected: next, tracks, followIds });
+    if (!same) void get().refreshPositions();
   },
 
   clearSelected: () => set({
