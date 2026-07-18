@@ -132,15 +132,39 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     });
   }, [fleet, query, dayMeta]);
 
-  // Выбранные — наверх (лёгкая сортировка).
+  /**
+   * Порядок списка:
+   *  1) с ФИО (в разнарядке сегодня) → без ФИО;
+   *  2) статус: зелёный → синий → жёлтый → красный;
+   *  3) гаражный (число / строка).
+   */
   const ordered = useMemo(() => {
-    if (selected.size === 0) return filtered;
+    const statusRank = (st: ReturnType<typeof vehicleStatus>): number => {
+      if (st === 'moving') return 0;   // зелёный
+      if (st === 'stop') return 1;     // синий
+      if (st === 'parking') return 2;  // жёлтый (стоянка)
+      return 3;                       // красный / нет данных
+    };
+    const garageKey = (g: string): [number, string] => {
+      const n = Number(String(g).replace(/\D/g, ''));
+      return [Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER, (g || '').toUpperCase()];
+    };
     return [...filtered].sort((a, b) => {
-      const sa = selected.has(a.id) ? 0 : 1;
-      const sb = selected.has(b.id) ? 0 : 1;
-      return sa - sb;
+      const ma = dayMeta.get((a.garage || '').toUpperCase());
+      const mb = dayMeta.get((b.garage || '').toUpperCase());
+      const hasFioA = (ma?.driver || '').trim() ? 0 : 1;
+      const hasFioB = (mb?.driver || '').trim() ? 0 : 1;
+      if (hasFioA !== hasFioB) return hasFioA - hasFioB;
+
+      const ra = statusRank(vehicleStatus(positions.get(a.id)));
+      const rb = statusRank(vehicleStatus(positions.get(b.id)));
+      if (ra !== rb) return ra - rb;
+
+      const [na, sa] = garageKey(a.garage);
+      const [nb, sb] = garageKey(b.garage);
+      return na - nb || sa.localeCompare(sb, 'ru', { numeric: true });
     });
-  }, [filtered, selected]);
+  }, [filtered, dayMeta, positions]);
 
   // Ширина панели = пилл(«В движении 999 км/ч») + max ФИО + кнопки; погода сдвигается.
   useEffect(() => {
