@@ -1179,11 +1179,10 @@ function MolRow({
             <SearchMark text={record.position} query={nameQ} />
           </div>
         )}
-        {record.comment && (
-          <div className="mt-1">
-            <span className="inline-flex items-center rounded-md bg-accent-clay/[0.12] px-1.5 py-0.5 text-[10.5px] font-medium leading-tight text-accent-clay">
-              {record.comment}
-            </span>
+        {/* П1.13: комментарий — отдельный блок (для контактов с табельным). */}
+        {record.comment && record.tab?.trim() && (
+          <div className="mt-1.5 max-w-full rounded-md border border-border-subtle/70 bg-bg-elevated/80 px-2 py-1.5 text-[12px] leading-snug text-text-secondary whitespace-pre-wrap break-words">
+            {record.comment}
           </div>
         )}
       </Td>
@@ -1231,27 +1230,36 @@ function MolRow({
       </Td>
 
       <Td tdRef={setCellRef(index, 4)} {...cellProps(4)}>
-        <div
-          className={cn(
-            'whitespace-normal break-words text-[11.5px] font-medium leading-snug',
-            statusColor,
-          )}
-        >
-          {record.status || '—'}
-        </div>
-        {record.tab && (
-          <div className="mt-0.5 text-[10.5px] tabular-nums text-text-muted">
-            таб. <SearchMark text={record.tab} query={tabQ} kind={tabKind} />
-          </div>
+        {/* П1.13: справочник без табельного — колонки Статус/склад не показываем. */}
+        {record.tab?.trim() ? (
+          <>
+            <div
+              className={cn(
+                'whitespace-normal break-words text-[11.5px] font-medium leading-snug',
+                statusColor,
+              )}
+            >
+              {record.status || '—'}
+            </div>
+            <div className="mt-0.5 text-[10.5px] tabular-nums text-text-muted">
+              таб. <SearchMark text={record.tab} query={tabQ} kind={tabKind} />
+            </div>
+          </>
+        ) : (
+          <span className="text-text-muted">—</span>
         )}
       </Td>
 
       <Td tdRef={setCellRef(index, 5)} {...cellProps(5)}>
-        <WarehouseCell
-          warehouses={record.warehouses}
-          isMol={record.isMol ?? true}
-          isDismissed={record.isDismissed ?? false}
-        />
+        {record.tab?.trim() ? (
+          <WarehouseCell
+            warehouses={record.warehouses}
+            isMol={record.isMol ?? true}
+            isDismissed={record.isDismissed ?? false}
+          />
+        ) : (
+          <span className="text-text-muted">—</span>
+        )}
       </Td>
     </tr>
   );

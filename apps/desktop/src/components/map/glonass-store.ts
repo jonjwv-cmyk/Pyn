@@ -1,5 +1,6 @@
 import { createZustandStore as create } from '@pyn/core';
 import type { LatLng } from './map-types';
+import { formatGosPlate } from './glonass-format';
 
 /**
  * Состояние раздела «Глонасс» (спутниковый мониторинг транспорта на карте).
@@ -642,7 +643,10 @@ function findVehicle(fleet: GlonassVehicle[], id: number): GlonassVehicle | null
 
 function vehicleLabel(vehicle: GlonassVehicle | null | undefined): string {
   if (!vehicle) return 'машина';
-  return [vehicle.garage, vehicle.gos].filter(Boolean).join(' · ') || vehicle.name || 'машина';
+  // Базовый ярлык (без типа/водителя — их подмешивает панель выбора).
+  // Гос в формате «Х 905 КВ».
+  const gos = formatGosPlate(vehicle.gos) || vehicle.gos;
+  return [vehicle.garage, gos].filter(Boolean).join(' | ') || vehicle.name || 'машина';
 }
 
 function formatPeriodShort(from: string, to: string): string {

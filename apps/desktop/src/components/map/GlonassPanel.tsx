@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Crosshair, Loader2, RotateCw, Route, Satellite, Search, Square, X } from 'lucide-react';
+import { flowTransportGet, flowVehiclesGet } from '@pyn/core';
+import { api } from '@/lib/api';
 import {
   useGlonassStore,
   vehicleStatus,
@@ -12,6 +14,11 @@ import {
   type GlonassPosition,
   type GlonassVehicle,
 } from './glonass-store';
+import {
+  formatGlonassPickLine,
+  formatGosPlate,
+  todayYmdYekaterinburg,
+} from './glonass-format';
 
 /**
  * Панель «Глонасс» — поиск/выбор машин для слежения на карте. Плитка поверх
@@ -44,16 +51,85 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const [query, setQuery] = useState('');
   const [historyVehicleId, setHistoryVehicleId] = useState<number | ''>('');
   const [historyDay, setHistoryDay] = useState(() => toLocalDateValue(new Date()));
+  /** Гаражный → тип ТС + водитель на сегодня (из flow_vehicles / flow_transport). */
+  const [dayMeta, setDayMeta] = useState<Map<string, { vehicleType: string; driver: string }>>(() => new Map());
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const day = todayYmdYekaterinburg();
+    void (async () => {
+      try {
+        const [vehs, trRows] = await Promise.all([
+          flowVehiclesGet(api),
+          flowTransportGet(api, day),
+        ]);
+        if (cancelled) return;
+        const typeByGarage = new Map<string, string>();
+        for (const v of vehs) {
+          const g = (v.garage_no || '').trim();
+          if (!g) continue;
+          // model часто «Пульман 9м» / тип кузова; vtype — класс.
+          const t = (v.model || v.vtype || '').trim();
+          if (t) typeByGarage.set(g.toUpperCase(), t);
+        }
+        const driverByGarage = new Map<string, string>();
+        const trTypeByGarage = new Map<string, string>();
+        for (const r of trRows) {
+          const g = (r.garage_no || '').trim();
+          if (!g) continue;
+          const key = g.toUpperCase();
+          if (r.driver?.trim() && !driverByGarage.has(key)) driverByGarage.set(key, r.driver.trim());
+          if (r.vehicle_type?.trim()) trTypeByGarage.set(key, r.vehicle_type.trim());
+        }
+        const next = new Map<string, { vehicleType: string; driver: string }>();
+        const keys = new Set([...typeByGarage.keys(), ...driverByGarage.keys(), ...trTypeByGarage.keys()]);
+        for (const k of keys) {
+          next.set(k, {
+            vehicleType: trTypeByGarage.get(k) || typeByGarage.get(k) || '',
+            driver: driverByGarage.get(k) || '',
+          });
+        }
+        setDayMeta(next);
+      } catch {
+        /* нет сессии / сеть — список Глонасс всё равно работает */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, fleet.length]);
+
+  const pickLine = (v: GlonassVehicle): string => {
+    const meta = dayMeta.get((v.garage || '').toUpperCase());
+    return formatGlonassPickLine({
+      garage: v.garage,
+      gos: v.gos,
+      vehicleType: meta?.vehicleType,
+      driver: meta?.driver,
+      fallbackName: v.name,
+    });
+  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return fleet;
-    return fleet.filter((v) =>
-      v.garage.toLowerCase().includes(q) ||
-      v.gos.toLowerCase().includes(q) ||
-      v.name.toLowerCase().includes(q),
-    );
-  }, [fleet, query]);
+    return fleet.filter((v) => {
+      const meta = dayMeta.get((v.garage || '').toUpperCase());
+      const line = formatGlonassPickLine({
+        garage: v.garage,
+        gos: v.gos,
+        vehicleType: meta?.vehicleType,
+        driver: meta?.driver,
+        fallbackName: v.name,
+      }).toLowerCase();
+      return (
+        v.garage.toLowerCase().includes(q) ||
+        v.gos.toLowerCase().includes(q) ||
+        v.name.toLowerCase().includes(q) ||
+        line.includes(q) ||
+        (meta?.driver || '').toLowerCase().includes(q)
+      );
+    });
+  }, [fleet, query, dayMeta]);
 
   // Выбранные — наверх, затем по гаражному номеру.
   const ordered = useMemo(() => {
@@ -175,7 +251,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           >
             <option value="">Выберите машину</option>
             {fleet.map((v) => (
-              <option key={v.id} value={v.id}>{v.garage ? `${v.garage} · ` : ''}{v.gos || v.name}</option>
+              <option key={v.id} value={v.id}>{pickLine(v)}</option>
             ))}
           </select>
           <HistoryDateField value={historyDay} onChange={setHistoryDay} />
@@ -264,6 +340,7 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           <VehicleRow
             key={v.id}
             v={v}
+            label={pickLine(v)}
             checked={selected.has(v.id)}
             following={followId === v.id}
             position={positions.get(v.id)}
@@ -445,8 +522,10 @@ function yearStartIso(): string {
   return new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0).toISOString();
 }
 
-function VehicleRow({ v, checked, following, position, onToggle, onFocus, onFollow }: {
+function VehicleRow({ v, label, checked, following, position, onToggle, onFocus, onFollow }: {
   v: GlonassVehicle;
+  /** `гар | гос | тип | водитель` (ТЗ п.10). */
+  label: string;
   checked: boolean;
   following: boolean;
   position: GlonassPosition | undefined;
@@ -457,6 +536,7 @@ function VehicleRow({ v, checked, following, position, onToggle, onFocus, onFoll
   const status = vehicleStatus(position);
   const statusColor = STATUS_COLOR[status];
   const title = position ? 'Перейти к машине на карте' : 'Координат пока нет';
+  const gosFmt = formatGosPlate(v.gos) || v.gos;
 
   return (
     <div
@@ -483,14 +563,19 @@ function VehicleRow({ v, checked, following, position, onToggle, onFocus, onFoll
 
       <button
         type="button"
-        title={title}
+        title={label || title}
         disabled={!position}
         onClick={() => { if (position) onFocus(position); }}
         className="min-w-0 rounded-lg px-1 py-0.5 text-left outline-none transition-colors hover:bg-bg-hover disabled:cursor-default disabled:hover:bg-transparent"
       >
         <span className="block whitespace-normal break-words text-[12px] font-medium leading-[1.18] text-text-strong">
-          {v.gos || v.name}
+          {gosFmt || v.name}
         </span>
+        {label.includes('|') && (
+          <span className="mt-0.5 block whitespace-normal break-words text-[10px] leading-[1.2] text-text-muted">
+            {label}
+          </span>
+        )}
       </button>
 
       <button

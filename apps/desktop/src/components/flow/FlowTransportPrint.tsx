@@ -4,7 +4,6 @@ import { Printer, X } from 'lucide-react';
 import type { FlowTransportRow, FlowVehicle } from '@pyn/core';
 import { cn } from '@/lib/cn';
 import { formatMobilePhone } from '@/lib/mol-format';
-import { useProdCalendarStore } from '@/lib/prod-calendar';
 import { formatUntilDate } from './flow-sandbox.fixtures';
 import {
   vehicleBrand,
@@ -14,7 +13,7 @@ import {
   fmtDaysSummary,
   weekdayRu,
 } from './FlowTransportGrid';
-import { isDokRow, isOkalinaRow, isShiftUndershoot, shouldPrintTransportRow } from './flow-transport-shift';
+import { isDokRow, isOkalinaRow, isTimeBoldFlag, shouldPrintTransportRow } from './flow-transport-shift';
 import type { FlowDriverOption } from './flow-driver-cell';
 
 /** Уникальные гаражные по каждому дню (одна машина — один раз в день, без дублей по работам). */
@@ -63,7 +62,6 @@ export function FlowTransportPrint({
 }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
-  const prodCalByYear = useProdCalendarStore((st) => st.byYear);
 
   const printRows = useMemo(
     () => rows.filter((r) => shouldPrintTransportRow(r.work, printDok, printOkalina)),
@@ -267,7 +265,7 @@ export function FlowTransportPrint({
                   prev && prev.tdate === r.tdate && !workIsSixPlus(prev.work) && workIsSixPlus(r.work);
                 const dok = isDokRow(r.work);
                 const okalina = isOkalinaRow(r.work);
-                const timeBold = isShiftUndershoot(r.time_range, r.work, r.tdate, prodCalByYear);
+                const timeBold = isTimeBoldFlag(r.time_bold);
                 return (
                   <Fragment key={r.id}>
                     {multiDay && dayChanged && (

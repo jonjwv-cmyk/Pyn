@@ -44,6 +44,11 @@ export interface FlowTransportRow {
   work: string;
   /** ⏰ «08:00-20:00». */
   time_range: string;
+  /**
+   * Жирное ВРЕМЯ: 0/1. Авто при вставке (неполная дневная 1.2/2.n/3.n),
+   * дальше только кнопка вручную (ТЗ 17.07 п.11).
+   */
+  time_bold?: number;
   /** '' | Новый | Открыт | Отклонен | Отмена | Размещен (строго как в эталоне). */
   status: string;
   comment: string;
@@ -90,6 +95,8 @@ export interface FlowTransportPasteRow {
   ban: number;
   work: string;
   time_range: string;
+  /** 0/1 — клиент считает при вставке (неполная дневная смена). */
+  time_bold?: number;
   status: string;
   comment: string;
   driver: string;

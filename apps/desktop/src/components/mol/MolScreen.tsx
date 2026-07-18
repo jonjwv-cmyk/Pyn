@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { cn } from '@/lib/cn';
@@ -19,6 +19,29 @@ import { WarehouseSidebar } from './WarehouseSidebar';
 
 /** Сколько строк рендерим максимум — paste 500–1000 складов → много МОЛ; cap с запасом. */
 const RESULTS_CAP = 5000;
+
+/** П1.2.д: контур нормализации — снять навсегда после открытия карточки. */
+const NORMALIZE_SEEN_KEY = 'pyn:mol:normalize-seen:v1';
+
+function loadNormalizeSeen(): Set<number> {
+  try {
+    const raw = localStorage.getItem(NORMALIZE_SEEN_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.map(Number).filter((n) => Number.isFinite(n) && n > 0));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveNormalizeSeen(ids: Set<number>): void {
+  try {
+    localStorage.setItem(NORMALIZE_SEEN_KEY, JSON.stringify([...ids]));
+  } catch {
+    /* quota / private mode */
+  }
+}
 
 /**
  * Раздел «Контакты» — единая база ПЕРСОН (ФИО + МОЛ) + лист «Цеха».
@@ -41,7 +64,19 @@ export function MolScreen() {
   const [actionRequest, setActionRequest] = useState<ContactActionRequest | null>(null);
   /** Боковая панель: нормализация «кривых» vs новые МОЛ/контакты. */
   const [normalizeMode, setNormalizeMode] = useState(false);
+  /** Id карточек, в которые уже заходили из Нормализации — контур снят навсегда. */
+  const [normalizeSeen, setNormalizeSeen] = useState<Set<number>>(() => loadNormalizeSeen());
   const openPersonEdit = usePersonEditStore((s) => s.open);
+
+  const markNormalizeSeen = useCallback((personId: number) => {
+    setNormalizeSeen((prev) => {
+      if (prev.has(personId)) return prev;
+      const next = new Set(prev);
+      next.add(personId);
+      saveNormalizeSeen(next);
+      return next;
+    });
+  }, []);
 
   // Полные 19k — только когда раздел База/Контакты ВИДЕН. Иначе в RAM slim
   // (МОЛ+роли ~1–2k) для Потока. Always-mounted shell → смотрим activeSection.
@@ -98,6 +133,8 @@ export function MolScreen() {
     const rows: Row[] = [];
     for (const p of persons) {
       if (!p.tab.trim()) continue;
+      // П1.2.в: «Уволился» — больше не в Нормализации.
+      if (p.isDismissed) continue;
       const hasWh = p.warehouses.some(
         (w) => (w.code && w.code !== 'МОЛ' && w.code !== 'MOL') || w.isWas,
       );
@@ -225,14 +262,16 @@ export function MolScreen() {
     parsed.mode === 'empty'
     && (normalizeMode || newMols.length > 0 || newContacts.length > 0);
 
-  const openEdit = (person: Person) => {
+  const openEdit = (person: Person, fromNormalize = false) => {
     // Активный МОЛ без ФИО → режим orphan; иначе обычный edit (ФИО/должность правятся).
     const mode = person.isMol && !isValidPersonFio(person.fio) ? 'orphan' : 'edit';
+    // П1.2.д: провалились в карточку — контур снимается навсегда (даже без правок).
+    if (fromNormalize || normalizeMode) markNormalizeSeen(person.id);
     openPersonEdit({ mode, person });
   };
   const onEditPersonId = (id: number) => {
     const p = persons.find((x) => x.id === id);
-    if (p) openEdit(p);
+    if (p) openEdit(p, false);
   };
 
   return (
@@ -298,7 +337,8 @@ export function MolScreen() {
                 newContacts={newContacts}
                 normalizeMode={normalizeMode}
                 normalizePeople={normalizePeople}
-                onEdit={openEdit}
+                normalizeSeenIds={normalizeSeen}
+                onEdit={(p) => openEdit(p, true)}
               />
             ) : null}
           </div>

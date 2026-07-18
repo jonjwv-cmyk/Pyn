@@ -24,9 +24,9 @@ export function workMajorPrefix(work: string): number | null {
 }
 
 /**
- * Ожидаемый тип смены по префиксу работы (ТЗ п.12):
- * 1.1 → обычная 08:00–20:00; 1.2 → дневная; 2.n → дневная; 7.n → обычная.
- * Прочие префиксы — правила нет (не подсвечиваем).
+ * Ожидаемый тип смены по префиксу работы:
+ * 1.1 → обычная 08:00–20:00; 1.2 / 2.n / 3.n → дневная (произв. календарь);
+ * 7.n → обычная. Прочие — правил нет.
  */
 export function expectedShiftKind(work: string): TransportShiftKind | null {
   const pm = parseWorkMajorMinor(work);
@@ -34,8 +34,21 @@ export function expectedShiftKind(work: string): TransportShiftKind | null {
   if (pm.major === 1 && pm.minor === 1) return 'regular';
   if (pm.major === 1 && pm.minor === 2) return 'day';
   if (pm.major === 2) return 'day';
+  if (pm.major === 3) return 'day';
   if (pm.major === 7) return 'regular';
   return null;
+}
+
+/**
+ * Авто-жирное ВРЕМЯ (только при вставке): дневная смена 1.2 / 2.n / 3.n,
+ * если время короче полной смены по произв. календарю (ТЗ 17.07 п.11).
+ */
+export function isAutoTimeBoldWork(work: string): boolean {
+  const pm = parseWorkMajorMinor(work);
+  if (!pm) return false;
+  if (pm.major === 1 && pm.minor === 2) return true;
+  if (pm.major === 2 || pm.major === 3) return true;
+  return false;
 }
 
 /** Парсинг «08:00-20:00» / «8:00 – 17:00» → минуты от полуночи. */
@@ -82,14 +95,25 @@ export function isFullShiftRange(
   return bounds.startMin === expectedShiftStartMin(kind) && bounds.endMin === expectedEnd;
 }
 
-/** Нужно жирнить ВРЕМЯ — дали меньше, чем полная смена по правилу префикса. */
+/**
+ * Авто-кандидат на жирное ВРЕМЯ при вставке: работа 1.2/2.n/3.n и смена
+ * короче дневной нормы (старт 08:30 + конец из произв. календаря).
+ */
 export function isShiftUndershoot(
   timeRange: string,
   work: string,
   tdate: string,
   calByYear: ProdCalendarByYear | null | undefined,
 ): boolean {
+  if (!isAutoTimeBoldWork(work)) return false;
   return !isFullShiftRange(timeRange, work, tdate, calByYear);
+}
+
+/** Показ: серверный флаг time_bold (0/1), выставляется при вставке или кнопкой. */
+export function isTimeBoldFlag(timeBold: number | string | boolean | null | undefined): boolean {
+  if (timeBold === true) return true;
+  const n = Number(timeBold);
+  return Number.isFinite(n) && n === 1;
 }
 
 /** Сайт: всегда норма 08:00–20:00. */

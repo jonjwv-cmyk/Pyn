@@ -11,7 +11,7 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { ChevronLeft, ChevronRight, ClipboardPaste, History, Plus, Printer, Redo2, RefreshCw, Trash2, Undo2 } from 'lucide-react';
+import { Bold, ChevronLeft, ChevronRight, ClipboardPaste, History, Plus, Printer, Redo2, RefreshCw, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import * as Popover from '@radix-ui/react-popover';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
@@ -51,7 +51,7 @@ import { colRowSelection } from './flow-grid-selection';
 import { FlowGridEditor, EMPTY_GRID_SELECTION, type FlowGridEditorHandle } from './FlowGridEditor';
 import { createLiveValue, useLiveValue, type LiveValue } from './flow-live-value';
 import { useProdCalendarStore } from '@/lib/prod-calendar';
-import { isShiftUndershoot } from './flow-transport-shift';
+import { isShiftUndershoot, isTimeBoldFlag } from './flow-transport-shift';
 import { FlowSearchPanel } from './FlowSearchPanel';
 import { useFlowGridSearch, type FlowSearchColumn } from './flow-grid-search';
 import { FlowHeaderMenu } from './FlowHeaderMenu';
@@ -394,6 +394,7 @@ const TR_RENDERERS = [flowDropdownRenderer, flowDriverRenderer, flowStackRendere
 /** Работа из «шестого» блока — ведущий пункт ≥ 6 (6.x, 7.x …). Внутри дня ЕДИНСТВЕННАЯ
  *  чёрная линия отделяет этот блок от всех пунктов выше (0,1,2,3,4,5) — юзер 2026-06-12:
  *  «отделять пункты начинающиеся на 6 от всех выше 0 1 2 3 4 5». */
+/** Переход в блок 6+ (ДОК и выше) внутри дня — чёрная линия. */
 export function workIsSixPlus(w: string): boolean {
   const m = /^(\d+)/.exec((w || '').trim());
   return m ? Number(m[1]) >= 6 : false;
@@ -1060,7 +1061,8 @@ export function FlowTransportGrid(): JSX.Element {
       }
       const editable = colEditable(spec, locked);
       if (spec.id === 'time') {
-        const undershoot = isShiftUndershoot(r.time_range, r.work, r.tdate, prodCalByYear);
+        // Жирное — только флаг time_bold (авто при вставке + кнопка). Не пересчитываем live.
+        const bold = isTimeBoldFlag(r.time_bold);
         return {
           kind: GridCellKind.Text,
           data: r.time_range,
@@ -1068,7 +1070,7 @@ export function FlowTransportGrid(): JSX.Element {
           allowOverlay: editable,
           readonly: !editable,
           allowWrapping: false,
-          themeOverride: undershoot ? { baseFontStyle: `700 ${STD_FONT}` } : fontOverride,
+          themeOverride: bold ? { baseFontStyle: `700 ${STD_FONT}` } : fontOverride,
         };
       }
       const rawData = text;
@@ -1083,7 +1085,7 @@ export function FlowTransportGrid(): JSX.Element {
         themeOverride: fontOverride,
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked, colEditable, driverOptions, driverByFio, molFlagByFio, cols, tripKeys, prodCalByYear],
+    [viewRows, cellText, vehByGarage, workOptions, rowLocked, colEditable, driverOptions, driverByFio, molFlagByFio, cols, tripKeys],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -1432,10 +1434,15 @@ export function FlowTransportGrid(): JSX.Element {
           setMsg('В буфере не нашёл строк шаблона (пришли образец — подгоню разбор)');
           return;
         }
-        const res = await flowTransportPaste(api, parsed);
+        // Авто-жирное ВРЕМЯ только при вставке (1.2 / 2.n / 3.n + неполная дневная).
+        const withBold = parsed.map((r) => ({
+          ...r,
+          time_bold: isShiftUndershoot(r.time_range, r.work, r.tdate, prodCalByYear) ? 1 : 0,
+        }));
+        const res = await flowTransportPaste(api, withBold);
         // Вставка = один шаг Undo (юзер 2026-07-06): ⌘Z уберёт вставленные строки.
         if (res.insertedIds.length > 0) {
-          pushHistory({ kind: 'paste', insertedIds: res.insertedIds, rows: parsed });
+          pushHistory({ kind: 'paste', insertedIds: res.insertedIds, rows: withBold });
         }
         const parts = [`+${res.inserted} новых`, `${res.updated} обновлено`];
         if (res.autoAdded > 0) parts.push(`${res.autoAdded} авто 0.x`);
@@ -1445,7 +1452,43 @@ export function FlowTransportGrid(): JSX.Element {
       })
       .catch((e) => setMsg(`Ошибка вставки: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`))
       .finally(() => setBusy(false));
-  }, [busy, pushHistory]);
+  }, [busy, pushHistory, prodCalByYear]);
+
+  /** Кнопка: вручную жирнить / снять жирный у ВРЕМЯ в выделенных строках. */
+  const toggleTimeBold = useCallback(() => {
+    const sel = selectionRef.current;
+    const rowIdxs = new Set<number>();
+    if (sel.rows.length > 0) {
+      for (const r of sel.rows) rowIdxs.add(r);
+    } else if (sel.current?.range) {
+      const { y, height } = sel.current.range;
+      for (let i = y; i < y + height; i++) rowIdxs.add(i);
+    }
+    if (rowIdxs.size === 0) {
+      setMsg('Выделите строки — кнопка «Жирное ВРЕМЯ» только для колонки ВРЕМЯ');
+      return;
+    }
+    const targets = [...rowIdxs]
+      .map((i) => viewRows[i])
+      .filter((r): r is FlowTransportRow => !!r && !rowLocked(r));
+    if (targets.length === 0) {
+      setMsg('Нет доступных строк (архив >7 дней — read-only)');
+      return;
+    }
+    // Если хоть одна без жирного — ставим; все жирные — снимаем.
+    const allBold = targets.every((r) => isTimeBoldFlag(r.time_bold));
+    const next = allBold ? 0 : 1;
+    const edits = targets.map((r) => ({
+      id: r.id,
+      before: { time_bold: String(Number(r.time_bold) === 1 ? 1 : 0) },
+      after: { time_bold: String(next) },
+    }));
+    applyFieldsBatch(edits.map((e) => ({ id: e.id, fields: e.after })));
+    for (const e of edits) pushHistory(e);
+    setMsg(next === 1
+      ? `Жирное ВРЕМЯ: +${targets.length}`
+      : `Жирное ВРЕМЯ снято: ${targets.length}`);
+  }, [viewRows, rowLocked, applyFieldsBatch, pushHistory]);
 
   const runAdd = useCallback((date: string, garage: string) => {
     setBusy(true);
@@ -1776,6 +1819,16 @@ export function FlowTransportGrid(): JSX.Element {
             <ClipboardPaste size={13} strokeWidth={1.75} />
           )}
           Вставить из буфера
+        </button>
+        <button
+          type="button"
+          onClick={toggleTimeBold}
+          disabled={busy}
+          title="Жирное ВРЕМЯ: вручную поставить/снять у выделенных строк (авто — только при вставке из буфера)"
+          className="flex h-6 items-center gap-1.5 rounded-md border border-black/10 px-2 text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:opacity-50"
+        >
+          <Bold size={13} strokeWidth={2} />
+          ВРЕМЯ
         </button>
         <Popover.Root open={addOpen} onOpenChange={setAddOpen}>
           <Popover.Trigger asChild>

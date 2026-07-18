@@ -14,3 +14,19 @@ export function isValidPersonFio(raw: string): boolean {
     return letters.length > 2;
   });
 }
+
+/** Справочник-контакт без табельного (П1.13): «ФИО * наименование», минимум 3 символа. */
+export function isValidDirectoryName(raw: string): boolean {
+  return String(raw || '').trim().length >= 3;
+}
+
+/** Табельный: не короче 7 цифр (пример 1107243). */
+export function isValidPersonTab(raw: string): boolean {
+  const digits = String(raw || '').replace(/\D/g, '');
+  return digits.length >= 7;
+}
+
+/** Есть ли табельный (цифры) — staff-контакт vs справочник. */
+export function personTabDigits(raw: string): string {
+  return String(raw || '').replace(/\D/g, '');
+}

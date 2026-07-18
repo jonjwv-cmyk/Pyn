@@ -6,11 +6,14 @@ import { Check, ChevronDown, Copy, X } from 'lucide-react';
 import {
   BROADCAST_GROUPS,
   BROADCAST_PURPOSE_OPTIONAL_GROUPS,
+  isValidDirectoryName,
   isValidPersonFio,
+  isValidPersonTab,
   normalizePersonFio,
   normalizePersonMail,
   normalizePersonMobileStorage,
   normalizePersonWorkStorage,
+  personTabDigits,
   serializeBroadcastApprovalWarehouses,
   type Person,
   type PersonCreateInput,
@@ -106,9 +109,20 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
     }
   }, [open, personId]);
 
-  // ФИО: ≥2 слова, в каждом >2 букв (иначе остаётся в панели «Новый МОЛ/контакт»).
-  const fioOk = isValidPersonFio(form.fio);
+  // П1.13 create: с табельным (≥7 цифр) — staff; без — справочник (Диспетчер…).
+  const createTabDigits = mode === 'create' ? personTabDigits(form.tab) : '';
+  const createIsDirectory = mode === 'create' && createTabDigits.length === 0;
+  const createIsStaff = mode === 'create' && createTabDigits.length > 0;
+  const existingIsDirectory =
+    (mode === 'edit' || mode === 'orphan') && !personTabDigits(form.tab);
+
+  // ФИО staff / orphan: ≥2 слова; справочник: ≥3 символа «ФИО * наименование».
+  const fioOk = createIsDirectory || existingIsDirectory
+    ? isValidDirectoryName(form.fio)
+    : isValidPersonFio(form.fio);
+  const tabOk = !createIsStaff || isValidPersonTab(form.tab);
   const broadcastOk = (() => {
+    if (createIsDirectory || existingIsDirectory) return true;
     if (!form.broadcastEnabled) return true;
     if (!form.broadcastGroup.trim()) return false;
     if (transportRoleSelected && !transportRoleAllowed) return false;
@@ -121,19 +135,22 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
     // ИТР УПП / Заявители: обязательна цель рассылки.
     return form.broadcastPurpose.trim().length > 0;
   })();
-  const canSave = !saving && fioOk && broadcastOk;
+  const canSave = !saving && fioOk && tabOk && broadcastOk;
 
   // edit/orphan: ФИО + должность правятся; табельный — только create (иначе read-only + copy).
+  // Справочник: нет Статус / роль потока / «Уволился».
   const showField = {
     tab: mode === 'create',
-    tabReadonly: mode === 'edit' || mode === 'orphan',
+    tabReadonly: (mode === 'edit' || mode === 'orphan') && !existingIsDirectory,
     fio: true,
     position: true,
-    status: mode === 'create' || mode === 'edit' || mode === 'orphan',
+    status: !createIsDirectory && !existingIsDirectory && (mode === 'create' || mode === 'edit' || mode === 'orphan'),
     mobile: true,
     work: true,
     mail: true,
     comment: true,
+    dismissed: mode !== 'create' && !existingIsDirectory,
+    broadcast: !createIsDirectory && !existingIsDirectory,
   };
 
   const copyTab = async () => {
@@ -165,30 +182,46 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
     setSaveError('');
     try {
       // Локальная нормализация = серверная (на сервере ещё раз, «база сама»).
-      const fio = normalizePersonFio(form.fio);
+      // Справочник без табельного — имя как ввели (без правила ФИО).
+      const isDirSave = mode === 'create'
+        ? personTabDigits(form.tab).length === 0
+        : personTabDigits(form.tab).length === 0;
+      const fio = isDirSave ? form.fio.trim() : normalizePersonFio(form.fio);
       const mobile = normalizePersonMobileStorage(form.mobile) || toCanonMobile(form.mobile);
       const work = normalizePersonWorkStorage(form.work);
       const mail = normalizePersonMail(form.mail);
       if (mode === 'create') {
         const input: PersonCreateInput = {
-          tab: form.tab.trim(), fio, position: form.position.trim(),
-          status: form.status.trim(), mobile, work, mail,
+          tab: isDirSave ? '' : personTabDigits(form.tab),
+          fio,
+          position: form.position.trim(),
+          status: isDirSave ? '' : form.status.trim(),
+          mobile, work, mail,
           comment: form.comment.trim(),
-          ...broadcastPatchFromForm(form),
+          ...(isDirSave
+            ? { broadcast_enabled: 0 as const, broadcast_group: '', broadcast_purpose: '', broadcast_approval_warehouses: '[]' }
+            : broadcastPatchFromForm(form)),
         };
         await createPerson(input); // create ждёт сервер: нужен id + защита от дублей
       } else if (personId !== null) {
-        const broadcast = broadcastPatchFromForm(form);
+        const broadcast = isDirSave
+          ? {
+              broadcast_enabled: 0 as const,
+              broadcast_group: '',
+              broadcast_purpose: '',
+              broadcast_approval_warehouses: '[]',
+            }
+          : broadcastPatchFromForm(form);
         // edit и orphan: ФИО + должность + контакты (табельный не меняем).
         const patch: PersonPatch = {
           fio,
           position: form.position.trim(),
-          status: form.status.trim(),
+          status: isDirSave ? '' : form.status.trim(),
           mobile,
           work,
           mail,
           comment: form.comment.trim(),
-          dismissed: form.dismissed ? 1 : 0,
+          dismissed: isDirSave ? 0 : (form.dismissed ? 1 : 0),
           ...broadcast,
         };
         // Оптимистично: savePerson патчит стор СИНХРОННО (валидация уже прошла —
@@ -249,7 +282,7 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
               {showField.tab && (
                 <Field
                   label={t('mol.edit.field_tab')}
-                  hint={t('mol.edit.tab_optional')}
+                  hint={createIsDirectory ? t('mol.edit.tab_optional_dir') : t('mol.edit.tab_staff_hint')}
                   value={form.tab}
                   onChange={(v) => set('tab', v)}
                   mono
@@ -282,11 +315,18 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
               {showField.fio && (
                 <div ref={!showField.status ? alignRowRef : undefined}>
                   <Field
-                    label={t('mol.edit.field_fio')}
+                    label={createIsDirectory || existingIsDirectory
+                      ? t('mol.edit.field_fio_dir')
+                      : t('mol.edit.field_fio')}
                     value={form.fio}
                     onChange={(v) => set('fio', v)}
                     required
                     autoFocus={mode === 'create' || mode === 'orphan' || !isValidPersonFio(form.fio)}
+                    hint={createIsDirectory
+                      ? t('mol.edit.fio_dir_hint')
+                      : createIsStaff && !tabOk
+                        ? t('mol.edit.tab_too_short')
+                        : undefined}
                   />
                 </div>
               )}
@@ -336,9 +376,8 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
                 />
               )}
 
-              {/* «Уволился» — только у существующих контактов. Пометка главнее
-                  выгрузки: как МОЛ не выбирается, в Android-базу не идёт. */}
-              {mode !== 'create' && (
+              {/* «Уволился» — только у staff-контактов (с табельным). */}
+              {showField.dismissed && (
                 <div className="mt-1 flex items-start justify-between gap-3 pt-1">
                   <div className="min-w-0">
                     <span className={cn(
@@ -358,12 +397,14 @@ export function PersonEditDialog({ statuses }: PersonEditDialogProps): JSX.Eleme
                 </div>
               )}
 
-              <BroadcastSection
-                form={form}
-                set={set}
-                t={t}
-                transportRoleAllowed={transportRoleAllowed}
-              />
+              {showField.broadcast && (
+                <BroadcastSection
+                  form={form}
+                  set={set}
+                  t={t}
+                  transportRoleAllowed={transportRoleAllowed}
+                />
+              )}
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-1.5">

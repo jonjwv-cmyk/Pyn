@@ -11,6 +11,8 @@ interface OrphanPanelProps {
   /** Режим «Нормализация» — единый список «кривых» записей (tab + дыры в данных). */
   normalizeMode?: boolean;
   normalizePeople?: Person[];
+  /** П1.2.д: id, в карточки которых уже заходили — контур снят. */
+  normalizeSeenIds?: Set<number>;
   onEdit: (person: Person) => void;
 }
 
@@ -22,6 +24,7 @@ export function OrphanPanel({
   newContacts,
   normalizeMode = false,
   normalizePeople = [],
+  normalizeSeenIds,
   onEdit,
 }: OrphanPanelProps): JSX.Element | null {
   const { t } = useTranslation();
@@ -56,6 +59,7 @@ export function OrphanPanel({
                     kind={p.isMol ? 'mol' : 'contact'}
                     onEdit={() => onEdit(p)}
                     showGaps
+                    contour={!normalizeSeenIds?.has(p.id)}
                   />
                 ))}
               </div>
@@ -167,11 +171,14 @@ function OrphanCard({
   kind,
   onEdit,
   showGaps = false,
+  /** П1.2.д: контур-подсветка только у «свежих», куда ещё не заходили. */
+  contour = false,
 }: {
   person: Person;
   kind: 'mol' | 'contact';
   onEdit: () => void;
   showGaps?: boolean;
+  contour?: boolean;
 }): JSX.Element {
   const { t } = useTranslation();
   // Реальные склады + «был» (код склада), без плейсхолдера «МОЛ».
@@ -185,9 +192,11 @@ function OrphanCard({
     <article
       className={cn(
         'shrink-0 rounded-lg border px-3 py-2.5 backdrop-blur-sm',
-        isMol || hasWh
-          ? 'border-amber-400/30 bg-amber-400/[0.06]'
-          : 'border-border-default/80 bg-bg-elevated/40',
+        contour
+          ? 'border-accent-clay/70 bg-accent-clay/[0.08] ring-2 ring-accent-clay/45 shadow-[0_0_0_1px_rgba(217,119,87,0.25)]'
+          : isMol || hasWh
+            ? 'border-amber-400/30 bg-amber-400/[0.06]'
+            : 'border-border-default/80 bg-bg-elevated/40',
       )}
     >
       <div className="flex items-center justify-between gap-2">
