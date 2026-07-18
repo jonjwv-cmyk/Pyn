@@ -191,16 +191,35 @@ usePersonsStore.subscribe((state, prev) => {
 interface CachePayload {
   meta: PersonsMeta | null;
   persons: Person[];
+  /** true = полный слепок Контактов (~19k). Без флага — эвристика по count. */
+  fullSnapshot?: boolean;
+}
+
+/** Полная база контактов ≥ ~10k; slim runtime ~1–3k. Диск <8k = битый/slim-файл. */
+function isFullContactsSnapshot(persons: Person[], meta: PersonsMeta | null, flag?: boolean): boolean {
+  if (flag === true && persons.length >= 1000) return true;
+  if (persons.length >= 8000) return true;
+  // meta.recordsCount / molCount одни не спасают: slim тоже может иметь mol meta.
+  return false;
 }
 
 async function saveCache(): Promise<void> {
   // Никогда не пишем slim (1–2k) поверх полного слепка 19k на диске.
   if (personsRuntimeMode !== 'full') return;
   const s = usePersonsStore.getState();
+  if (!isFullContactsSnapshot(s.persons, s.meta, true)) {
+    // eslint-disable-next-line no-console
+    console.warn('[pyn:persons] skip saveCache: store is not a full snapshot', s.persons.length);
+    return;
+  }
   try {
     await window.pyn?.cache?.save(
       CACHE_NAME,
-      JSON.stringify({ meta: s.meta, persons: s.persons } satisfies CachePayload),
+      JSON.stringify({
+        meta: s.meta,
+        persons: s.persons,
+        fullSnapshot: true,
+      } satisfies CachePayload),
     );
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -214,7 +233,8 @@ export async function loadPersonsFromCache(): Promise<boolean> {
     if (!raw) return false;
     const parsed = JSON.parse(raw) as CachePayload;
     if (!Array.isArray(parsed.persons) || parsed.persons.length === 0) return false;
-    personsRuntimeMode = 'full';
+    const full = isFullContactsSnapshot(parsed.persons, parsed.meta ?? null, parsed.fullSnapshot);
+    personsRuntimeMode = full ? 'full' : 'slim';
     usePersonsStore.getState().setLoaded({ persons: parsed.persons, meta: parsed.meta ?? null });
     return true;
   } catch (err) {
@@ -250,11 +270,18 @@ export async function refreshPersonsFromServer(opts: { force?: boolean } = {}): 
   try {
     const serverMeta = await personsVersion(api);
     const localMeta = store.meta;
-    // Версии совпали и данные уже есть → «База актуальна» (даже на ручной refresh,
-    // как у складов) — не перекачиваем и не пишем ложно «обновлена».
-    if (localMeta && localMeta.version === serverMeta.version && usePersonsStore.getState().persons.length > 0) {
+    const localPersons = usePersonsStore.getState().persons;
+    const localIsFull = isFullContactsSnapshot(localPersons, localMeta, personsRuntimeMode === 'full');
+    // Версии совпали И полный слепок на месте → не качаем.
+    // Если на диске/в RAM остался slim (битый кэш ~0.5 МБ) — качаем full несмотря на version.
+    if (
+      !opts.force &&
+      localMeta &&
+      localMeta.version === serverMeta.version &&
+      localPersons.length > 0 &&
+      localIsFull
+    ) {
       usePersonsStore.setState({ meta: serverMeta, status: 'loaded', lastRefreshOutcome: 'up-to-date' });
-      await saveCache();
       scheduleToastReset();
       return false;
     }
@@ -327,16 +354,23 @@ export function releaseFullPersonsHold(): void {
 }
 
 /**
- * Login: кэш → slim (МОЛ+роли в RAM) → фоновый version-check.
- * Полные 19k только на диске + при открытии Контактов (ensureFullPersons).
+ * Login: кэш → slim (МОЛ+роли+«был» в RAM) → version-check / force full если кэш битый.
+ * Полные 19k на диске + при открытии Контактов (ensureFullPersons).
  */
 export async function initPersons(): Promise<void> {
   await loadPersonsFromCache();
-  slimPersonsToFlowActors();
-  // Фон: если версия сменилась — скачает full, сохранит диск, снова slim.
-  void refreshPersonsFromServer().then(() => {
-    if (!fullPersonsHoldRequested) slimPersonsToFlowActors();
-  });
+  const n = usePersonsStore.getState().persons.length;
+  const incomplete = n > 0 && n < 8000;
+  // Битый slim-на-диске: не slim'ить дальше — сразу full с сервера.
+  if (incomplete) {
+    await refreshPersonsFromServer({ force: true });
+  } else {
+    slimPersonsToFlowActors();
+    void refreshPersonsFromServer().then(() => {
+      if (!fullPersonsHoldRequested) slimPersonsToFlowActors();
+    });
+  }
+  if (!fullPersonsHoldRequested) slimPersonsToFlowActors();
 }
 
 /**
