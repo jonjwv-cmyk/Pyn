@@ -33,25 +33,37 @@ export function normalizePlateCompact(raw: string): string {
 
 /**
  * Госномер → «Х 905 КВ» / «А 982 НК 96».
- * Всегда разделяет буквы и цифры; латиницу-двойники приводит к кириллице.
+ * Берём ТОЛЬКО префикс РФ-номера (L DDD LL [RR]) — хвост «КАМАЗ» и т.п. отрезаем.
  */
 export function formatGosPlate(raw: string): string {
   const compact = normalizePlateCompact(raw);
   if (!compact) return '';
 
-  // Стандарт РФ: L DDD LL [RR]
-  const m = /^([А-ЯA-Z])(\d{3})([А-ЯA-Z]{2})(\d{2,3})?$/.exec(compact);
+  // Не якорим конец строки: «Н528АРКАМАЗ» → «Н 528 АР», не «Н 528 АРКАМАЗ».
+  const m = /^([А-ЯA-Z])(\d{3})([А-ЯA-Z]{2})(\d{2,3})?/.exec(compact);
   if (m) {
     const base = `${m[1]} ${m[2]} ${m[3]}`;
     return m[4] ? `${base} ${m[4]}` : base;
   }
 
-  // Fallback: вставить пробел на каждой границе буква↔цифра.
-  return compact
-    .replace(/([А-ЯA-Z])(\d)/g, '$1 $2')
-    .replace(/(\d)([А-ЯA-Z])/g, '$1 $2')
-    .replace(/\s+/g, ' ')
-    .trim();
+  // Fallback: только буква-цифры-буквы кусок в начале.
+  const loose = /^([А-ЯA-Z]+)(\d+)([А-ЯA-Z]+)/.exec(compact);
+  if (loose) {
+    return `${loose[1]} ${loose[2]} ${loose[3]}`.trim();
+  }
+  return compact;
+}
+
+/** Марка из model без импорта FlowTransportGrid (perf). */
+export function brandFromModel(model: string): string {
+  const tokens = String(model || '').trim().split(/[\s,]+/).filter(Boolean);
+  for (const t of tokens) {
+    const head = t.split(/(?=\d)/)[0]?.replace(/[-–—]+$/, '') ?? '';
+    if (head.length >= 2 && !/\d/.test(head) && /^[A-ZА-ЯЁa-zа-яё]+$/i.test(head)) {
+      return head.length <= 12 ? head : head.slice(0, 12);
+    }
+  }
+  return '';
 }
 
 /** Список машин: «Х 905 КВ КамАЗ» (гос + марка после). */

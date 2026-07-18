@@ -1,31 +1,31 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { ChevronLeft, ChevronRight, Crosshair, History, Loader2, RotateCw, Satellite, Search, Square, X } from 'lucide-react';
 import { flowTransportGet, flowVehiclesGet } from '@pyn/core';
 import { api } from '@/lib/api';
-import { vehicleBrand } from '@/components/flow/FlowTransportGrid';
 import {
   useGlonassStore,
   vehicleStatus,
   STATUS_LABEL,
   STATUS_COLOR,
-  formatGlonassSpeed,
   GLONASS_PRO_COLOR,
   GLONASS_RAW_COLOR,
   type GlonassPosition,
-  type GlonassStatus,
   type GlonassVehicle,
 } from './glonass-store';
 import {
+  brandFromModel,
   formatGosPlate,
   todayYmdYekaterinburg,
 } from './glonass-format';
 
 type DayMeta = { vehicleType: string; brand: string; driver: string };
 
-/** Пилл: ширина под «В движении 999 км/ч» целиком. */
-const PILL_W = '7.1rem';
-const PILL_MIN_H = '2.55rem';
+/** Кэш meta на день — не дёргаем transport/vehicles на каждый ре-рендер/fleet.length. */
+let dayMetaCache: { day: string; at: number; map: Map<string, DayMeta> } | null = null;
+const DAY_META_TTL_MS = 90_000;
+
+const EMPTY_META: DayMeta = { vehicleType: '', brand: '', driver: '' };
 
 /**
  * Панель «Глонасс» — поиск/выбор машин для слежения на карте. Плитка поверх
@@ -54,13 +54,20 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
   const setShowRaw = useGlonassStore((s) => s.setShowRaw);
 
   const [query, setQuery] = useState('');
-  /** Гаражный → тип ТС / марка / водитель на сегодня. */
-  const [dayMeta, setDayMeta] = useState<Map<string, DayMeta>>(() => new Map());
+  /** Гаражный → тип ТС / марка / водитель (кэш 90с, без FlowTransportGrid). */
+  const [dayMeta, setDayMeta] = useState<Map<string, DayMeta>>(
+    () => dayMetaCache?.map ?? new Map(),
+  );
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     const day = todayYmdYekaterinburg();
+    const now = Date.now();
+    if (dayMetaCache && dayMetaCache.day === day && now - dayMetaCache.at < DAY_META_TTL_MS) {
+      setDayMeta(dayMetaCache.map);
+      return;
+    }
     void (async () => {
       try {
         const [vehs, trRows] = await Promise.all([
@@ -69,15 +76,11 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
         ]);
         if (cancelled) return;
         const brandByGarage = new Map<string, string>();
-        const modelTypeByGarage = new Map<string, string>();
         for (const v of vehs) {
           const g = (v.garage_no || '').trim();
           if (!g) continue;
-          const key = g.toUpperCase();
-          const brand = vehicleBrand(v.model || '') || '';
-          if (brand) brandByGarage.set(key, brand);
-          // model целиком — fallback типа, если в транспорте нет vehicle_type
-          if ((v.model || '').trim()) modelTypeByGarage.set(key, v.model.trim());
+          const brand = brandFromModel(v.model || '');
+          if (brand) brandByGarage.set(g.toUpperCase(), brand);
         }
         const driverByGarage = new Map<string, string>();
         const trTypeByGarage = new Map<string, string>();
@@ -89,43 +92,30 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           if (r.vehicle_type?.trim()) trTypeByGarage.set(key, r.vehicle_type.trim());
         }
         const next = new Map<string, DayMeta>();
-        const keys = new Set([
-          ...brandByGarage.keys(),
-          ...modelTypeByGarage.keys(),
-          ...driverByGarage.keys(),
-          ...trTypeByGarage.keys(),
-        ]);
-        for (const k of keys) {
-          const brand = brandByGarage.get(k) || '';
-          const vtype = trTypeByGarage.get(k) || '';
-          // Тип ТС = vehicle_type из транспорта; марка отдельно (КамАЗ). Не дублировать.
+        for (const k of new Set([...brandByGarage.keys(), ...driverByGarage.keys(), ...trTypeByGarage.keys()])) {
           next.set(k, {
-            vehicleType: vtype,
-            brand,
+            vehicleType: trTypeByGarage.get(k) || '',
+            brand: brandByGarage.get(k) || '',
             driver: driverByGarage.get(k) || '',
           });
         }
+        dayMetaCache = { day, at: Date.now(), map: next };
         setDayMeta(next);
       } catch {
-        /* нет сессии / сеть — список Глонасс всё равно работает */
+        /* сеть — список без meta */
       }
     })();
     return () => { cancelled = true; };
-  }, [open, fleet.length]);
-
-  const metaOf = (v: GlonassVehicle): DayMeta =>
-    dayMeta.get((v.garage || '').toUpperCase()) ?? { vehicleType: '', brand: '', driver: '' };
+  }, [open]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return fleet;
     return fleet.filter((v) => {
       const m = dayMeta.get((v.garage || '').toUpperCase());
-      const gos = formatGosPlate(v.gos).toLowerCase();
       return (
         v.garage.toLowerCase().includes(q) ||
         v.gos.toLowerCase().includes(q) ||
-        gos.includes(q) ||
         v.name.toLowerCase().includes(q) ||
         (m?.driver || '').toLowerCase().includes(q) ||
         (m?.brand || '').toLowerCase().includes(q) ||
@@ -134,8 +124,9 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     });
   }, [fleet, query, dayMeta]);
 
-  // Выбранные — наверх, затем по гаражному номеру.
+  // Выбранные — наверх (лёгкая сортировка).
   const ordered = useMemo(() => {
+    if (selected.size === 0) return filtered;
     return [...filtered].sort((a, b) => {
       const sa = selected.has(a.id) ? 0 : 1;
       const sb = selected.has(b.id) ? 0 : 1;
@@ -143,10 +134,15 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
     });
   }, [filtered, selected]);
 
+  const onToggle = useCallback((id: number) => toggleSelect(id), [toggleSelect]);
+  const onFollowToggle = useCallback((id: number) => {
+    setFollow(followId === id ? null : id);
+  }, [followId, setFollow]);
+
   if (!open) return null;
 
   return (
-    <div className="absolute left-3 top-3 z-[6] flex max-h-[calc(100%-1.5rem)] w-[382px] flex-col overflow-hidden rounded-2xl border border-border-default bg-bg-surface shadow-[0_18px_58px_rgba(0,0,0,0.46)]">
+    <div className="absolute left-3 top-3 z-[6] flex max-h-[calc(100%-1.5rem)] w-[440px] flex-col overflow-hidden rounded-2xl border border-border-default bg-bg-surface shadow-[0_18px_58px_rgba(0,0,0,0.46)]">
       {/* Шапка */}
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
         <Satellite className="h-3.5 w-3.5 text-emerald-400" />
@@ -258,13 +254,14 @@ export function GlonassPanel({ onFocusVehicle }: { onFocusVehicle: (pos: Glonass
           <VehicleRow
             key={v.id}
             v={v}
-            meta={metaOf(v)}
+            meta={dayMeta.get((v.garage || '').toUpperCase()) ?? EMPTY_META}
             checked={selected.has(v.id)}
             following={followId === v.id}
             position={positions.get(v.id)}
-            onToggle={() => toggleSelect(v.id)}
+            onToggle={onToggle}
             onFocus={onFocusVehicle}
-            onFollow={() => setFollow(followId === v.id ? null : v.id)}
+            onFollowToggle={onFollowToggle}
+            historyBusy={!!historyLoading}
           />
         ))}
       </div>
@@ -412,26 +409,40 @@ function buildMonthDays(year: number, month: number): Array<{ year: number; mont
 }
 
 /**
- * Строка списка:
- *  [пилл]  тип ТС целиком · Т 955 РК · КамАЗ
- *          ФИО (если есть)
- *          [⊙ следить] [ downstream история]
+ * Строка списка (2+2, одна высота):
  *
- * Гос без truncate (…); тип целиком (может переноситься).
+ *  ┌─────────────────────┐  ФИО водителя          [⊙] [🕘]
+ *  │ 398  Пульман 9м     │  Н 528 АР  КамАЗ
+ *  │ В движении  45 км/ч │
+ *  └─────────────────────┘
+ *
+ * Пилл: стр.1 гаражный + тип ТС; стр.2 статус + скорость — читаемый кегль.
+ * Справа: стр.1 ФИО, стр.2 гос (без марки в номере) + марка.
  */
-function VehicleRow({ v, meta, checked, following, position, onToggle, onFocus, onFollow }: {
+const VehicleRow = memo(function VehicleRow({
+  v,
+  meta,
+  checked,
+  following,
+  position,
+  onToggle,
+  onFocus,
+  onFollowToggle,
+  historyBusy,
+}: {
   v: GlonassVehicle;
   meta: DayMeta;
   checked: boolean;
   following: boolean;
   position: GlonassPosition | undefined;
-  onToggle: () => void;
+  onToggle: (id: number) => void;
   onFocus: (pos: GlonassPosition) => void;
-  onFollow: () => void;
+  onFollowToggle: (id: number) => void;
+  historyBusy: boolean;
 }) {
   const status = vehicleStatus(position);
   const color = STATUS_COLOR[status];
-  const gosFmt = formatGosPlate(v.gos) || v.gos || '';
+  const gosFmt = formatGosPlate(v.gos) || '';
   const speedText = position?.speed == null || !Number.isFinite(position.speed)
     ? '— км/ч'
     : `${Math.min(999, Math.round(position.speed))} км/ч`;
@@ -439,103 +450,109 @@ function VehicleRow({ v, meta, checked, following, position, onToggle, onFocus, 
   const type = meta.vehicleType.trim();
   const brand = meta.brand.trim();
   const driver = meta.driver.trim();
-  const mapTip = position ? 'Перейти к машине на карте' : 'Координат пока нет';
 
   return (
     <div
       className={
-        'flex w-full items-center gap-1.5 rounded-xl px-1.5 py-1 transition-colors ' +
-        (checked ? 'bg-white/[0.06]' : 'hover:bg-white/[0.03]')
+        'flex w-full items-stretch gap-2 rounded-xl px-2 py-1.5 transition-colors ' +
+        (checked ? 'bg-white/[0.07]' : 'hover:bg-white/[0.03]')
       }
     >
+      {/* Пилл: 2 строки, крупнее, тип рядом с гаражным */}
       <button
         type="button"
         aria-pressed={checked}
-        onClick={onToggle}
+        onClick={() => onToggle(v.id)}
         title={`${statusLabel} ${speedText}`}
-        className="flex shrink-0 cursor-pointer flex-col items-start justify-center rounded-lg border px-1.5 py-1 text-left outline-none transition-[filter] hover:brightness-110"
+        className="flex w-[9.6rem] shrink-0 cursor-pointer flex-col items-start justify-center gap-0.5 rounded-lg border px-2 py-1.5 text-left outline-none transition-[filter] hover:brightness-110"
         style={{
-          width: PILL_W,
-          minHeight: PILL_MIN_H,
+          minHeight: '3.15rem',
           borderColor: `${color}${checked ? 'ee' : '99'}`,
           backgroundColor: `${color}${checked ? '5c' : '40'}`,
         }}
       >
-        <span className="font-mono text-[12px] font-bold tabular-nums leading-none text-white">
-          {v.garage || '—'}
+        <span className="flex w-full min-w-0 items-baseline gap-1 leading-tight">
+          <span className="shrink-0 font-mono text-[13px] font-bold tabular-nums text-white">
+            {v.garage || '—'}
+          </span>
+          {type ? (
+            <span className="min-w-0 truncate text-[11px] font-semibold text-white/95" title={type}>
+              {type}
+            </span>
+          ) : null}
         </span>
-        <span className="mt-0.5 whitespace-nowrap text-[8px] font-semibold leading-tight text-white/95">
+        <span className="w-full text-[11px] font-semibold leading-snug text-white">
           {statusLabel}{' '}
           <span className="font-mono tabular-nums font-medium">{speedText}</span>
         </span>
       </button>
 
+      {/* 2 строки = высота пилла: ФИО / гос + марка */}
       <button
         type="button"
         disabled={!position}
-        title={mapTip}
+        title={position ? 'Перейти к машине на карте' : 'Координат пока нет'}
         onClick={() => { if (position) onFocus(position); }}
-        className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 text-left outline-none disabled:cursor-default"
-        style={{ minHeight: PILL_MIN_H }}
+        className="flex min-h-[3.15rem] min-w-0 flex-1 flex-col justify-center gap-0.5 text-left outline-none disabled:cursor-default"
       >
-        {/* тип целиком · гос целиком · марка — без «…» на госе */}
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0">
-          {type ? (
-            <span className="text-[11px] font-medium leading-snug text-text-secondary">
-              {type}
-            </span>
-          ) : null}
+        <span className="min-w-0 truncate text-[12.5px] font-medium leading-snug text-text-strong">
+          {driver || '\u00a0'}
+        </span>
+        <span className="flex min-w-0 items-baseline gap-1.5 leading-snug">
           {gosFmt ? (
-            <span className="shrink-0 font-mono text-[11.5px] font-semibold tabular-nums leading-snug text-text-strong">
+            <span className="shrink-0 font-mono text-[12.5px] font-semibold tabular-nums text-text-strong">
               {gosFmt}
             </span>
           ) : null}
           {brand ? (
-            <span className="shrink-0 text-[11.5px] font-medium leading-snug text-text-strong">
+            <span className="min-w-0 truncate text-[12.5px] font-medium text-text-secondary">
               {brand}
             </span>
           ) : null}
-        </div>
-        {driver ? (
-          <span className="min-w-0 truncate text-[11px] leading-snug text-text-muted">
-            {driver}
-          </span>
-        ) : null}
+          {!gosFmt && !brand ? <span className="text-[12.5px] text-text-muted/40">{'\u00a0'}</span> : null}
+        </span>
       </button>
 
-      <button
-        type="button"
-        aria-label={following ? 'Перестать следить' : 'Следить за машиной'}
-        aria-pressed={following}
-        title={position ? (following ? 'Слежу' : 'Следить') : 'Координат пока нет'}
-        disabled={!position}
-        onClick={onFollow}
-        className={
-          'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border outline-none transition-colors disabled:cursor-default disabled:opacity-35 ' +
-          (following
-            ? 'border-accent-clay/60 bg-accent-clay/18 text-accent-clay'
-            : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-bg-hover hover:text-text-strong')
-        }
-      >
-        <Crosshair className="h-3.5 w-3.5" />
-      </button>
-
-      <VehicleHistoryButton vehicleId={v.id} garage={v.garage} />
+      {/* 3-я колонка: найти + история */}
+      <div className="flex shrink-0 flex-col items-center justify-center gap-0.5">
+        <button
+          type="button"
+          aria-label={following ? 'Перестать следить' : 'Следить за машиной'}
+          aria-pressed={following}
+          title={position ? (following ? 'Слежу' : 'Следить / найти') : 'Координат пока нет'}
+          disabled={!position}
+          onClick={() => onFollowToggle(v.id)}
+          className={
+            'flex h-7 w-7 items-center justify-center rounded-lg border outline-none transition-colors disabled:cursor-default disabled:opacity-35 ' +
+            (following
+              ? 'border-accent-clay/60 bg-accent-clay/18 text-accent-clay'
+              : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-bg-hover hover:text-text-strong')
+          }
+        >
+          <Crosshair className="h-3.5 w-3.5" />
+        </button>
+        <VehicleHistoryButton vehicleId={v.id} garage={v.garage} busy={historyBusy} />
+      </div>
     </div>
   );
-}
+});
 
-/** Иконка истории → календарь → кнопка «История». */
-function VehicleHistoryButton({ vehicleId, garage }: { vehicleId: number; garage: string }) {
-  const createHistoryLayer = useGlonassStore((s) => s.createHistoryLayer);
-  const historyLoading = useGlonassStore((s) => s.historyLoading);
+/** Иконка истории → календарь → «История» (без подписки на store в каждой строке). */
+function VehicleHistoryButton({
+  vehicleId,
+  garage,
+  busy,
+}: {
+  vehicleId: number;
+  garage: string;
+  busy: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [day, setDay] = useState(() => toLocalDateValue(new Date()));
-  const busy = !!historyLoading;
 
   const run = () => {
     const [from, to] = localDayRangeToIso(day);
-    void createHistoryLayer(vehicleId, from, to).then(() => setOpen(false));
+    void useGlonassStore.getState().createHistoryLayer(vehicleId, from, to).then(() => setOpen(false));
   };
 
   return (
@@ -545,7 +562,7 @@ function VehicleHistoryButton({ vehicleId, garage }: { vehicleId: number; garage
           type="button"
           title={`История · ${garage || vehicleId}`}
           disabled={busy}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-transparent text-text-muted outline-none transition-colors hover:border-border-subtle hover:bg-bg-hover hover:text-sky-300 disabled:opacity-40"
+          className="flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-text-muted outline-none transition-colors hover:border-border-subtle hover:bg-bg-hover hover:text-sky-300 disabled:opacity-40"
         >
           <History className="h-3.5 w-3.5" />
         </button>
