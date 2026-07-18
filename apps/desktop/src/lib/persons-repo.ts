@@ -42,12 +42,23 @@ let personsRuntimeMode: PersonsRuntimeMode = 'full';
 /** Роли потока (как в FlowPlanGrid / PersonEditDialog). */
 const FLOW_ROLE_GROUPS = new Set(['Экспедиторы', 'Водители-экспедиторы']);
 
+/**
+ * Канон кода склада (как flow-warehouse.whKey): zero-insensitive «0604»==«604».
+ * Нужен в deriveMol, иначе «живой МОЛ 0604» не гасит фантом «был» на 604.
+ */
+function whCanon(raw: string | null | undefined): string {
+  return String(raw ?? '').trim().toUpperCase().replace(/^0+(\d)/, '$1');
+}
+
 /** Кто нужен Потоку/Транспорту в RAM (не вся книга контактов). */
 export function isFlowActor(p: Person): boolean {
   if (p.isMol) return true;
   // Орфан-МОЛ без ФИО — нужен нормализации/плашке.
   if (p.isOrphan) return true;
   if (p.broadcastEnabled && FLOW_ROLE_GROUPS.has(p.broadcastGroup || '')) return true;
+  // Фантомы «кто был ранее»: is_mol=0, но warehouses[].isWas=1.
+  // Без них slim убивал показ «ранее» на складах без МОЛа (юзер 2026-07-18).
+  if (p.warehouses?.some((w) => w.isWas)) return true;
   return false;
 }
 
@@ -101,30 +112,34 @@ function deriveMolFromPersons(persons: Person[]): MolRecord[] {
     createdAt: p.updatedAt,
   });
 
-  // Склады, у которых есть хотя бы один активный (не «был») МОЛ.
+  // Склады с ≥1 ЖИВЫМ МОЛом (is_mol, не isWas, не уволен) — как server buildMolRecordsFromPersons.
+  // Ключ = whCanon (zero-insensitive): иначе «0604» в выгрузке не гасит «был» на «604».
   const activeWh = new Set<string>();
   for (const p of persons) {
-    if (p.isOrphan || !p.isMol) continue;
+    if (p.isOrphan || !p.isMol || p.isDismissed) continue;
     for (const w of p.warehouses) {
       if (w.isWas) continue;
-      const code = (w.code || '').trim();
-      if (code && code !== 'МОЛ' && code !== 'MOL') activeWh.add(code.toLowerCase());
+      const code = whCanon(w.code);
+      if (code && code !== 'МОЛ' && code !== 'MOL') activeWh.add(code);
     }
   }
 
   for (const p of persons) {
     if (p.isOrphan) continue;
+    const untilWas = p.isDismissed ? 'уволился' : 'был';
     if (p.isMol) {
-      if (p.warehouses.length === 0) out.push(row(p, 'МОЛ', ''));
-      else {
+      if (p.warehouses.length === 0) {
+        out.push(row(p, 'МОЛ', p.isDismissed ? 'уволился' : ''));
+      } else {
         for (const w of p.warehouses) {
           const code = (w.code || '').trim();
+          const key = whCanon(code);
           if (w.isWas) {
-            // «был» только если склад полностью без активного МОЛ.
-            if (!code || activeWh.has(code.toLowerCase())) continue;
-            out.push(row(p, code, 'был'));
+            // «был»/ранее — ТОЛЬКО если на складе сейчас нет ни одного живого МОЛа.
+            if (!key || activeWh.has(key)) continue;
+            out.push(row(p, code, untilWas));
           } else {
-            out.push(row(p, code || 'МОЛ', w.until || ''));
+            out.push(row(p, code || 'МОЛ', p.isDismissed ? 'уволился' : w.until || ''));
           }
         }
       }
@@ -134,8 +149,9 @@ function deriveMolFromPersons(persons: Person[]): MolRecord[] {
     for (const w of p.warehouses) {
       if (!w.isWas) continue;
       const code = (w.code || '').trim();
-      if (!code || activeWh.has(code.toLowerCase())) continue;
-      out.push(row(p, code, 'был'));
+      const key = whCanon(code);
+      if (!key || activeWh.has(key)) continue;
+      out.push(row(p, code, untilWas));
     }
   }
   return out;
