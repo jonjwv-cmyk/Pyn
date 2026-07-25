@@ -80,10 +80,10 @@ function targetWindow(): BrowserWindow | null {
 }
 
 /** Параметры printToPDF — единый источник правды.
- *  Поля 0.3937" = 10mm = ровно 1 см со всех сторон. */
-const PDF_OPTIONS = {
+ *  Поля 0.3937" = 10mm = ровно 1 см со всех сторон.
+ *  landscape по умолчанию false (Проба/график); Транспорт передаёт landscape:true. */
+const PDF_OPTIONS_BASE = {
   pageSize: 'A4' as const,
-  landscape: false,
   printBackground: true,
   displayHeaderFooter: false,
   margins: {
@@ -94,6 +94,15 @@ const PDF_OPTIONS = {
     right: 0.3937,
   },
 };
+
+type PrintOpts = { landscape?: boolean };
+
+function pdfOptions(opts?: PrintOpts) {
+  return {
+    ...PDF_OPTIONS_BASE,
+    landscape: opts?.landscape === true,
+  };
+}
 
 /**
  * ⚠️  CANONICAL — НЕ УПРОЩАТЬ И НЕ УДАЛЯТЬ СЛОИ. См. header файла + memory
@@ -350,6 +359,7 @@ export function setupPrintBridge(): void {
     async (
       _evt,
       defaultName?: string,
+      opts?: PrintOpts,
     ): Promise<{ ok: boolean; error?: string }> => {
       const win = targetWindow();
       if (!win || win.isDestroyed()) {
@@ -362,7 +372,7 @@ export function setupPrintBridge(): void {
           `pyn-print-${Date.now()}-${safeName}.pdf`,
         );
         const pdfBuf = await withTransparentRoot(win, () =>
-          win.webContents.printToPDF(PDF_OPTIONS),
+          win.webContents.printToPDF(pdfOptions(opts)),
         );
         await writeFile(tmpPath, pdfBuf);
         // Загружаем PDF в hidden BrowserWindow (Chromium PDFium viewer),
@@ -424,6 +434,7 @@ export function setupPrintBridge(): void {
     async (
       _evt,
       defaultName?: string,
+      opts?: PrintOpts,
     ): Promise<{ ok: boolean; path?: string; error?: string }> => {
       const win = targetWindow();
       if (!win || win.isDestroyed()) {
@@ -433,7 +444,7 @@ export function setupPrintBridge(): void {
       try {
         const filePath = uniquePdfPath(app.getPath('downloads'), safeName);
         const pdfBuf = await withTransparentRoot(win, () =>
-          win.webContents.printToPDF(PDF_OPTIONS),
+          win.webContents.printToPDF(pdfOptions(opts)),
         );
         await writeFile(filePath, pdfBuf);
         return { ok: true, path: filePath };

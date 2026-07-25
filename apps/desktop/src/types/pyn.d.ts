@@ -294,9 +294,11 @@ declare global {
       print: {
         dialog: (
           defaultName?: string,
+          opts?: { landscape?: boolean },
         ) => Promise<{ ok: boolean; error?: string }>;
         savePdf: (
           defaultName?: string,
+          opts?: { landscape?: boolean },
         ) => Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
       };
       /**

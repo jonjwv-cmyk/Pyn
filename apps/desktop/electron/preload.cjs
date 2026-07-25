@@ -270,11 +270,19 @@ contextBridge.exposeInMainWorld('pyn', {
      * @param defaultName — basename для tmp-файла (для удобства в titlebar
      *                     viewer'а). Без .pdf — добавляется автоматом.
      */
-    dialog: function pynPrintDialog(defaultName) {
-      return ipcRenderer.invoke('pyn:print:dialog', String(defaultName || 'document'));
+    dialog: function pynPrintDialog(defaultName, opts) {
+      return ipcRenderer.invoke(
+        'pyn:print:dialog',
+        String(defaultName || 'document'),
+        opts && typeof opts === 'object' ? opts : undefined,
+      );
     },
-    savePdf: function pynPrintSavePdf(defaultName) {
-      return ipcRenderer.invoke('pyn:print:save-pdf', String(defaultName || 'document'));
+    savePdf: function pynPrintSavePdf(defaultName, opts) {
+      return ipcRenderer.invoke(
+        'pyn:print:save-pdf',
+        String(defaultName || 'document'),
+        opts && typeof opts === 'object' ? opts : undefined,
+      );
     },
   },
   /**

@@ -246,6 +246,157 @@ export function parseTransportPaste(tsv: string): FlowTransportPasteRow[] {
   return out;
 }
 
+// ── Спец-вставка из 1С (заголовки → наши колонки) ────────────────────────────
+
+/** Нормализованный ключ заголовка: lower, без NBSP/точек/скобок, схлопнутые пробелы. */
+function normHeaderKey(raw: string): string {
+  return T(raw)
+    .replace(/\u00a0/g, ' ')
+    .toLowerCase()
+    .replace(/[.\u2026()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** «17.07.2026 8:00:00» / «17.07.2026 8:00» → { date: YYYY-MM-DD, hm: H:MM }. */
+function parse1cDateTime(raw: string): { date: string; hm: string } {
+  const s = T(raw).replace(/\u00a0/g, ' ');
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::\d{2})?)?/.exec(s)
+    ?? /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2})(?::\d{2})?)?/.exec(s);
+  if (!m) return { date: '', hm: '' };
+  let date = '';
+  let hh = '';
+  let mm = '';
+  if (m[0].includes('-') && /^\d{4}/.test(m[0])) {
+    date = `${m[1]}-${m[2]}-${m[3]}`;
+    hh = m[4] ?? '';
+    mm = m[5] ?? '';
+  } else {
+    date = `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+    hh = m[4] ?? '';
+    mm = m[5] ?? '';
+  }
+  if (!hh) return { date, hm: '' };
+  return { date, hm: `${Number(hh)}:${mm}` };
+}
+
+/** Пятница: конец 17:00 → 15:45 (норма смены на комбинате). */
+function normalizeFridayEndHm(tdate: string, endHm: string): string {
+  if (!tdate || !endHm) return endHm;
+  const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(tdate);
+  if (!dm) return endHm;
+  const y = Number(dm[1]);
+  const mo = Number(dm[2]);
+  const d = Number(dm[3]);
+  // JS: 0=Вс … 5=Пт. Полдень UTC-safe: Date.UTC.
+  const dow = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0)).getUTCDay();
+  if (dow !== 5) return endHm;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(endHm.trim());
+  if (!m) return endHm;
+  if (Number(m[1]) === 17 && Number(m[2]) === 0) return '15:45';
+  return endHm;
+}
+
+/**
+ * Признак спец-вставки 1С: в первой непустой строке есть колонка «Статус»
+ * (в обычном шаблоне 🚚 заголовков нет; «Статус» в шапке 1С — маркер).
+ */
+export function isTransport1cPaste(tsv: string): boolean {
+  for (const raw of String(tsv ?? '').split(/\r?\n/)) {
+    if (!T(raw)) continue;
+    const parts = raw.split('\t').map((x) => normHeaderKey(x));
+    const hasStatus = parts.some((h) => h === 'статус' || h.startsWith('статус '));
+    const hasDepart = parts.some((h) => h === 'отправление' || h.startsWith('отправление'));
+    const hasArrive = parts.some((h) => h === 'прибытие' || h.startsWith('прибытие'));
+    const hasNumber = parts.some((h) => h === 'номер');
+    return hasStatus && (hasDepart || hasArrive || hasNumber);
+  }
+  return false;
+}
+
+/**
+ * Спец-вставка из 1С: маппинг ПО ЗАГОЛОВКАМ.
+ *   Номер → ЗАКАЗ; Статус → Статус; Комментарий → РАБОТА;
+ *   Отправление → ДАТА + начало ВРЕМЯ; Прибытие → конец ВРЕМЯ;
+ *   Треб. ТС (тип) → ТИП ТС; Гос номер → gos (если есть).
+ * Лишние колонки игнорируются. Пятница 17:00 → 15:45.
+ */
+export function parseTransport1cPaste(tsv: string): FlowTransportPasteRow[] {
+  const lines = String(tsv ?? '').split(/\r?\n/).filter((l) => T(l));
+  if (lines.length < 2) return [];
+  const headerParts = (lines[0] ?? '').split('\t').map((x) => x.trim());
+  const keys = headerParts.map(normHeaderKey);
+  const idxOf = (...cands: string[]): number => {
+    for (const c of cands) {
+      const i = keys.findIndex((h) => h === c || h.startsWith(`${c} `));
+      if (i >= 0) return i;
+    }
+    return -1;
+  };
+  const iOrder = idxOf('номер');
+  const iType = idxOf('треб тс тип', 'треб тс', 'тип тс');
+  // «Треб. ТС (тип)» → norm «треб тс тип»
+  const iTypeAlt = iType >= 0 ? iType : keys.findIndex((h) => h.includes('треб') && h.includes('тс'));
+  const iStatus = idxOf('статус');
+  const iWork = idxOf('комментарий');
+  const iGos = idxOf('гос номер', 'госномер', 'гос');
+  const iDepart = idxOf('отправление');
+  const iArrive = idxOf('прибытие');
+  if (iStatus < 0) return [];
+
+  const out: FlowTransportPasteRow[] = [];
+  for (let li = 1; li < lines.length; li++) {
+    const parts = (lines[li] ?? '').split('\t').map((x) => x.trim());
+    if (parts.every((p) => !T(p))) continue;
+    const order = iOrder >= 0 ? pick(parts, iOrder) : '';
+    const status = iStatus >= 0 ? pick(parts, iStatus) : '';
+    const work = iWork >= 0 ? pick(parts, iWork) : '';
+    const gos = iGos >= 0 ? pick(parts, iGos) : '';
+    const vtype = iTypeAlt >= 0 ? pick(parts, iTypeAlt) : '';
+    const dep = parse1cDateTime(iDepart >= 0 ? pick(parts, iDepart) : '');
+    const arr = parse1cDateTime(iArrive >= 0 ? pick(parts, iArrive) : '');
+    const tdate = dep.date || arr.date;
+    if (!tdate) continue;
+    if (!order && !work && !status) continue;
+    let endHm = arr.hm;
+    endHm = normalizeFridayEndHm(tdate, endHm);
+    const startHm = dep.hm;
+    const time_range = startHm && endHm ? `${startHm}-${endHm}` : startHm || endHm || '';
+    const fact = time_range ? time_range : '';
+    const factParts = fact
+      ? [...fact.matchAll(/(\d{1,2}):(\d{2})/g)].map((m) => `${Number(m[1])}:${m[2]}`)
+      : [];
+    out.push({
+      tdate,
+      garage_no: '',
+      color: '',
+      vtype: '',
+      model: '',
+      gos_no: gos,
+      max_mass_kg: '',
+      capacity_kg: '',
+      len_mm: '',
+      wid_mm: '',
+      hei_mm: '',
+      ban: 0,
+      work,
+      time_range,
+      status,
+      comment: '',
+      driver: '',
+      driver_phone: '',
+      expeditors: '',
+      ot: '',
+      sp: '',
+      order_no: order,
+      vehicle_type: vtype,
+      fact_start: factParts[0] || '',
+      fact_end: factParts[1] || '',
+    });
+  }
+  return out;
+}
+
 /** Вся база машин. */
 export async function flowVehiclesGet(client: ApiClient): Promise<FlowVehicle[]> {
   const wire = await client.call<{ rows?: FlowVehicle[] }>('flow_vehicles_get', {});
@@ -286,15 +437,20 @@ export interface FlowTransportPasteResult {
   insertedIds: number[];
 }
 
+/** Режим вставки: `template` — лист 🚚 (статус → Размещен); `1c` — спец-вставка 1С (статус из буфера). */
+export type FlowTransportPasteMode = 'template' | '1c';
+
 /** Вставка из буфера: upsert машин + строки дня (повтор того же дня не дублирует). */
 export async function flowTransportPaste(
   client: ApiClient,
   rows: FlowTransportPasteRow[],
+  opts?: { mode?: FlowTransportPasteMode },
 ): Promise<FlowTransportPasteResult> {
+  const mode: FlowTransportPasteMode = opts?.mode === '1c' ? '1c' : 'template';
   const wire = await client.call<{
     inserted?: number; updated?: number; auto_added?: number; vehicles?: number; dates?: string[];
     inserted_ids?: number[];
-  }>('flow_transport_paste', { rows });
+  }>('flow_transport_paste', { rows, mode });
   return {
     inserted: Number(wire.inserted) || 0,
     updated: Number(wire.updated) || 0,

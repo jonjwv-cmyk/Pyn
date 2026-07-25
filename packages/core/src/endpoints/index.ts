@@ -342,11 +342,14 @@ export {
   flowTransportAdd,
   flowTransportDelete,
   parseTransportPaste,
+  parseTransport1cPaste,
+  isTransport1cPaste,
   FLOW_TRANSPORT_STATUSES,
   type FlowVehicle,
   type FlowTransportRow,
   type FlowTransportPasteRow,
   type FlowTransportPasteResult,
+  type FlowTransportPasteMode,
   type FlowTransportEdit,
 } from './flow-transport';
 

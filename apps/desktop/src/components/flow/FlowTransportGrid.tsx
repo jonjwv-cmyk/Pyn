@@ -11,11 +11,12 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { Bold, ChevronLeft, ChevronRight, ClipboardPaste, History, Plus, Printer, Redo2, RefreshCw, Trash2, Undo2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ClipboardPaste, History, Plus, Printer, Redo2, RefreshCw, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import * as Popover from '@radix-ui/react-popover';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { flowDropdownRenderer, type FlowDropdownCell } from './flow-dropdown-cell';
+import { flowCheckRenderer, type FlowCheckCell } from './flow-check-cell';
 import {
   flowDeliveriesGet,
   flowTransportAdd,
@@ -26,6 +27,8 @@ import {
   flowVehiclesGet,
   flowTransportViewGet,
   flowTransportViewSet,
+  isTransport1cPaste,
+  parseTransport1cPaste,
   parseTransportPaste,
   type FlowDeliveryRow,
   type FlowTransportChangedEvent,
@@ -51,7 +54,14 @@ import { colRowSelection } from './flow-grid-selection';
 import { FlowGridEditor, EMPTY_GRID_SELECTION, type FlowGridEditorHandle } from './FlowGridEditor';
 import { createLiveValue, useLiveValue, type LiveValue } from './flow-live-value';
 import { useProdCalendarStore } from '@/lib/prod-calendar';
-import { isShiftUndershoot, isTimeBoldFlag } from './flow-transport-shift';
+import {
+  isShiftUndershoot,
+  isTimeBoldFlag,
+  parseTimeRangeBounds,
+  shouldShowTimeBold,
+  workMajorPrefix,
+} from './flow-transport-shift';
+import { formatGosPlate } from '@/components/map/glonass-format';
 import { FlowSearchPanel } from './FlowSearchPanel';
 import { useFlowGridSearch, type FlowSearchColumn } from './flow-grid-search';
 import { FlowHeaderMenu } from './FlowHeaderMenu';
@@ -97,7 +107,12 @@ interface TrColSpec {
 type TrEdit = { id: number; before: Record<string, string>; after: Record<string, string> };
 /** Шаг «вставка из буфера» (юзер 2026-07-06): отмена = удалить вставленные новые строки,
  *  повтор = вставить те же строки заново (id обновятся). */
-type TrPasteStep = { kind: 'paste'; insertedIds: number[]; rows: ReturnType<typeof parseTransportPaste> };
+type TrPasteStep = {
+  kind: 'paste';
+  insertedIds: number[];
+  rows: ReturnType<typeof parseTransportPaste>;
+  mode?: 'template' | '1c';
+};
 /** Заливка диапазона одним значением (Excel): один Ctrl+Z отменяет всю заливку. */
 type TrFillStep = { kind: 'fill'; edits: TrEdit[] };
 type TrHistStep = TrEdit | TrPasteStep | TrFillStep;
@@ -120,7 +135,7 @@ const TR_COLS: readonly TrColSpec[] = [
   { id: 'fact_end', title: 'ФАКТ КОН', editable: true },
   { id: 'force', title: 'ФОРС М', editable: true },
   { id: 'brand', title: 'МАРКА' }, // стек: марка + цвет
-  { id: 'garage', title: '№ · ГОС' }, // стек: № (жирный) + гос; двойной клик → карточка характеристик
+  { id: 'garage', title: '№ · ГОС', editable: true }, // dropdown: №|гос|тип|водитель; двойной клик → карточка
   { id: 'out', title: 'ВЫЕЗД', editable: true },
   { id: 'driver', title: 'ВОДИТЕЛЬ', editable: true }, // ФИО + СОТ под ним
   { id: 'no_exp', title: 'БЕЗ ЭКСП.', editable: true },
@@ -130,7 +145,28 @@ const TR_COLS: readonly TrColSpec[] = [
 /** Порядок статусов в выпадашке — по слову юзера; «(пусто)» НЕТ (снять = Delete). */
 const STATUS_ORDER = ['Размещен', 'Дополнение', 'Отклонен', 'Отмена', 'Не приехал', 'Новый', 'Открыт'] as const;
 const OUT_STATUS_ORDER = ['ДА', 'НЕТ'] as const;
-const YES_NO_ORDER = ['ДА', 'НЕТ'] as const;
+
+/** БЕЗ ЭКСП.: галочка → 'ДА', снят → ''. Совместимо со старыми ДА/НЕТ в базе. */
+function isNoExpChecked(raw: string | null | undefined): boolean {
+  const s = String(raw ?? '').trim().toUpperCase();
+  return s === 'ДА' || s === '1' || s === 'TRUE' || s === 'YES' || s === '✓' || s === '✔';
+}
+/**
+ * В буфер: вкл → «ДА», выкл → «НЕТ» (не пустая строка — иначе clipboard/Glide
+ * не копирует «пусто», и заливку снятия галочки сделать нельзя).
+ * В базу: вкл → «ДА», выкл → ''.
+ */
+function noExpCopyData(checked: boolean): string {
+  return checked ? 'ДА' : 'НЕТ';
+}
+/** Вставка/копирование: да/1/✓ → 'ДА'; нет/0/пусто → ''. */
+function normalizeNoExpValue(raw: string): string {
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  if (/^(нет|no|0|false|off|-|☐|□)$/i.test(s)) return '';
+  if (isNoExpChecked(s) || /^(да|yes|on|x|х|v|☑|✓|✔)$/i.test(s)) return 'ДА';
+  return '';
+}
 const FORCE_REASONS = ['ожидание выгрузки', 'поломка ТС'] as const;
 
 /** Шрифт как в Формировании: стандарт 10px на всю таблицу. Мелкие (8px) — только стек-ячейки
@@ -344,6 +380,20 @@ function forceDraftsToJson(rows: ForceDraft[]): string {
     .filter((r) => r.reason || r.start || r.end || r.comment));
 }
 
+/** Число строк переноса текста при ширине maxW (как в PlanGrid). */
+function approxWrapLines(text: string, maxW: number, fontPx = 10): number {
+  const s = (text || '').trim();
+  if (!s) return 1;
+  const avg = fontPx * 0.55;
+  const per = Math.max(8, Math.floor(maxW / avg));
+  let lines = 0;
+  for (const part of s.split(/\n/)) {
+    const len = part.trim().length;
+    lines += len === 0 ? 1 : Math.max(1, Math.ceil(len / per));
+  }
+  return Math.max(1, lines);
+}
+
 /** Ключ сортировки РАБОТЫ по числовому префиксу. */
 function workKey(w: string): number {
   const m = /^(\d+)(?:\.(\d+))?/.exec((w || '').trim());
@@ -389,7 +439,13 @@ function cmpWh(a: string, b: string): number {
   return baseOf(A) - baseOf(B) || tFirst(A) - tFirst(B) || A.localeCompare(B, 'ru');
 }
 
-const TR_RENDERERS = [flowDropdownRenderer, flowDriverRenderer, flowStackRenderer, flowHistoryRenderer];
+const TR_RENDERERS = [
+  flowDropdownRenderer,
+  flowDriverRenderer,
+  flowStackRenderer,
+  flowHistoryRenderer,
+  flowCheckRenderer,
+];
 
 /** Работа из «шестого» блока — ведущий пункт ≥ 6 (6.x, 7.x …). Внутри дня ЕДИНСТВЕННАЯ
  *  чёрная линия отделяет этот блок от всех пунктов выше (0,1,2,3,4,5) — юзер 2026-06-12:
@@ -398,6 +454,33 @@ const TR_RENDERERS = [flowDropdownRenderer, flowDriverRenderer, flowStackRendere
 export function workIsSixPlus(w: string): boolean {
   const m = /^(\d+)/.exec((w || '').trim());
   return m ? Number(m[1]) >= 6 : false;
+}
+
+/** Печать: блок 7.n — жирная линия перед входом в 7.x. */
+export function workIsSeven(w: string): boolean {
+  return workMajorPrefix(w) === 7;
+}
+
+/**
+ * Сортировка печати: сначала «красные» статусы (Отклонен/Отмена/Новый/Открыт) —
+ * серым блоком сверху, затем Размещен и прочие по РАБОТЕ.
+ */
+export function printStatusGroup(status: string): number {
+  switch ((status || '').trim()) {
+    case 'Отклонен':
+    case 'Отмена':
+    case 'Новый':
+    case 'Открыт':
+    case 'Не приехал':
+      return 0;
+    default:
+      return 1;
+  }
+}
+
+/** Статус «красный» → в печати серая заливка строки (как ДОК/ОКАЛИНА). */
+export function isPrintGrayStatus(status: string): boolean {
+  return printStatusGroup(status) === 0;
 }
 
 // Кэш на сессию (мгновенный повторный вход, потом refetch + реалтайм).
@@ -743,8 +826,8 @@ export function FlowTransportGrid(): JSX.Element {
   );
 
   // База показа: день (свободный поиск НЕ прячет строки — он подсвечивает).
-  // Свежий день сверху, внутри дня — по номеру работы. Дни НЕ выбраны → ТЕКУЩИЙ МЕСЯЦ
-  // (+ будущее), а не весь архив (юзер 2026-07-04); прошлые месяцы — выбором дней в календаре.
+  // Внутри дня — как печать: «не Размещен» (Отклонён/Отмена/Новый/Открыт) сверху,
+  // затем Размещен и прочие по РАБОТЕ. Дни: свежий сверху; без фильтра — текущий месяц.
   const currentMonthPrefix = useMemo(() => isoToday().slice(0, 7), []);
   const baseRows = useMemo(() => {
     const out = rows.filter((r) => {
@@ -756,6 +839,7 @@ export function FlowTransportGrid(): JSX.Element {
     out.sort(
       (a, b) =>
         (b.tdate || '').localeCompare(a.tdate || '') ||
+        printStatusGroup(a.status) - printStatusGroup(b.status) ||
         workKey(a.work) - workKey(b.work) ||
         (a.garage_no || '').localeCompare(b.garage_no || '', 'ru') ||
         a.id - b.id,
@@ -832,18 +916,35 @@ export function FlowTransportGrid(): JSX.Element {
   const allDays = useMemo(() => [...new Set(rows.map((r) => r.tdate))].sort((a, b) => b.localeCompare(a)), [rows]);
   const allDaysSet = useMemo(() => new Set(allDays), [allDays]);
 
-  // Частые РАБОТЫ (3+ раз) — выпадашка + свой текст.
-  const workOptions = useMemo(() => {
-    const cnt = new Map<string, number>();
+  /**
+   * Выпадашка гаражного: «№ | гос | тип ТС | водитель на текущий день».
+   * Водитель — из строки транспорта на выбранный/сегодняшний день, иначе из базы машин.
+   */
+  const garagePick = useMemo(() => {
+    const day = daySel.size === 1 ? [...daySel][0]! : isoToday();
+    const driverToday = new Map<string, string>();
+    const typeToday = new Map<string, string>();
     for (const r of rows) {
-      const w = (r.work || '').trim();
-      if (w) cnt.set(w, (cnt.get(w) ?? 0) + 1);
+      if (r.tdate !== day || !r.garage_no) continue;
+      if (r.driver && !driverToday.has(r.garage_no)) driverToday.set(r.garage_no, r.driver);
+      if (r.vehicle_type && !typeToday.has(r.garage_no)) typeToday.set(r.garage_no, r.vehicle_type);
     }
-    return [...cnt.entries()]
-      .filter(([, n]) => n >= 3)
-      .map(([w]) => w)
-      .sort((a, b) => workKey(a) - workKey(b) || a.localeCompare(b, 'ru'));
-  }, [rows]);
+    const options: string[] = [];
+    const labels: string[] = [];
+    const sorted = [...vehicles].sort((a, b) =>
+      (a.garage_no || '').localeCompare(b.garage_no || '', 'ru', { numeric: true }),
+    );
+    for (const v of sorted) {
+      const g = (v.garage_no || '').trim();
+      if (!g) continue;
+      const gos = formatGosPlate(v.gos_no || '') || (v.gos_no || '').trim();
+      const vtype = typeToday.get(g) || v.vtype || '';
+      const driver = driverToday.get(g) || v.driver || '';
+      options.push(g);
+      labels.push([g, gos, vtype, driver].filter(Boolean).join(' | '));
+    }
+    return { options, labels, day };
+  }, [vehicles, rows, daySel]);
 
   // Авто-ширина «как формирование»: замер уникальных значений колонок (12px Inter),
   // клампы; РАБОТА и ТИП вписываются целиком (ТИП дополнительно переносится).
@@ -868,12 +969,43 @@ export function FlowTransportGrid(): JSX.Element {
         if (spec.id === 'garage') for (const r of sample) uniq.add(cellText('gos', r));
         else if (spec.id === 'brand') for (const r of sample) uniq.add(cellText('color', r));
       }
+      // Водитель: ФИО + телефон (две строки) — меряем по самой длинной из них.
+      if (spec.id === 'driver') {
+        for (const r of sample) {
+          const d = cellText('driver', r);
+          const p = cellText('phone', r);
+          if (d) uniq.add(d);
+          if (p) uniq.add(p);
+        }
+      }
+      // №·ГОС: стек/display «№ · ГОС» — меряем склейку, иначе гос обрезается.
+      if (spec.id === 'garage') {
+        for (const r of sample) {
+          const g = cellText('garage', r);
+          const gos = cellText('gos', r);
+          if (g && gos) uniq.add(`${g} · ${gos}`);
+          else if (gos) uniq.add(gos);
+        }
+      }
       for (const v of uniq) max = Math.max(max, ctx.measureText(v).width);
-      // Плотная подгонка по тексту (юзер 2026-06-12: «колонки компактнее, много пустоты»).
-      // pad = 6 слева (cellHorizontalPadding) + правый запас. ВРЕМЯ переносится построчно —
-      // ему нужен ПОЛНЫЙ внутренний отступ (2×6) + запас, иначе «am/pm» уезжает на 3-ю строку.
-      const pad = spec.id === 'time' ? 16 : 10;
-      const cap = spec.id === 'work' ? 300 : spec.id === 'comment' ? 200 : spec.id === 'driver' ? 190 : 240;
+      // pad: 6 слева + правый запас (+▾ у dropdown). Водитель/гараж — целиком.
+      // РАБОТА — умеренная ширина (текст переносится, высота строки растёт), как печать.
+      const pad = spec.id === 'time' ? 16 : spec.id === 'driver' || spec.id === 'garage' ? 22 : 10;
+      if (spec.id === 'work') {
+        // 180–240: длинные «2.3. …» переносятся, не раздувают лист.
+        widths.set(spec.id, Math.min(240, Math.max(180, Math.ceil(Math.min(max, 200) + pad))));
+        continue;
+      }
+      if (spec.id === 'no_exp') {
+        // Компактная колонка: заголовок + маленькая галочка.
+        widths.set(spec.id, 58);
+        continue;
+      }
+      const cap =
+        spec.id === 'comment' ? 200
+          : spec.id === 'driver' ? 320
+            : spec.id === 'garage' ? 160
+              : 240;
       widths.set(spec.id, Math.min(cap, Math.max(30, Math.ceil(max + pad))));
     }
     return widths;
@@ -909,9 +1041,20 @@ export function FlowTransportGrid(): JSX.Element {
     setSelection: applySelection,
   });
 
-  // Высота строки фиксирована и выше обычной: вмещает ВОДИТЕЛЬ (ФИО + СОТ под ним) и
-  // ВРЕМЯ в две строки (юзер 2026-06-12 п.6); ТИП-перенос на 2 слова тоже влезает.
-  const getRowHeight = useCallback((): number => 36, []);
+  // Высота строки: минимум 36 (водитель+тел, стек №·ГОС); РАБОТА/коммент — перенос.
+  const getRowHeight = useCallback(
+    (row: number): number => {
+      const r = viewRows[row];
+      if (!r) return 36;
+      const workW = (colWidths.get('work') ?? 200) - 12;
+      const commentW = (colWidths.get('comment') ?? 160) - 12;
+      const workLines = approxWrapLines(r.work || '', workW);
+      const commentLines = approxWrapLines(r.comment || '', commentW);
+      const lines = Math.max(2, workLines, commentLines);
+      return Math.min(108, Math.max(36, 10 + lines * 13));
+    },
+    [viewRows, colWidths],
+  );
 
   const cutoff = editCutoff();
   const rowLocked = useCallback(
@@ -939,13 +1082,16 @@ export function FlowTransportGrid(): JSX.Element {
         return cell;
       }
       if (spec.id === 'work') {
-        const cell: FlowDropdownCell = {
-          kind: GridCellKind.Custom,
+        // Перенос текста как в печати (allowWrapping + динамическая высота строки).
+        // Частые работы — подсказки не в canvas; правка текстом (allowCustom раньше).
+        return {
+          kind: GridCellKind.Text,
+          data: r.work || '',
+          displayData: r.work || '',
           allowOverlay: !locked,
-          copyData: r.work || '',
-          data: { kind: 'flow-dropdown', value: r.work || '', options: workOptions, allowCustom: true },
+          readonly: locked,
+          allowWrapping: true,
         };
-        return cell;
       }
       if (spec.id === 'vehicle_type') {
         const cell: FlowDropdownCell = {
@@ -966,11 +1112,14 @@ export function FlowTransportGrid(): JSX.Element {
         return cell;
       }
       if (spec.id === 'no_exp') {
-        const cell: FlowDropdownCell = {
+        // Компактная clay-галочка; copyData «ДА»/«НЕТ» — пустое тоже копируется и заливается.
+        const on = isNoExpChecked(r.no_exp_status);
+        const cell: FlowCheckCell = {
           kind: GridCellKind.Custom,
           allowOverlay: !locked,
-          copyData: r.no_exp_status || '',
-          data: { kind: 'flow-dropdown', value: r.no_exp_status || '', options: YES_NO_ORDER },
+          readonly: locked,
+          copyData: noExpCopyData(on),
+          data: { kind: 'flow-check', checked: on },
         };
         return cell;
       }
@@ -1003,13 +1152,22 @@ export function FlowTransportGrid(): JSX.Element {
         return cell;
       }
       if (spec.id === 'garage') {
-        // Гаражный № (жирный, сверху) + ГОС. № (снизу) — одна ячейка (юзер 2026-06-12).
+        // Dropdown: гаражный | гос | тип | водитель дня. На canvas — № + ГОС (стек-вид через display).
         const veh = vehByGarage.get(r.garage_no);
-        const cell: FlowStackCell = {
+        const gos = veh?.gos_no ?? '';
+        const display = [r.garage_no, gos].filter(Boolean).join(' · ');
+        const cell: FlowDropdownCell = {
           kind: GridCellKind.Custom,
-          allowOverlay: false,
-          copyData: [r.garage_no, veh?.gos_no ?? ''].filter(Boolean).join(' · '),
-          data: { kind: 'flow-stack', top: r.garage_no || '', bottom: veh?.gos_no ?? '', boldTop: true, small: true },
+          allowOverlay: !locked,
+          copyData: display,
+          data: {
+            kind: 'flow-dropdown',
+            value: r.garage_no || '',
+            displayValue: display,
+            options: garagePick.options,
+            labels: garagePick.labels,
+            allowCustom: true,
+          },
         };
         return cell;
       }
@@ -1061,8 +1219,8 @@ export function FlowTransportGrid(): JSX.Element {
       }
       const editable = colEditable(spec, locked);
       if (spec.id === 'time') {
-        // Жирное — только флаг time_bold (авто при вставке + кнопка). Не пересчитываем live.
-        const bold = isTimeBoldFlag(r.time_bold);
+        // Жирное: авто, если время ≠ норма смены по работе; + ручной флаг «Жирный».
+        const bold = shouldShowTimeBold(r.time_range, r.work, r.tdate, prodCalByYear, r.time_bold);
         return {
           kind: GridCellKind.Text,
           data: r.time_range,
@@ -1085,7 +1243,7 @@ export function FlowTransportGrid(): JSX.Element {
         themeOverride: fontOverride,
       };
     },
-    [viewRows, cellText, vehByGarage, workOptions, rowLocked, colEditable, driverOptions, driverByFio, molFlagByFio, cols, tripKeys],
+    [viewRows, cellText, vehByGarage, garagePick, rowLocked, colEditable, driverOptions, driverByFio, molFlagByFio, cols, tripKeys, prodCalByYear],
   );
 
   const applyServerRows = useCallback((serverRows: FlowTransportRow[]) => {
@@ -1183,7 +1341,7 @@ export function FlowTransportGrid(): JSX.Element {
   // Повтор вставки — вставить те же строки заново; id обновятся для следующей отмены.
   const redoPasteStep = useCallback((e: TrPasteStep) => {
     setMsg('Повтор вставки…');
-    void flowTransportPaste(api, e.rows)
+    void flowTransportPaste(api, e.rows, { mode: e.mode === '1c' ? '1c' : 'template' })
       .then((res) => {
         e.insertedIds = res.insertedIds;
         setMsg(`Вставка повторена: +${res.inserted} · ${res.updated} обновлено`);
@@ -1263,9 +1421,13 @@ export function FlowTransportGrid(): JSX.Element {
       }
       let value = '';
       if (newValue.kind === GridCellKind.Custom) {
-        const d = (newValue as FlowDropdownCell).data;
-        if (!d || d.kind !== 'flow-dropdown') return;
-        value = d.value;
+        const raw = (newValue as FlowDropdownCell | FlowCheckCell).data;
+        if (!raw) return;
+        if (raw.kind === 'flow-check') {
+          value = raw.checked ? 'ДА' : '';
+        } else if (raw.kind === 'flow-dropdown') {
+          value = raw.value;
+        } else return;
       } else if (newValue.kind === GridCellKind.Text) {
         value = String(newValue.data ?? '').trim();
       } else return;
@@ -1286,8 +1448,43 @@ export function FlowTransportGrid(): JSX.Element {
       };
       const field = fieldByCol[spec.id];
       if (!field) return;
+      if (field === 'no_exp_status') value = normalizeNoExpValue(value);
       const before = String((r as unknown as Record<string, unknown>)[field] ?? '');
-      if (before === value) return;
+      // Нормализуем старые «НЕТ»/пустые к одному виду для сравнения.
+      const beforeNorm = field === 'no_exp_status' ? (isNoExpChecked(before) ? 'ДА' : '') : before;
+      if (beforeNorm === value) return;
+      // Пишем канон: 'ДА' или '' (не «НЕТ»).
+      if (field === 'no_exp_status') {
+        applyFields(r.id, { no_exp_status: value });
+        pushHistory({ id: r.id, before: { no_exp_status: before }, after: { no_exp_status: value } });
+        return;
+      }
+
+      // ВРЕМЯ (план): одновременно заполняет факт (план = факт, пока факт не правили отдельно).
+      // Правка факта НЕ трогает time_range (сервер + клиент).
+      if (field === 'time_range') {
+        const bounds = parseTimeRangeBounds(value);
+        const fs = bounds ? `${Math.floor(bounds.startMin / 60)}:${String(bounds.startMin % 60).padStart(2, '0')}` : '';
+        const fe = bounds ? `${Math.floor(bounds.endMin / 60)}:${String(bounds.endMin % 60).padStart(2, '0')}` : '';
+        // Убираем ведущий 0 у часов (как timeRangeParts на сервере).
+        const normHm = (hm: string) => {
+          const m = /^(\d{1,2}):(\d{2})$/.exec(hm);
+          return m ? `${Number(m[1])}:${m[2]}` : hm;
+        };
+        const after: Record<string, string> = { time_range: value };
+        if (fs) after.fact_start = normHm(fs);
+        if (fe) after.fact_end = normHm(fe);
+        const beforeMap: Record<string, string> = {
+          time_range: before,
+          fact_start: r.fact_start || '',
+          fact_end: r.fact_end || '',
+        };
+        applyFields(r.id, after);
+        pushHistory({ id: r.id, before: beforeMap, after });
+        return;
+      }
+
+      // Гаражный: сервер подтянет вес/марку/тип/водителя из последнего состояния.
       applyFields(r.id, { [field]: value });
       pushHistory({ id: r.id, before: { [field]: before }, after: { [field]: value } });
     },
@@ -1295,10 +1492,15 @@ export function FlowTransportGrid(): JSX.Element {
   );
 
   // Вставка в выделенный диапазон (Excel: одно значение → все ячейки, ТЗ п.5).
+  // Пустая строка — валидное значение (снять галочку БЕЗ ЭКСП. / очистить ячейку).
   const handlePaste = useCallback(
     (_target: Item, values: readonly (readonly string[])[]): boolean => {
-      const single = values.length === 1 && values[0]?.length === 1 ? values[0][0] : undefined;
+      const single =
+        values.length === 1 && values[0] != null && values[0].length === 1
+          ? values[0][0]
+          : undefined;
       const range = selectionRef.current.current?.range;
+      // single может быть '' — это ок (пустое значение для заливки).
       if (single === undefined || !range || (range.width <= 1 && range.height <= 1)) return true;
       const fieldByCol: Record<string, string> = {
         garage: 'garage_no',
@@ -1320,8 +1522,11 @@ export function FlowTransportGrid(): JSX.Element {
           const field = fieldByCol[spec.id];
           if (!field) continue;
           const before = String((r as unknown as Record<string, unknown>)[field] ?? '');
-          const value = single.trim();
-          if (before === value) continue;
+          const value =
+            field === 'no_exp_status' ? normalizeNoExpValue(single) : single.trim();
+          const beforeCmp =
+            field === 'no_exp_status' ? (isNoExpChecked(before) ? 'ДА' : '') : before;
+          if (beforeCmp === value) continue;
           const acc = fillByRow.get(r.id) ?? { id: r.id, before: {}, after: {} };
           acc.before[field] = before;
           acc.after[field] = value;
@@ -1429,9 +1634,15 @@ export function FlowTransportGrid(): JSX.Element {
     void navigator.clipboard
       .readText()
       .then(async (tsv) => {
-        const parsed = parseTransportPaste(tsv);
+        // Сначала спец-режим 1С (шапка со «Статус»), иначе шаблон листа 🚚.
+        const mode1c = isTransport1cPaste(tsv);
+        const parsed = mode1c ? parseTransport1cPaste(tsv) : parseTransportPaste(tsv);
         if (parsed.length === 0) {
-          setMsg('В буфере не нашёл строк шаблона (пришли образец — подгоню разбор)');
+          setMsg(
+            mode1c
+              ? 'В буфере 1С не нашёл строк (нужны заголовки Номер/Статус/Отправление…)'
+              : 'В буфере не нашёл строк шаблона (пришли образец — подгоню разбор)',
+          );
           return;
         }
         // Авто-жирное ВРЕМЯ только при вставке (1.2 / 2.n / 3.n + неполная дневная).
@@ -1439,16 +1650,21 @@ export function FlowTransportGrid(): JSX.Element {
           ...r,
           time_bold: isShiftUndershoot(r.time_range, r.work, r.tdate, prodCalByYear) ? 1 : 0,
         }));
-        const res = await flowTransportPaste(api, withBold);
+        const res = await flowTransportPaste(api, withBold, { mode: mode1c ? '1c' : 'template' });
         // Вставка = один шаг Undo (юзер 2026-07-06): ⌘Z уберёт вставленные строки.
         if (res.insertedIds.length > 0) {
-          pushHistory({ kind: 'paste', insertedIds: res.insertedIds, rows: withBold });
+          pushHistory({
+            kind: 'paste',
+            insertedIds: res.insertedIds,
+            rows: withBold,
+            mode: mode1c ? '1c' : 'template',
+          });
         }
         const parts = [`+${res.inserted} новых`, `${res.updated} обновлено`];
         if (res.autoAdded > 0) parts.push(`${res.autoAdded} авто 0.x`);
         if (res.vehicles > 0) parts.push(`машин: ${res.vehicles}`);
         if (res.insertedIds.length > 0) parts.push('⌘Z — отменить');
-        setMsg(`Вставка: ${parts.join(' · ')}`);
+        setMsg(`${mode1c ? '1С' : 'Вставка'}: ${parts.join(' · ')}`);
       })
       .catch((e) => setMsg(`Ошибка вставки: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`))
       .finally(() => setBusy(false));
@@ -1810,7 +2026,7 @@ export function FlowTransportGrid(): JSX.Element {
           type="button"
           onClick={pasteFromClipboard}
           disabled={busy}
-          title="Вставить выгрузку из буфера — машины уйдут в базу, строки в дни (старше 7 дней пропускаются)"
+          title="Вставить из буфера: шаблон 🚚 или спец-вставка 1С (шапка со Статус/Отправление)"
           className="flex h-6 items-center gap-1.5 rounded-md border border-black/10 px-2 text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:opacity-50"
         >
           {busy ? (
@@ -1824,11 +2040,10 @@ export function FlowTransportGrid(): JSX.Element {
           type="button"
           onClick={toggleTimeBold}
           disabled={busy}
-          title="Жирное ВРЕМЯ: вручную поставить/снять у выделенных строк (авто — только при вставке из буфера)"
-          className="flex h-6 items-center gap-1.5 rounded-md border border-black/10 px-2 text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:opacity-50"
+          title="Жирный: вручную поставить/снять жирное ВРЕМЯ у выделенных строк (авто — если время ≠ норма смены)"
+          className="flex h-6 items-center rounded-md border border-black/10 px-2 font-bold text-[#3F3D38] transition-colors hover:border-black/25 hover:text-[#0A0A0A] disabled:opacity-50"
         >
-          <Bold size={13} strokeWidth={2} />
-          ВРЕМЯ
+          Жирный
         </button>
         <Popover.Root open={addOpen} onOpenChange={setAddOpen}>
           <Popover.Trigger asChild>
@@ -1858,10 +2073,18 @@ export function FlowTransportGrid(): JSX.Element {
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && addDate) runAdd(addDate, addGarage);
                     }}
-                    placeholder="можно пусто"
+                    list="tr-garage-pick"
+                    placeholder="№ | гос | тип | водитель"
                     autoFocus
                     className="h-7 rounded-md border border-border-subtle bg-transparent px-2 text-[12px] text-text-primary outline-none focus:border-accent-clay/60"
                   />
+                  <datalist id="tr-garage-pick">
+                    {garagePick.labels.map((label, i) => (
+                      <option key={garagePick.options[i] ?? label} value={garagePick.options[i] ?? ''} label={label}>
+                        {label}
+                      </option>
+                    ))}
+                  </datalist>
                 </label>
                 <button
                   type="button"
@@ -2220,7 +2443,9 @@ export function FlowTransportGrid(): JSX.Element {
             .sort(
               (a, b) =>
                 (a.tdate || '').localeCompare(b.tdate || '') ||
+                printStatusGroup(a.status) - printStatusGroup(b.status) ||
                 workKey(a.work) - workKey(b.work) ||
+                (a.garage_no || '').localeCompare(b.garage_no || '', 'ru') ||
                 a.id - b.id,
             )}
           vehByGarage={vehByGarage}

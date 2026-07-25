@@ -36,7 +36,9 @@ Thumbs.db
 # Editors
 .vscode/
 .idea/
-.cursor/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/reglement-work.mdc
 *.swp
 *.swo
 

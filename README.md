@@ -1,5 +1,9 @@
 # Pyn
 
+Перед задачами для ИИ-агентов см. [Регламент работы](./REGLEMENT_WORK.md):
+экономный порядок действий, правила запуска desktop и проверки UI без серого
+экрана.
+
 Кросс-платформенное приложение — **Electron** (desktop, Mac/Win) + **React Native + Expo** (mobile, iOS/iPad/Android).
 Shared TypeScript codebase для бизнес-логики (API, crypto, types).
 
