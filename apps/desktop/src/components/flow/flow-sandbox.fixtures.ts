@@ -761,12 +761,22 @@ export interface MatCardRow {
   mat_full: string;
 }
 
-/** Read-only строки карточки материала: Создал → Выгружен → (Удалён) → [Вывезено%] → тех-имя.
- *  Единый источник (ТЗ §7) — данные из ЯКОРЯ.
- *  Формирование (ТЗ 17.07 п.6): **без** % — только история выгрузки (Создал/Выгружен/Удалён/тех-имя);
- *  % живёт в колонке «%» / карточке %; СЭД — в колонке СЭД.
- *  `includePct` — добавить строку «Вывезено N%» (План/Отчёт по желанию). */
-export function matCardLines(row: MatCardRow, opts?: { includePct?: boolean }): FlowCardLine[] | null {
+/** Read-only строки карточки MAT (ТЗ поток.docx п.5 / 17.07):
+ *  Создал → Выгружен → (Удалён) → **СЭД** → **История** → тех-имя.
+ *  **Без %** — процент не в MAT (живёт в колонке «%», если нужна).
+ *  СЭД/История подключаются сюда (раньше были отдельно и «не доехали» в карточку). */
+export function matCardLines(
+  row: MatCardRow,
+  opts?: {
+    /** @deprecated % в MAT не показываем (п.5). Игнорируется. */
+    includePct?: boolean;
+    /** СЭД: computed-лейбл + holder (из поставки якоря). */
+    sedLine?: string;
+    /** Есть эпизоды истории по якорю. */
+    hasHistory?: boolean;
+  },
+): FlowCardLine[] | null {
+  void opts?.includePct; // % из MAT убран (поток.docx п.5)
   const lines: FlowCardLine[] = [];
   if (row.created_by) {
     const cd = formatDateRu(row.load_dt);
@@ -780,26 +790,34 @@ export function matCardLines(row: MatCardRow, opts?: { includePct?: boolean }): 
     const off = formatUploadDay(row.off_at);
     if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
   }
-  if (opts?.includePct) {
-    const p = livePct(row);
-    if (p != null && row.qty != null && row.chg != null) {
-      const uom = row.uom ? ` ${row.uom}` : '';
-      lines.push({
-        t: `Вывезено ${Math.round(p * 100)}% — ${fmtNum3(row.chg - row.qty)} из ${fmtNum3(row.chg)}${uom}`,
-        nowrap: true,
-      });
+  const sed = String(opts?.sedLine || '').trim();
+  if (sed) {
+    for (const part of sed.split('\n')) {
+      const t = part.trim();
+      if (t) lines.push({ t: t.startsWith('СЭД') ? t : `СЭД: ${t}`, muted: true, nowrap: true });
     }
+  }
+  if (opts?.hasHistory) {
+    lines.push({ t: 'История: есть (клик ⏱ в строке / карточка якоря)', muted: true, nowrap: true });
   }
   // Тех-имя ПЕРЕНОСИТСЯ, если длиннее стандарта (ширину задаёт шапка карточки).
   if (row.mat_full) lines.push({ t: row.mat_full });
   return lines.length ? lines : null;
 }
 
-export function flowCard(spec: FlowColumnSpec, row: FlowSandboxRow): FlowCardLine[] | null {
+export function flowCard(
+  spec: FlowColumnSpec,
+  row: FlowSandboxRow,
+  extra?: { sedLine?: string; hasHistory?: boolean },
+): FlowCardLine[] | null {
   switch (spec.id) {
     case 'mat':
-      // Формирование: без % (ТЗ 17.07 п.6) — история выгрузки + тех-имя; СЭД/История — свои колонки.
-      return matCardLines(row, { includePct: false });
+      // Формирование: без %; история выгрузки + СЭД + флаг истории + тех-имя.
+      return matCardLines(row, {
+        includePct: false,
+        sedLine: extra?.sedLine,
+        hasHistory: extra?.hasHistory,
+      });
     case 'mol': {
       const m = parseMol(row.mol);
       if (!m) return null;

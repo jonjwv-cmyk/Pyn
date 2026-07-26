@@ -173,11 +173,14 @@ export async function flowTransfer(
   ids: number[],
   toDate: string,
   keepDlv = true,
+  opts?: { stat?: string; stat_sub?: string },
 ): Promise<{ transferred: number; rows: FlowDeliveryRow[] }> {
   const wire = await client.call<{ transferred?: number; rows?: FlowDeliveryRow[] }>('flow_transfer', {
     ids,
     to_date: toDate,
     keep_dlv: keepDlv,
+    ...(opts?.stat ? { stat: opts.stat } : {}),
+    ...(opts?.stat_sub ? { stat_sub: opts.stat_sub } : {}),
   });
   return {
     transferred: Number(wire.transferred) || 0,

@@ -2399,8 +2399,8 @@ export function FlowSandboxGrid(): JSX.Element {
         } satisfies FlowDayCell;
       }
       if (spec.kind === 'mat') {
-        // MAT — «свои данные» (Создал/Выгружен/Удалён/Вывезено) в read-only оверлее (FlowMatEditor),
-        // как было. Карточка ИЗМЕНЕНИЯ материала открывается двойным кликом на НОМЕНКЛАТУРЕ (NO.№), не тут.
+        // MAT — Создал/Выгружен/Удалён + СЭД + История (без %) в read-only оверлее.
+        // Карточка ИЗМЕНЕНИЯ материала — двойной клик на NO.№, не тут.
         const anchorKey = `${rowData.ord}|${rowData.it}`;
         const tr = transferPendingByAnchor.get(anchorKey);
         const planWas = planWasByAnchor.get(anchorKey);
@@ -2409,6 +2409,11 @@ export function FlowSandboxGrid(): JSX.Element {
           : planWas
             ? planWasMatPrefix(planWas, planYear)
             : '';
+        const s = sedByAnchor.get(anchorKey);
+        const sedHead = s ? SED_LABEL[sedComputed(s.status, s.open)] : '';
+        const sedLine = s
+          ? (s.holder ? `${sedHead}\n${s.holder}` : sedHead)
+          : '';
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
@@ -2418,7 +2423,10 @@ export function FlowSandboxGrid(): JSX.Element {
             name: rowData.mat ?? '',
             warn: needsWarn(rowData),
             prefix: matPrefix || undefined,
-            lines: flowCard(spec, rowData) ?? [],
+            lines: flowCard(spec, rowData, {
+              sedLine,
+              hasHistory: anchorsWithHistory.has(anchorKey),
+            }) ?? [],
           },
         } satisfies FlowMatCell;
       }

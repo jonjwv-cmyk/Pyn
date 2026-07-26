@@ -204,7 +204,7 @@ const snapEpsAnchor = (
 const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'fix', title: 'FIX', width: 60 },
   { id: 'graph', title: 'ГРАФ', width: 56 },
-  { id: 'day_plan', title: 'DAY план', width: 88 },
+  { id: 'day_plan', title: 'DAY план', width: 88, editable: true },
   { id: 'day_fact', title: 'DAY факт', width: 88, editable: true },
   { id: 'approved', title: 'СОГЛ.', width: 130, editable: true },
   { id: 'fr', title: 'От', width: 52 },
@@ -254,7 +254,7 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'mat', title: 'Материал', width: 280 },
   { id: 'uom', title: 'ЕИ', width: 42 },
   { id: 'qty', title: 'Кол-во', width: 86 },
-  { id: 'day_plan', title: 'DAY план', width: 88 },
+  { id: 'day_plan', title: 'DAY план', width: 88, editable: true },
   { id: 'day_fact', title: 'DAY факт', width: 88, editable: true },
   { id: 'status', title: 'STAT', width: 200, editable: true },
   { id: 'stat_note', title: 'STAT NOTE', width: 160, editable: true },
@@ -2108,6 +2108,12 @@ export function FlowPlanGrid({
         const transferDates = transferChainDates(r);
         const viewYear = Number((currentMonthPrefix || '').slice(0, 4)) || new Date().getFullYear();
         const transferPrefix = transferDates.length > 1 ? transferMatPrefix(transferDates[0] || '', viewYear) : '';
+        const st = (r.sed_status || '').trim();
+        const who = (r.sed_holder || '').trim();
+        const sedHead = st ? SED_LABEL[sedComputed(st, Number(r.sap_open) === 1)] : '';
+        const sedLine = sedHead
+          ? (who ? `${sedHead}\n${who}` : sedHead)
+          : '';
         const cell: FlowMatCell = {
           kind: GridCellKind.Custom,
           allowOverlay: true,
@@ -2117,8 +2123,30 @@ export function FlowPlanGrid({
             name: r.mat ?? '',
             prefix: transferPrefix,
             warn: anchor ? needsWarn(anchor) : false,
-            // История выгрузки + % (План/Отчёт); Формирование — без % (ТЗ 17.07 п.6).
-            lines: anchor ? matCardLines(anchor, { includePct: true }) ?? [] : [],
+            // Без % в MAT (п.5); СЭД + история с якоря/поставки.
+            lines: anchor
+              ? matCardLines(anchor, {
+                  includePct: false,
+                  sedLine,
+                  hasHistory: !!(r.ord || '').trim()
+                    && (r.done_stat === 'выполнено' || r.done_stat === 'увезли'),
+                }) ?? []
+              : (sedLine
+                  ? matCardLines(
+                      {
+                        created_by: '',
+                        load_dt: '',
+                        time_at: '',
+                        day_wk: '',
+                        off_at: '',
+                        qty: r.qty,
+                        chg: null,
+                        uom: r.uom || '',
+                        mat_full: '',
+                      },
+                      { sedLine },
+                    ) ?? []
+                  : []),
           },
         };
         return cell;
@@ -2836,8 +2864,20 @@ export function FlowPlanGrid({
       const fields: Record<string, string | number | null> = {};
       if (spec.id === 'stat_note') {
         fields.stat_note = raw;
+      } else if (spec.id === 'day_plan') {
+        // DAY план = plan_date. При правке/вставке: day_fact = plan (если факт пуст — всегда при смене плана ставим факт=план для «вставка авто»).
+        const iso = normalizeDayInput(raw);
+        if (!iso && raw) {
+          setMsg('DAY план: YYYY-MM-DD или ДД.ММ.ГГГГ');
+          return;
+        }
+        if (iso) {
+          fields.plan_date = iso;
+          // Авто DAY факт = DAY план (п.6); дальше факт правят руками.
+          fields.day_fact = iso;
+        }
       } else if (spec.id === 'day_fact') {
-        // Ручной DAY факт: ISO YYYY-MM-DD или «12.06.2026» / «12 июня» — принимаем ISO и dd.mm.yyyy.
+        // Ручной DAY факт: ISO YYYY-MM-DD или dd.mm.yyyy.
         const iso = normalizeDayInput(raw);
         fields.day_fact = iso;
       } else if (spec.id === 'transfer') {
@@ -3001,6 +3041,13 @@ export function FlowPlanGrid({
           return null;
         case 'stat_note':
           return { fields: { stat_note: raw } };
+        case 'day_plan': {
+          const iso = normalizeDayInput(raw);
+          if (raw && !iso) return { error: 'DAY план: YYYY-MM-DD или ДД.ММ.ГГГГ' };
+          if (!iso) return { fields: {} };
+          // Вставка/протяжка: факт = план (п.6).
+          return { fields: { plan_date: iso, day_fact: iso } };
+        }
         case 'day_fact': {
           const iso = normalizeDayInput(raw);
           if (raw && !iso) return { error: 'DAY факт: YYYY-MM-DD или ДД.ММ.ГГГГ' };
@@ -3539,21 +3586,32 @@ export function FlowPlanGrid({
   // Источник сереет «перенос: дата», позиция возвращается в Формирование на дату переноса;
   // в План уйдёт по «Сформировать план» (наследуя живую поставку) — сервер делает всё сам.
   const transferIds = useCallback(
-    (ids: readonly number[], toDate: string | null, keepDlv = true) => {
+    (
+      ids: readonly number[],
+      toDate: string | null,
+      keepDlv = true,
+      trStat: { stat?: string; stat_sub?: string } = {},
+    ) => {
       if (!toDate || ids.length === 0) return;
       if (toDate < transferMinDate) {
         setMsg('Перенос в прошлую дату запрещён');
         return;
       }
       setMsg('');
-      void flowTransfer(api, [...ids], toDate, keepDlv)
+      // STAT переноса: цех|перенос или экспедиция|перенос (из первой строки / opts).
+      const first = rows.find((x) => ids.includes(x.id));
+      const st =
+        trStat.stat
+        || (String(first?.stat || '') === 'экспедиция' ? 'экспедиция' : 'цех');
+      const su = trStat.stat_sub || 'перенос';
+      void flowTransfer(api, [...ids], toDate, keepDlv, { stat: st, stat_sub: su })
         .then((res) => {
           applyServerDlv(res.rows);
           clearSelection();
           setPendingTransfer(null);
           setMsg(
             mode === 'report'
-              ? `Перенесено строк: ${res.transferred}. Позиция вернулась в Формирование на ${fmtTransferDate(toDate)}`
+              ? `Перенесено: ${res.transferred} · ${st} · ${su} → ${fmtTransferDate(toDate)}`
               : `Перенесено строк: ${res.transferred}`,
           );
         })
@@ -3562,7 +3620,7 @@ export function FlowPlanGrid({
           setMsg(`Не удалось перенести: ${text.slice(0, 90)}`);
         });
     },
-    [applyServerDlv, mode, transferMinDate, clearSelection],
+    [applyServerDlv, mode, transferMinDate, clearSelection, rows],
   );
 
   const commitPendingTransfer = useCallback(
@@ -3572,6 +3630,37 @@ export function FlowPlanGrid({
     },
     [pendingTransfer, transferIds],
   );
+
+  /** п.9: выделить строки → «Перенести» → выбор даты. */
+  const startTransferSelected = useCallback(() => {
+    const ids: number[] = [];
+    let blocked = 0;
+    for (const idx of selectionRef.current.rows) {
+      const r = viewRows[idx];
+      if (!r) continue;
+      if (rowLocked(r)) {
+        blocked++;
+        continue;
+      }
+      ids.push(r.id);
+    }
+    if (ids.length === 0) {
+      setMsg(blocked > 0 ? 'Выделенные строки закрыты (архив 7 дней)' : 'Выделите строки для переноса');
+      return;
+    }
+    const first = viewRows.find((r) => ids.includes(r.id));
+    const st = String(first?.stat || '') === 'экспедиция' ? 'экспедиция' : 'цех';
+    setPendingTransfer({
+      rowId: ids[0]!,
+      dlv: '',
+      sameRowIds: ids,
+      ids,
+      keepDlv: true,
+      label: `${ids.length} стр. · ${st} · перенос`,
+      step: 'date',
+    });
+    setMsg('');
+  }, [viewRows, rowLocked]);
 
   // Размер контейнера для DataEditor.
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -3767,7 +3856,7 @@ export function FlowPlanGrid({
             mode={mode}
             onMassMark={massMark}
             onMassFail={(reason) => massMark('не увезли', reason)}
-            onTransferHint={() => setMsg('Перенос делается через ячейку статуса конкретной строки')}
+            onTransfer={startTransferSelected}
             onDelete={deleteSelected}
           />
         )}
@@ -4009,14 +4098,15 @@ const PlanSelToolbar = memo(function PlanSelToolbar({
   mode,
   onMassMark,
   onMassFail,
-  onTransferHint,
+  onTransfer,
   onDelete,
 }: {
   selLive: LiveValue<number>;
   mode: 'plan' | 'report';
   onMassMark: (done: 'выполнено' | 'не увезли', reason: string) => void;
   onMassFail: (reason: string) => void;
-  onTransferHint: () => void;
+  /** п.9: выделить → Перенести → дата. */
+  onTransfer: () => void;
   onDelete: () => void;
 }) {
   const selectedCount = useLiveValue(selLive);
@@ -4033,11 +4123,19 @@ const PlanSelToolbar = memo(function PlanSelToolbar({
         >
           Выполнено
         </button>
+        <button
+          type="button"
+          onClick={onTransfer}
+          title="Перенести выделенные на другую дату (цех/экспедиция · перенос)"
+          className="rounded-md border border-black/10 px-2 py-0.5 text-[#8A5A11] transition-colors hover:border-[#8A5A11]/50"
+        >
+          Перенести
+        </button>
         <select
           defaultValue=""
           onChange={(e) => {
             if (e.target.value) {
-              if (e.target.value === 'перенос') onTransferHint();
+              if (e.target.value === 'перенос') onTransfer();
               else onMassFail(REASON_CANON[e.target.value] ?? e.target.value);
               e.target.value = '';
             }
@@ -4067,9 +4165,18 @@ const PlanSelToolbar = memo(function PlanSelToolbar({
     );
   }
 
+  // План: перенос двигает черновики на дату; корзина — в резерв.
   return (
     <div className="ml-auto flex items-center gap-2">
       <span className="tabular-nums text-[#2A2925]">Выбрано: {selectedCount}</span>
+      <button
+        type="button"
+        onClick={onTransfer}
+        title="Перенести выделенные черновики на другую дату"
+        className="rounded-md border border-black/10 px-2 py-0.5 text-[#8A5A11] transition-colors hover:border-[#8A5A11]/50"
+      >
+        Перенести
+      </button>
       <button
         type="button"
         onClick={onDelete}
