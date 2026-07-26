@@ -70,11 +70,7 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "build/icon-source.png",
-      "node_modules/uiohook-napi/**/*"
-    ],
-    "asarUnpack": [
-      "node_modules/uiohook-napi/**/*"
+      "build/icon-source.png"
     ],
     "directories": {
       "output": "release",
