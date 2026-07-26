@@ -8,9 +8,10 @@
   "scripts": {
     "dev": "vite",
     "dev:html-grid": "VITE_FLOW_HTML_GRID=1 vite",
-    "build": "tsc --noEmit && vite build && electron-builder",
-    "build:mac": "tsc --noEmit && vite build && electron-builder --mac",
-    "build:win": "tsc --noEmit && vite build && electron-builder --win",
+    "stage:uiohook": "node scripts/stage-uiohook.mjs",
+    "build": "tsc --noEmit && vite build && node scripts/stage-uiohook.mjs && electron-builder",
+    "build:mac": "tsc --noEmit && vite build && node scripts/stage-uiohook.mjs && electron-builder --mac",
+    "build:win": "tsc --noEmit && vite build && node scripts/stage-uiohook.mjs && electron-builder --win",
     "build:icons": "node ../../scripts/build-icons.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
@@ -71,6 +72,11 @@
       "dist/**/*",
       "dist-electron/**/*",
       "build/icon-source.png"
+    ],
+    "asarUnpack": [
+      "**/dist-electron/vendor/uiohook-napi/**/*",
+      "**/vendor/uiohook-napi/**/*",
+      "**/*.node"
     ],
     "directories": {
       "output": "release",

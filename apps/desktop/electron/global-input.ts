@@ -5,16 +5,34 @@
  * Mac: нужны права «Универсальный доступ» (System Settings → Privacy → Accessibility)
  * для Electron / Terminal (в dev) / Pyn.app (в prod). Без прав start() падает —
  * молча no-op, pet остаётся на in-app listeners.
+ *
+ * Native: uiohook-napi — external (vite), staged в dist-electron/vendor/,
+ * asarUnpack (OS не грузит .node из asar).
  */
 import { systemPreferences, shell } from 'electron';
+import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 type ActivityHandler = (ev: { kind: 'key' | 'mouse'; x?: number; y?: number }) => void;
+
+type UiohookMod = {
+  uIOhook: {
+    on: (ev: string, cb: (...args: never[]) => void) => void;
+    start: () => void;
+    stop: () => void;
+  };
+  UiohookKey: Record<string, number>;
+};
 
 let started = false;
 let handler: ActivityHandler | null = null;
 /** throttle mouse move → не засыпаем IPC */
 let lastMouseEmit = 0;
 const MOUSE_THROTTLE_MS = 80;
+/** cached module after first successful load */
+let loaded: UiohookMod | null = null;
 
 export function setGlobalInputHandler(h: ActivityHandler | null): void {
   handler = h;
@@ -61,6 +79,62 @@ export function openInputPermissionSettings(): void {
   }
 }
 
+/** Каталог main (dist-electron) — и в dev, и в packaged. */
+function mainDir(): string {
+  try {
+    // CJS bundle от vite-plugin-electron обычно даёт __dirname
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const d = typeof __dirname !== 'undefined' ? __dirname : '';
+    if (d) return d;
+  } catch {
+    /* */
+  }
+  try {
+    return dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return process.cwd();
+  }
+}
+
+/**
+ * .node нельзя require из app.asar — electron-builder asarUnpack кладёт
+ * копию в app.asar.unpacked/.
+ */
+function asarUnpacked(p: string): string {
+  // OS cannot dlopen .node from inside app.asar
+  if (p.includes('app.asar') && !p.includes('app.asar.unpacked')) {
+    return p.replace('app.asar', 'app.asar.unpacked');
+  }
+  return p;
+}
+
+function vendorUiohookPath(): string {
+  return asarUnpacked(join(mainDir(), 'vendor', 'uiohook-napi'));
+}
+
+function loadUiohook(): UiohookMod {
+  if (loaded) return loaded;
+
+  const vendor = vendorUiohookPath();
+  if (existsSync(join(vendor, 'package.json'))) {
+    const req = createRequire(join(vendor, 'package.json'));
+    loaded = req(vendor) as UiohookMod;
+    console.log('[pyn:global-input] loaded vendor uiohook-napi from', vendor);
+    return loaded;
+  }
+
+  // Dev / unpackaged: resolve from node_modules (pnpm symlink ok here)
+  const req = createRequire(join(mainDir(), 'package.json'));
+  try {
+    loaded = req('uiohook-napi') as UiohookMod;
+    console.log('[pyn:global-input] loaded uiohook-napi from node_modules');
+    return loaded;
+  } catch {
+    // last resort: dynamic import (may work in some packagers)
+  }
+  throw new Error(`uiohook-napi not found (vendor=${vendor})`);
+}
+
 export async function startGlobalInput(): Promise<{ ok: boolean; reason?: string }> {
   if (started) return { ok: true };
   if (process.platform === 'darwin' && !hasInputPermission()) {
@@ -69,11 +143,10 @@ export async function startGlobalInput(): Promise<{ ok: boolean; reason?: string
   }
 
   try {
-    // Dynamic import — native module; external в electron bundle
-    const mod = await import('uiohook-napi');
+    const mod = loadUiohook();
     const { uIOhook, UiohookKey } = mod;
 
-    uIOhook.on('keydown', (e) => {
+    uIOhook.on('keydown', ((e: { keycode: number }) => {
       const k = e.keycode;
       if (
         k === UiohookKey.Ctrl ||
@@ -88,18 +161,18 @@ export async function startGlobalInput(): Promise<{ ok: boolean; reason?: string
         return;
       }
       handler?.({ kind: 'key' });
-    });
+    }) as (...args: never[]) => void);
 
-    uIOhook.on('mousemove', (e) => {
+    uIOhook.on('mousemove', ((e: { x: number; y: number }) => {
       const now = Date.now();
       if (now - lastMouseEmit < MOUSE_THROTTLE_MS) return;
       lastMouseEmit = now;
       handler?.({ kind: 'mouse', x: e.x, y: e.y });
-    });
+    }) as (...args: never[]) => void);
 
-    uIOhook.on('mousedown', () => {
+    uIOhook.on('mousedown', (() => {
       handler?.({ kind: 'mouse' });
-    });
+    }) as (...args: never[]) => void);
 
     uIOhook.start();
     started = true;
@@ -114,14 +187,9 @@ export async function startGlobalInput(): Promise<{ ok: boolean; reason?: string
 export function stopGlobalInput(): void {
   if (!started) return;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    void import('uiohook-napi').then((mod) => {
-      try {
-        mod.uIOhook.stop();
-      } catch {
-        /* */
-      }
-    });
+    if (loaded) {
+      loaded.uIOhook.stop();
+    }
   } catch {
     /* */
   }
