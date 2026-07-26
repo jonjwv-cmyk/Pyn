@@ -761,48 +761,45 @@ export interface MatCardRow {
   mat_full: string;
 }
 
-/** Read-only строки карточки MAT (ТЗ поток.docx п.5 / 17.07):
- *  Создал → Выгружен → (Удалён) → **СЭД** → **История** → тех-имя.
- *  **Без %** — процент не в MAT (живёт в колонке «%», если нужна).
- *  СЭД/История подключаются сюда (раньше были отдельно и «не доехали» в карточку). */
+/**
+ * Карточка MAT (поток.docx п.5) — **только 2 блока**:
+ *  1) История **движения** позиции (не «создал/выгружен» — те уже в колонках).
+ *  2) СЭД (движение документа / на ком).
+ * Без %, без tech-name. Нет данных → явные «Нет истории» / «Нет движения СЭД».
+ */
 export function matCardLines(
-  row: MatCardRow,
+  _row: MatCardRow,
   opts?: {
-    /** @deprecated % в MAT не показываем (п.5). Игнорируется. */
+    /** @deprecated % в MAT не показываем. */
     includePct?: boolean;
-    /** СЭД: computed-лейбл + holder (из поставки якоря). */
+    /** СЭД: computed-лейбл + holder. */
     sedLine?: string;
-    /** Есть эпизоды истории по якорю. */
+    /** Есть эпизоды истории движения по якорю. */
     hasHistory?: boolean;
   },
 ): FlowCardLine[] | null {
-  void opts?.includePct; // % из MAT убран (поток.docx п.5)
+  void _row;
+  void opts?.includePct;
   const lines: FlowCardLine[] = [];
-  if (row.created_by) {
-    const cd = formatDateRu(row.load_dt);
-    lines.push({ t: `Создал: ${row.created_by}${cd ? ` — ${cd}` : ''}`, muted: true, nowrap: true });
+  // Блок 1 — история движения
+  lines.push({ t: '— История движения —', muted: true, nowrap: true });
+  if (opts?.hasHistory) {
+    lines.push({ t: 'Есть эпизоды (открой карточку истории по якорю)', nowrap: true });
+  } else {
+    lines.push({ t: 'Нет истории', muted: true, nowrap: true });
   }
-  // time_at/off_at — серверные UTC-метки: показ по Екатеринбургу (formatUploadDay).
-  const up = formatUploadDay(row.time_at);
-  if (up) lines.push({ t: `Выгружен: ${up}`, muted: true, nowrap: true });
-  // Дата удаления — для OFF-строк (когда заказ пропал из выгрузки).
-  if (row.day_wk === 'OFF' && row.off_at) {
-    const off = formatUploadDay(row.off_at);
-    if (off) lines.push({ t: `Удалён: ${off}`, muted: true, nowrap: true });
-  }
+  // Блок 2 — СЭД
+  lines.push({ t: '— СЭД —', muted: true, nowrap: true });
   const sed = String(opts?.sedLine || '').trim();
   if (sed) {
     for (const part of sed.split('\n')) {
       const t = part.trim();
-      if (t) lines.push({ t: t.startsWith('СЭД') ? t : `СЭД: ${t}`, muted: true, nowrap: true });
+      if (t) lines.push({ t, nowrap: true });
     }
+  } else {
+    lines.push({ t: 'Нет движения СЭД', muted: true, nowrap: true });
   }
-  if (opts?.hasHistory) {
-    lines.push({ t: 'История: есть (клик ⏱ в строке / карточка якоря)', muted: true, nowrap: true });
-  }
-  // Тех-имя ПЕРЕНОСИТСЯ, если длиннее стандарта (ширину задаёт шапка карточки).
-  if (row.mat_full) lines.push({ t: row.mat_full });
-  return lines.length ? lines : null;
+  return lines;
 }
 
 export function flowCard(
