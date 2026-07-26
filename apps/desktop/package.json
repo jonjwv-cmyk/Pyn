@@ -66,6 +66,7 @@
   "build": {
     "appId": "app.pyn.desktop",
     "productName": "Pyn",
+    "npmRebuild": false,
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
