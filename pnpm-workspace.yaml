@@ -5,7 +5,8 @@ packages:
 # Разрешаем build scripts для нативных зависимостей.
 # electron — скачивает native binary при post-install.
 # esbuild — скачивает native binary для bundling.
+# uiohook-napi — global input (Accessibility) for pet/desktop.
 allowBuilds:
   electron: true
   esbuild: true
-  uiohook-napi: set this to true or false
+  uiohook-napi: true
