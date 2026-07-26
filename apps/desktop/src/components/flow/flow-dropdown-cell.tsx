@@ -17,6 +17,15 @@ import { useFlipUpIfClipped } from './flow-cell-flip';
  * открывает список опций в нашем стиле, выбор коммитит значение.
  */
 
+/** Ветка раскрывающегося меню (STAT: АТУ / склад / цех / экспедиция). */
+export interface FlowDropdownGroup {
+  /** id узла; для листа без children — это и есть commit value. */
+  readonly id: string;
+  readonly label: string;
+  /** Есть children → пункт только раскрывает, не коммитит. */
+  readonly children?: readonly { value: string; label: string }[];
+}
+
 export interface FlowDropdownData {
   readonly kind: 'flow-dropdown';
   readonly value: string;
@@ -26,6 +35,12 @@ export interface FlowDropdownData {
   /** Подписи пунктов (параллельно options): в списке «уровень 1», в ячейке «1».
    *  Не задано — показываем сами значения. */
   readonly labels?: readonly string[];
+  /**
+   * Иерархия: пункты с children раскрываются (▸ / ▾), подпункты коммитят value.
+   * Если задано — рисуем groups вместо плоского options (options можно оставить
+   * для paste/валидации).
+   */
+  readonly groups?: readonly FlowDropdownGroup[];
   /** Разрешить СВОЙ текст: сверху поле ввода (Enter коммитит, печать фильтрует
    *  список). Для колонок «выбери из частых ИЛИ напиши своё» (РАБОТА транспорта). */
   readonly allowCustom?: boolean;
@@ -89,7 +104,7 @@ function FlowMultiEditor({
 
 export type FlowDropdownCell = CustomCell<FlowDropdownData>;
 
-/** Редактор-список опций в стиле меню колонки (+опц. свой ввод сверху). */
+/** Редактор-список опций в стиле меню колонки (+опц. свой ввод / иерархия groups). */
 function FlowDropdownEditor({
   value: cell,
   onFinishedEditing,
@@ -97,9 +112,29 @@ function FlowDropdownEditor({
   value: FlowDropdownCell;
   onFinishedEditing: (newValue?: FlowDropdownCell) => void;
 }) {
-  const { options, value, labels, allowCustom } = cell.data;
+  const { options, value, labels, allowCustom, groups } = cell.data;
   const [query, setQuery] = useState('');
+  // Раскрытые ветки: по id группы. Авто-раскрыть ветку, где лежит текущее value.
+  const [openIds, setOpenIds] = useState<ReadonlySet<string>>(() => {
+    const init = new Set<string>();
+    if (groups && value) {
+      for (const g of groups) {
+        if (g.children?.some((c) => c.value === value || c.label === value)) init.add(g.id);
+        // value вида «цех · отказ» → parent id «цех»
+        if (value.startsWith(`${g.id} · `) || value === g.id) init.add(g.id);
+      }
+    }
+    return init;
+  });
   const commit = (v: string) => onFinishedEditing({ ...cell, data: { ...cell.data, value: v } });
+  const toggleGroup = (id: string) => {
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
   // Свой ввод фильтрует список (как поиск); Enter коммитит набранный текст.
   const q = query.trim().toLowerCase();
   const shown = allowCustom && q !== '' ? options.filter((o) => o.toLowerCase().includes(q)) : options;
@@ -108,7 +143,7 @@ function FlowDropdownEditor({
   // даёт КОНТЕЙНЕР оверлея через styleOverride ниже — иначе скруглённый поповер
   // сидел бы на квадратной светлой подложке контейнера Glide.
   return (
-    <div ref={flipRef} className="flex max-h-[320px] w-full flex-col text-text-secondary">
+    <div ref={flipRef} className="flex max-h-[320px] w-full min-w-[200px] flex-col text-text-secondary">
       {allowCustom && (
         <input
           autoFocus
@@ -129,24 +164,78 @@ function FlowDropdownEditor({
         />
       )}
       <div className="flex min-h-0 flex-col overflow-y-auto">
-        {shown.map((o) => {
-          const selected = o === value;
-          const label = labels?.[options.indexOf(o)] ?? o;
-          return (
-            <button
-              type="button"
-              key={o}
-              onClick={() => commit(o)}
-              className={cn(
-                // Без галочки — выбранный просто подсвечен clay (компактнее).
-                'w-full shrink-0 truncate rounded px-2 py-1 text-left text-[12px] transition-colors',
-                selected ? 'bg-accent-clay/25 text-text-strong' : 'text-text-primary hover:bg-accent-clay/20',
-              )}
-            >
-              {label === '' ? '(пусто)' : label}
-            </button>
-          );
-        })}
+        {groups && groups.length > 0 && !(allowCustom && q !== '') ? (
+          // Иерархия: листья коммитят; ветки (АТУ/склад/цех/экспедиция) — только раскрытие.
+          groups.map((g) => {
+            const hasKids = !!(g.children && g.children.length > 0);
+            const open = openIds.has(g.id);
+            const leafSelected = !hasKids && (g.id === value || g.label === value);
+            const childSelected = hasKids && g.children!.some((c) => c.value === value);
+            return (
+              <div key={g.id} className="flex flex-col">
+                <button
+                  type="button"
+                  onClick={() => (hasKids ? toggleGroup(g.id) : commit(g.id))}
+                  className={cn(
+                    'flex w-full shrink-0 items-center gap-1 rounded px-2 py-1 text-left text-[12px] transition-colors',
+                    leafSelected || childSelected
+                      ? 'bg-accent-clay/25 text-text-strong'
+                      : 'text-text-primary hover:bg-accent-clay/20',
+                  )}
+                >
+                  {hasKids && (
+                    <span className="w-3 shrink-0 text-[10px] text-text-muted" aria-hidden>
+                      {open ? '▾' : '▸'}
+                    </span>
+                  )}
+                  {!hasKids && <span className="w-3 shrink-0" aria-hidden />}
+                  <span className="truncate font-medium">{g.label}</span>
+                </button>
+                {hasKids && open && (
+                  <div className="mb-0.5 ml-2 flex flex-col border-l border-white/10 pl-1">
+                    {g.children!.map((c) => {
+                      const selected = c.value === value;
+                      return (
+                        <button
+                          type="button"
+                          key={c.value}
+                          onClick={() => commit(c.value)}
+                          className={cn(
+                            'w-full shrink-0 truncate rounded px-2 py-1 text-left text-[12px] transition-colors',
+                            selected
+                              ? 'bg-accent-clay/25 text-text-strong'
+                              : 'text-text-primary hover:bg-accent-clay/20',
+                          )}
+                        >
+                          {c.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        ) : (
+          shown.map((o) => {
+            const selected = o === value;
+            const label = labels?.[options.indexOf(o)] ?? o;
+            return (
+              <button
+                type="button"
+                key={o}
+                onClick={() => commit(o)}
+                className={cn(
+                  // Без галочки — выбранный просто подсвечен clay (компактнее).
+                  'w-full shrink-0 truncate rounded px-2 py-1 text-left text-[12px] transition-colors',
+                  selected ? 'bg-accent-clay/25 text-text-strong' : 'text-text-primary hover:bg-accent-clay/20',
+                )}
+              >
+                {label === '' ? '(пусто)' : label}
+              </button>
+            );
+          })
+        )}
       </div>
     </div>
   );

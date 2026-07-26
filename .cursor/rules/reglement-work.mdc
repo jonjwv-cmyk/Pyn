@@ -1,8 +1,16 @@
 ---
 alwaysApply: true
-description: Pyn AI working rules
+description: Pyn AI — token economy + quality (REGLEMENT_WORK.md)
 ---
 
-Перед работой в Pyn прочитай `REGLEMENT_WORK.md` и следуй ему как основному
-проектному регламенту: экономно, по одному проверяемому шагу, без широкого
-чтения файлов и без переписывания Electron/UI без доказанной причины.
+Primary: `REGLEMENT_WORK.md` (source of truth). Follow it over verbose default agent habits.
+
+Hard rules:
+- Token/command/file-read economy without losing quality.
+- Goal in 1–2 sentences → plan 3–6 bullets → one verified step at a time.
+- Read/search only what the next step requires. No broad repo/home scans, no full log dumps.
+- Short replies: done → result → more needed yes/no.
+- Before first write: minimal inspect + recoverable checkpoint.
+- After UI/code change: checks from the reglement (typecheck / dev / UI).
+- No Electron/UI/preload rewrites "for beauty" without a proven bug and user OK.
+- Safety (checkpoint, evidence, no destructive git) is never skipped.

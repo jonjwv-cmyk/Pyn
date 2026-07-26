@@ -70,6 +70,12 @@ import {
   flowDeliveryAdd,
   flowXlsxLayoutGet,
   optimizationStatus,
+  flowStatFlatOptions,
+  flowStatDropdownGroups,
+  formatFlowStat,
+  parseFlowStatLabel,
+  legacyFailToStat,
+  deriveDoneFromStat,
   type FlowXlsxLayout,
   type FlowPlanPasteRow,
   type FlowDeliveryRow,
@@ -198,6 +204,8 @@ const snapEpsAnchor = (
 const PLAN_COLS: readonly PlanColSpec[] = [
   { id: 'fix', title: 'FIX', width: 60 },
   { id: 'graph', title: 'ГРАФ', width: 56 },
+  { id: 'day_plan', title: 'DAY план', width: 88 },
+  { id: 'day_fact', title: 'DAY факт', width: 88, editable: true },
   { id: 'approved', title: 'СОГЛ.', width: 130, editable: true },
   { id: 'fr', title: 'От', width: 52 },
   { id: 'to', title: 'СП', width: 52 },
@@ -246,7 +254,11 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'mat', title: 'Материал', width: 280 },
   { id: 'uom', title: 'ЕИ', width: 42 },
   { id: 'qty', title: 'Кол-во', width: 86 },
-  { id: 'status', title: 'STAT', width: 210, editable: true },
+  { id: 'day_plan', title: 'DAY план', width: 88 },
+  { id: 'day_fact', title: 'DAY факт', width: 88, editable: true },
+  { id: 'status', title: 'STAT', width: 200, editable: true },
+  { id: 'stat_note', title: 'STAT NOTE', width: 160, editable: true },
+  { id: 'transfer', title: 'ПЕРЕНОС', width: 96, editable: true },
   { id: 'score', title: 'БАЛЛ', width: 60 },
   { id: 'exp', title: 'ЭКСПЕДИТОР', width: 190, editable: true },
   { id: 'vehicleType', title: 'ТИП ТС', width: 130, editable: true },
@@ -301,30 +313,61 @@ const FAIL_REASONS = [
  *  (соответствует до 3 гаражным). Хранится в поле `vehicle` (через `\n`).
  *  Список имён единый с картой — см. flow-body-types.ts. */
 
-/** Статус выполнения (юзер 2026-06-14): по умолчанию «ОЖИДАНИЕ» (пусто в БД), «выполнено»
- *  (зелёный в исходном отчёте) или ПРИЧИНА (серый, не увезено). Стереть ячейку → снова ожидание. */
-const STATUS_WAIT = 'ожидание';
+/** Статус (2026-07-26): дефолт пусто (НЕ «ожидание»); иерархия STAT · sub; STAT NOTE отдельно. */
 const STATUS_DONE = 'выполнено';
-
-/** Опции выпадашки: ожидание / выполнено / каждая причина (выбор причины = «не увезли»). */
-const STATUS_OPTIONS: readonly string[] = [STATUS_WAIT, STATUS_DONE, ...FAIL_REASONS];
+/** Плоский список — paste/валидация; в UI — groups с раскрытием. */
+const STATUS_OPTIONS: readonly string[] = flowStatFlatOptions({ includePlanReportOnly: true });
+const STATUS_GROUPS = flowStatDropdownGroups({ includePlanReportOnly: true });
 const EXPEDITOR_ROLE_GROUPS = new Set(['Экспедиторы', 'Водители-экспедиторы']);
 const DRIVER_EXPEDITOR_ROLE = 'Водители-экспедиторы';
 
-/** Отображаемое значение статуса из (done_stat, fail_reason). Пусто → «ожидание». */
+/** Отображаемое значение STAT: новые поля → legacy done_stat/fail_reason. Пусто = нет статуса. */
 function statusValue(r: FlowDeliveryRow): string {
+  const st = String(r.stat || '').trim();
+  const su = String(r.stat_sub || '').trim();
+  if (st) return formatFlowStat(st, su);
   if (r.done_stat === STATUS_DONE || r.done_stat === 'увезли') return STATUS_DONE;
-  if (r.fail_reason) return displayFailReason(r.fail_reason); // серый: не увезено, причина в ячейке
+  if (r.fail_reason) {
+    const leg = legacyFailToStat(r.done_stat, r.fail_reason);
+    if (leg.sub === 'перенос' && leg.transferDate) {
+      return formatFlowStat(leg.stat || 'цех', 'перенос');
+    }
+    if (leg.stat) return formatFlowStat(leg.stat, leg.sub);
+    return displayFailReason(r.fail_reason);
+  }
   if (r.done_stat === 'не увезли') return 'не увезли';
-  return STATUS_WAIT; // по умолчанию — ожидание
+  return ''; // дефолт — пусто (не «ожидание»)
 }
 
-/** Разбор выбранной опции статуса → поля поставки. «ожидание»/пусто → сброс в ноль.
- *  Короткое имя причины разворачиваем в канонический текст для БД. */
-function decodeStatus(opt: string): { done_stat: string; fail_reason: string } {
-  if (opt === STATUS_DONE) return { done_stat: STATUS_DONE, fail_reason: '' };
-  if (opt === STATUS_WAIT || opt === '') return { done_stat: '', fail_reason: '' };
-  return { done_stat: 'не увезли', fail_reason: REASON_CANON[opt] ?? opt }; // выбрана причина
+/** Дата переноса из fail_reason / day_fact. */
+function transferDateOf(r: FlowDeliveryRow): string {
+  const df = String(r.day_fact || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(df) && String(r.stat_sub || '') === 'перенос') return df;
+  const m = /^перенос на другой день:\s*(\d{4}-\d{2}-\d{2})/.exec(String(r.fail_reason || ''));
+  return m?.[1] ?? '';
+}
+
+/** Разбор опции STAT → поля поставки (B1 + derived done_stat). */
+function decodeStatus(opt: string): {
+  done_stat: string;
+  fail_reason: string;
+  stat: string;
+  stat_sub: string;
+} {
+  const raw = String(opt || '').trim();
+  if (!raw || raw === 'ожидание') {
+    return { done_stat: '', fail_reason: '', stat: '', stat_sub: '' };
+  }
+  // legacy short reasons from old UI paste
+  if (FAIL_REASONS.includes(raw as (typeof FAIL_REASONS)[number])) {
+    const canon = REASON_CANON[raw] ?? raw;
+    const leg = legacyFailToStat('не увезли', canon);
+    const d = deriveDoneFromStat(leg.stat, leg.sub, leg.transferDate);
+    return { ...d, stat: leg.stat, stat_sub: leg.sub };
+  }
+  const { stat, sub } = parseFlowStatLabel(raw);
+  const d = deriveDoneFromStat(stat, sub, '');
+  return { ...d, stat, stat_sub: sub };
 }
 
 const PLAN_RENDERERS = [flowDropdownRenderer, flowWindowRenderer, flowScoreRenderer, flowMolRenderer, flowMatRenderer, flowHistoryRenderer, flowDriverRenderer, flowVehicleRenderer, flowDayRenderer, flowTwoToneRenderer];
@@ -334,6 +377,18 @@ function fmtPlanDate(s: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || '');
   if (!m) return s || '';
   return `${parseInt(m[3] ?? '1', 10)} ${MONTH_ABBR_RU[parseInt(m[2] ?? '1', 10) - 1] ?? ''}`;
+}
+
+/** Ввод даты → ISO YYYY-MM-DD или ''. */
+function normalizeDayInput(raw: string): string {
+  const t = String(raw || '').trim();
+  if (!t) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const dmy = /^(\d{1,2})[./](\d{1,2})[./](\d{4})$/.exec(t);
+  if (dmy) {
+    return `${dmy[3]}-${dmy[2]!.padStart(2, '0')}-${dmy[1]!.padStart(2, '0')}`;
+  }
+  return '';
 }
 
 function displayFailReason(reason: string): string {
@@ -1388,6 +1443,18 @@ export function FlowPlanGrid({
           return r.fail_reason || '';
         case 'status':
           return statusValue(r);
+        case 'stat_note':
+          return r.stat_note || '';
+        case 'day_plan':
+          return fmtPlanDate(r.plan_date);
+        case 'day_fact': {
+          const iso = String(r.day_fact || '').slice(0, 10);
+          return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? fmtPlanDate(iso) : (r.day_fact || '');
+        }
+        case 'transfer': {
+          const td = transferDateOf(r);
+          return td ? fmtPlanDate(td) : '';
+        }
         case 'dlv':
           return (r.dlv || '').trim() ? `${r.dlv}${(r.dlv_pos || '').trim() ? `|${r.dlv_pos}` : ''}` : 'черновик';
         case 'order':
@@ -2072,14 +2139,19 @@ export function FlowPlanGrid({
         } satisfies FlowHistoryCell;
       }
       if (spec.id === 'status') {
-        // P4: объединённая отметка отчёта — одна выпадашка «увезли / не увезли — <причина>».
+        // STAT: дерево с раскрытием (АТУ/склад/цех/экспедиция), не плоский список.
         const v = statusValue(r);
         const cell: FlowDropdownCell = {
           kind: GridCellKind.Custom,
           allowOverlay: !locked,
           copyData: v,
           themeOverride: planCellTheme(spec.id),
-          data: { kind: 'flow-dropdown', value: v, options: STATUS_OPTIONS },
+          data: {
+            kind: 'flow-dropdown',
+            value: v,
+            options: STATUS_OPTIONS,
+            groups: STATUS_GROUPS,
+          },
         };
         return cell;
       }
@@ -2596,8 +2668,21 @@ export function FlowPlanGrid({
             setMsg('');
             return;
           }
-          const { done_stat, fail_reason } = decodeStatus(value);
-          const fields: Record<string, string | number | null> = { done_stat, fail_reason };
+          const decoded = decodeStatus(value);
+          const fields: Record<string, string | number | null> = {
+            done_stat: decoded.done_stat,
+            fail_reason: decoded.fail_reason,
+            stat: decoded.stat,
+            stat_sub: decoded.stat_sub,
+          };
+          // Перенос: дата уже может быть в колонке ПЕРЕНОС / day_fact
+          if (decoded.stat_sub === 'перенос') {
+            const td = transferDateOf(r) || String(r.day_fact || '').slice(0, 10);
+            if (td) {
+              fields.fail_reason = `перенос на другой день: ${td}`;
+              fields.day_fact = td;
+            }
+          }
           // R3.8 ПРИНЦИП ЕДИНОГО ДОКУМЕНТА: поставка — один документ. Нельзя одну позицию отметить,
           // а другие нет → статус применяем КО ВСЕЙ поставке (все позиции dlv того дня). Частично =
           // сначала удали лишние позиции из поставки в Плане (перенос «позиция удалена»), потом отметь.
@@ -2749,7 +2834,36 @@ export function FlowPlanGrid({
 
       // Поля самой поставки. Кол-во валидируем ДО оптимистичного показа.
       const fields: Record<string, string | number | null> = {};
-      if (spec.id === 'qty') {
+      if (spec.id === 'stat_note') {
+        fields.stat_note = raw;
+      } else if (spec.id === 'day_fact') {
+        // Ручной DAY факт: ISO YYYY-MM-DD или «12.06.2026» / «12 июня» — принимаем ISO и dd.mm.yyyy.
+        const iso = normalizeDayInput(raw);
+        fields.day_fact = iso;
+      } else if (spec.id === 'transfer') {
+        // Колонка ПЕРЕНОС: дата → day_fact + fail_reason; STAT = цех·перенос (или уже экспедиция).
+        const iso = normalizeDayInput(raw);
+        if (!iso && raw) {
+          setMsg('Дата переноса: YYYY-MM-DD или ДД.ММ.ГГГГ');
+          return;
+        }
+        const top = String(r.stat || '').trim() === 'экспедиция' ? 'экспедиция' : 'цех';
+        if (iso) {
+          fields.day_fact = iso;
+          fields.stat = top;
+          fields.stat_sub = 'перенос';
+          fields.done_stat = 'не увезли';
+          fields.fail_reason = `перенос на другой день: ${iso}`;
+        } else {
+          fields.day_fact = '';
+          if (String(r.stat_sub || '') === 'перенос') {
+            fields.stat = '';
+            fields.stat_sub = '';
+            fields.done_stat = '';
+            fields.fail_reason = '';
+          }
+        }
+      } else if (spec.id === 'qty') {
         // Ручные (написанные с нуля) строки — кол-во правится и после фиксации; буферные/
         // SAP-строки после фиксации неизменны (юзер 2026-07-04: «слепок»).
         if (Number(r.fixation_id) > 0 && !isFreeEditRow(r)) {
@@ -2885,6 +2999,37 @@ export function FlowPlanGrid({
             return { fields: { snap_note: raw } };
           }
           return null;
+        case 'stat_note':
+          return { fields: { stat_note: raw } };
+        case 'day_fact': {
+          const iso = normalizeDayInput(raw);
+          if (raw && !iso) return { error: 'DAY факт: YYYY-MM-DD или ДД.ММ.ГГГГ' };
+          return { fields: { day_fact: iso } };
+        }
+        case 'transfer': {
+          const iso = normalizeDayInput(raw);
+          if (raw && !iso) return { error: 'ПЕРЕНОС: YYYY-MM-DD или ДД.ММ.ГГГГ' };
+          const top = String(r.stat || '').trim() === 'экспедиция' ? 'экспедиция' : 'цех';
+          if (!iso) {
+            return {
+              fields: {
+                day_fact: '',
+                ...(String(r.stat_sub || '') === 'перенос'
+                  ? { stat: '', stat_sub: '', done_stat: '', fail_reason: '' }
+                  : {}),
+              },
+            };
+          }
+          return {
+            fields: {
+              day_fact: iso,
+              stat: top,
+              stat_sub: 'перенос',
+              done_stat: 'не увезли',
+              fail_reason: `перенос на другой день: ${iso}`,
+            },
+          };
+        }
         default:
           return null;
       }

@@ -52,6 +52,12 @@ import {
   flowPlanMonthSet,
   flowViewGet,
   flowViewSet,
+  flowStatFlatOptions,
+  flowStatDropdownGroups,
+  formatFlowStat,
+  formatStatCellLines,
+  parseFlowStatLabel,
+  parseStatStack,
   type FlowChangedEvent,
   type FlowDeliveryRow,
   type FlowDeliveryEvent,
@@ -1815,16 +1821,24 @@ export function FlowSandboxGrid(): JSX.Element {
           if (tech !== r.mat_full) patch.mat_full = tech;
         }
       }
-      // STAT: ручной-липкий (stat_manual=1, непустой) держим как есть; иначе показываем
-      // РАСЧЁТНЫЙ ярлык (statMetaById — реалтайм от нормы/связки/номенклатуры). Снял липкий
-      // (manual=0) → ярлык вернётся (заявка/мало/мет_ок/масловоз/пусто). OFF не трогаем.
+      // STAT A1: авто — 1-я строка (не пишем в БД поверх стека). В storage:
+      //  • stat_manual=1 + stored — primary manual;
+      //  • stat_stack — ручные из отчёта (жирные на клиенте);
+      //  • иначе показываем auto только в UI (ниже getCellContent), здесь не патчим,
+      //    если есть стек (чтобы не затирать «цех» авто-«мало»).
       {
         const meta = statMetaById.get(r.id);
         if (meta && effDay !== 'OFF') {
           const stored = String(r.stat ?? '').trim();
           const statManual = Number(r.stat_manual) === 1;
-          const display = statManual && stored !== '' ? stored : meta.auto;
-          if (display !== stored) patch.stat = display;
+          const stack = parseStatStack(r.stat_stack);
+          if (stack.length > 0) {
+            // стек есть — r.stat не трогаем (primary/sticky отдельно)
+          } else if (statManual && stored !== '') {
+            // primary manual — ok
+          } else if (meta.auto !== stored) {
+            patch.stat = meta.auto;
+          }
         }
       }
       if (Object.keys(patch).length === 0) return r;
@@ -2559,6 +2573,58 @@ export function FlowSandboxGrid(): JSX.Element {
             },
           } satisfies FlowDropdownCell;
         }
+        // STAT A1: авто + жирные ручные строки стека — text multi-line; edit через dropdown value.
+        if (spec.id === 'stat') {
+          const meta = statMetaById.get(rowData.id);
+          const auto = meta?.auto ?? '';
+          let stack = parseStatStack(rowData.stat_stack);
+          const stored = String(rowData.stat ?? '').trim();
+          const sub = String(rowData.stat_sub ?? '').trim();
+          if (!stack.length && Number(rowData.stat_manual) === 1 && stored) {
+            stack = [{
+              stat: stored,
+              sub,
+              note: String(rowData.stat_note ?? '').trim(),
+              src: 'manual',
+            }];
+          }
+          // Primary manual в stack — не дублировать auto в manuals
+          const { auto: aLine, manuals } = formatStatCellLines(
+            stack.length ? auto : (Number(rowData.stat_manual) === 1 ? auto : (stored || auto)),
+            stack,
+          );
+          const lines = [aLine, ...manuals].filter(Boolean);
+          const display = lines.join('\n') || stored || auto || '';
+          // Dropdown value = primary (последний manual или stored)
+          const last = stack[stack.length - 1];
+          const ddValue = last
+            ? formatFlowStat(last.stat, last.sub)
+            : (Number(rowData.stat_manual) === 1 ? formatFlowStat(stored, sub) : '');
+          const hierOpts = flowStatFlatOptions({ includePlanReportOnly: false });
+          const options = [...new Set([...statOptionsForRow(rowData), ...hierOpts])];
+          // Раскрытие: legacy auto-опции (мало/…) как листья + дерево без «выполнено».
+          const treeGroups = flowStatDropdownGroups({ includePlanReportOnly: false });
+          const legacyLeaves = statOptionsForRow(rowData)
+            .filter((o) => !treeGroups.some((g) =>
+              g.id === o || g.children?.some((c) => c.value === o || c.label === o),
+            ))
+            .map((o) => ({ id: o, label: o }));
+          const groups = [...legacyLeaves, ...treeGroups];
+          return {
+            kind: GridCellKind.Custom,
+            allowOverlay: true,
+            copyData: display,
+            themeOverride: manuals.length > 0
+              ? { baseFontStyle: '600 12px' }
+              : undefined,
+            data: {
+              kind: 'flow-dropdown',
+              value: ddValue || display,
+              options,
+              groups,
+            },
+          } satisfies FlowDropdownCell;
+        }
         const value = spec.id === 'split_level'
           ? (Number(raw) > 0 ? String(raw) : '')
           : spec.id === 'unload_equip'
@@ -2566,12 +2632,9 @@ export function FlowSandboxGrid(): JSX.Element {
             : spec.id === 'priority'
               ? priorityDisplay(String(raw ?? ''))
               : String(raw ?? '');
-        // STAT — пункты ПО СТРОКЕ (statOptionsForRow): авто-ярлык не предлагаем руками.
-        const options = spec.id === 'stat'
-          ? statOptionsForRow(rowData)
-          : spec.id === 'unload_equip'
-            ? EQUIP_LABELS
-            : (spec.options ?? []);
+        const options = spec.id === 'unload_equip'
+          ? EQUIP_LABELS
+          : (spec.options ?? []);
         // УР: в списке «уровень N», в ячейке — чистая цифра; пустого пункта нет
         // (снять уровень = Delete по ячейке → 0).
         const labels = spec.id === 'split_level' ? options.map((o) => `уровень ${o}`) : undefined;
@@ -2948,34 +3011,53 @@ export function FlowSandboxGrid(): JSX.Element {
         if (spec.kind === 'dropdown') {
           const v = String(newVal ?? '');
           if (spec.id === 'stat') {
-            // ФИНАЛЬНАЯ модель STAT (юзер 2026-06-07):
-            //  • снятие/Delete ('') → stat_manual=0 → возврат к АВТО-ярлыку (заявка/мало/мет_ок/
-            //    масловоз/пусто). Заявку-9002+КХП и любой авто-ярлык «в пусто» так не убрать — авто
-            //    мгновенно вернёт его (то самое «снял → снова заявка/масловоз»).
-            //  • значение НЕ из допустимых по строке (мет_ок/масловоз/прекурсор + заявка на авто-
-            //    строке) — руками не ставится (отсекаем).
-            //  • «мало» = валидируемый возврат: только при реальном недоборе → возврат к расчёту;
-            //    иначе карточка ВГХ (поправить транспортную норму).
-            //  • прочее допустимое (заявка на обычной / вопрос / самовывоз / отказ / неликвиды) —
-            //    липкий ручной (stat_manual=1, перекрывает расчёт).
+            // A1 + иерархия (2026-07-26): авто «мало» отдельно; ручной STAT · sub — sticky.
+            // Справочник отчёта (цех·отказ …) + legacy (вопрос/самовывоз как «цех · …»).
             const cur = String(viewRow.stat ?? '').trim();
-            const allowed = statOptionsForRow(viewRow);
+            const allowed = new Set([
+              ...statOptionsForRow(viewRow),
+              ...flowStatFlatOptions({ includePlanReportOnly: false }),
+            ]);
             if (v === '') {
               statManualNext = 0;
+              after.set(viewRow.id, {
+                ...(after.get(viewRow.id) ?? {}),
+                stat: '',
+                stat_sub: '',
+                stat_manual: 0,
+              });
+              // clear handled below via newVal path — set newVal empty
             } else if (v === 'мало') {
-              // «мало» проверяем РАНЬШЕ списка: при реальном недоборе → возврат к расчёту;
-              // иначе подсказка-карточка (в т.ч. при вставке мало на строку с пройденной нормой).
-              if (cur === 'мало') continue; // уже «мало»
+              if (cur === 'мало' && Number(viewRow.stat_manual) !== 1) continue;
               if (statMetaById.get(viewRow.id)?.undershoot) {
-                newVal = ''; // недобор подтверждён → снять липкий, показать расчётное «мало»
+                newVal = '';
                 statManualNext = 0;
               } else {
                 openVghCard(viewRow, 'Норма пройдена — «мало» поставить нельзя. Поправьте транспортную норму.');
                 continue;
               }
-            } else if (!allowed.includes(v)) {
+            } else if (!allowed.has(v) && !allowed.has(parseFlowStatLabel(v).stat)) {
               continue;
             } else {
+              const parsed = parseFlowStatLabel(v);
+              // Legacy single tokens → дерево
+              const mapLegacy: Record<string, { stat: string; sub: string }> = {
+                отказ: { stat: 'цех', sub: 'отказ' },
+                самовывоз: { stat: 'цех', sub: 'самовывоз' },
+                заявка: { stat: 'цех', sub: 'заявка' },
+                неликвиды: { stat: 'неликвиды', sub: '' },
+                вопрос: { stat: 'вопрос', sub: '' },
+              };
+              const leg = mapLegacy[v];
+              const st = leg?.stat ?? parsed.stat;
+              const su = leg?.sub ?? parsed.sub;
+              newVal = st;
+              after.set(viewRow.id, {
+                ...(after.get(viewRow.id) ?? {}),
+                stat: st,
+                stat_sub: su,
+                stat_manual: 1,
+              });
               statManualNext = 1;
             }
           } else if (spec.id === 'split_level') {

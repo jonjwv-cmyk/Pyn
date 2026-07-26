@@ -18,6 +18,7 @@ export * from './avatar-colors';
 export * from './default-avatars';
 export * from './endpoints';
 export * from './crypto';
+export * from './flow-stat';
 export * from './mol-query';
 export * from './mols-html';
 export * from './person-fio';

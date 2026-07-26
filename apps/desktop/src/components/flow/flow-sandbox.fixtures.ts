@@ -42,6 +42,12 @@ export interface FlowSandboxRow {
   day_wk: string; // G DAY — единая колонка: 'new' | 'OFF' | дата (ISO). Стадия ST схлопнута сюда (2026-06-05).
   stat: string; // I STAT — статус (хранимый: липкий ручной ИЛИ пусто=авто)
   stat_manual?: number; // флаг «статус задан/снят руками» (0 авто / 1 ручной); снимок → undefined=авто
+  /** Подстатус справочника (B1). */
+  stat_sub?: string;
+  /** STAT NOTE — свободный комментарий к статусу. */
+  stat_note?: string;
+  /** JSON-стек ручных статусов из Плана/Отчёта (A1). */
+  stat_stack?: string;
   time_at: string; // J TIME — когда выгружен к нам (до секунд)
   off_at?: string; // когда удалён (пропал из выгрузки → day_wk='OFF'); пусто — активен
   pct: number | null; // % — ВИРТУАЛЬНАЯ (в БД нет): считаем livePct из qty/chg; поле-ключ колонки
@@ -153,7 +159,9 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'pr', title: 'PR', width: 62, kind: 'text' },
   { id: 'point', title: 'ТОЧКА', width: 156, kind: 'dropdown', editable: true },
   { id: 'day_wk', title: 'DAY', width: 84, kind: 'day', editable: true },
-  { id: 'stat', title: 'STAT', width: 104, kind: 'dropdown', options: FLOW_STAT_DROPDOWN, editable: true },
+  { id: 'stat', title: 'STAT', width: 120, kind: 'dropdown', options: FLOW_STAT_DROPDOWN, editable: true },
+  /** STAT NOTE — свободный комментарий к статусу (после STAT; юзер 2026-07-26). */
+  { id: 'stat_note', title: 'STAT NOTE', width: 160, kind: 'text', editable: true },
   { id: 'pct', title: '%', width: 52, kind: 'percent' },
   { id: 'q', title: 'Q', width: 38, kind: 'text' },
   { id: 'no_num', title: 'NO. №', width: 86, kind: 'text' },
