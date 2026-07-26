@@ -65,10 +65,21 @@ export default {
           '50%': { backgroundPosition: '80% 32%, 22% 72%, 82% 22%, 30% 82%, 40% 55%' },
           '75%': { backgroundPosition: '34% 76%, 70% 60%, 55% 38%, 58% 50%, 76% 64%' },
         },
+        // Питомец: лёгкий bounce под музыку + nudge при «работе».
+        'pet-bounce': {
+          '0%, 100%': { transform: 'translateY(0)' },
+          '50%': { transform: 'translateY(-6px)' },
+        },
+        'pet-nudge': {
+          '0%, 100%': { transform: 'translateX(0)' },
+          '50%': { transform: 'translateX(3px)' },
+        },
       },
       animation: {
         shimmer: 'shimmer 1.8s linear infinite',
         mesh: 'mesh 15s ease-in-out infinite',
+        'pet-bounce': 'pet-bounce 0.45s ease-in-out infinite',
+        'pet-nudge': 'pet-nudge 0.55s ease-in-out infinite',
       },
     },
   },

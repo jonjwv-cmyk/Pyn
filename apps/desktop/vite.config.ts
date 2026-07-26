@@ -49,7 +49,8 @@ export default defineConfig(({ command }) => ({
               // utf-8-validate) глушим через resolve.alias ниже на пустой stub,
               // т.к. vite-plugin-electron делает несколько rollup-проходов и
               // `external`-флаг не подхватывается всеми из них.
-              external: ['electron'],
+              // uiohook-napi — native .node, не бандлить (подгружается из node_modules)
+              external: ['electron', 'uiohook-napi'],
             },
           },
           resolve: {

@@ -11,6 +11,7 @@ import { GoogleAccountPanel } from './GoogleAccountPanel';
 import { AppControlPanel } from './AppControlPanel';
 import { LanguagePanel } from './LanguagePanel';
 import { FontPanel } from './FontPanel';
+import { PetsPanel } from './PetsPanel';
 import { useUsersPanelState } from './users/use-users-panel-state';
 
 interface SettingsScreenProps {
@@ -98,6 +99,12 @@ function pickSubSectionUi(
         title: t('settings_sidebar.appearance'),
         actions: null,
         body: <FontPanel />,
+      };
+    case 'pets':
+      return {
+        title: t('settings_sidebar.pets'),
+        actions: null,
+        body: <PetsPanel />,
       };
     case 'google':
       return {

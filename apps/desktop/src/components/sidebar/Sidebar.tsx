@@ -3,6 +3,7 @@ import type { Role } from '@pyn/core';
 import {
   NAV_FEED,
   NAV_FLOW,
+  NAV_REPORT,
   NAV_VGH,
   NAV_TRANSPORT,
   NAV_LOG,
@@ -204,10 +205,8 @@ export function Sidebar({
   const collapsedWidth = computeCollapsedWidth(sections);
   const width = collapsed ? collapsedWidth : EXPANDED_WIDTH;
 
-  // «Рабочее» раскладываем по частоте: График и Хранилище достаём поимённо, чтобы
-  // расставить их в новом порядке (График — над Google-таблицами, Хранилище — внизу).
+  // «Рабочее»: График — над Google-таблицами (Хранилище убрано из сайдбара).
   const navSchedule = NAV_WORKSPACE_BEFORE_TABLES.find((s) => s.id === 'proba');
-  const navVault = NAV_WORKSPACE_BEFORE_TABLES.find((s) => s.id === 'vault');
 
   // Один пункт nav с учётом dynamic badge'а (merge из `sections`).
   const renderNavItem = (section: NavSection, textOnly = false) => {
@@ -322,12 +321,15 @@ export function Sidebar({
         {showFlow && <SyncNavRow collapsed={collapsed} userRole={userRole} />}
 
         {/* Секция «Работа». Порядок пунктов (юзер 2026-06-12):
-            Поток · Рассылка · Транспорт · База · График · ВГХ · ЛОГ · ОТИФ(серым) · Хранилище.
+            Поток · Сводка · Рассылка · Транспорт · База · График · ВГХ · ЛОГ · ОТИФ(серым).
             Общий NavGroupHeader — линия-разделитель совпадает с нижней группой «Лента». */}
         {showFlow && <NavGroupHeader label="Работа" collapsed={collapsed} />}
 
         {/* 1. «Поток» — главный дневной раздел (план/отчёт). */}
         {showFlow && renderNavItem(NAV_FLOW)}
+
+        {/* 1b. «Сводка» — PDF White/Black. */}
+        {showFlow && renderNavItem(NAV_REPORT)}
 
         {/* 2. «Рассылка». */}
         {showBroadcast && renderNavItem(NAV_BROADCAST)}
@@ -370,9 +372,6 @@ export function Sidebar({
             onSectionClick(sectionId);
           }}
         />
-
-        {/* «Хранилище» — вспомогательное, внизу рабочей группы. */}
-        {navVault && renderNavItem(navVault)}
 
         {/* Группа «Лента»: Чаты, Новости. */}
         <NavGroupHeader label={t('sidebar.group_feed')} collapsed={collapsed} />

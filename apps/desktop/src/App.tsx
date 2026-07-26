@@ -3,8 +3,7 @@ import i18next from 'i18next';
 import { useTranslation } from 'react-i18next';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { Sidebar } from '@/components/sidebar';
-import { AiAssistantPanel } from '@/components/ai/AiAssistantPanel';
-import { useAiStore } from '@/lib/ai-store';
+
 import { useSelectionCopy } from '@/lib/use-selection-copy';
 import { ChatConversation, ChatList } from '@/components/chats';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
@@ -15,6 +14,7 @@ import { VghScreen } from '@/components/vgh';
 import { TransportScreen } from '@/components/flow/TransportScreen';
 import { MapScreen } from '@/components/map/MapScreen';
 import { TechScreen } from '@/components/tech/TechScreen';
+import { ReportScreen } from '@/components/report';
 import { MolScreen } from '@/components/mol';
 import { PersonEditDialog } from '@/components/mol/PersonEditDialog';
 import { distinctStatuses } from '@/lib/persons-view';
@@ -26,7 +26,6 @@ import { usePersonsStore } from '@/lib/persons-store';
 import { prefetchScheduleMonthsMeta } from '@/lib/schedule/use-schedule-sync';
 import { NewsFeed } from '@/components/news';
 import { ProbaScreen } from '@/components/proba';
-import { StorageScreen } from '@/components/storage';
 import { TablesScreen } from '@/components/tables';
 import { UpdateConfirmDialog } from '@/components/system/UpdateConfirmDialog';
 import { SettingsScreen } from '@/components/settings';
@@ -236,7 +235,7 @@ export function App() {
   // Раньше admin при login сразу поднимал Поток+План+Транспорт+ВГХ (мегабайты
   // JSON, thrash на 8 ГБ, каскад «граф → МОЛ → …»). SF-паттерн 2026: lazy first
   // paint, warm after visit (display:none, не unmount).
-  const [heavyVisited, setHeavyVisited] = useState({ flow: false, transport: false, vgh: false });
+  const [heavyVisited, setHeavyVisited] = useState({ flow: false, transport: false, vgh: false, report: false });
   useEffect(() => {
     setHeavyVisited((prev) => {
       let changed = false;
@@ -244,6 +243,7 @@ export function App() {
       if (activeSection === 'flow' && !prev.flow) { next.flow = true; changed = true; }
       if (activeSection === 'transport' && !prev.transport) { next.transport = true; changed = true; }
       if (activeSection === 'vgh' && !prev.vgh) { next.vgh = true; changed = true; }
+      if (activeSection === 'report' && !prev.report) { next.report = true; changed = true; }
       return changed ? next : prev;
     });
   }, [activeSection]);
@@ -261,8 +261,8 @@ export function App() {
   const displaySection = (
     activeSection === 'proba' ||
     activeSection === 'mol' ||
-    activeSection === 'vault' ||
     activeSection === 'flow' ||
+    activeSection === 'report' ||
     activeSection === 'vgh' ||
     activeSection === 'transport' ||
     activeSection === 'log' ||
@@ -285,7 +285,7 @@ export function App() {
   // Иначе контентная область остаётся пустой и видно только bg-bg-deep (серое окно).
   useEffect(() => {
     if (!session) return;
-    const known = new Set(['proba', 'mol', 'vault', 'flow', 'vgh', 'transport', 'log', 'broadcast', 'map', 'tech', 'news', 'chats']);
+    const known = new Set(['proba', 'mol', 'flow', 'report', 'vgh', 'transport', 'log', 'broadcast', 'map', 'tech', 'news', 'chats']);
     const isSheet = activeSection.startsWith('sheet:');
     if (!known.has(activeSection) && !isSheet) {
       // mol — текущая работа (Контакты / диалог с Согласующими)
@@ -391,14 +391,32 @@ export function App() {
     }, [doLogout]),
   );
 
-  // Проактивный выход РОВНО в момент истечения — не ждём следующего серверного вызова, чтобы статус
-  // не «краснел» без выхода. Реактивный путь (auth-failure) остаётся бэкстопом. DEV не трогаем.
+  // Проактивный выход РОВНО в момент истечения — не «краснеть» и не зависать
+  // как offline. Dismiss «Продлить» не отменяет logout: через 5 мин (0) → QR.
+  // DEV не трогаем (HMR).
   const { remainingMs: sessionRemainingMs, hasInfo: hasSessionInfo } = useSessionRemaining();
+  const sessionZeroAtRef = useRef<number | null>(null);
   useEffect(() => {
     if (import.meta.env.DEV) return;
-    if (!session || !hasSessionInfo || sessionRemainingMs > 0) return;
-    window.pyn?.debugLog?.('session-expiry', 'remaining=0 → авто-выход на вход');
-    doLogout();
+    if (!session || !hasSessionInfo) {
+      sessionZeroAtRef.current = null;
+      return;
+    }
+    if (sessionRemainingMs > 0) {
+      sessionZeroAtRef.current = null;
+      return;
+    }
+    // remaining=0: сразу + страховка если первый тик «залип»
+    if (sessionZeroAtRef.current == null) {
+      sessionZeroAtRef.current = Date.now();
+      window.pyn?.debugLog?.('session-expiry', 'remaining=0 → авто-выход на вход');
+      doLogout();
+      return;
+    }
+    if (Date.now() - sessionZeroAtRef.current > 2000 && session) {
+      window.pyn?.debugLog?.('session-expiry', 'remaining=0 sticky → повторный выход');
+      doLogout();
+    }
   }, [session, hasSessionInfo, sessionRemainingMs, doLogout]);
 
   // Restore persisted session на mount.
@@ -552,6 +570,20 @@ export function App() {
       void refreshConversations();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  // Admin/dev: prefs с сервера (hydrate→pull) + always-on-top питомец.
+  useEffect(() => {
+    if (!session || !isAdminLike(session.role)) {
+      void window.pyn?.pet?.hide?.();
+      return;
+    }
+    void (async () => {
+      const { initDesktopPrefs } = await import('@/lib/desktop-prefs');
+      // token уже в api (login/restore) — иначе prefs → auth_required
+      await initDesktopPrefs();
+      void window.pyn?.pet?.show?.();
+    })();
   }, [session]);
 
   // На session change для admin/developer — подтянуть список users c аватарами
@@ -1212,7 +1244,10 @@ export function App() {
               showMap={isAdminLike(session.role)}
               showTech={isAdminLike(session.role)}
               onToggleCollapsed={() => setCollapsed((v) => !v)}
-              onAiClick={() => useAiStore.getState().setOpen(true)}
+              onAiClick={() => {
+                // Сайдбар: показать / скрыть always-on-top питомца
+                void window.pyn?.pet?.toggle?.();
+              }}
               onSectionClick={setActiveSection}
               onOpenSettings={() => setShowSettings(true)}
               onLogout={() => {
@@ -1232,14 +1267,14 @@ export function App() {
                 после Sidebar в row-flex → пустые/серые зоны или "серое окно".
                 Теперь один регион, mol (или другой displaySection) заполняет его полностью.
                 Fallback — только тонкий баннер сверху, не замена контента. */}
-            <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               {/* Тонкий баннер (не full-replacement), если persisted activeSection был устаревшим.
                   С force 'mol' в hydrate + displaySection + эффекты это почти не случается. */}
               {!(
                 activeSection === 'proba' ||
                 activeSection === 'mol' ||
-                activeSection === 'vault' ||
                 activeSection === 'flow' ||
+                activeSection === 'report' ||
                 activeSection === 'vgh' ||
                 activeSection === 'transport' ||
                 activeSection === 'log' ||
@@ -1271,16 +1306,16 @@ export function App() {
                 <MolScreen />
               </div>
 
-            {/* §design — Хранилище вынесено на подложку: h-9 шапка + контент
-                (Breadcrumb/Home/FileList) в WorkspaceCard. Conditional render —
-                storage-store держит currentPath между mount'ами. */}
-            {displaySection === 'vault' && <StorageScreen />}
-
             {/* §flow/vgh/transport — тяжёлые гриды: first-visit mount, затем keep-alive
                 (display-toggle). Не грузим 2–8 МБ таблиц при каждом login admin. */}
             {isAdminLike(session.role) && heavyVisited.flow && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'flow' ? 'flex' : 'none' }}>
                 <FlowScreen />
+              </div>
+            )}
+            {isAdminLike(session.role) && heavyVisited.report && (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" style={{ display: activeSection === 'report' ? 'flex' : 'none' }}>
+                <ReportScreen />
               </div>
             )}
             {isAdminLike(session.role) && heavyVisited.vgh && (
@@ -1436,13 +1471,7 @@ export function App() {
           </div>
         )}
 
-        {/* ИИ-помощник — общий чат в правом нижнем углу (admin/developer). */}
-        {isAdminLike(session.role) && (
-          <AiAssistantPanel
-            myLogin={session.user.login}
-            myName={session.user.fullName || session.user.login}
-          />
-        )}
+        {/* Питомец — отдельное always-on-top окно (#pet), не внутри main. */}
 
         {updateInfo && (
           <UpdateConfirmDialog

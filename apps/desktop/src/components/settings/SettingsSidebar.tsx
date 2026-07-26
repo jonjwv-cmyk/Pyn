@@ -1,4 +1,4 @@
-import { ArrowLeft, Chrome, Globe, Palette, ServerCog, Users, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, Chrome, Globe, Palette, PawPrint, ServerCog, Users, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { isDeveloper, type Role } from '@pyn/core';
 import { cn } from '@/lib/cn';
@@ -8,6 +8,7 @@ export type SettingsSubSection =
   | 'users'
   | 'language'
   | 'appearance'
+  | 'pets'
   | 'google'
   | 'app-control';
 
@@ -26,6 +27,7 @@ const ALL_ITEMS: SubItem[] = [
   { id: 'users',        labelKey: 'users',       icon: Users,       devOnly: true },
   { id: 'language',     labelKey: 'language',    icon: Globe },
   { id: 'appearance',   labelKey: 'appearance',  icon: Palette },
+  { id: 'pets',         labelKey: 'pets',        icon: PawPrint },
   { id: 'google',       labelKey: 'google',      icon: Chrome },
   { id: 'app-control',  labelKey: 'app_control', icon: ServerCog,   devOnly: true },
 ];

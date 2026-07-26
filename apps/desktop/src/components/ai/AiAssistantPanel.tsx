@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
-import { ArrowUp, Check, Copy, HelpCircle, Minus, Sparkles, X } from 'lucide-react';
+import { ArrowUp, Check, Copy, HelpCircle, Minus, PawPrint, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useWsEvent } from '@/lib/ws';
 import { DateDivider } from '@/components/ui/DateDivider';
 import { formatDayDividerLabel, formatTimeYek, yekDayKeyFor } from '@/lib/format-time';
 import { useAiStore, type AiChatMessage, type AiServerMessage } from '@/lib/ai-store';
+import { usePetStore } from '@/lib/pet-store';
+import { YoutubeLofiPlayer } from './YoutubeLofiPlayer';
+import { PetActivityBridge } from './PetActivityBridge';
+import { PetCompanionCard } from './PetCompanionCard';
 
 interface AiQueryResponse {
   ok: boolean;
@@ -24,12 +28,10 @@ interface AiAssistantPanelProps {
 }
 
 /**
- * ИИ-помощник — общий чат в правом нижнем углу (как чат с оператором).
- * Снизу ввод, сверху лента «кто спросил → вопрос → ответ». Сворачивается в
- * пилюлю, закрывается крестиком. В шапке — остаток общего лимита.
- *
- * MVP: отправка `ai_query` + показ ответа + счётчик. История/realtime/кэш —
- * следующим слоем (ai_history + событие ai_message + persist).
+ * Питомец-компаньон + ИИ-чат.
+ * Свёрнут = живой спрайт «Питомец» (drag). Развёрнут = спрайт слева + лента
+ * чата справа (весь прежний ai_query / history / status). Музыка — Hi-Fi в
+ * сайдбаре + YoutubeLofiPlayer; mood — PetActivityBridge.
  */
 export function AiAssistantPanel({ myLogin, myName }: AiAssistantPanelProps) {
   const { t } = useTranslation();
@@ -47,8 +49,20 @@ export function AiAssistantPanel({ myLogin, myName }: AiAssistantPanelProps) {
   const geom = useAiStore((s) => s.geom);
   const setPillPos = useAiStore((s) => s.setPillPos);
   const setPanelSize = useAiStore((s) => s.setPanelSize);
+  const petName = usePetStore((s) => s.name);
+  const setAiThinking = usePetStore((s) => s.setAiThinking);
 
-  const pillDrag = usePillDrag(geom.pill, setPillPos, toggleMinimized);
+  const expandFromPet = useCallback(() => {
+    useAiStore.getState().setOpen(true);
+    if (useAiStore.getState().minimized) useAiStore.getState().toggleMinimized();
+  }, []);
+
+  const pillDrag = usePillDrag(geom.pill, setPillPos, () => {
+    // Клик по карточке: если чат закрыт/свёрнут — открыть; иначе фраза.
+    if (!useAiStore.getState().open || useAiStore.getState().minimized) {
+      expandFromPet();
+    }
+  });
   const panelResize = usePanelResize(geom.size, setPanelSize);
 
   const [input, setInput] = useState('');
@@ -97,9 +111,8 @@ export function AiAssistantPanel({ myLogin, myName }: AiAssistantPanelProps) {
     }
   }, [messages, open, minimized]);
 
-  // При открытии подтягиваем индикатор «модель + остаток %» в шапку.
+  // Статус модели/% — на карточке питомца всегда (не только в открытом чате).
   useEffect(() => {
-    if (!open) return;
     void (async () => {
       try {
         const s = await api.call<{ model_label?: string; remaining_pct?: number }>('ai_status', {});
@@ -108,7 +121,7 @@ export function AiAssistantPanel({ myLogin, myName }: AiAssistantPanelProps) {
         /* ignore */
       }
     })();
-  }, [open, setStatus]);
+  }, [setStatus]);
 
   const send = useCallback(async () => {
     const q = input.trim();
@@ -121,6 +134,7 @@ export function AiAssistantPanel({ myLogin, myName }: AiAssistantPanelProps) {
       ...prev,
       { key, login: myLogin, name: myName, question: q, answer: '', pending: true },
     ]);
+    setAiThinking(true);
     try {
       const res = await api.call<AiQueryResponse>('ai_query', { question: q }, { timeoutMs: 90_000 });
       const st = { model_label: res.model_label, remaining_pct: res.remaining_pct };
@@ -158,8 +172,12 @@ export function AiAssistantPanel({ myLogin, myName }: AiAssistantPanelProps) {
             : m,
         ),
       );
+    } finally {
+      // Сбрасываем think только если других pending нет.
+      const still = useAiStore.getState().messages.some((m) => m.pending);
+      setAiThinking(still);
     }
-  }, [input, myLogin, myName, setMessages, setStatus, upsertServer]);
+  }, [input, myLogin, myName, setMessages, setStatus, upsertServer, setAiThinking]);
 
   // Группировка по yek-дню (как в Чатах) — внутри каждой группы плавающий
   // sticky-разделитель даты. Оптимистичные сообщения без created_at → dayKey 0
@@ -175,204 +193,151 @@ export function AiAssistantPanel({ myLogin, myName }: AiAssistantPanelProps) {
     return out;
   }, [messages]);
 
-  if (!open) return null;
-
-  if (minimized) {
-    // Сочный mesh: насыщенные цветные источники с плотным ядром (color до ~20%,
-    // прозрачность дальше) — плавно блуждают по площади, перекрываются богато,
-    // без туманных размывов. Анкор — фирменный clay, акценты — водно-плазменные.
-    const mesh =
-      'radial-gradient(circle,#F2774C 0%,#F2774C 22%,transparent 60%),' +
-      'radial-gradient(circle,#3FC6E8 0%,#3FC6E8 18%,transparent 56%),' +
-      'radial-gradient(circle,#B664F5 0%,#B664F5 18%,transparent 56%),' +
-      'radial-gradient(circle,#5C84F5 0%,#5C84F5 18%,transparent 56%),' +
-      'radial-gradient(circle,#F0A23F 0%,#F0A23F 20%,transparent 58%)';
-    const meshStyle = {
-      backgroundImage: mesh,
-      backgroundSize: '150% 150%', // крупные плотные пятна → богатое перекрытие
-      backgroundRepeat: 'no-repeat',
-    } as const;
-    // Цветной кант-рамка (тот же набор по кругу, насыщеннее, без шва).
-    const borderGrad =
-      'conic-gradient(from 0deg,#F2774C,#F0A23F,#3FC6E8,#5C84F5,#B664F5,#F2774C)';
-    const pos = pillDrag.pos;
-    return (
-      <button
-        type="button"
-        aria-label="Развернуть AI Gemini"
-        onPointerDown={pillDrag.onPointerDown}
-        onPointerMove={pillDrag.onPointerMove}
-        onPointerUp={pillDrag.onPointerUp}
-        onClick={pillDrag.onClick}
-        style={pos ? { left: pos.x, top: pos.y } : undefined}
-        className={cn(
-          'group fixed z-[60] touch-none select-none rounded-full',
-          'cursor-grab active:cursor-grabbing',
-          !pos && 'bottom-4 right-4',
-        )}
-      >
-        {/* Насыщенное цветное свечение-ореол по площади (размытая копия mesh). */}
-        <span
-          aria-hidden
-          className="pointer-events-none absolute -inset-1 rounded-full opacity-90 blur-[7px] saturate-150 animate-mesh group-hover:opacity-100 motion-reduce:animate-none"
-          style={meshStyle}
-        />
-        {/* Сочный цветной кант 2px (тело перекрывает центр). */}
-        <span
-          className="relative block overflow-hidden rounded-full p-[2px] shadow-lg"
-          style={{ backgroundImage: borderGrad }}
-        >
-          {/* Тело: тёмная подложка + плотный цветной градиент; текст/иконка поверх. */}
-          <span className="relative flex items-center gap-2 overflow-hidden rounded-full bg-bg-primary px-3.5 py-2 text-[13px] font-medium text-white [text-shadow:0_1px_3px_rgba(0,0,0,0.5)]">
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-0 opacity-90 saturate-150 animate-mesh motion-reduce:animate-none"
-              style={meshStyle}
-            />
-            <Sparkles className="relative h-4 w-4 drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" strokeWidth={1.85} />
-            <span className="relative">AI Gemini</span>
-          </span>
-        </span>
-      </button>
-    );
-  }
+  // Питомец всегда на экране (своя карточка). Чат — отдельное лаконичное окно слева.
+  const showChat = open && !minimized;
+  // Чат по умолчанию слева от правого нижнего угла (место под pet card ~140px).
+  const chatRight = 16 + 140 + 10; // right padding + pet width + gap
 
   return (
-    <div
-      style={{ width: panelResize.size.w, height: panelResize.size.h }}
-      className={cn(
-        'fixed bottom-4 right-4 z-[60] flex flex-col',
-        // Стеклянное окно (как пилюля): полупрозрачный фон + блюр подложки.
-        'overflow-hidden rounded-xl border border-border-strong bg-bg-surface/80 backdrop-blur-2xl',
-        'shadow-[0_12px_48px_rgba(0,0,0,0.55)] ring-1 ring-white/10',
-      )}
-    >
-      {/* Ресайз за края/угол: окно якорится снизу-справа, поэтому верхний край
-          растит высоту, левый — ширину, угол — оба. */}
-      <div aria-hidden {...panelResize.makeHandlers('n')} className="absolute left-3 right-3 top-0 z-10 h-1.5 cursor-ns-resize touch-none" />
-      <div aria-hidden {...panelResize.makeHandlers('w')} className="absolute bottom-3 left-0 top-3 z-10 w-1.5 cursor-ew-resize touch-none" />
-      <div
-        role="separator"
-        aria-label="Изменить размер окна"
-        {...panelResize.makeHandlers('nw')}
-        className="group absolute left-0 top-0 z-10 h-4 w-4 cursor-nwse-resize touch-none"
-      >
-        <span className="absolute left-1 top-1 h-2 w-2 rounded-tl-[3px] border-l-2 border-t-2 border-border-strong opacity-0 transition-opacity group-hover:opacity-100" />
-      </div>
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-border-default px-3">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-accent-clay" strokeWidth={1.75} />
-          <span className="text-[13px] font-medium text-text-strong">AI Gemini</span>
-        </div>
-        <div className="flex items-center gap-0.5">
-          {/* Текущая модель цепочки + остаток её дневной квоты (%). Модель слева. */}
-          {modelLabel && (
-            <span className="mr-1.5 flex items-center gap-1 text-[11px] text-text-muted">
-              <span className="font-medium text-text-secondary">{modelLabel}</span>
-              <span className="text-text-muted/40">·</span>
-              <span className="tabular-nums">{t('ai.remaining_pct', { p: remainingPct })}</span>
-            </span>
-          )}
-          {/* «Что я могу» — простая подсказка-концепция (рядом с индикатором). */}
-          <Popover.Root>
-            <Popover.Trigger asChild>
-              <button
-                type="button"
-                aria-label={t('ai.help')}
-                title={t('ai.help')}
-                className="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
-              >
-                <HelpCircle className="h-4 w-4" strokeWidth={1.75} />
-              </button>
-            </Popover.Trigger>
-            <Popover.Portal>
-              <Popover.Content
-                side="bottom"
-                align="end"
-                sideOffset={6}
-                className={cn(
-                  'z-[70] w-[300px] rounded-xl border border-border-default bg-bg-elevated p-3 shadow-2xl',
-                  'data-[state=open]:animate-in data-[state=closed]:animate-out',
-                  'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
-                  'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
-                )}
-              >
-                <div className="mb-1.5 flex items-center gap-1.5">
-                  <Sparkles className="h-3.5 w-3.5 text-accent-clay" strokeWidth={1.75} />
-                  <span className="text-[12px] font-semibold text-text-strong">{t('ai.help_greeting')}</span>
-                </div>
-                <HelpBody text={t('ai.help_body')} />
-              </Popover.Content>
-            </Popover.Portal>
-          </Popover.Root>
-          <HeaderButton title="Свернуть" onClick={toggleMinimized}>
-            <Minus className="h-4 w-4" strokeWidth={1.75} />
-          </HeaderButton>
-          <HeaderButton title="Закрыть" onClick={() => setOpen(false)}>
-            <X className="h-4 w-4" strokeWidth={1.75} />
-          </HeaderButton>
-        </div>
-      </div>
+    <>
+      <YoutubeLofiPlayer />
+      <PetActivityBridge />
 
-      <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3">
-        {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-[13px] text-text-muted">
-            {t('ai.empty')}
-          </div>
-        ) : (
-          <div className="flex flex-col">
-            {groups.map((g) => (
-              // Без gap на обёртке — sticky-divider внутри flex+gap в Chromium
-              // капризничает (см. DateDivider). Отступы сообщений — вложенным space-y.
-              <div key={g.dayKey} className="flex flex-col">
-                {g.label && <DateDivider label={g.label} />}
-                <div className="space-y-3">
-                  {g.items.map((m) => (
-                    <MessageRow key={m.key} m={m} time={formatTimeYek(m.created_at)} />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <PetCompanionCard
+        modelLabel={modelLabel}
+        remainingPct={remainingPct}
+        drag={pillDrag}
+        chatOpen={showChat}
+      />
 
-      <div className="shrink-0 border-t border-border-default p-2">
+      {showChat && (
         <div
+          style={{
+            width: panelResize.size.w,
+            height: panelResize.size.h,
+            right: chatRight,
+          }}
           className={cn(
-            'flex items-end gap-1.5 rounded-xl border border-border-default bg-bg-deep px-2 py-1.5',
-            'transition-colors focus-within:border-accent-clay/60',
+            'fixed bottom-4 z-[60] flex flex-col',
+            'overflow-hidden rounded-2xl border border-border-default/80',
+            'bg-bg-surface/88 backdrop-blur-2xl',
+            'shadow-[0_12px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/8',
           )}
         >
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-            placeholder={t('ai.ask')}
-            rows={1}
-            className="max-h-28 min-h-[28px] flex-1 resize-none bg-transparent px-1 py-1 text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed"
-          />
-          {input.trim().length > 0 && (
-            <button
-              type="button"
-              onClick={() => void send()}
+          <div aria-hidden {...panelResize.makeHandlers('n')} className="absolute left-3 right-3 top-0 z-10 h-1.5 cursor-ns-resize touch-none" />
+          <div aria-hidden {...panelResize.makeHandlers('w')} className="absolute bottom-3 left-0 top-3 z-10 w-1.5 cursor-ew-resize touch-none" />
+          <div
+            role="separator"
+            aria-label="Изменить размер окна"
+            {...panelResize.makeHandlers('nw')}
+            className="group absolute left-0 top-0 z-10 h-4 w-4 cursor-nwse-resize touch-none"
+          >
+            <span className="absolute left-1 top-1 h-2 w-2 rounded-tl-[3px] border-l-2 border-t-2 border-border-strong opacity-0 transition-opacity group-hover:opacity-100" />
+          </div>
+
+          {/* Лаконичная шапка — без модели/% (они на карточке питомца). */}
+          <div className="flex h-9 shrink-0 items-center justify-between border-b border-border-subtle px-2.5">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <PawPrint className="h-3.5 w-3.5 shrink-0 text-accent-clay" strokeWidth={1.75} />
+              <span className="truncate text-[12px] font-medium text-text-strong">{petName}</span>
+            </div>
+            <div className="flex items-center gap-0.5">
+              <Popover.Root>
+                <Popover.Trigger asChild>
+                  <button
+                    type="button"
+                    aria-label={t('ai.help')}
+                    title={t('ai.help')}
+                    className="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-bg-hover hover:text-text-strong"
+                  >
+                    <HelpCircle className="h-3.5 w-3.5" strokeWidth={1.75} />
+                  </button>
+                </Popover.Trigger>
+                <Popover.Portal>
+                  <Popover.Content
+                    side="bottom"
+                    align="end"
+                    sideOffset={6}
+                    className={cn(
+                      'z-[70] w-[300px] rounded-xl border border-border-default bg-bg-elevated p-3 shadow-2xl',
+                    )}
+                  >
+                    <div className="mb-1.5 flex items-center gap-1.5">
+                      <PawPrint className="h-3.5 w-3.5 text-accent-clay" strokeWidth={1.75} />
+                      <span className="text-[12px] font-semibold text-text-strong">{t('ai.help_greeting')}</span>
+                    </div>
+                    <HelpBody text={t('ai.help_body')} />
+                  </Popover.Content>
+                </Popover.Portal>
+              </Popover.Root>
+              <HeaderButton title="Свернуть" onClick={toggleMinimized}>
+                <Minus className="h-3.5 w-3.5" strokeWidth={1.75} />
+              </HeaderButton>
+              <HeaderButton title="Закрыть" onClick={() => setOpen(false)}>
+                <X className="h-3.5 w-3.5" strokeWidth={1.75} />
+              </HeaderButton>
+            </div>
+          </div>
+
+          <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-2.5">
+            {messages.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-[12px] text-text-muted">
+                {t('ai.empty')}
+              </div>
+            ) : (
+              <div className="flex flex-col">
+                {groups.map((g) => (
+                  <div key={g.dayKey} className="flex flex-col">
+                    {g.label && <DateDivider label={g.label} />}
+                    <div className="space-y-2.5">
+                      {g.items.map((m) => (
+                        <MessageRow key={m.key} m={m} time={formatTimeYek(m.created_at)} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="shrink-0 border-t border-border-subtle p-2">
+            <div
               className={cn(
-                'mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
-                'bg-accent-clay text-white transition-colors hover:bg-accent-clay-dim',
+                'flex items-end gap-1.5 rounded-xl border border-border-default bg-bg-deep/80 px-2 py-1.5',
+                'transition-colors focus-within:border-accent-clay/50',
               )}
-              aria-label="Отправить"
             >
-              <ArrowUp className="h-4 w-4" strokeWidth={2} />
-            </button>
-          )}
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+                placeholder={t('ai.ask')}
+                rows={1}
+                className="max-h-24 min-h-[26px] flex-1 resize-none bg-transparent px-1 py-0.5 text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none"
+              />
+              {input.trim().length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void send()}
+                  className={cn(
+                    'mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
+                    'bg-accent-clay text-white transition-colors hover:bg-accent-clay-dim',
+                  )}
+                  aria-label="Отправить"
+                >
+                  <ArrowUp className="h-3.5 w-3.5" strokeWidth={2} />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      )}
+    </>
   );
 }
 
@@ -408,8 +373,8 @@ function HelpBody({ text }: { text: string }) {
 }
 
 /** Минимальный размер развёрнутого окна (px). Максимум — вьюпорт минус поля. */
-const MIN_W = 320;
-const MIN_H = 360;
+const MIN_W = 300;
+const MIN_H = 320;
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(Math.max(v, lo), hi);
@@ -582,9 +547,9 @@ function MessageRow({ m, time }: { m: AiChatMessage; time: string }) {
           </div>
         </div>
       </div>
-      {/* Ответ ИИ — слева (входящее). */}
+      {/* Ответ питомца / ИИ — слева (входящее). */}
       <div className="group flex items-start gap-1.5">
-        <Sparkles className="mt-1 h-3.5 w-3.5 shrink-0 text-accent-clay" strokeWidth={1.75} />
+        <PawPrint className="mt-1 h-3.5 w-3.5 shrink-0 text-accent-clay" strokeWidth={1.75} />
         <div
           className={cn(
             'max-w-[88%] select-text-msg rounded-2xl rounded-tl-sm px-3 py-1.5 text-[13px]',

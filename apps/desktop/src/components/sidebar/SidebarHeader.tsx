@@ -20,12 +20,7 @@ const BUTTON_SIZE = 24;       // h-6 w-6 = 24dp
 const TOOLTIP_GAP = 14;
 
 /**
- * Top row sidebar — кнопка сворачивания/разворачивания.
- *
- * Tooltip располагается **за правым краем sidebar** (как у NavItem-tooltip'ов
- * в collapsed mode). Offset вычисляется динамически:
- *
- *   sideOffset = sidebarWidth − buttonRightX + TOOLTIP_GAP
+ * Top row sidebar — сворачивание + кнопка «Питомец» (плеер только у питомца).
  */
 export function SidebarHeader({
   collapsed,

@@ -178,14 +178,68 @@ export function flowStatDropdownGroups(opts?: {
   return out;
 }
 
-/** Жёлтые для White-отчёта (позже): выполнено + цех·самовывоз. */
+/**
+ * Жёлтые маркеры из поток.docx (shd=ffff00 + верхние «общие»):
+ * в White остаются «честными»; всё остальное → «выполнено» (липовый %).
+ * Самовывоз: и legacy top-level, и цех·самовывоз.
+ */
+const WHITE_TOP = new Set(['выполнено', 'самовывоз', 'запрет снабжения']);
+const WHITE_YELLOW_SUBS: Readonly<Record<string, ReadonlySet<string>>> = {
+  АТУ: new Set(['ТС неисправно', 'ТС снято', 'ТС отказано', 'нет водителя', 'отказ водителя']),
+  склад: new Set([
+    'нет',
+    'мало',
+    'брак',
+    'кран сломан',
+    'нет погрузчика',
+    'погрузчик сломан',
+    'не комплект',
+  ]),
+  цех: new Set([
+    'возврат на склад',
+    'приемка',
+    'нет МОЛа',
+    'перенос',
+    'отказ',
+    'самовывоз',
+    'персонал занят',
+    'нет персонала',
+    'кран сломан',
+    'нет погрузчика',
+    'погрузчик сломан',
+  ]),
+};
+
+/** Жёлтый маркер White (docx): честный статус, не подменяется на «выполнено». */
 export function isFlowStatYellow(stat: string, sub = ''): boolean {
   const s = String(stat || '').trim();
   const u = String(sub || '').trim();
+  if (!s) return false;
+  if (WHITE_TOP.has(s)) return true;
+  const set = WHITE_YELLOW_SUBS[s];
+  return !!(set && u && set.has(u));
+}
+
+/** Вывезено: выполнено / самовывоз (в т.ч. цех·самовывоз). */
+export function isFlowStatShipped(stat: string, sub = ''): boolean {
+  const s = String(stat || '').trim();
+  const u = String(sub || '').trim();
   if (s === 'выполнено') return true;
+  if (s === 'самовывоз') return true;
   if (s === 'цех' && u === 'самовывоз') return true;
-  if (s === 'самовывоз') return true; // legacy
   return false;
+}
+
+/**
+ * White-проекция: жёлтые и пустой статус — как есть;
+ * прочие (не жёлтые) → «выполнено» (считаются увезёнными).
+ */
+export function whiteEffectiveStat(stat: string, sub = ''): { stat: string; sub: string } {
+  const s = String(stat || '').trim();
+  const u = String(sub || '').trim();
+  if (!s) return { stat: '', sub: '' };
+  if (isFlowStatYellow(s, u)) return { stat: s, sub: u };
+  return { stat: 'выполнено', sub: '' };
 }
 
 /** done_stat / fail_reason для совместимости occupies + старого UI. */

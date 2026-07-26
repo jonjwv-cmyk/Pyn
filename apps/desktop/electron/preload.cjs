@@ -360,4 +360,112 @@ contextBridge.exposeInMainWorld('pyn', {
       ipcRenderer.removeListener('pyn:visibility', wrapped);
     };
   },
+  /**
+   * Активность пользователя: клавиши из main webContents (в т.ч. webview /
+   * таблицы). Renderer слушает и двигает mood/фразы питомца.
+   * { kind: 'key' | 'mouse', x?, y? }
+   */
+  onUserActivity: function pynOnUserActivity(handler) {
+    const wrapped = (_evt, payload) => {
+      try {
+        handler(payload || {});
+      } catch (_) {
+        /* */
+      }
+    };
+    ipcRenderer.on('pyn:user-activity', wrapped);
+    return function unsubscribe() {
+      ipcRenderer.removeListener('pyn:user-activity', wrapped);
+    };
+  },
+  /** Always-on-top pet overlay (поверх всех приложений). */
+  pet: {
+    toggle: function pynPetToggle() {
+      return ipcRenderer.invoke('pyn:pet:toggle');
+    },
+    show: function pynPetShow() {
+      return ipcRenderer.invoke('pyn:pet:show');
+    },
+    hide: function pynPetHide() {
+      return ipcRenderer.invoke('pyn:pet:hide');
+    },
+    isVisible: function pynPetIsVisible() {
+      return ipcRenderer.invoke('pyn:pet:is-visible');
+    },
+    onVisible: function pynPetOnVisible(handler) {
+      const wrapped = (_e, v) => handler(!!v);
+      ipcRenderer.on('pyn:pet:visible', wrapped);
+      return function unsubscribe() {
+        ipcRenderer.removeListener('pyn:pet:visible', wrapped);
+      };
+    },
+    /** Статус system-wide input (Mac Accessibility + uiohook running). */
+    globalInputStatus: function pynPetGlobalInputStatus() {
+      return ipcRenderer.invoke('pyn:pet:global-input-status');
+    },
+    openAccessibility: function pynPetOpenAccessibility() {
+      return ipcRenderer.invoke('pyn:pet:open-accessibility');
+    },
+    retryGlobalInput: function pynPetRetryGlobalInput() {
+      return ipcRenderer.invoke('pyn:pet:retry-global-input');
+    },
+    onGlobalInput: function pynPetOnGlobalInput(handler) {
+      const wrapped = (_e, payload) => handler(payload || {});
+      ipcRenderer.on('pyn:pet:global-input', wrapped);
+      return function unsubscribe() {
+        ipcRenderer.removeListener('pyn:pet:global-input', wrapped);
+      };
+    },
+    getBounds: function pynPetGetBounds() {
+      return ipcRenderer.invoke('pyn:pet:get-bounds');
+    },
+    setBounds: function pynPetSetBounds(bounds) {
+      return ipcRenderer.invoke('pyn:pet:set-bounds', bounds);
+    },
+    moveBy: function pynPetMoveBy(dx, dy) {
+      return ipcRenderer.invoke('pyn:pet:move-by', dx, dy);
+    },
+    /** true = прозрачные зоны click-through (не блокируют скролл под окном). */
+    setIgnoreMouse: function pynPetSetIgnoreMouse(ignore) {
+      return ipcRenderer.invoke('pyn:pet:set-ignore-mouse', !!ignore);
+    },
+    /** idle | strip | full — размер окна под контент (якорь bottom-right). */
+    setLayout: function pynPetSetLayout(mode) {
+      return ipcRenderer.invoke('pyn:pet:set-layout', mode);
+    },
+    /** Разослать выбранный species в другие окна (settings → pet overlay). */
+    broadcastSpecies: function pynPetBroadcastSpecies(species) {
+      return ipcRenderer.invoke('pyn:pet:broadcast-species', species);
+    },
+    onSpecies: function pynPetOnSpecies(handler) {
+      const wrapped = (_e, species) => handler(species);
+      ipcRenderer.on('pyn:pet:species', wrapped);
+      return function unsubscribe() {
+        ipcRenderer.removeListener('pyn:pet:species', wrapped);
+      };
+    },
+  },
+  /** Music: engine в pet overlay; main Hi-Fi шлёт cmd / принимает state. */
+  music: {
+    cmd: function pynMusicCmd(cmd) {
+      return ipcRenderer.invoke('pyn:music:cmd', cmd);
+    },
+    broadcastState: function pynMusicBroadcastState(state) {
+      return ipcRenderer.invoke('pyn:music:state', state);
+    },
+    onCmd: function pynMusicOnCmd(handler) {
+      const wrapped = (_e, cmd) => handler(cmd);
+      ipcRenderer.on('pyn:music:cmd', wrapped);
+      return function unsubscribe() {
+        ipcRenderer.removeListener('pyn:music:cmd', wrapped);
+      };
+    },
+    onState: function pynMusicOnState(handler) {
+      const wrapped = (_e, state) => handler(state);
+      ipcRenderer.on('pyn:music:state', wrapped);
+      return function unsubscribe() {
+        ipcRenderer.removeListener('pyn:music:state', wrapped);
+      };
+    },
+  },
 });

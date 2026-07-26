@@ -61,6 +61,7 @@
     "nav_mol": "Custodios",
     "nav_base": "Base",
     "nav_flow": "Flujo",
+    "nav_report": "Resumen",
     "nav_vgh": "W&D",
     "nav_log": "LOG",
     "nav_broadcast": "Difusión",
@@ -432,9 +433,18 @@
     "language": "Idioma",
     "font": "Fuente",
     "appearance": "Apariencia",
+    "pets": "Mascotas",
     "google": "Google",
     "app_control": "Control",
     "soon": "pronto"
+  },
+  "settings_pets": {
+    "title": "Mascotas",
+    "blurb": "Compañero de escritorio: baila con Tokyo Lofi, reacciona al ratón y teclado, abre el chat de IA.",
+    "name": "Nombre",
+    "species": "Tipo",
+    "cat": "Gato",
+    "orb": "Orb"
   },
   "settings_google": {
     "checking": "Comprobando…",

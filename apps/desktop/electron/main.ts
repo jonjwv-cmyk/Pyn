@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, Tray, nativeImage } from 'electron';
+import { createPetWindow, setupPetBridge, sendPetActivity } from './pet-window';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { setupMainLog } from './log';
@@ -116,6 +117,33 @@ let trayMenuWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 
+/** Показать и поднять main-окно (запуск / second-instance / tray «Показать»). */
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+  if (isMac && app.dock) {
+    try {
+      app.dock.show();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+// ── Single instance: второй клик по EXE → фокус уже запущенного ──────────
+// До whenReady: иначе два процесса успеют подняться.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
+app.on('second-instance', () => {
+  if (!gotSingleInstanceLock) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  showMainWindow();
+});
+
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -136,6 +164,7 @@ function createMainWindow(): void {
         },
     trafficLightPosition: isMac ? { x: 16, y: 18 } : undefined,
     backgroundColor: '#1F1E1B',
+    // show:false + ready-to-show — без flash; страховка did-finish-load.
     show: false,
     webPreferences: {
       // .cjs — preload собран как CommonJS (см. vite.config.ts).
@@ -154,7 +183,37 @@ function createMainWindow(): void {
     },
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  // Запуск с рабочего стола → окно сразу, не только tray.
+  mainWindow.once('ready-to-show', () => showMainWindow());
+  mainWindow.webContents.once('did-finish-load', () => {
+    // Если ready-to-show уже прошёл / не сработал — всё равно показать.
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      showMainWindow();
+    }
+  });
+
+  // Питомец: клавиши из main + webview → pet overlay mood/фразы.
+  const forwardKeyActivity = (contents: Electron.WebContents) => {
+    contents.on('before-input-event', (_e, input) => {
+      if (input.type !== 'keyDown') return;
+      if (input.key === 'Meta' || input.key === 'Control' || input.key === 'Alt' || input.key === 'Shift') {
+        return;
+      }
+      const payload = { kind: 'key' as const };
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send('pyn:user-activity', payload);
+        } catch {
+          /* */
+        }
+      }
+      sendPetActivity(payload);
+    });
+  };
+  forwardKeyActivity(mainWindow.webContents);
+  mainWindow.webContents.on('did-attach-webview', (_e, guest) => {
+    forwardKeyActivity(guest);
+  });
 
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     // eslint-disable-next-line no-console
@@ -361,6 +420,9 @@ function setupTray(): void {
 }
 
 app.whenReady().then(async () => {
+  // Второй экземпляр уже ушёл в quit — не поднимаем окна.
+  if (!gotSingleInstanceLock) return;
+
   // Убираем дефолтное Electron-меню (File/Edit/View/Window/Help) — у Pyn
   // свой UI, native menu только засоряет окно. Стандартные shortcut'ы
   // (Ctrl+C / V / X / Z / A / W / Q) работают через `Edit`/`Window`-роли
@@ -436,18 +498,12 @@ app.whenReady().then(async () => {
   // Tray bridge — actions из React tray menu (show/settings/quit/close).
   setupTrayBridge({
     showMainWindow: () => {
-      if (!mainWindow) return;
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      if (!mainWindow.isVisible()) mainWindow.show();
-      mainWindow.focus();
+      showMainWindow();
     },
     openSettings: () => {
-      if (!mainWindow) return;
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      if (!mainWindow.isVisible()) mainWindow.show();
-      mainWindow.focus();
+      showMainWindow();
       // Renderer слушает событие через window.pyn.tray.onOpenSettings → открывает Settings overlay.
-      mainWindow.webContents.send('pyn:tray:open-settings');
+      mainWindow?.webContents.send('pyn:tray:open-settings');
     },
     quit: () => {
       isQuitting = true;
@@ -460,8 +516,11 @@ app.whenReady().then(async () => {
     },
   });
 
+  setupPetBridge();
   createMainWindow();
   createTrayMenuWindow();
+  // Pet overlay создаём заранее (скрытый) — show по логину / toggle сайдбара.
+  createPetWindow();
   setupTray();
 
   // §pyn-1.2.54 — если запущены с CLI-арг --remove-prev=<path> (новый

@@ -49,7 +49,8 @@ export interface AiGeom {
   size: { w: number; h: number };
 }
 
-const DEFAULT_GEOM: AiGeom = { pill: null, size: { w: 380, h: 520 } };
+/** Лаконичный чат рядом с карточкой питомца (пет отдельно). */
+const DEFAULT_GEOM: AiGeom = { pill: null, size: { w: 360, h: 480 } };
 
 interface AiStoreState {
   open: boolean;

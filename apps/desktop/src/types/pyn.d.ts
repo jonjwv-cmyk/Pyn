@@ -322,6 +322,76 @@ declare global {
       onVisibilityChange: (
         handler: (state: 'foreground' | 'background') => void,
       ) => () => void;
+      /**
+       * Клавиши/активность из main (webview, любые webContents).
+       * Питомец: typing mood + комплименты продуктивности.
+       */
+      onUserActivity?: (
+        handler: (ev: { kind: 'key' | 'mouse'; x?: number; y?: number }) => void,
+      ) => () => void;
+      /** Always-on-top pet overlay + system-wide input. */
+      pet?: {
+        toggle: () => Promise<boolean>;
+        show: () => Promise<boolean>;
+        hide: () => Promise<boolean>;
+        isVisible: () => Promise<boolean>;
+        onVisible: (handler: (visible: boolean) => void) => () => void;
+        globalInputStatus: () => Promise<{
+          ok: boolean;
+          permitted?: boolean;
+          running?: boolean;
+          platform: string;
+        }>;
+        openAccessibility: () => Promise<boolean>;
+        /** После выдачи Accessibility — перезапуск uiohook. */
+        retryGlobalInput: () => Promise<{
+          ok?: boolean;
+          running?: boolean;
+          permitted?: boolean;
+          reason?: string;
+        }>;
+        onGlobalInput: (
+          handler: (ev: { ok: boolean; reason?: string; running?: boolean }) => void,
+        ) => () => void;
+        getBounds: () => Promise<{ x: number; y: number; width: number; height: number } | null>;
+        setBounds: (bounds: {
+          x?: number;
+          y?: number;
+          width?: number;
+          height?: number;
+        }) => Promise<void>;
+        moveBy: (dx: number, dy: number) => Promise<void>;
+        /** true = click-through прозрачных зон. */
+        setIgnoreMouse: (ignore: boolean) => Promise<boolean>;
+        /** idle | strip | full — размер окна под UI. */
+        setLayout: (mode: 'idle' | 'strip' | 'full') => Promise<boolean>;
+        /** Settings → other windows (pet overlay). */
+        broadcastSpecies: (species: string) => Promise<boolean>;
+        onSpecies: (handler: (species: string) => void) => () => void;
+      };
+      /** Music bridge (engine = pet overlay). */
+      music?: {
+        cmd: (cmd: 'toggle' | 'next' | 'cycleWave' | string) => Promise<boolean>;
+        broadcastState: (state: {
+          wantPlaying: boolean;
+          isPlaying: boolean;
+          trackTitle: string;
+          waveIndex: number;
+          error: string | null;
+          ready: boolean;
+        }) => Promise<boolean>;
+        onCmd: (handler: (cmd: string) => void) => () => void;
+        onState: (
+          handler: (state: {
+            wantPlaying: boolean;
+            isPlaying: boolean;
+            trackTitle: string;
+            waveIndex: number;
+            error: string | null;
+            ready: boolean;
+          }) => void,
+        ) => () => void;
+      };
     };
   }
   /**

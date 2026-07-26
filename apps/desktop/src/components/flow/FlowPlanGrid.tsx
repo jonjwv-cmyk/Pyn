@@ -240,9 +240,10 @@ const PLAN_HIDDEN_COLS: readonly PlanHiddenColSpec[] = [
   { id: 'stock_note', title: 'Мест хран', width: 160, anchorAfter: 'mol' },
 ];
 
-/** §3.3 Отчёт — 22 видимых + 10 скрываемых = 32. БАЛЛ всегда видна. */
+/** §3.3 Отчёт — FIX + ГРАФ + … БАЛЛ всегда видна. */
 const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'fix', title: 'FIX', width: 60 },
+  { id: 'graph', title: 'ГРАФ', width: 56 },
   { id: 'fr', title: 'От', width: 52 },
   { id: 'to', title: 'СП', width: 52 },
   { id: 'pr', title: 'PR', width: 64 },
@@ -1390,8 +1391,8 @@ export function FlowPlanGrid({
     (r: FlowDeliveryRow): number | null => (mode === 'report' && r.fact_qty != null ? r.fact_qty : r.qty),
     [mode],
   );
-  // ГРАФ строки (В4, юзер 2026-07-02): день недели склада из графика месяца строки +
-  // ближайшее вхождение ≥ даты плана («ПТ.3»). soon = «без перескока недель» (зелёный).
+  // ГРАФ (юзер 2026-07-26): «да» если день плана = день склада в графике;
+  // иначе ближайшая дата графика «июл 22» (год — если ≠ текущий); нет в графике — «—».
   const graphInfo = useCallback(
     (r: FlowDeliveryRow): { label: string; soon: boolean } | null => {
       const wh = whMapGet(whByKey, r.to_wh);
@@ -1403,11 +1404,20 @@ export function FlowPlanGrid({
       } else if (m && canUseLiveWarehouseScheduleForMonth(m.year, m.month) && (!meta || meta.exists !== false)) {
         day = wh && Number(wh.in_schedule) === 1 ? wh.delivery_day : null;
       }
-      if (!day) return null;
+      // Нет в графике — «нет» (юзер 2026-07-26; сводка: «Нет в графике»).
+      if (!day) return { label: 'нет', soon: false };
       const todayIso = todayIsoLocal();
       const ref = /^\d{4}-\d{2}-\d{2}/.test(r.plan_date || '') ? (r.plan_date || '').slice(0, 10) : todayIso;
       const near = nearestGraphDate(day, ref);
-      return { label: graphDayLabel(day, near), soon: graphDateSoon(near, todayIso) };
+      if (near && near === ref) return { label: 'да', soon: true };
+      if (!near) return { label: 'нет', soon: false };
+      // дата графика: «июл 22» / «июл 22 2025»
+      const mon = MONTH_ABBR_RU[Number(near.slice(5, 7)) - 1] ?? near.slice(5, 7);
+      const dd = parseInt(near.slice(8, 10), 10);
+      const yy = Number(near.slice(0, 4));
+      const curY = Number(todayIso.slice(0, 4));
+      const label = yy !== curY ? `${mon} ${dd} ${yy}` : `${mon} ${dd}`;
+      return { label, soon: graphDateSoon(near, todayIso) };
     },
     [whByKey, scheduleMetaMap],
   );
@@ -1428,9 +1438,9 @@ export function FlowPlanGrid({
           return r.q_spec ?? '';
         case 'graph': {
           // День доставки склада из графика месяца + ЧИСЛО ближайшего вхождения ≥ даты
-          // плана строки: «ПТ.3» (юзер 2026-07-02, В4). Нет в графике — «—».
+          // плана строки. Нет в графике — «нет»; день = график — «да»; иначе дата графика.
           const g = graphInfo(r);
-          return g ? g.label : '—';
+          return g ? g.label : 'нет';
         }
         case 'clst': {
           // Только ВЫЕЗД/КХП (НТМК и прочие кластеры — пусто). День — в GRAPH (ТЗ §6).
@@ -2261,14 +2271,25 @@ export function FlowPlanGrid({
     [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo, whStatusNote, rowExpeditors, rowVehicle, mapPoints, transferChainDates, routeNoteByRowId, vghByKey, prodCalByYear],
   );
 
-  /** Применить серверные строки поставок (ответ правки/конфликта). */
+  /**
+   * Серверные строки: принимаем только если version ≥ локальной.
+   * Конфликт (тот же version, UPDATE не прошёл) раньше ЗАМЕЩАЛ оптимистичный
+   * STAT старым снимком → «вставил — откатилось».
+   */
   const applyServerDlv = useCallback((serverRows: FlowDeliveryRow[]) => {
     if (serverRows.length === 0) return;
     setRows((prev) => {
       const byId = new Map(prev.map((r) => [r.id, r] as const));
       for (const r of serverRows) {
-        if (Number(r.reserved) === 1) byId.delete(r.id);
-        else byId.set(r.id, r);
+        if (Number(r.reserved) === 1) {
+          byId.delete(r.id);
+          continue;
+        }
+        const cur = byId.get(r.id);
+        if (cur && Number(r.row_version) < Number(cur.row_version)) continue;
+        // version равен → сервер не записал (conflict): локальный optimistic не трогаем
+        if (cur && Number(r.row_version) === Number(cur.row_version)) continue;
+        byId.set(r.id, r);
       }
       const next = [...byId.values()];
       planDlvCache = next;
@@ -2302,6 +2323,7 @@ export function FlowPlanGrid({
 
   // Применить набор полей к поставке (оптимистично + сервер) БЕЗ записи в историю — общий
   // путь для правки и для отмены/повтора. row_version берём актуальный из rowsRef.
+  // При conflict — один retry со свежей version (STAT paste «откат»).
   const applyDlvFields = useCallback(
     (id: number, fields: Record<string, string | number | null>) => {
       const cur = rowsRef.current.find((x) => x.id === id);
@@ -2317,9 +2339,32 @@ export function FlowPlanGrid({
         rowsRef.current = next;
         return next;
       });
-      void flowDeliveriesEdit(api, [{ id, row_version: cur.row_version, fields }]).then((res) =>
-        applyServerDlv(res.rows),
-      );
+      void flowDeliveriesEdit(api, [{ id, row_version: cur.row_version, fields }])
+        .then(async (res) => {
+          applyServerDlv(res.rows);
+          if (!res.conflicts.includes(id)) return;
+          const fresh = rowsRef.current.find((x) => x.id === id);
+          if (!fresh) return;
+          // conflict: накатим поля снова на актуальный version
+          setRows((prev) => {
+            const next = prev.map((x) =>
+              x.id === id ? ({ ...x, ...fields } as FlowDeliveryRow) : x,
+            );
+            planDlvCache = next;
+            rowsRef.current = next;
+            return next;
+          });
+          const res2 = await flowDeliveriesEdit(api, [
+            { id, row_version: fresh.row_version, fields },
+          ]);
+          applyServerDlv(res2.rows);
+          if (res2.conflicts.includes(id)) {
+            setMsg('Не удалось сохранить статус — обновите строку и повторите');
+          }
+        })
+        .catch((e) => {
+          setMsg(`Правка: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
+        });
     },
     [applyServerDlv, rowLocked],
   );
@@ -2347,6 +2392,7 @@ export function FlowPlanGrid({
     [syncHistory],
   );
   // Применить пачку правок заливки (одно действие: оптимистично + один запрос серверу).
+  // Conflict → retry раз со свежими version (иначе STAT/NOTE «вставилось и откатилось»).
   const applyFillItems = useCallback(
     (items: PlanEdit[], side: 'before' | 'after') => {
       const cur = new Map(rowsRef.current.map((x) => [x.id, x] as const));
@@ -2357,10 +2403,52 @@ export function FlowPlanGrid({
         rowsRef.current = next;
         return next;
       });
-      void flowDeliveriesEdit(
-        api,
-        items.map((it) => ({ id: it.id, row_version: cur.get(it.id)?.row_version ?? 0, fields: it[side] })),
-      ).then((res) => applyServerDlv(res.rows));
+      const payload = items.map((it) => ({
+        id: it.id,
+        row_version: cur.get(it.id)?.row_version ?? 0,
+        fields: it[side],
+      }));
+      void flowDeliveriesEdit(api, payload)
+        .then(async (res) => {
+          applyServerDlv(res.rows);
+          if (res.conflicts.length === 0 || side !== 'after') return;
+          const conflictSet = new Set(res.conflicts);
+          const fieldsById = new Map(items.map((it) => [it.id, it.after] as const));
+          const serverById = new Map(res.rows.map((r) => [r.id, r] as const));
+          // conflict: взять version с сервера + снова наши поля, один retry.
+          setRows((prev) => {
+            const next = prev.map((x) => {
+              if (!conflictSet.has(x.id)) return x;
+              const f = fieldsById.get(x.id);
+              const srv = serverById.get(x.id);
+              if (!f) return x;
+              const base = srv ?? x;
+              return { ...base, ...f } as FlowDeliveryRow;
+            });
+            planDlvCache = next;
+            rowsRef.current = next;
+            return next;
+          });
+          const retry = res.conflicts
+            .map((id) => {
+              const fields = fieldsById.get(id);
+              const srv = serverById.get(id);
+              const row = rowsRef.current.find((x) => x.id === id);
+              if (!fields || !row) return null;
+              const ver = Number(srv?.row_version ?? row.row_version) || 0;
+              return { id, row_version: ver, fields };
+            })
+            .filter((x): x is { id: number; row_version: number; fields: Record<string, string | number | null> } => !!x);
+          if (retry.length === 0) return;
+          const res2 = await flowDeliveriesEdit(api, retry);
+          applyServerDlv(res2.rows);
+          if (res2.conflicts.length > 0) {
+            setMsg(`Не сохранено строк: ${res2.conflicts.length} — повторите вставку`);
+          }
+        })
+        .catch((e) => {
+          setMsg(`Вставка: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`);
+        });
     },
     [applyServerDlv],
   );
@@ -2667,31 +2755,20 @@ export function FlowPlanGrid({
         if (spec.id === 'status' && data.kind === 'flow-dropdown') {
           const value = String(data.value ?? '');
           if (value === 'перенос' || value === TRANSFER_REASON) {
-            const dlv = (r.dlv || '').trim();
-            const sameDeliveryRows = dlv
-              ? rows.filter((x) =>
-                  Number(x.fixation_id) > 0 &&
-                  Number(x.reserved) !== 1 &&
-                  (x.dlv || '').trim() === dlv &&
-                  (x.plan_date || '').slice(0, 10) === (r.plan_date || '').slice(0, 10),
-                )
-              : [r];
-            if (sameDeliveryRows.some((x) => rowLocked(x))) {
-              setMsg('Поставка содержит закрытые строки отчёта — перенос заблокирован');
+            // Позиционно: перенос только этой строки (1 ключ), не всей поставки.
+            if (rowLocked(r)) {
+              setMsg('Строка старше 7 дней — отчёт по ней закрыт');
               return;
             }
-            const sameRowIds = sameDeliveryRows.map((x) => x.id);
-            // П.11: поставка из >1 строки → спросить «позиция удалена из поставки?». Иначе
-            // (одна строка или черновик) — сразу к выбору дня (вся поставка, номер сохраняем).
-            const multi = !!dlv && sameRowIds.length > 1;
+            const dlv = (r.dlv || '').trim();
             setPendingTransfer({
               rowId: r.id,
               dlv,
-              sameRowIds,
-              ids: multi ? sameRowIds : [r.id],
+              sameRowIds: [r.id],
+              ids: [r.id],
               keepDlv: true,
-              label: dlv ? `поставка ${dlv}` : `1 строка · ${whDisplay(r.to_wh) || r.to_wh || ''}`,
-              step: multi ? 'ask' : 'date',
+              label: `1 строка · ${whDisplay(r.to_wh) || r.to_wh || ''}${dlv ? ` · ${dlv}` : ''}`,
+              step: 'date',
             });
             setMsg('');
             return;
@@ -2711,40 +2788,19 @@ export function FlowPlanGrid({
               fields.day_fact = td;
             }
           }
-          // R3.8 ПРИНЦИП ЕДИНОГО ДОКУМЕНТА: поставка — один документ. Нельзя одну позицию отметить,
-          // а другие нет → статус применяем КО ВСЕЙ поставке (все позиции dlv того дня). Частично =
-          // сначала удали лишние позиции из поставки в Плане (перенос «позиция удалена»), потом отметь.
-          const dlv = (r.dlv || '').trim();
-          const day = (r.plan_date || '').slice(0, 10);
-          const targets = dlv
-            ? rows.filter(
-                (x) =>
-                  Number(x.fixation_id) > 0 &&
-                  Number(x.reserved) !== 1 &&
-                  (x.dlv || '').trim() === dlv &&
-                  (x.plan_date || '').slice(0, 10) === day &&
-                  !rowLocked(x),
-              )
-            : [r];
-          const ts = targets.filter((t) => {
-            const b = captureBefore(t, fields);
-            return Object.keys(fields).some((k) => String(b[k] ?? '') !== String(fields[k] ?? ''));
-          });
-          if (ts.length === 0) return;
-          setRows((prev) => {
-            const ids = new Set(ts.map((t) => t.id));
-            const next = prev.map((x) => (ids.has(x.id) ? ({ ...x, ...fields } as FlowDeliveryRow) : x));
-            planDlvCache = next;
-            rowsRef.current = next;
-            return next;
-          });
-          void flowDeliveriesEdit(
-            api,
-            ts.map((t) => ({ id: t.id, row_version: t.row_version, fields })),
-          ).then((res) => applyServerDlv(res.rows));
-          // История — на инициирующую строку (отмена статуса), остальные правятся тем же значением.
-          pushHistory({ id: r.id, before: captureBefore(r, fields), after: fields });
-          if (dlv && ts.length > 1) setMsg(`Статус применён ко всей поставке ${dlv} (${ts.length} поз.)`);
+          // Позиционно (юзер 2026-07-26): статус — только на ЭТУ строку (ключ id),
+          // не на всю поставку. Перенос/STAT/NOTE всегда 1 строка = 1 ключ.
+          if (rowLocked(r)) {
+            setMsg('Строка старше 7 дней — отчёт по ней закрыт');
+            return;
+          }
+          const b = captureBefore(r, fields);
+          const changed = Object.keys(fields).some((k) => String(b[k] ?? '') !== String(fields[k] ?? ''));
+          if (!changed) return;
+          // applyDlvFields: optimistic + server + conflict-retry (не через сырой row_version из viewRows).
+          applyDlvFields(r.id, fields);
+          pushHistory({ id: r.id, before: b, after: fields });
+          setMsg('');
           return;
         }
         if (spec.id === 'mol' && data.kind === 'flow-mol') {
@@ -3041,6 +3097,21 @@ export function FlowPlanGrid({
           return null;
         case 'stat_note':
           return { fields: { stat_note: raw } };
+        case 'status': {
+          // Вставка/протяжка STAT: decode → stat + stat_sub + legacy. Перенос — только через ячейку.
+          if (raw.startsWith(TRANSFER_REASON) || raw === 'перенос' || raw.startsWith('перенос')) {
+            return { error: 'Перенос вставкой не копируется — задайте через ячейку статуса' };
+          }
+          const d = decodeStatus(raw);
+          return {
+            fields: {
+              done_stat: d.done_stat,
+              fail_reason: d.fail_reason,
+              stat: d.stat,
+              stat_sub: d.stat_sub,
+            },
+          };
+        }
         case 'day_plan': {
           const iso = normalizeDayInput(raw);
           if (raw && !iso) return { error: 'DAY план: YYYY-MM-DD или ДД.ММ.ГГГГ' };
@@ -3109,11 +3180,19 @@ export function FlowPlanGrid({
 
   const onCellsEdited = useCallback(
     (edits: readonly { location: Item; value: EditableGridCell }[]) => {
-      // Одиночная правка — прежний путь (свои сообщения/история). Пачка (вставка
-      // диапазоном) — собираем поля по строкам и шлём одним запросом (см. applyFieldsBatch).
-      if (edits.length <= 1) {
-        for (const e of edits) onCellEdited(e.location, e.value);
-        return true;
+      // Одиночная правка custom-dropdown (выбор в UI) — прежний onCellEdited.
+      // Вставка Text (в т.ч. STAT/STAT NOTE одна ячейка или пачка) — fieldsForPaste + batch,
+      // иначе custom-ячейка статус не принимает Text от Glide («ничего не вставилось»).
+      if (edits.length === 1) {
+        const only = edits[0]!;
+        const onlySpec = COLS[only.location[0]];
+        const textPaste =
+          only.value.kind === GridCellKind.Text &&
+          (onlySpec?.id === 'status' || onlySpec?.id === 'stat_note');
+        if (!textPaste) {
+          onCellEdited(only.location, only.value);
+          return true;
+        }
       }
       const batch: Array<{ id: number; fields: Record<string, string | number | null> }> = [];
       const molAnchors: Array<{ anchor: FlowRow; mol: string }> = [];
@@ -3127,7 +3206,9 @@ export function FlowPlanGrid({
         else if (e.value.kind === GridCellKind.Custom) {
           const d = e.value.data as { kind?: string; value?: string; driver?: string } | undefined;
           if (d?.kind === 'flow-driver' && spec.id === 'exp') raw = String(d.driver ?? '');
-          else if (d?.kind === 'flow-dropdown' && spec.id === 'vehicleType') raw = String(d.value ?? '');
+          else if (d?.kind === 'flow-dropdown' && (spec.id === 'vehicleType' || spec.id === 'status')) {
+            raw = String(d.value ?? '');
+          }
         }
         const res = raw === undefined ? null : fieldsForPaste(r, spec, raw);
         if (res === null) {
@@ -3248,15 +3329,13 @@ export function FlowPlanGrid({
     setMsg(next ? `Залито строк: ${targets.length}` : `Заливка снята: ${targets.length}`);
   }, [viewRows, rowLocked, paintColor, applyFillItems, pushHistory]);
 
-  /** Массовая отметка отчёта (ТЗ §5.1): одно значение на все выделенные строки,
-   *  БЕЗ привязки к складу — выбрал → протянулось. Причина чистится при «увезли». */
-  // Применить статус ко ВСЕМ выделенным строкам разом (массовая отметка + вставка значения
-  // статуса из буфера). Замок 7 дней уважаем. `done_stat:''` = сброс в ожидание.
+  /** Массовая отметка / вставка STAT: все выделенные строки (rows + range), 1 ключ = 1 строка.
+   *  Пишем и новые stat/stat_sub, и legacy done_stat (UI statusValue читает stat первым). */
   const applyStatusToSelected = useCallback(
-    (fields: { done_stat: string; fail_reason: string }) => {
+    (fields: { done_stat: string; fail_reason: string; stat: string; stat_sub: string }) => {
       const targets: FlowDeliveryRow[] = [];
       let lockedHit = false;
-      for (const idx of selectionRef.current.rows) {
+      for (const idx of selectionRowIdxs(selectionRef.current)) {
         const r = viewRows[idx];
         if (!r) continue;
         if (rowLocked(r)) {
@@ -3268,22 +3347,30 @@ export function FlowPlanGrid({
       if (lockedHit) setMsg('Часть строк старше 7 дней — отчёт по ним закрыт');
       if (targets.length === 0) return;
       if (!lockedHit) setMsg('');
-      setRows((prev) => {
-        const ids = new Set(targets.map((t) => t.id));
-        const next = prev.map((x) => (ids.has(x.id) ? ({ ...x, ...fields } as FlowDeliveryRow) : x));
-        planDlvCache = next;
-        return next;
-      });
-      void flowDeliveriesEdit(
-        api,
-        targets.map((t) => ({ id: t.id, row_version: t.row_version, fields })),
-      ).then((res) => applyServerDlv(res.rows));
+      const patch = {
+        done_stat: fields.done_stat,
+        fail_reason: fields.fail_reason,
+        stat: fields.stat,
+        stat_sub: fields.stat_sub,
+      };
+      const items = targets.map((t) => ({
+        id: t.id,
+        before: captureBefore(t, patch),
+        after: patch as Record<string, string | number | null>,
+      }));
+      applyFillItems(items, 'after');
+      pushHistory({ kind: 'fill', items, label: 'STAT' });
     },
-    [viewRows, applyServerDlv, rowLocked],
+    [viewRows, rowLocked, captureBefore, applyFillItems, pushHistory],
   );
   const massMark = useCallback(
-    (done: 'выполнено' | 'не увезли', reason: string) =>
-      applyStatusToSelected({ done_stat: done, fail_reason: done === 'не увезли' ? reason : '' }),
+    (done: 'выполнено' | 'не увезли', reason: string) => {
+      if (done === STATUS_DONE) {
+        applyStatusToSelected({ done_stat: STATUS_DONE, fail_reason: '', stat: STATUS_DONE, stat_sub: '' });
+        return;
+      }
+      applyStatusToSelected(decodeStatus(reason || 'не увезли'));
+    },
     [applyStatusToSelected],
   );
   // Вставка из буфера в колонку СТАТУС: одно скопированное значение → на ВСЕ выделенные строки
@@ -3520,38 +3607,80 @@ export function FlowPlanGrid({
         const tsv = values.map((row) => row.join('\t')).join('\n');
         if (applyPastedRows(tsv)) return false; // обработали сами — Glide не вставляет
       }
-      const spec = COLS[target[0]];
-      const pasted = String(values?.[0]?.[0] ?? '').trim();
-      if (spec?.id === 'status' && selectionRef.current.rows.length > 1 && pasted) {
-        if (pasted.startsWith(TRANSFER_REASON) || pasted.startsWith('перенос')) {
-          setMsg('Перенос вставкой не копируется — задайте через ячейку статуса');
-          return false;
-        }
-        applyStatusToSelected(decodeStatus(pasted));
-        return false; // обработали сами — Glide не вставляет
-      }
-      // «Как в Excel» (юзер 2026-07-04): скопировал ячейку (или блок 2 колонок — тип ТС +
-      // гаражный), выделил диапазон → вставка ТИРАЖИРУЕТСЯ на всё выделение, а не только
-      // на первую ячейку. Правки идут ПАЧКОЙ через onCellsEdited: одна строка = один
-      // элемент запроса (иначе гонка row_version — «вставилось и сбросилось»).
+      const col0 = target[0];
+      const spec = COLS[col0];
+      const pasted = String(values?.[0]?.[0] ?? '');
+      const pastedTrim = pasted.trim();
+      const rowIdxs = selectionRowIdxs(selectionRef.current);
       const range = selectionRef.current.current?.range;
       const H = Array.isArray(values) ? values.length : 0;
       const W = H > 0 ? Math.max(...values.map((row) => row.length)) : 0;
+
+      // STAT: одно значение → на все выделенные строки (rows и/или range).
+      // Раньше: только selection.rows + без stat/stat_sub → «вставил — ничего не видно».
+      if (spec?.id === 'status' && rowIdxs.length > 1 && H <= 1 && W <= 1) {
+        if (pastedTrim.startsWith(TRANSFER_REASON) || pastedTrim === 'перенос' || pastedTrim.startsWith('перенос')) {
+          setMsg('Перенос вставкой не копируется — задайте через ячейку статуса');
+          return false;
+        }
+        applyStatusToSelected(decodeStatus(pastedTrim));
+        return false;
+      }
+
+      // «Как в Excel»: скопировал ячейку → выделил область → тираж на всё выделение.
+      // 1) Прямоугольник range больше буфера — tile по range.
+      // 2) Выделены строки (row markers / multi), range 1×1 — tile по колонкам×строкам.
+      // STAT / STAT NOTE / прочие editable — через onCellsEdited + fieldsForPaste (пачка).
+      const textCell = (v: string): EditableGridCell =>
+        ({ kind: GridCellKind.Text, data: v, displayData: v, allowOverlay: true }) as EditableGridCell;
+
       if (range && H > 0 && W > 0 && (range.height > H || range.width > W)) {
         const list: Array<{ location: Item; value: EditableGridCell }> = [];
         for (let dy = 0; dy < range.height; dy++) {
           for (let dx = 0; dx < range.width; dx++) {
             const v = String(values[dy % H]?.[dx % W] ?? '');
-            list.push({
-              location: [range.x + dx, range.y + dy] as Item,
-              value: { kind: GridCellKind.Text, data: v, displayData: v, allowOverlay: true },
-            });
+            list.push({ location: [range.x + dx, range.y + dy] as Item, value: textCell(v) });
           }
         }
         onCellsEdited(list);
-        return false; // обработали сами — растянули на всё выделение
+        return false;
       }
-      return true; // остальное — обычная вставка диапазона Glide (придёт в onCellsEdited)
+
+      // Multi-row selection, paste one cell into column(s): fill each selected row.
+      if (rowIdxs.length > 1 && H === 1 && W >= 1) {
+        const list: Array<{ location: Item; value: EditableGridCell }> = [];
+        for (const ri of rowIdxs) {
+          for (let dx = 0; dx < W; dx++) {
+            const v = String(values[0]?.[dx] ?? '');
+            list.push({ location: [col0 + dx, ri] as Item, value: textCell(v) });
+          }
+        }
+        onCellsEdited(list);
+        return false;
+      }
+
+      // Одна ячейка STAT / STAT NOTE: custom-dropdown не принимает Text от Glide —
+      // проводим через fieldsForPaste сами (иначе «скопировал — не вставилось»).
+      if (
+        H === 1 &&
+        W === 1 &&
+        (spec?.id === 'status' || spec?.id === 'stat_note') &&
+        target[1] != null
+      ) {
+        if (
+          spec.id === 'status' &&
+          (pastedTrim.startsWith(TRANSFER_REASON) ||
+            pastedTrim === 'перенос' ||
+            pastedTrim.startsWith('перенос'))
+        ) {
+          setMsg('Перенос вставкой не копируется — задайте через ячейку статуса');
+          return false;
+        }
+        onCellsEdited([{ location: [col0, target[1]] as Item, value: textCell(pasted) }]);
+        return false;
+      }
+
+      return true; // обычная вставка Glide → onCellsEdited
     },
     [COLS, applyStatusToSelected, applyPastedRows, onCellsEdited],
   );

@@ -1,6 +1,6 @@
 {
   "name": "@pyn/desktop",
-  "version": "1.3.13",
+  "version": "1.3.14",
   "private": true,
   "description": "Pyn Desktop — Electron app (Mac, Windows)",
   "main": "dist-electron/main.js",
@@ -43,6 +43,7 @@
     "react-i18next": "^17.0.8",
     "react-responsive-carousel": "^3.2.23",
     "tailwind-merge": "^2.5.5",
+    "uiohook-napi": "^1.5.5",
     "ws": "^8.20.1"
   },
   "devDependencies": {
@@ -68,7 +69,11 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "build/icon-source.png"
+      "build/icon-source.png",
+      "node_modules/uiohook-napi/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/uiohook-napi/**/*"
     ],
     "directories": {
       "output": "release",

@@ -24,7 +24,9 @@ import { extendSession, meSessionInfo } from '@pyn/core';
  */
 const POLL_FAR_MS = 5 * 60 * 1000;  // 5 минут — когда expiry > 30 мин
 const POLL_NEAR_MS = 30_000;        // 30 сек — когда близко к expiry
+const POLL_WARN_MS = 15_000;        // 15 сек — в окне «продлить» (≤5 мин)
 const POLL_NEAR_WINDOW_MS = 30 * 60 * 1000; // < 30 мин = "near"
+const POLL_WARN_WINDOW_MS = 5 * 60 * 1000;  // ≤5 мин = warn
 
 /**
  * За сколько до истечения сессии показывать prompt продления. 1:1 с
@@ -82,12 +84,12 @@ export function SessionExpiryWatch() {
     }
   }, [setSharedInfo]);
 
-  // Latest remaining в ref — adaptive-delay читает свежее значение БЕЗ участия
-  // remainingMs в deps poll-эффекта (см. критичный коммент ниже).
+  // Adaptive delay по ЛОКАЛЬНОМУ countdown (elapsed), не по «сырому» snapshot
+  // poll'а — иначе near-окно запаздывает на весь FAR-интервал.
   const remainingRef = useRef<number>(Number.MAX_SAFE_INTEGER);
   useEffect(() => {
-    remainingRef.current = info?.remainingMs ?? Number.MAX_SAFE_INTEGER;
-  }, [info?.remainingMs]);
+    remainingRef.current = remainingMs > 0 ? remainingMs : info?.remainingMs ?? Number.MAX_SAFE_INTEGER;
+  }, [remainingMs, info?.remainingMs]);
 
   // §pyn-1.2.46 — adaptive polling: 5 мин если сессия далека от expiry,
   // 30s когда близко (< 30 мин). Снижает жор CF в 10× для typical 4-8h
@@ -105,7 +107,12 @@ export function SessionExpiryWatch() {
     let timerId: ReturnType<typeof setTimeout> | null = null;
     const schedule = (): void => {
       const remaining = remainingRef.current;
-      const nextDelay = remaining <= POLL_NEAR_WINDOW_MS ? POLL_NEAR_MS : POLL_FAR_MS;
+      const nextDelay =
+        remaining <= POLL_WARN_WINDOW_MS
+          ? POLL_WARN_MS
+          : remaining <= POLL_NEAR_WINDOW_MS
+            ? POLL_NEAR_MS
+            : POLL_FAR_MS;
       timerId = setTimeout(async () => {
         await refreshInfo();
         schedule();
@@ -139,14 +146,16 @@ export function SessionExpiryWatch() {
   // Top-toast убран по UX-request — он закрывался крестиком, теперь
   // постоянный индикатор в sidebar.
 
-  // Reset dismiss при появлении нового info с увеличенным remainingMs (i.e.
-  // юзер где-то ещё продлил, или server prolongation подоспел).
+  // Reset dismiss ТОЛЬКО при реальном продлении (скачок ≥ 10 мин).
+  // Раньше любой +1s от poll/skew сбрасывал dismiss → «постоянно просит продлить».
   const lastSeenRemainingRef = useRef<number>(0);
   useEffect(() => {
     const fresh = info?.remainingMs ?? 0;
+    if (fresh > lastSeenRemainingRef.current + 10 * 60 * 1000) {
+      setDismissedAtRemainingMs(null);
+    }
     if (fresh > lastSeenRemainingRef.current) {
       lastSeenRemainingRef.current = fresh;
-      setDismissedAtRemainingMs(null);
     }
   }, [info?.remainingMs]);
 

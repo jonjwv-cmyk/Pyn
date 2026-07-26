@@ -1,10 +1,10 @@
-import { Archive, CalendarRange, Container, Database, History, MapPinned, MessageSquare, Newspaper, Rss, Scale, Truck, Waves } from 'lucide-react';
+import { CalendarRange, Container, Database, FileBarChart2, History, MapPinned, MessageSquare, Newspaper, Rss, Scale, Truck, Waves } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
 /**
  * **Статические** разделы Pyn, сгруппированы в 2 секции сайдбара (Linear-стиль):
- *   • «Рабочее» — рабочие инструменты: Хранилище, График, Google-таблицы, МОЛ.
+ *   • «Рабочее» — рабочие инструменты: График, Google-таблицы, МОЛ.
  *     Google-таблицы (Workflow / OTIF / …) динамические — рендерятся через
  *     `TableNavItems` внутри этой группы, между BEFORE/AFTER подсписками.
  *   • «Лента» — Чаты + Новости.
@@ -12,12 +12,11 @@ import type { NavSection } from '@/types/nav';
  *
  * §2026-05-27: старый «График» (ScheduleScreen) удалён. «Проба» переименована
  * в «График» и теперь использует id 'proba' под новым label `nav_schedule`.
+ * §2026-07-26: пункт «Хранилище» (vault) убран из сайдбара.
  */
 
 // Группа «Рабочее» — до Google-таблиц.
 export const NAV_WORKSPACE_BEFORE_TABLES: NavSection[] = [
-  // Хранилище — приглушённое (уходящий/вспомогательный раздел, не мешает глазу).
-  { id: 'vault', get label() { return i18next.t('sidebar.nav_storage');  }, icon: Archive, muted: true },
   { id: 'proba', get label() { return i18next.t('sidebar.nav_schedule'); }, icon: CalendarRange },
 ];
 
@@ -43,6 +42,17 @@ export const NAV_FLOW: NavSection = {
   // Флагман «Поток» = teal (вода/поток — под иконку Waves); прохладная семья с ВГХ-violet
   // и База-blue, чётко контрастирует с тёплой clay-подсветкой активной вкладки.
   iconColor: 'text-teal-400',
+};
+
+/**
+ * Раздел «Сводка» (id `report`) — PDF White/Black (ручные + вывоз + причины).
+ * Тот же гейт, что «Поток» (`showFlow`); вне `NAV_SECTIONS`.
+ */
+export const NAV_REPORT: NavSection = {
+  id: 'report',
+  get label() { return i18next.t('sidebar.nav_report', 'Сводка'); },
+  icon: FileBarChart2,
+  iconColor: 'text-lime-400',
 };
 
 /**

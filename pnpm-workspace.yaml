@@ -8,3 +8,4 @@ packages:
 allowBuilds:
   electron: true
   esbuild: true
+  uiohook-napi: set this to true or false

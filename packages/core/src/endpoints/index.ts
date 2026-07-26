@@ -327,6 +327,24 @@ export {
 } from './flow-plan';
 
 export {
+  emptyReportManualDay,
+  normalizeReportManualDay,
+  flowReportManualGet,
+  flowReportManualSet,
+  computeFlowReport,
+  formatReportDaysTitle,
+  type ReportManualLine,
+  type ReportManualDay,
+  type ReportMode,
+  type ReportTreeNote,
+  type ReportTreeReason,
+  type ReportTreeShop,
+  type ReportComputeResult,
+  type ReportGraphKind,
+  type FlowReportOpts,
+} from './flow-report';
+
+export {
   clientErrorLog,
   clientErrorsGet,
   type ClientErrorReport,

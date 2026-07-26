@@ -683,7 +683,12 @@ export function buildExpedGroups(rowsIn: ExpedXlsxRow[]): ExpedGroup[] {
     }
     const items = [...grouped.values()].sort(cmp);
     if (items.length === 0) continue;
-    const uniq = (vals: string[]): string => [...new Set(vals.filter(Boolean))].join(' | ');
+    /** Уникальные склады, сортировка эталоном: СП — 824Т → 8024, 806М → 806Т → 8006… */
+    const uniqSorted = (vals: string[], keyOf: (s: string) => string): string => {
+      const u = [...new Set(vals.map((x) => String(x || '').trim()).filter(Boolean))];
+      u.sort((a, b) => keyOf(a).localeCompare(keyOf(b), 'ru') || a.localeCompare(b, 'ru', { numeric: true }));
+      return u.join(' | ');
+    };
     // Экспедиторы/тип ТС машины — ПО ВСЕМ строкам группы, не только первой (юзер
     // 2026-07-05: «в шапке нет ФИО» — первая по сортировке строка могла быть без них).
     const expSeen = new Set<string>();
@@ -702,8 +707,8 @@ export function buildExpedGroups(rowsIn: ExpedXlsxRow[]): ExpedGroup[] {
       vehicleType: items.find((x) => x.r.vehicleType.trim())?.r.vehicleType || '',
       expeditors,
       fillArgb: g ? items.find((x) => x.r.fillArgb)?.r.fillArgb || '' : '',
-      frList: uniq(items.map((x) => x.r.fr)),
-      toList: uniq(items.map((x) => x.r.to_wh)),
+      frList: uniqSorted(items.map((x) => x.r.fr), planSortKeyFr),
+      toList: uniqSorted(items.map((x) => x.r.to_wh), planSortKeyTo),
       items: items.map((it) => {
         const grpKey = `${whPairBase(it.r.fr)}|${whPairBase(it.r.to_wh)}`;
         const topBorder = prevGrpKey !== null && grpKey !== prevGrpKey;

@@ -73,6 +73,7 @@
     "nav_mol": "Контакты",
     "nav_base": "База",
     "nav_flow": "Поток",
+    "nav_report": "Сводка",
     "nav_vgh": "ВГХ",
     "nav_log": "LOG",
     "nav_broadcast": "Рассылка",
@@ -445,9 +446,18 @@
     "language": "Язык",
     "font": "Шрифт",
     "appearance": "Оформление",
+    "pets": "Питомцы",
     "google": "Google",
     "app_control": "Управление",
     "soon": "soon"
+  },
+  "settings_pets": {
+    "title": "Питомцы",
+    "blurb": "",
+    "name": "Имя",
+    "species": "Вид",
+    "cat": "Кот",
+    "orb": "Orb"
   },
   "settings_google": {
     "checking": "Проверяем…",

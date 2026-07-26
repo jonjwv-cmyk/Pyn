@@ -16,6 +16,7 @@ import './lib/fonts';
 // BrowserWindow. Determinant — hash `#tray` в URL (main.ts создаёт tray window
 // с `loadURL(...#tray)`).
 const isTrayMenu = window.location.hash === '#tray';
+const isPetOverlay = window.location.hash === '#pet';
 
 // §pyn-1.2.25 — AWAIT i18n init до первого render. Раньше `void init` давал
 // флэш: TrayMenu рендерил raw keys ('tray_menu.open') и иногда успевал
@@ -44,7 +45,16 @@ async function bootstrap(): Promise<void> {
   });
 
   // Глобальный репорт необработанных ошибок на сервер (мониторинг) — только основное окно.
-  if (!isTrayMenu) installGlobalErrorReporting();
+  if (!isTrayMenu && !isPetOverlay) installGlobalErrorReporting();
+
+  if (isPetOverlay) {
+    const { PetOverlayApp } = await import('./pet-overlay/PetOverlayApp');
+    // Прозрачный body для always-on-top overlay
+    document.documentElement.style.background = 'transparent';
+    document.body.style.background = 'transparent';
+    ReactDOM.createRoot(document.getElementById('root')!).render(<PetOverlayApp />);
+    return;
+  }
 
   ReactDOM.createRoot(document.getElementById('root')!).render(
     isTrayMenu ? <TrayMenu /> : <App />,

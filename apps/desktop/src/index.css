@@ -36,6 +36,325 @@
  * ЧАСТЬ. Явный -webkit-префикс — Electron Chromium надёжно перебивает
  * наследуемый none. cursor:text — I-beam как сигнал «можно выделять».
  */
+/* ── Petdex atlas sprite (192×208 frames, sheet 1536 wide) ─────────────── */
+.pyn-pet-atlas {
+  --sprite-row: 0;
+  --sprite-frames: 6;
+  --sprite-duration: 1100ms;
+  --sprite-sheet-width: 1536px;
+  --pet-scale: 0.42;
+  --sprite-y: calc(var(--sprite-row) * -208px);
+  --sprite-end-x: calc(var(--sprite-frames) * -192px);
+  width: 192px;
+  height: 208px;
+  background-image: var(--sprite-url);
+  background-repeat: no-repeat;
+  background-size: var(--sprite-sheet-width) auto;
+  /* soft scale — не pixelated (petdex chibi читается лучше сглаженным) */
+  image-rendering: auto;
+  transform: scale(var(--pet-scale)) translateZ(0);
+  transform-origin: top left;
+  will-change: background-position;
+  animation: pyn-pet-state var(--sprite-duration) steps(var(--sprite-frames)) infinite;
+}
+
+@keyframes pyn-pet-state {
+  from {
+    background-position: 0 var(--sprite-y);
+  }
+  to {
+    background-position: var(--sprite-end-x) var(--sprite-y);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pyn-pet-atlas {
+    animation: none;
+  }
+}
+
+/* Погодные / sleep / smoke FX поверх спрайта питомца */
+.pyn-pet-fx {
+  position: absolute;
+  z-index: 3;
+  line-height: 1;
+  user-select: none;
+}
+
+/* Перекур: сигарета + дым */
+.pyn-pet-fx--smoke {
+  inset: 0;
+  pointer-events: none;
+}
+.pyn-pet-cig {
+  position: absolute;
+  right: 6%;
+  bottom: 28%;
+  font-size: 14px;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4));
+  transform: rotate(-18deg);
+  animation: pyn-pet-cig-bob 1.4s ease-in-out infinite;
+}
+.pyn-pet-puff {
+  position: absolute;
+  right: 10%;
+  bottom: 48%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(220, 220, 220, 0.75) 0%,
+    rgba(160, 160, 160, 0.25) 55%,
+    transparent 70%
+  );
+  opacity: 0;
+  animation: pyn-pet-puff 2.2s ease-out infinite;
+}
+.pyn-pet-puff--a {
+  animation-delay: 0s;
+}
+.pyn-pet-puff--b {
+  width: 14px;
+  height: 14px;
+  right: 2%;
+  bottom: 52%;
+  animation-delay: 0.55s;
+}
+.pyn-pet-puff--c {
+  width: 18px;
+  height: 18px;
+  right: -4%;
+  bottom: 58%;
+  animation-delay: 1.1s;
+}
+@keyframes pyn-pet-cig-bob {
+  0%,
+  100% {
+    transform: rotate(-18deg) translateY(0);
+  }
+  50% {
+    transform: rotate(-12deg) translateY(1px);
+  }
+}
+@keyframes pyn-pet-puff {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.5);
+  }
+  15% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(10px, -22px) scale(1.35);
+  }
+}
+.pyn-pet-fx--umbrella {
+  top: -6%;
+  right: 2%;
+  font-size: 18px;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
+  animation: pyn-pet-bob 2.4s ease-in-out infinite;
+}
+.pyn-pet-fx--wrap {
+  bottom: 8%;
+  left: 8%;
+  font-size: 14px;
+  opacity: 0.9;
+}
+.pyn-pet-fx--scarf {
+  bottom: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 13px;
+}
+.pyn-pet-fx--snow {
+  top: 0;
+  left: 8%;
+  font-size: 12px;
+  animation: pyn-pet-bob 2s ease-in-out infinite;
+}
+.pyn-pet-fx--bolt {
+  top: -4%;
+  left: 10%;
+  font-size: 14px;
+  animation: pyn-pet-flash 1.6s ease-in-out infinite;
+}
+.pyn-pet-fx--zzz {
+  top: -2%;
+  right: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.72);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  animation: pyn-pet-zzz 2.2s ease-in-out infinite;
+}
+.pyn-pet-fx--sweat i,
+.pyn-pet-fx--drops i {
+  position: absolute;
+  display: block;
+  width: 4px;
+  height: 7px;
+  border-radius: 50% 50% 50% 50% / 40% 40% 60% 60%;
+  background: rgba(120, 190, 255, 0.85);
+  box-shadow: 0 0 2px rgba(80, 150, 220, 0.5);
+}
+.pyn-pet-fx--sweat {
+  top: 12%;
+  right: 10%;
+  width: 14px;
+  height: 22px;
+}
+.pyn-pet-fx--sweat i:nth-child(1) {
+  left: 0;
+  animation: pyn-pet-drip 1.1s ease-in infinite;
+}
+.pyn-pet-fx--sweat i:nth-child(2) {
+  left: 8px;
+  animation: pyn-pet-drip 1.1s ease-in 0.35s infinite;
+  background: rgba(255, 220, 120, 0.9);
+}
+.pyn-pet-fx--drops {
+  top: -4%;
+  left: 20%;
+  width: 40px;
+  height: 28px;
+}
+.pyn-pet-fx--drops i:nth-child(1) {
+  left: 4px;
+  animation: pyn-pet-drip 0.9s linear infinite;
+}
+.pyn-pet-fx--drops i:nth-child(2) {
+  left: 16px;
+  animation: pyn-pet-drip 0.9s linear 0.25s infinite;
+}
+.pyn-pet-fx--drops i:nth-child(3) {
+  left: 28px;
+  animation: pyn-pet-drip 0.9s linear 0.5s infinite;
+}
+
+@keyframes pyn-pet-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes pyn-pet-drip {
+  0% {
+    transform: translateY(0);
+    opacity: 0.9;
+  }
+  80% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: translateY(14px);
+    opacity: 0;
+  }
+}
+@keyframes pyn-pet-zzz {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+@keyframes pyn-pet-flash {
+  0%,
+  70%,
+  100% {
+    opacity: 0.35;
+  }
+  75% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pyn-pet-fx--umbrella,
+  .pyn-pet-fx--snow,
+  .pyn-pet-fx--zzz,
+  .pyn-pet-fx--bolt,
+  .pyn-pet-fx--sweat i,
+  .pyn-pet-fx--drops i,
+  .pyn-pet-cig,
+  .pyn-pet-puff {
+    animation: none;
+  }
+}
+
+/* Подложка-сцена под питомцем */
+.pyn-pet-stage {
+  background:
+    radial-gradient(circle at 50% 42%, rgba(217, 119, 87, 0.12) 0%, transparent 62%),
+    radial-gradient(circle at 50% 70%, rgba(63, 198, 232, 0.06) 0%, transparent 55%);
+}
+
+/* Pet overlay composer: placeholder всегда слева (WebKit иногда центрирует). */
+.pyn-pet-composer .pyn-pet-composer-field,
+.pyn-pet-composer .pyn-pet-composer-field::placeholder {
+  text-align: left !important;
+  direction: ltr;
+}
+
+/* Музыка: нотки «паром» над питомцем */
+.pyn-music-steam {
+  z-index: 2;
+}
+.pyn-music-note {
+  position: absolute;
+  bottom: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: rgba(242, 180, 140, 0.95);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  animation: pyn-music-steam 2.4s ease-out infinite;
+  opacity: 0;
+}
+.pyn-music-note--a {
+  left: 28%;
+  animation-delay: 0s;
+}
+.pyn-music-note--b {
+  left: 48%;
+  font-size: 12px;
+  animation-delay: 0.75s;
+  color: rgba(120, 200, 230, 0.95);
+}
+.pyn-music-note--c {
+  left: 62%;
+  animation-delay: 1.4s;
+}
+@keyframes pyn-music-steam {
+  0% {
+    transform: translate3d(0, 6px, 0) scale(0.7);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: translate3d(4px, -28px, 0) scale(1.05);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pyn-music-note {
+    animation: none;
+    opacity: 0.7;
+    transform: translateY(-10px);
+  }
+}
+
 .select-text-msg {
   -webkit-user-select: text;
   user-select: text;
