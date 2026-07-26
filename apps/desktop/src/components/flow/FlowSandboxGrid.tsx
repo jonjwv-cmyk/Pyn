@@ -1793,7 +1793,9 @@ export function FlowSandboxGrid(): JSX.Element {
         const tomorrow = isoAddDays(todayIso, 1);
         const monthStart = `${planYear}-${String(planMonth).padStart(2, '0')}-01`;
         const graphRef = monthStart > tomorrow ? monthStart : tomorrow;
-        const near = weekday ? nearestGraphDate(weekday, graphRef) : null;
+        // «Не возим» (31 и т.п.) — meta.holidays месяца; иначе ГРАФ показывает мёртвую дату.
+        const hol = planMeta?.holidays ?? [];
+        const near = weekday ? nearestGraphDate(weekday, graphRef, hol) : null;
         const num = near ? String(parseInt(near.slice(8, 10), 10)) : '';
         const clst = !weekday
           ? CLST_NONE
@@ -2497,7 +2499,7 @@ export function FlowSandboxGrid(): JSX.Element {
           const tomorrow = isoAddDays(todayIso, 1);
           const monthStart = `${planYear}-${String(planMonth).padStart(2, '0')}-01`;
           const graphRef = monthStart > tomorrow ? monthStart : tomorrow;
-          const near = nearestGraphDate(wd, graphRef);
+          const near = nearestGraphDate(wd, graphRef, planMeta?.holidays ?? []);
           if (near) {
             const y = Number(near.slice(0, 4));
             const m = Number(near.slice(5, 7));
@@ -2728,7 +2730,10 @@ export function FlowSandboxGrid(): JSX.Element {
           const monthStart = `${planYear}-${String(planMonth).padStart(2, '0')}-01`;
           const graphRef = monthStart > tomorrow ? monthStart : tomorrow;
           const wd = clst.split(' ')[0] ?? '';
-          graphGreen = graphDateSoon(nearestGraphDate(wd, graphRef), todayIso);
+          graphGreen = graphDateSoon(
+            nearestGraphDate(wd, graphRef, planMeta?.holidays ?? []),
+            todayIso,
+          );
         }
       }
       const fontPx = colFontPx(spec.id);

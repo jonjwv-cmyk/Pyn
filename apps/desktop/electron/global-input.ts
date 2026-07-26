@@ -137,6 +137,10 @@ function loadUiohook(): UiohookMod {
 
 export async function startGlobalInput(): Promise<{ ok: boolean; reason?: string }> {
   if (started) return { ok: true };
+  // Win: global hooks need elevation / AV blocks → только in-app listeners (юзер 2026-07-26).
+  if (process.platform === 'win32') {
+    return { ok: false, reason: 'in_app_only' };
+  }
   if (process.platform === 'darwin' && !hasInputPermission()) {
     console.warn('[pyn:global-input] no Accessibility permission');
     return { ok: false, reason: 'accessibility' };

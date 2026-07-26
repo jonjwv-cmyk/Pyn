@@ -515,6 +515,8 @@ export interface FlowPlanRowsApplyResult {
   inserted: number;
   /** id вставленных строк — для отмены вставки (undo). */
   insertedIds: number[];
+  /** Точные дубли (ключ+поставка+qty) — не вставляли. */
+  skippedDup: number;
 }
 
 /**
@@ -531,7 +533,8 @@ export async function flowPlanRowsApply(
   opts?: { planDate?: string; source?: 'macro' | 'paste'; target?: 'plan' | 'report' },
 ): Promise<FlowPlanRowsApplyResult> {
   const wire = await client.call<{
-    received?: number; assigned?: number; updated?: number; inserted?: number; inserted_ids?: number[];
+    received?: number; assigned?: number; updated?: number; inserted?: number;
+    inserted_ids?: number[]; skipped_dup?: number;
   }>(
     'flow_plan_rows_apply',
     { rows, plan_date: opts?.planDate, source: opts?.source ?? 'paste', target: opts?.target ?? 'plan' },
@@ -542,6 +545,7 @@ export async function flowPlanRowsApply(
     updated: Number(wire.updated) || 0,
     inserted: Number(wire.inserted) || 0,
     insertedIds: Array.isArray(wire.inserted_ids) ? wire.inserted_ids.map(Number).filter(Number.isFinite) : [],
+    skippedDup: Number(wire.skipped_dup) || 0,
   };
 }
 

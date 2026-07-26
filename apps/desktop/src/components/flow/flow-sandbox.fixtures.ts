@@ -419,13 +419,34 @@ export function todayIsoLocal(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-/** Ближайшее вхождение дня недели графика ≥ fromIso. null — день/дата не распознаны. */
-export function nearestGraphDate(weekdayRu: string, fromIso: string): string | null {
+/**
+ * Ближайшее вхождение дня недели графика ≥ fromIso.
+ * `holidays` — числа месяца «не возим» из графика (meta.holidays); если попадаем
+ * на такой день (31 июля и т.п.) — ищем следующий тот же weekday (+7, до 12 недель).
+ * null — день/дата не распознаны.
+ */
+export function nearestGraphDate(
+  weekdayRu: string,
+  fromIso: string,
+  holidays: readonly number[] = [],
+): string | null {
   const wd = WEEKDAY_RU_JS[weekdayRu.trim().toUpperCase().slice(0, 2)];
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(fromIso);
   if (wd === undefined || !m) return null;
+  const hol = new Set(holidays.map(Number).filter((n) => n >= 1 && n <= 31));
   const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
   d.setDate(d.getDate() + ((wd - d.getDay() + 7) % 7));
+  for (let i = 0; i < 12; i++) {
+    const dayNum = d.getDate();
+    // holidays относятся к месяцу fromIso; при уходе в следующий месяц не фильтруем
+    // (нужны holidays следующего месяца — отдельно). В пределах 1-го месяца — skip.
+    const sameMonth =
+      d.getFullYear() === Number(m[1]) && d.getMonth() + 1 === Number(m[2]);
+    if (!sameMonth || !hol.has(dayNum)) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+    }
+    d.setDate(d.getDate() + 7);
+  }
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 

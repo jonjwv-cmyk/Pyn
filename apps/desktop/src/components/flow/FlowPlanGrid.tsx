@@ -380,16 +380,57 @@ function fmtPlanDate(s: string): string {
   return `${parseInt(m[3] ?? '1', 10)} ${MONTH_ABBR_RU[parseInt(m[2] ?? '1', 10) - 1] ?? ''}`;
 }
 
-/** Ввод даты → ISO YYYY-MM-DD или ''. */
+/** Месяц RU (сокр./полн.) → 1..12. */
+const MONTH_RU_TO_N: Record<string, number> = {
+  янв: 1, январь: 1, января: 1,
+  фев: 2, февраль: 2, февраля: 2,
+  мар: 3, март: 3, марта: 3,
+  апр: 4, апрель: 4, апреля: 4,
+  май: 5, мая: 5,
+  июн: 6, июнь: 6, июня: 6,
+  июл: 7, июль: 7, июля: 7,
+  авг: 8, август: 8, августа: 8,
+  сен: 9, сент: 9, сентябрь: 9, сентября: 9,
+  окт: 10, октябрь: 10, октября: 10,
+  ноя: 11, ноябрь: 11, ноября: 11,
+  дек: 12, декабрь: 12, декабря: 12,
+};
+
+/**
+ * Ввод/буфер даты → ISO YYYY-MM-DD или ''.
+ * UI показывает «12 июня», в ячейке/копии — ISO; буфер может нести оба.
+ */
 function normalizeDayInput(raw: string): string {
   const t = String(raw || '').trim();
   if (!t) return '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
-  const dmy = /^(\d{1,2})[./](\d{1,2})[./](\d{4})$/.exec(t);
+  // «12.07.2026» / «12/07/2026» / «12.07.26»
+  const dmy = /^(\d{1,2})[./](\d{1,2})[./](\d{2,4})$/.exec(t);
   if (dmy) {
-    return `${dmy[3]}-${dmy[2]!.padStart(2, '0')}-${dmy[1]!.padStart(2, '0')}`;
+    let y = Number(dmy[3]);
+    if (y < 100) y += 2000;
+    return `${y}-${dmy[2]!.padStart(2, '0')}-${dmy[1]!.padStart(2, '0')}`;
+  }
+  // «12 июня» / «12 июн» / «12 июня 2026» (copy из displayData)
+  const ru = /^(\d{1,2})\s+([а-яё.]+)(?:\s+(\d{4}))?$/i.exec(t);
+  if (ru) {
+    const monKey = ru[2]!.toLowerCase().replace(/\./g, '');
+    const mo = MONTH_RU_TO_N[monKey];
+    if (mo) {
+      const y = ru[3] ? Number(ru[3]) : new Date().getFullYear();
+      const d = Number(ru[1]);
+      if (d >= 1 && d <= 31) {
+        return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      }
+    }
   }
   return '';
+}
+
+function isStatusDone(done: string, stat: string): boolean {
+  const d = String(done || '').trim();
+  const s = String(stat || '').trim();
+  return d === 'выполнено' || d === 'увезли' || s === 'выполнено';
 }
 
 function displayFailReason(reason: string): string {
@@ -1408,7 +1449,7 @@ export function FlowPlanGrid({
       if (!day) return { label: 'нет', soon: false };
       const todayIso = todayIsoLocal();
       const ref = /^\d{4}-\d{2}-\d{2}/.test(r.plan_date || '') ? (r.plan_date || '').slice(0, 10) : todayIso;
-      const near = nearestGraphDate(day, ref);
+      const near = nearestGraphDate(day, ref, meta?.holidays ?? []);
       if (near && near === ref) return { label: 'да', soon: true };
       if (!near) return { label: 'нет', soon: false };
       // дата графика: «июл 22» / «июл 22 2025»
@@ -2240,6 +2281,26 @@ export function FlowPlanGrid({
       }
       // ГАРАЖНЫЙ — обычный текст, пишем РУКАМИ (юзер 2026-07-03): выпадашка машин убрана,
       // ячейка идёт генерик-веткой ниже (editable, multi через перенос строки).
+      // DAY план/факт/ПЕРЕНОС: data = ISO (копирование/вставка), display = «12 июня».
+      if (spec.id === 'day_plan' || spec.id === 'day_fact' || spec.id === 'transfer') {
+        let iso = '';
+        if (spec.id === 'day_plan') iso = (r.plan_date || '').slice(0, 10);
+        else if (spec.id === 'day_fact') {
+          const raw = String(r.day_fact || '').slice(0, 10);
+          iso = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : '';
+        } else {
+          iso = transferDateOf(r);
+        }
+        const editable = !!spec.editable && !locked;
+        return {
+          kind: GridCellKind.Text,
+          data: iso,
+          displayData: iso ? fmtPlanDate(iso) : '',
+          allowOverlay: editable,
+          readonly: !editable,
+          themeOverride: planCellTheme(spec.id),
+        };
+      }
       const text = cellText(spec, r);
       const displayText =
         spec.id === 'vehicleType'
@@ -2787,6 +2848,14 @@ export function FlowPlanGrid({
               fields.fail_reason = `перенос на другой день: ${td}`;
               fields.day_fact = td;
             }
+          } else if (isStatusDone(decoded.done_stat, decoded.stat)) {
+            // «выполнено» → DAY факт = план, если факт пуст
+            const plan = (r.plan_date || '').slice(0, 10);
+            const curFact = String(r.day_fact || '').slice(0, 10);
+            if (plan && !/^\d{4}-\d{2}-\d{2}$/.test(curFact)) fields.day_fact = plan;
+          } else {
+            // Иной статус → DAY факт убирается (перенос выше оставил day_fact)
+            fields.day_fact = '';
           }
           // Позиционно (юзер 2026-07-26): статус — только на ЭТУ строку (ключ id),
           // не на всю поставку. Перенос/STAT/NOTE всегда 1 строка = 1 ключ.
@@ -2921,20 +2990,29 @@ export function FlowPlanGrid({
       if (spec.id === 'stat_note') {
         fields.stat_note = raw;
       } else if (spec.id === 'day_plan') {
-        // DAY план = plan_date. При правке/вставке: day_fact = plan (если факт пуст — всегда при смене плана ставим факт=план для «вставка авто»).
+        // DAY план = plan_date. DAY факт = план только если статус «выполнено».
         const iso = normalizeDayInput(raw);
         if (!iso && raw) {
-          setMsg('DAY план: YYYY-MM-DD или ДД.ММ.ГГГГ');
+          setMsg('DAY план: дата (ISO / ДД.ММ.ГГГГ / «12 июня»)');
           return;
         }
         if (iso) {
           fields.plan_date = iso;
-          // Авто DAY факт = DAY план (п.6); дальше факт правят руками.
-          fields.day_fact = iso;
+          if (isStatusDone(String(r.done_stat || ''), String(r.stat || ''))) {
+            fields.day_fact = iso;
+          }
         }
       } else if (spec.id === 'day_fact') {
-        // Ручной DAY факт: ISO YYYY-MM-DD или dd.mm.yyyy.
+        // DAY факт только при «выполнено»; иначе очищаем.
         const iso = normalizeDayInput(raw);
+        if (raw && !iso) {
+          setMsg('DAY факт: дата (ISO / ДД.ММ.ГГГГ / «12 июня»)');
+          return;
+        }
+        if (iso && !isStatusDone(String(r.done_stat || ''), String(r.stat || ''))) {
+          setMsg('DAY факт только для статуса «выполнено»');
+          return;
+        }
         fields.day_fact = iso;
       } else if (spec.id === 'transfer') {
         // Колонка ПЕРЕНОС: дата → day_fact + fail_reason; STAT = цех·перенос (или уже экспедиция).
@@ -3103,30 +3181,44 @@ export function FlowPlanGrid({
             return { error: 'Перенос вставкой не копируется — задайте через ячейку статуса' };
           }
           const d = decodeStatus(raw);
-          return {
-            fields: {
-              done_stat: d.done_stat,
-              fail_reason: d.fail_reason,
-              stat: d.stat,
-              stat_sub: d.stat_sub,
-            },
+          const fields: Record<string, string | number | null> = {
+            done_stat: d.done_stat,
+            fail_reason: d.fail_reason,
+            stat: d.stat,
+            stat_sub: d.stat_sub,
           };
+          if (d.stat_sub === 'перенос') {
+            /* day_fact/fail_reason — через колонку ПЕРЕНОС */
+          } else if (isStatusDone(d.done_stat, d.stat)) {
+            const plan = (r.plan_date || '').slice(0, 10);
+            const curFact = String(r.day_fact || '').slice(0, 10);
+            if (plan && !/^\d{4}-\d{2}-\d{2}$/.test(curFact)) fields.day_fact = plan;
+          } else {
+            fields.day_fact = '';
+          }
+          return { fields };
         }
         case 'day_plan': {
           const iso = normalizeDayInput(raw);
-          if (raw && !iso) return { error: 'DAY план: YYYY-MM-DD или ДД.ММ.ГГГГ' };
+          if (raw && !iso) return { error: 'DAY план: дата (ISO / ДД.ММ / «12 июня»)' };
           if (!iso) return { fields: {} };
-          // Вставка/протяжка: факт = план (п.6).
-          return { fields: { plan_date: iso, day_fact: iso } };
+          const fields: Record<string, string | number | null> = { plan_date: iso };
+          if (isStatusDone(String(r.done_stat || ''), String(r.stat || ''))) {
+            fields.day_fact = iso;
+          }
+          return { fields };
         }
         case 'day_fact': {
           const iso = normalizeDayInput(raw);
-          if (raw && !iso) return { error: 'DAY факт: YYYY-MM-DD или ДД.ММ.ГГГГ' };
+          if (raw && !iso) return { error: 'DAY факт: дата (ISO / ДД.ММ / «12 июня»)' };
+          if (iso && !isStatusDone(String(r.done_stat || ''), String(r.stat || ''))) {
+            return { error: 'DAY факт только для статуса «выполнено»' };
+          }
           return { fields: { day_fact: iso } };
         }
         case 'transfer': {
           const iso = normalizeDayInput(raw);
-          if (raw && !iso) return { error: 'ПЕРЕНОС: YYYY-MM-DD или ДД.ММ.ГГГГ' };
+          if (raw && !iso) return { error: 'ПЕРЕНОС: дата (ISO / ДД.ММ / «12 июня»)' };
           const top = String(r.stat || '').trim() === 'экспедиция' ? 'экспедиция' : 'цех';
           if (!iso) {
             return {
@@ -3347,17 +3439,32 @@ export function FlowPlanGrid({
       if (lockedHit) setMsg('Часть строк старше 7 дней — отчёт по ним закрыт');
       if (targets.length === 0) return;
       if (!lockedHit) setMsg('');
-      const patch = {
-        done_stat: fields.done_stat,
-        fail_reason: fields.fail_reason,
-        stat: fields.stat,
-        stat_sub: fields.stat_sub,
-      };
-      const items = targets.map((t) => ({
-        id: t.id,
-        before: captureBefore(t, patch),
-        after: patch as Record<string, string | number | null>,
-      }));
+      const items = targets.map((t) => {
+        const patch: Record<string, string | number | null> = {
+          done_stat: fields.done_stat,
+          fail_reason: fields.fail_reason,
+          stat: fields.stat,
+          stat_sub: fields.stat_sub,
+        };
+        if (fields.stat_sub === 'перенос') {
+          const td = transferDateOf(t) || String(t.day_fact || '').slice(0, 10);
+          if (td) {
+            patch.fail_reason = `перенос на другой день: ${td}`;
+            patch.day_fact = td;
+          }
+        } else if (isStatusDone(fields.done_stat, fields.stat)) {
+          const plan = (t.plan_date || '').slice(0, 10);
+          const cur = String(t.day_fact || '').slice(0, 10);
+          if (plan && !/^\d{4}-\d{2}-\d{2}$/.test(cur)) patch.day_fact = plan;
+        } else {
+          patch.day_fact = '';
+        }
+        return {
+          id: t.id,
+          before: captureBefore(t, patch),
+          after: patch,
+        };
+      });
       applyFillItems(items, 'after');
       pushHistory({ kind: 'fill', items, label: 'STAT' });
     },
@@ -3404,6 +3511,7 @@ export function FlowPlanGrid({
           pushHistory({ kind: 'paste', ids: r.insertedIds, rows: parsed, planDate, target: mode });
           setMsg(
             `Вставлено: ${r.inserted} нов · ${r.assigned} на черновики · ${r.updated} обновлено` +
+              (r.skippedDup > 0 ? ` · ${r.skippedDup} дублей пропущено` : '') +
               (skipped > 0 ? ` · ${skipped} строк без ключа пропущено` : ''),
           );
         })
