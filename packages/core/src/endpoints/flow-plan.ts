@@ -32,6 +32,9 @@ export interface FlowDeliveryRow {
   /** Фиксация: 0 — не зафиксирована; batch_seq 1=план, 2+=дополнение. */
   fixation_id: number;
   batch_seq: number;
+  /** З.8 FIX-override: ручной ранг фиксации (0=авто по batch_seq; 1=план; 2=доп.1; 3=доп.2…).
+   *  Переопределяет живой ранг для ярлыка FIX и группировки экспорта. */
+  fix_manual?: number;
   /** № транспортного заказа (№ТрЗкз). */
   trz: string;
   vehicle: string;
@@ -95,6 +98,10 @@ export interface FlowDeliveryRow {
   snap_delivery?: string;
   snap_priority?: string;
   snap_unload?: string;
+  /** З.18 заморозка: снап КГ/V на момент фиксации (null/undefined = не заморожено → живой из ВГХ).
+   *  Сервер без базы ВГХ — значения шлёт клиент при «Зафиксировать». */
+  snap_weight?: number | null;
+  snap_volume?: number | null;
   /** SNAPSHOT «склад до» (Был/прежний склад-получатель) — заморожен при фиксации (п.1). */
   snap_pr: string;
   /** SNAPSHOT машины/экспедиторов/гаражного/заливки на момент фиксации (юзер 2026-07-05:
@@ -210,10 +217,12 @@ export interface FlowPlanFormResult {
 export async function flowPlanFix(
   client: ApiClient,
   date: string,
+  // З.18: снап КГ/V по id фиксируемой строки (сервер без базы ВГХ — считает клиент).
+  snaps?: Record<number, { w: number; v: number }>,
 ): Promise<{ fixationId: number; batchSeq: number; fixed: number }> {
   const wire = await client.call<{ fixation_id?: number; batch_seq?: number; fixed?: number }>(
     'flow_plan_fix',
-    { date },
+    snaps && Object.keys(snaps).length > 0 ? { date, snaps } : { date },
   );
   return {
     fixationId: Number(wire.fixation_id) || 0,

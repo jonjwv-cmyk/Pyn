@@ -41,6 +41,8 @@ export interface FlowDriverData {
   readonly showPhoneInCell?: boolean;
   readonly selectedDrivers?: readonly string[];
   readonly maxSelected?: number;
+  /** Разрешить вписать ФИО НЕ из базы (свободный ввод) — Отчёт (задача 20, юзер 2026-07-26). */
+  readonly allowCustom?: boolean;
 }
 export type FlowDriverCell = CustomCell<FlowDriverData>;
 
@@ -88,6 +90,7 @@ function FlowDriverEditor({
     searchPlaceholder = 'Поиск водителя: ФИО / должность / сот.',
     emptyLabel = 'Нет водителей в базе контактов',
     emptySearchLabel = 'Не найдено среди водителей базы',
+    allowCustom = false,
   } = cell.data;
   const [query, setQuery] = useState('');
   const multi = Array.isArray(selectedDrivers);
@@ -154,6 +157,25 @@ function FlowDriverEditor({
     });
   };
 
+  // Свободный ввод (задача 20): вписать ФИО не из базы. Без телефона/статуса (нейтрально).
+  const pickCustom = (name: string): void => {
+    const nm = name.trim();
+    if (!nm) return;
+    if (multi) {
+      if (picked.some((x) => x.toUpperCase() === nm.toUpperCase()) || picked.length >= maxSelected) return;
+      onChange?.(multiCell([...picked, nm]));
+      setQuery('');
+      return;
+    }
+    onFinishedEditing({
+      ...cell,
+      data: { ...cell.data, driver: nm, phone: '', phoneDisplay: '', color: '', isMol: false, until: '' },
+    });
+  };
+  const q = query.trim();
+  const canCustom =
+    allowCustom && q.length > 0 && !drivers.some((d) => d.fio.toLowerCase() === q.toLowerCase());
+
   const flipRef = useFlipUpIfClipped<HTMLDivElement>();
   return (
     <div ref={flipRef} className="flex max-h-80 w-72 flex-col">
@@ -165,10 +187,22 @@ function FlowDriverEditor({
         spellCheck={false}
         placeholder={searchPlaceholder}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && matches[0]) pick(matches[0]);
+          if (e.key !== 'Enter') return;
+          if (matches[0]) pick(matches[0]);
+          else if (canCustom) pickCustom(q);
         }}
         className="mb-1 h-8 w-full rounded-md border border-white/[0.12] bg-white/[0.04] px-2 text-[12px] text-text-primary outline-none placeholder:text-text-muted/60 focus:border-accent-clay/60"
       />
+      {canCustom && (
+        // Свободный ввод ФИО не из базы (Отчёт, задача 20). Enter тоже применяет.
+        <button
+          type="button"
+          onClick={() => pickCustom(q)}
+          className="mb-1 rounded-lg border border-accent-clay/40 bg-accent-clay/10 px-2 py-1.5 text-left text-[12px] text-text-primary transition-colors hover:bg-accent-clay/20"
+        >
+          Вписать вручную: «{q}»
+        </button>
+      )}
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-0.5 py-0.5 text-text-secondary">
         {matches.length === 0 ? (
           <div className="px-2 py-1.5 text-[12px] text-text-muted/70">

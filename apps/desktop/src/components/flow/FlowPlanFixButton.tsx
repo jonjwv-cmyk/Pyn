@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { Lock, RefreshCw } from 'lucide-react';
 import { flowDeliveriesGet, flowPlanFix } from '@pyn/core';
 import { api } from '@/lib/api';
+import { useVghStore, normVghKey } from '@/lib/vgh-store';
+import { ensureVghLoaded } from '@/lib/vgh-repo';
 import { MONTH_ABBR_RU } from './flow-sandbox.fixtures';
 
 /**
@@ -15,6 +17,10 @@ export function FlowPlanFixButton(): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [dates, setDates] = useState<{ date: string; count: number }[] | null>(null);
   const [msg, setMsg] = useState('');
+  const vghByKey = useVghStore((s) => s.byKey);
+  useEffect(() => {
+    void ensureVghLoaded();
+  }, []);
 
   const loadDates = (): void => {
     setDates(null);
@@ -41,7 +47,28 @@ export function FlowPlanFixButton(): JSX.Element {
     if (busy) return;
     setBusy(true);
     setMsg('');
-    void flowPlanFix(api, date)
+    // З.18: заморозка КГ/V — считаем снап (qty × ВГХ) для черновых строк дня и шлём серверу
+    // (у сервера базы ВГХ нет). Свежий fetch — состав к фиксации актуален.
+    void flowDeliveriesGet(api)
+      .then((rows) => {
+        const snaps: Record<number, { w: number; v: number }> = {};
+        for (const r of rows) {
+          if (Number(r.fixation_id) > 0 || Number(r.reserved) === 1) continue;
+          if ((r.plan_date || '').slice(0, 10) !== date) continue;
+          const q = r.qty;
+          if (q == null) continue;
+          const vgh = vghByKey.get(normVghKey(r.no_num));
+          if (!vgh) continue;
+          const w = vgh.weight_kg;
+          const vol = vgh.volume_m3;
+          if (w == null && vol == null) continue;
+          snaps[r.id] = {
+            w: w != null ? Math.round(q * w * 1000) / 1000 : NaN,
+            v: vol != null ? q * vol : NaN,
+          };
+        }
+        return flowPlanFix(api, date, snaps);
+      })
       .then((r) => {
         setMsg(
           r.batchSeq === 1

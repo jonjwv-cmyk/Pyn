@@ -53,6 +53,7 @@ export interface FlowSandboxRow {
   pct: number | null; // % — ВИРТУАЛЬНАЯ (в БД нет): считаем livePct из qty/chg; поле-ключ колонки
   history?: undefined; // ИСТОРИЯ — синтетическая колонка-иконка (не поле строки; ключ для FlowColumnSpec)
   sed?: undefined; // СЭД — синтетическая колонка (статус движения + на ком с активной поставки)
+  offnew?: undefined; // OFF/NEW — синтетическая колонка-индикатор (читает day_wk; ключ для FlowColumnSpec)
   q: string; // L Q — значок аварийного запаса
   warn: string; // M ⚠️ — ручной заказ + ФИО
   no_num: string; // N NO.№ — номенклатура
@@ -158,10 +159,15 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'to_wh', title: 'TO', width: 62, kind: 'to', editable: true },
   { id: 'pr', title: 'PR', width: 62, kind: 'text' },
   { id: 'point', title: 'ТОЧКА', width: 156, kind: 'dropdown', editable: true },
-  { id: 'day_wk', title: 'DAY', width: 84, kind: 'day', editable: true },
+  { id: 'day_wk', title: 'DAY план', width: 84, kind: 'day', editable: true },
+  // З.4: отдельная колонка-индикатор OFF/NEW (read-only, читает day_wk): OFF → пила
+  // красная (+ строка красная rowTheme), NEW → пила «new». DAY план теперь = только дата.
+  { id: 'offnew', title: 'OFF/NEW', width: 74, kind: 'day' },
   { id: 'stat', title: 'STAT', width: 120, kind: 'dropdown', options: FLOW_STAT_DROPDOWN, editable: true },
   /** STAT NOTE — свободный комментарий к статусу (после STAT; юзер 2026-07-26). */
   { id: 'stat_note', title: 'STAT NOTE', width: 160, kind: 'text', editable: true },
+  // П1.12: галочка «Согл» (поле sogl 0/1) — перед «%» (юзер 2026-07-26, задача 13).
+  { id: 'sogl', title: 'Согл', width: 48, kind: 'check', editable: true },
   { id: 'pct', title: '%', width: 52, kind: 'percent' },
   { id: 'q', title: 'Q', width: 38, kind: 'text' },
   { id: 'no_num', title: 'NO. №', width: 86, kind: 'text' },
@@ -174,8 +180,9 @@ export const FLOW_COLUMNS: readonly FlowColumnSpec[] = [
   { id: 'note', title: 'NOTE', width: 150, kind: 'text', editable: true },
   { id: 'delivery', title: 'ОКНО', width: 118, kind: 'window', editable: true },
   { id: 'mol', title: 'МОЛ', width: 172, kind: 'mol', editable: true },
-  // П1.12: галочка «Согл» (поле sogl 0/1). approved_dates — след дат у кнопки «Согласование».
-  { id: 'sogl', title: 'Согл', width: 48, kind: 'check', editable: true },
+  // ЗАПРОС — кто запросил материал (поле `request`, ручной ФИО). Едино во всех 3 вкладках,
+  // течёт с якоря в План/Отчёт (юзер 2026-07-26, задача 15). Серверное поле (whitelist ln_edit).
+  { id: 'request', title: 'ЗАПРОС', width: 150, kind: 'text', editable: true },
 ];
 
 /**
@@ -429,6 +436,7 @@ export function nearestGraphDate(
   weekdayRu: string,
   fromIso: string,
   holidays: readonly number[] = [],
+  isHolidayIso?: (iso: string) => boolean,
 ): string | null {
   const wd = WEEKDAY_RU_JS[weekdayRu.trim().toUpperCase().slice(0, 2)];
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(fromIso);
@@ -437,17 +445,30 @@ export function nearestGraphDate(
   const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
   d.setDate(d.getDate() + ((wd - d.getDay() + 7) % 7));
   for (let i = 0; i < 12; i++) {
-    const dayNum = d.getDate();
-    // holidays относятся к месяцу fromIso; при уходе в следующий месяц не фильтруем
-    // (нужны holidays следующего месяца — отдельно). В пределах 1-го месяца — skip.
-    const sameMonth =
-      d.getFullYear() === Number(m[1]) && d.getMonth() + 1 === Number(m[2]);
-    if (!sameMonth || !hol.has(dayNum)) {
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
-    }
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    // «Не возим» по графику (з.14): предикат isHolidayIso знает holidays ЛЮБОГО
+    // месяца — при перескоке в следующий месяц садимся на реальный день доставки
+    // (авг 3 «не возим» → авг 10). Без предиката — legacy skip только в месяце fromIso.
+    const isHol = isHolidayIso
+      ? isHolidayIso(iso)
+      : d.getFullYear() === Number(m[1]) && d.getMonth() + 1 === Number(m[2]) && hol.has(d.getDate());
+    if (!isHol) return iso;
     d.setDate(d.getDate() + 7);
   }
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Предикат «дата — не возим по графику» для {@link nearestGraphDate} (з.14, кросс-месяц):
+ * holidays берутся из меты КОНКРЕТНОГО месяца даты-кандидата, а не только опорного.
+ */
+export function makeGraphHolidayPredicate(
+  holidaysOfMonth: (year: number, month: number) => readonly number[] | undefined,
+): (iso: string) => boolean {
+  return (iso) => {
+    const list = holidaysOfMonth(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)));
+    return !!list && list.includes(Number(iso.slice(8, 10)));
+  };
 }
 
 /** ISO-дата + N дней → ISO. */

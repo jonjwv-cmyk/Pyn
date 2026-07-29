@@ -87,6 +87,9 @@ export const FlowGridEditor = memo(
     return (
       <DataEditor
         {...editorProps}
+        // Юзер 2026-07-26: провал в ячейку / редактор только по двойному клику
+        // (не single-click). Enter/type по-прежнему активируют.
+        cellActivationBehavior={editorProps.cellActivationBehavior ?? 'double-click'}
         ref={setGridRef}
         gridSelection={selection}
         onGridSelectionChange={(sel) => {

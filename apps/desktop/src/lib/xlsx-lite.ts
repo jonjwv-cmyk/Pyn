@@ -364,12 +364,14 @@ function stylesXml(clones: Array<{ base: number; argb: string; top: boolean }>):
     `<fonts count="${fonts.length}">${fonts.join('')}</fonts>` +
     `<fills count="${3 + argbs.length}"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>` +
     `<fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/><bgColor indexed="64"/></patternFill></fill>${extraFills}</fills>` +
-    // border 2 — разделитель групп складов: заметная (medium) верхняя граница.
+    // Сетка тонких ЧЁРНЫХ линий на всю область (юзер 2026-07-28, задача 11: «границы все
+    // тонкие» как в Excel). border 2 — разделитель групп: чёрная medium-граница сверху
+    // (жирные горизонтальные линии оставляем поверх тонкой сетки).
     `<borders count="3"><border><left/><right/><top/><bottom/><diagonal/></border>` +
-    `<border><left style="thin"><color rgb="FFD1D5DB"/></left><right style="thin"><color rgb="FFD1D5DB"/></right>` +
-    `<top style="thin"><color rgb="FFD1D5DB"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border>` +
-    `<border><left style="thin"><color rgb="FFD1D5DB"/></left><right style="thin"><color rgb="FFD1D5DB"/></right>` +
-    `<top style="medium"><color rgb="FF8A8F98"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border></borders>` +
+    `<border><left style="thin"><color rgb="FF000000"/></left><right style="thin"><color rgb="FF000000"/></right>` +
+    `<top style="thin"><color rgb="FF000000"/></top><bottom style="thin"><color rgb="FF000000"/></bottom><diagonal/></border>` +
+    `<border><left style="thin"><color rgb="FF000000"/></left><right style="thin"><color rgb="FF000000"/></right>` +
+    `<top style="medium"><color rgb="FF000000"/></top><bottom style="thin"><color rgb="FF000000"/></bottom><diagonal/></border></borders>` +
     `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
     `<cellXfs count="${BASE_XFS.length + clones.length}">${cellXfs}</cellXfs>` +
     `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +

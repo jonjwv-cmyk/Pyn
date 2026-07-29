@@ -91,6 +91,8 @@ export interface PlanSortable {
   mat: string;
   no_num: string;
   qty: number | null;
+  /** З.16: позиция-ПЕРЕНОС от этого склада-отправителя FR — идёт блоком ВПЕРЕДИ внутри FR. */
+  transfer?: boolean;
 }
 
 /** Компаратор APLAN с настраиваемым порядком отправителей (серверный xlsx-layout). */
@@ -101,6 +103,8 @@ export function makePlanEtalonCompare(specialFr?: readonly string[]): (a: PlanSo
       : SPECIAL_FR_INDEX;
   return (a, b) =>
     planSortKeyFr(a.fr, frIndex).localeCompare(planSortKeyFr(b.fr, frIndex), 'ru') ||
+    // з.16: внутри отправителя FR переносы — блоком ВПЕРЕДИ (перед обычными позициями).
+    ((b.transfer ? 1 : 0) - (a.transfer ? 1 : 0)) ||
     planSortKeyClst(a.clst).localeCompare(planSortKeyClst(b.clst), 'ru') ||
     planSortKeyTo(a.to_wh).localeCompare(planSortKeyTo(b.to_wh), 'ru') ||
     String(a.dlv ?? '').localeCompare(String(b.dlv ?? ''), 'ru', { numeric: true }) ||

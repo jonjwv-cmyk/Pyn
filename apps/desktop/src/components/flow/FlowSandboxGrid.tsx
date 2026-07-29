@@ -164,6 +164,7 @@ import {
   FLOW_MAT_SUBFIELDS,
   FLOW_FONT_PX_DEFAULT,
   nearestGraphDate,
+  makeGraphHolidayPredicate,
   graphDateSoon,
   todayIsoLocal,
   isoAddDays,
@@ -386,16 +387,11 @@ function hasAutoRule(row: FlowSandboxRow): boolean {
 }
 
 
-/** Перелив по NEW-строкам (day_wk='new'): ПОСТОЯННЫЙ плавный оранжевый градиент —
- *  мягкие волны медленно текут вдоль строки (всегда видно, что строка новая). */
-const SWEEP_CYCLE_MS = 3000; // период дрейфа (медленно, плавно)
-const SWEEP_WAVES = 2; // сколько мягких волн по ширине строки
-// Цвета «живого» переливающегося фона по типу строки (сочные, не бледные): NEW —
-// оранжевый, STAT «вопрос» — насыщенный янтарь. base = фон в провале волны, peak = пик.
-const SWEEP_NEW = { rgb: '247,130,22', base: 0.18, peak: 0.52 };
+// Цвета СТАТИЧНОЙ заливки по типу строки (задача 26, юзер 2026-07-28: без градиента/анимации).
+// «вопрос» — насыщенный янтарь; «ГРАФ нет» — синий. NEW-оранжевый убран из строки (только в
+// ячейке DAY). Градиент остаётся ТОЛЬКО для RGB (repeat_done). `base/peak` — легаси, не нужны.
 const SWEEP_VOPROS = { rgb: '233,176,30', base: 0.16, peak: 0.48 };
-// «Нет» (склад вне графика выбранного месяца) — СИНИЙ перелив (как NEW, но синий):
-// кластер/день по графику не определить, строку нужно видеть и доформировать.
+// «Нет» (склад вне графика выбранного месяца) — СИНИЙ (кластер/день по графику не определить).
 const SWEEP_NET = { rgb: '56,124,222', base: 0.18, peak: 0.52 };
 // «Обманка отчёта» — СОЧНЫЙ РАДУЖНЫЙ перелив (RGB по всему спектру): отчёт говорит «увезли»
 // ровно столько же по ЕИ, сколько снова открыто в формировании → сигнал «поставка жива у нас»
@@ -1549,9 +1545,21 @@ export function FlowSandboxGrid(): JSX.Element {
 
   // Месяц формирования → мета графика выбранного месяца (для ЖИВОГО CLST). Сам
   // holidays-контроль делает пикер; здесь нужны frozen-дни недели НТМК-складов.
-  const planMonths = useMemo(() => [{ year: planYear, month: planMonth }], [planYear, planMonth]);
+  const planMonths = useMemo(
+    () => [
+      { year: planYear, month: planMonth },
+      // з.14: след. месяц — ГРАФ может перескочить туда (авг 3 «не возим» → авг 10).
+      planMonth === 12 ? { year: planYear + 1, month: 1 } : { year: planYear, month: planMonth + 1 },
+    ],
+    [planYear, planMonth],
+  );
   const planMetaMap = useScheduleMonthsMeta(planMonths);
   const planMeta = planMetaMap.get(monthKey(planYear, planMonth));
+  // з.14: «не возим» с учётом ЛЮБОГО месяца (кросс-месячный перескок ГРАФ).
+  const graphHoliday = useMemo(
+    () => makeGraphHolidayPredicate((y, mo) => planMetaMap.get(monthKey(y, mo))?.holidays),
+    [planMetaMap],
+  );
   // Производственный календарь — для конца дневной смены в колонке ОКНО (endMin).
   const prodCalByYear = useProdCalendarStore((s) => s.byYear);
 
@@ -1795,7 +1803,7 @@ export function FlowSandboxGrid(): JSX.Element {
         const graphRef = monthStart > tomorrow ? monthStart : tomorrow;
         // «Не возим» (31 и т.п.) — meta.holidays месяца; иначе ГРАФ показывает мёртвую дату.
         const hol = planMeta?.holidays ?? [];
-        const near = weekday ? nearestGraphDate(weekday, graphRef, hol) : null;
+        const near = weekday ? nearestGraphDate(weekday, graphRef, hol, graphHoliday) : null;
         const num = near ? String(parseInt(near.slice(8, 10), 10)) : '';
         const clst = !weekday
           ? CLST_NONE
@@ -1848,7 +1856,7 @@ export function FlowSandboxGrid(): JSX.Element {
       return { ...r, ...patch };
     });
     return changed ? next : rows;
-  }, [rows, whById, planMeta, planYear, planMonth, vghByKey, statMetaById, transferPendingByAnchor]);
+  }, [rows, whById, planMeta, planYear, planMonth, vghByKey, statMetaById, transferPendingByAnchor, graphHoliday]);
 
   // Session-warm: после того как CLST/KG посчитались — кладём в module-cache
   // снимок liveRows (только если есть wh/vgh). Следующий mount стартует «готовым».
@@ -2118,6 +2126,13 @@ export function FlowSandboxGrid(): JSX.Element {
     [matFilter],
   );
   const ordFilterActive = ordFilter.orders.size > 0 || ordFilter.positions.size > 0;
+  // Любой активный фильтр показа (колонки + умные MAT/ORD) — для escape-hatch «в ловушке»
+  // (задача 17): если по фильтру удалили все строки, до заголовка не добраться — даём
+  // всегда-видимую кнопку «Сбросить фильтры» поверх пустого листа (как в Excel/Sheets).
+  const anyFilterActive =
+    matFilterActive ||
+    ordFilterActive ||
+    Object.values(filters).some((f) => f.search.trim() !== '' || f.excluded.size > 0);
 
   // Окно-предупреждение МОЛ — блокирующее: пока открыто, клик мимо не закрывает его
   // и не сбивает фильтр/выделение в гриде (общее правило, см. modal-guard).
@@ -2382,14 +2397,23 @@ export function FlowSandboxGrid(): JSX.Element {
         } satisfies FlowMolCell;
       }
       if (spec.kind === 'day') {
-        // Авто-сброс ПРОШЕДШЕЙ даты DAY (юзер 2026-06-22: «дата ушла → сброс по Екб»). Дата строго
-        // раньше сегодня (Екатеринбург, UTC+5) показывается ПУСТОЙ — новую ставим вручную (руками
-        // прошлую дату и так нельзя). DB не трогаем: «Сформировать план» прошлые даты не берёт.
-        let rawDay = (rowData.day_wk ?? '').trim();
-        if (/^\d{4}-\d{2}-\d{2}/.test(rawDay)) {
-          const todayYek = new Date(Date.now() + 5 * 3_600_000).toISOString().slice(0, 10);
-          if (rawDay < todayYek) rawDay = '';
+        // Дату НЕ прячем, даже если прошла (юзер 2026-07-26): иначе после удаления из
+        // отчёта строка выглядела «зелёной NEW без даты», хотя day_wk в БД был.
+        // «Сформировать план» прошлые даты всё равно не берёт (сервер/фильтр).
+        const rawDay = (rowData.day_wk ?? '').trim();
+        const isOffNew = rawDay === 'OFF' || rawDay === 'new';
+        // З.4: колонка OFF/NEW — read-only индикатор, ТОЛЬКО пила OFF/new (дату не показываем).
+        if (spec.id === 'offnew') {
+          const label = rawDay === 'OFF' ? 'off' : rawDay === 'new' ? 'new' : '';
+          return {
+            kind: GridCellKind.Custom,
+            allowOverlay: false,
+            copyData: isOffNew ? rawDay : '',
+            data: { kind: 'flow-day', value: isOffNew ? rawDay : '', label },
+          } satisfies FlowDayCell;
         }
+        // DAY план — ТОЛЬКО ДАТА (OFF/new ушли в колонку offnew): для OFF/new метку прячем
+        // (пила не рисуется), но сырое value + редактор (двойной клик) сохраняем.
         const s = dayState({ ...rowData, day_wk: rawDay });
         return {
           kind: GridCellKind.Custom,
@@ -2397,7 +2421,7 @@ export function FlowSandboxGrid(): JSX.Element {
           // Копируем СЫРОЕ значение (ISO-дата / OFF / пусто), а не подпись — тогда при
           // вставке в другую DAY-ячейку условная заливка (зелёная YES) тянется за датой.
           copyData: rawDay,
-          data: { kind: 'flow-day', value: rawDay, label: s.label, color: s.color },
+          data: { kind: 'flow-day', value: rawDay, label: isOffNew ? '' : s.label, color: s.color },
         } satisfies FlowDayCell;
       }
       if (spec.kind === 'mat') {
@@ -2499,7 +2523,7 @@ export function FlowSandboxGrid(): JSX.Element {
           const tomorrow = isoAddDays(todayIso, 1);
           const monthStart = `${planYear}-${String(planMonth).padStart(2, '0')}-01`;
           const graphRef = monthStart > tomorrow ? monthStart : tomorrow;
-          const near = nearestGraphDate(wd, graphRef, planMeta?.holidays ?? []);
+          const near = nearestGraphDate(wd, graphRef, planMeta?.holidays ?? [], graphHoliday);
           if (near) {
             const y = Number(near.slice(0, 4));
             const m = Number(near.slice(5, 7));
@@ -2708,7 +2732,7 @@ export function FlowSandboxGrid(): JSX.Element {
         allowWrapping: true,
       };
     },
-    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor, mapPoints, transferPendingByAnchor, planWasByAnchor, vghByKey, planYear, planMonth, prodCalByYear],
+    [viewRows, molByWarehouse, molByKey, whById, whByShop, shippingOptions, whStatusNote, statOptionsForRow, anchorsWithHistory, sedByAnchor, mapPoints, transferPendingByAnchor, planWasByAnchor, vghByKey, planYear, planMonth, prodCalByYear, graphHoliday],
   );
 
   // Шрифт ЗНАЧЕНИЯ per-колонке (clst 7 / day·stat·kg·v·mol·request 8 / прочее 10) +
@@ -2731,7 +2755,7 @@ export function FlowSandboxGrid(): JSX.Element {
           const graphRef = monthStart > tomorrow ? monthStart : tomorrow;
           const wd = clst.split(' ')[0] ?? '';
           graphGreen = graphDateSoon(
-            nearestGraphDate(wd, graphRef, planMeta?.holidays ?? []),
+            nearestGraphDate(wd, graphRef, planMeta?.holidays ?? [], graphHoliday),
             todayIso,
           );
         }
@@ -2751,7 +2775,7 @@ export function FlowSandboxGrid(): JSX.Element {
         },
       } as GridCell;
     },
-    [getCellContentRaw, zoom, viewRows, planYear, planMonth],
+    [getCellContentRaw, zoom, viewRows, planYear, planMonth, graphHoliday],
   );
 
   // Обновить активность кнопок отмены/повтора по длине стеков.
@@ -3060,6 +3084,8 @@ export function FlowSandboxGrid(): JSX.Element {
                 заявка: { stat: 'цех', sub: 'заявка' },
                 неликвиды: { stat: 'неликвиды', sub: '' },
                 вопрос: { stat: 'вопрос', sub: '' },
+                // з.25: короткое «мало» (быстрый пункт при недоборе) → канон «склад · мало».
+                мало: { stat: 'склад', sub: 'мало' },
               };
               const leg = mapLegacy[v];
               const st = leg?.stat ?? parsed.stat;
@@ -3098,6 +3124,7 @@ export function FlowSandboxGrid(): JSX.Element {
             continue;
           }
         } else if (spec.kind === 'day') {
+          if (spec.id === 'offnew') continue; // read-only индикатор — не пишем day_wk
           const v = String(newVal ?? '');
           // «new» ставить нельзя (авто-состояние) — допустимо только пусто / OFF / дата.
           if (v !== '' && v !== 'OFF' && !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
@@ -3809,26 +3836,27 @@ export function FlowSandboxGrid(): JSX.Element {
     (row: number): number => {
       const r = viewRows[row];
       if (!r) return rowH;
-      const noteFontPx = Math.round(colFontPx('note') * zoom);
-      const noteInnerW = noteWidth - 2 * Math.max(4, Math.round(BASE_HPAD * zoom));
-      let maxLines = 1;
+      const hpad = Math.max(4, Math.round(BASE_HPAD * zoom));
+      // З.16: все текст-колонки имеют allowWrapping → высота строки подгоняется под
+      // ПЕРЕНОС ЛЮБОЙ колонки (МАТ «перенос+материал», статус, время), а не только NOTE.
+      // Берём МАКС доп-высоты с учётом шрифта самой колонки (кэш countWrapLines защищает перф).
+      let maxExtra = 0;
       for (const spec of activeColsRef.current) {
         if (spec.kind !== 'text') continue;
         const v = r[spec.id];
         if (typeof v !== 'string' || !v) continue;
-        // NOTE — резиновая, переносится по ширине → считаем визуальные строки (\n + wrap);
-        // прочие текст-колонки фикс-ширины — только явные переносы.
-        const lines =
-          spec.id === 'note'
-            ? countWrapLines(v, noteInnerW, noteFontPx)
-            : v.includes('\n')
-              ? v.split('\n').length
-              : 1;
-        if (lines > maxLines) maxLines = lines;
+        const colW = spec.id === 'note' ? noteWidth : Math.round((colWidths[spec.id] ?? spec.width) * zoom);
+        const innerW = colW - 2 * hpad;
+        const fontPx = Math.round(colFontPx(spec.id) * zoom);
+        const lines = countWrapLines(v, innerW, fontPx);
+        if (lines > 1) {
+          const extra = (lines - 1) * Math.round(fontPx * 1.3);
+          if (extra > maxExtra) maxExtra = extra;
+        }
       }
-      return maxLines <= 1 ? rowH : rowH + (maxLines - 1) * Math.round(noteFontPx * 1.3);
+      return maxExtra > 0 ? rowH + maxExtra : rowH;
     },
-    [viewRows, rowH, zoom, noteWidth],
+    [viewRows, rowH, zoom, noteWidth, colWidths],
   );
   // Условное форматирование строки — мягкий фон по статусу (перенос из Google-листа,
   // адаптирован под светлый лист; clay-выделение читается поверх).
@@ -3890,11 +3918,9 @@ export function FlowSandboxGrid(): JSX.Element {
             ? null
             : r.clst === CLST_NONE
               ? SWEEP_NET
-              : r.day_wk === 'new'
-                ? SWEEP_NEW
-                : r.stat === 'вопрос'
-                  ? SWEEP_VOPROS
-                  : null
+              : r.stat === 'вопрос'
+                ? SWEEP_VOPROS
+                : null
           : null;
       const lastColUnderlay = col === activeColsRef.current.length - 1;
       const lastRowUnderlay = row === viewRows.length - 1;
@@ -3914,26 +3940,13 @@ export function FlowSandboxGrid(): JSX.Element {
         ctx.restore();
         (args as unknown as { requestAnimationFrame?: () => void }).requestAnimationFrame?.();
       } else if (sweep) {
-        const W = gridPxWidthRef.current || rect.x + rect.width * 4;
-        // Фаза — по времени (одинаковая для всех ячеек кадра → полоса непрерывна по строке).
-        const phase = (performance.now() / SWEEP_CYCLE_MS) % 1;
-        const g = ctx.createLinearGradient(0, 0, W, 0);
-        const N = 16;
-        for (let i = 0; i <= N; i++) {
-          const p = i / N;
-          const wave = 0.5 + 0.5 * Math.cos(2 * Math.PI * (p * SWEEP_WAVES - phase));
-          const a = sweep.base + (sweep.peak - sweep.base) * wave;
-          g.addColorStop(p, `rgba(${sweep.rgb},${a.toFixed(3)})`);
-        }
+        // Задача 26 (юзер 2026-07-28): СТАТИЧНАЯ заливка (без градиента/анимации) —
+        // синий «ГРАФ нет», янтарь «вопрос», красный sed_pending, пурпур signed_open.
+        // Градиент оставлен ТОЛЬКО для RGB (repeat_done) выше; NEW-оранжевый — только в ячейке DAY.
         ctx.save();
-        ctx.fillStyle = g;
+        ctx.fillStyle = `rgba(${sweep.rgb},0.30)`;
         ctx.fillRect(rect.x + 1, rect.y + 1, rect.width - (lastColUnderlay ? 2 : 1), rect.height - (lastRowUnderlay ? 2 : 1));
         ctx.restore();
-        // Двигаем анимацию ШТАТНЫМ механизмом Glide: просим следующий кадр — Glide
-        // перерисует эту ячейку (как у встроенного last-updated flash). Надёжнее внешнего
-        // updateCells, который покадрово не перерисовывал. (requestAnimationFrame есть в
-        // рантайм-args, но не в публичном типе DrawCellCallback — отсюда узкий каст.)
-        (args as unknown as { requestAnimationFrame?: () => void }).requestAnimationFrame?.();
       }
       // CLST «ПН КХП 6» (юзер 2026-07-02): ДЕНЬ недели ЖИРНЫМ, кластер и число — обычным.
       // Рисуем текст сами (частичная жирность в одной ячейке); фоновые слои выше не задеты.
@@ -4364,6 +4377,14 @@ export function FlowSandboxGrid(): JSX.Element {
         {loading && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#FDFDFB]/70 text-[13px] text-[#6B6862]">
             Загрузка формирования…
+          </div>
+        )}
+        {/* Задача 17 (юзер уточнил): по фильтру удалили все строки — оверлей НЕ должен
+            перекрывать заголовок, сброс делается в самом ▾ колонки. Подсказка сквозная
+            (pointer-events-none) → клик по заголовку grid проходит, фильтр снова доступен. */}
+        {!loading && viewRows.length === 0 && anyFilterActive && (
+          <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center text-[12px] text-[#6B6862]">
+            <span>Все строки скрыты фильтром — сбросьте его в ▾ заголовка колонки</span>
           </div>
         )}
         {size.width > 0 && size.height > 0 && USE_HTML_GRID && (

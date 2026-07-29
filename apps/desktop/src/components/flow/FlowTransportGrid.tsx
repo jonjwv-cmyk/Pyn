@@ -2280,9 +2280,17 @@ export function FlowTransportGrid(): JSX.Element {
             </div>
           )}
           {!loading && viewRows.length === 0 && (
-            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-[13px] text-[#6B6862]">
-              <span className="text-[14px] font-medium text-[#2A2925]">Пусто</span>
-              <span>Вставьте выгрузку из буфера или снимите фильтры.</span>
+            // Задача 17 (юзер уточнил): оверлей НЕ перекрывает заголовок (pointer-events-none) —
+            // сброс фильтра делается в самом ▾ колонки, куда клик теперь проходит.
+            <div className="pointer-events-none absolute inset-0 z-[5] flex flex-col items-center justify-center gap-1 text-[13px] text-[#6B6862]">
+              {colFilters.hasAnyFilter ? (
+                <span className="text-[12px]">Все строки скрыты фильтром — сбросьте его в ▾ заголовка колонки</span>
+              ) : (
+                <>
+                  <span className="text-[14px] font-medium text-[#2A2925]">Пусто</span>
+                  <span>Вставьте выгрузку из буфера.</span>
+                </>
+              )}
             </div>
           )}
           {size.width > 0 && size.height > 0 && (

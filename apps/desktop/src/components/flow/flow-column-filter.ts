@@ -30,6 +30,10 @@ export interface FlowColumnFiltersApi<TRow> {
   menuSortDir: 'asc' | 'desc' | null;
   /** id колонок с активным фильтром — для подсветки заголовка (themeOverride). */
   activeFilterColIds: Set<string>;
+  /** Есть ли хоть один активный фильтр показа (для escape-hatch «в ловушке», задача 17). */
+  hasAnyFilter: boolean;
+  /** Сбросить ВСЕ фильтры показа (сортировку не трогаем) — «Сбросить фильтры» как в Excel. */
+  clearAllFilters: () => void;
   /** Есть ли активная колоночная сортировка (грид тогда не применяет дефолтную). */
   hasColumnSort: boolean;
   handleHeaderMenuClick: (colIndex: number, bounds: { x: number; y: number; width: number; height: number }) => void;
@@ -193,6 +197,8 @@ export function useFlowColumnFilters<TRow extends { id: number }>(args: {
     setSort((cur) => (cur && menuColId && cur.colId === menuColId ? null : cur));
   }, [menuColId]);
 
+  const clearAllFilters = useCallback(() => setFilters({}), []);
+
   return {
     menu,
     menuColId,
@@ -201,6 +207,8 @@ export function useFlowColumnFilters<TRow extends { id: number }>(args: {
     menuExcluded,
     menuSortDir,
     activeFilterColIds,
+    hasAnyFilter: activeFilterColIds.size > 0,
+    clearAllFilters,
     hasColumnSort: sort !== null,
     handleHeaderMenuClick,
     closeMenu,

@@ -9,7 +9,7 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { ArrowDownUp, Check, ClipboardPaste, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { ArrowDownUp, Check, ClipboardPaste, Plus, Redo2, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { BODY_TYPES } from './flow-body-types';
@@ -19,7 +19,7 @@ import { flowWindowRenderer, type FlowWindowCell } from './flow-window-cell';
 import { flowScoreRenderer, type FlowScoreCell } from './flow-score-cell';
 import { deliveryRowEps, EPS_LEVEL_LABEL, parseDeliveryWindow, PRIORITY_OPTIONS, priorityDisplay } from './flow-eps';
 import { planEtalonCompare } from './flow-plan-sort';
-import { garageRowColor, garageFillArgb, softenRowFill, FLOW_FILL_PALETTE } from './flow-garage-color';
+import { garageRowColor, garageFillArgb, garageColorKey, softenRowFill, FLOW_FILL_PALETTE } from './flow-garage-color';
 import {
   buildPlanXlsxSheets, planXlsxFilename, buildExpedXlsxBook, expedXlsxFilename, kladExpedFilename,
   numberedFioLines,
@@ -36,6 +36,7 @@ import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from '
 import { flowVehicleRenderer, type FlowVehicleCell, type FlowVehicleOption } from './flow-vehicle-cell';
 import { FlowGridEditor, EMPTY_GRID_SELECTION, type FlowGridEditorHandle } from './FlowGridEditor';
 import { createLiveValue, useLiveValue, type LiveValue } from './flow-live-value';
+import { FlowSelStats, type NumCellAt, type NormRowAt } from './flow-sel-stats';
 import { useFlowColLayout } from './use-flow-col-layout';
 import { FlowSearchPanel } from './FlowSearchPanel';
 import { FlowDayPicker } from './FlowDayPicker';
@@ -74,6 +75,8 @@ import {
   flowStatDropdownGroups,
   formatFlowStat,
   parseFlowStatLabel,
+  isFlowStatErroneous,
+  isFlowStatShipped,
   legacyFailToStat,
   deriveDoneFromStat,
   type FlowXlsxLayout,
@@ -121,7 +124,7 @@ import {
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
 import {
   fmtNum3, MONTH_ABBR_RU, parseMol, compactFio, matCardLines, needsWarn, findMolOptionForWh,
-  nearestGraphDate, graphDayLabel, graphDateSoon, todayIsoLocal, formatUploadDay, formatUploadDayParts, flowDate, planMatTitle,
+  nearestGraphDate, makeGraphHolidayPredicate, graphDayLabel, graphDateSoon, todayIsoLocal, formatUploadDay, formatUploadDayParts, flowDate, planMatTitle,
 } from './flow-sandbox.fixtures';
 // CSV-экспорт (flow-export) убран (юзер 2026-07-03) — только «План .xlsx» из Отчёта.
 
@@ -202,11 +205,11 @@ const snapEpsAnchor = (
 
 /** §3.2 План — 19 видимых + 11 скрываемых (PLAN_HIDDEN_COLS) = 30. */
 const PLAN_COLS: readonly PlanColSpec[] = [
-  { id: 'fix', title: 'FIX', width: 60 },
+  { id: 'fix', title: 'FIX', width: 60, editable: true },
   { id: 'graph', title: 'ГРАФ', width: 56 },
   { id: 'day_plan', title: 'DAY план', width: 88, editable: true },
   { id: 'day_fact', title: 'DAY факт', width: 88, editable: true },
-  { id: 'approved', title: 'СОГЛ.', width: 130, editable: true },
+  { id: 'request', title: 'ЗАПРОС', width: 130, editable: true },
   { id: 'fr', title: 'От', width: 52 },
   { id: 'to', title: 'СП', width: 52 },
   { id: 'clst', title: 'CLST', width: 64 },
@@ -242,7 +245,7 @@ const PLAN_HIDDEN_COLS: readonly PlanHiddenColSpec[] = [
 
 /** §3.3 Отчёт — FIX + ГРАФ + … БАЛЛ всегда видна. */
 const REPORT_COLS: readonly PlanColSpec[] = [
-  { id: 'fix', title: 'FIX', width: 60 },
+  { id: 'fix', title: 'FIX', width: 60, editable: true },
   { id: 'graph', title: 'ГРАФ', width: 56 },
   { id: 'fr', title: 'От', width: 52 },
   { id: 'to', title: 'СП', width: 52 },
@@ -264,7 +267,7 @@ const REPORT_COLS: readonly PlanColSpec[] = [
   { id: 'exp', title: 'ЭКСПЕДИТОР', width: 190, editable: true },
   { id: 'vehicleType', title: 'ТИП ТС', width: 130, editable: true },
   { id: 'vehicle', title: 'ID', width: 170, editable: true },
-  { id: 'approved', title: 'СОГЛ.', width: 130, editable: true },
+  { id: 'request', title: 'ЗАПРОС', width: 130, editable: true },
   { id: 'priority', title: 'ПРИОРИТЕТ', width: 92, editable: true },
   { id: 'delivery', title: 'ОКНО', width: 118, editable: true },
   { id: 'mol', title: 'МОЛ', width: 150, editable: true },
@@ -340,12 +343,39 @@ function statusValue(r: FlowDeliveryRow): string {
   return ''; // дефолт — пусто (не «ожидание»)
 }
 
+/** «Ошибочно» (экспедиция · ошибочно): позиция-ошибка — серая, не в счёте позиций, не в
+ *  переносах, не в белом отчёте (юзер 2026-07-28). */
+function isErroneousRow(r: FlowDeliveryRow): boolean {
+  return isFlowStatErroneous(String(r.stat ?? ''), String(r.stat_sub ?? ''));
+}
+
 /** Дата переноса из fail_reason / day_fact. */
 function transferDateOf(r: FlowDeliveryRow): string {
   const df = String(r.day_fact || '').slice(0, 10);
   if (/^\d{4}-\d{2}-\d{2}$/.test(df) && String(r.stat_sub || '') === 'перенос') return df;
   const m = /^перенос на другой день:\s*(\d{4}-\d{2}-\d{2})/.exec(String(r.fail_reason || ''));
   return m?.[1] ?? '';
+}
+
+/** Дата ФАКТ вывоза ставится только для ВЫВЕЗЕНО (выполнено/цех·самовывоз); «перенос» —
+ *  своя дата. Прочие статусы — факта нет (юзер 2026-07-28). Гейт показа; хранимое не трём. */
+function factVisibleFor(r: FlowDeliveryRow): boolean {
+  let st = String(r.stat || '').trim();
+  let su = String(r.stat_sub || '').trim();
+  if (!st && r.fail_reason) {
+    const leg = legacyFailToStat(r.done_stat, r.fail_reason);
+    st = leg.stat;
+    su = leg.sub;
+  }
+  if (!st && (r.done_stat === STATUS_DONE || r.done_stat === 'увезли')) st = STATUS_DONE;
+  return isFlowStatShipped(st, su) || su === 'перенос';
+}
+
+/** ISO факт-дня к показу: пусто, если статус не «вывезено»/«перенос». */
+function shownFactIso(r: FlowDeliveryRow): string {
+  const raw = String(r.day_fact || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return '';
+  return factVisibleFor(r) ? raw : '';
 }
 
 /** Разбор опции STAT → поля поставки (B1 + derived done_stat). */
@@ -427,10 +457,12 @@ function normalizeDayInput(raw: string): string {
   return '';
 }
 
-function isStatusDone(done: string, stat: string): boolean {
+function isStatusDone(done: string, stat: string, sub = ''): boolean {
   const d = String(done || '').trim();
   const s = String(stat || '').trim();
-  return d === 'выполнено' || d === 'увезли' || s === 'выполнено';
+  // «Вывезено» для факт-дня (з.ФАКТ): выполнено/увезли ИЛИ цех·самовывоз (самовывоз).
+  return d === 'выполнено' || d === 'увезли' || s === 'выполнено'
+    || isFlowStatShipped(s, String(sub || '').trim());
 }
 
 function displayFailReason(reason: string): string {
@@ -727,6 +759,9 @@ export function FlowPlanGrid({
   // подписчик LiveValue (как Формирование/Транспорт), монолит Плана не дёргается.
   const editorRef = useRef<FlowGridEditorHandle | null>(null);
   const selLive = useRef(createLiveValue(0)).current;
+  // Полное выделение как LiveValue — для нижней панели агрегатов (задача 21). Протяжка
+  // мыши обновляет только панель-подписчик, монолит-лист не ре-рендерится.
+  const selGridLive = useRef(createLiveValue<GridSelection>(EMPTY_GRID_SELECTION)).current;
   const gridRef = useRef<DataEditorRef | null>(null);
   // §7-B: карточка ИЗМЕНЕНИЯ материала (вес/объём/норма) — двойной клик по NO.№ (как в
   // Формировании). Правка пересчитывает KG/V live (подписка vgh_changed). Для Плана действует
@@ -856,17 +891,27 @@ export function FlowPlanGrid({
   const scheduleMonths = useMemo(() => {
     const seen = new Set<string>();
     const out: { year: number; month: number }[] = [];
+    const add = (mm: { year: number; month: number }) => {
+      const k = monthKey(mm.year, mm.month);
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push(mm);
+    };
     for (const r of rows) {
       const m = monthOfDate(r.plan_date);
       if (!m) continue;
-      const k = monthKey(m.year, m.month);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(m);
+      add(m);
+      // з.14: грузим и след. месяц — ГРАФ может перескочить туда (авг 3 «не возим» → авг 10).
+      add(m.month === 12 ? { year: m.year + 1, month: 1 } : { year: m.year, month: m.month + 1 });
     }
     return out;
   }, [rows]);
   const scheduleMetaMap = useScheduleMonthsMeta(scheduleMonths);
+  // з.14: «не возим» с учётом ЛЮБОГО месяца (кросс-месячный перескок ГРАФ).
+  const graphHoliday = useMemo(
+    () => makeGraphHolidayPredicate((y, mo) => scheduleMetaMap.get(monthKey(y, mo))?.holidays),
+    [scheduleMetaMap],
+  );
   // База ВГХ — живые КГ/V (КГ = кол-во × вес на 1 ЕИ; V = кол-во × объём).
   const vghByKey = useVghStore((s) => s.byKey);
   useEffect(() => {
@@ -879,15 +924,22 @@ export function FlowPlanGrid({
     if (Array.isArray(e.rows)) applyVghChanged(e.rows as unknown as VghRow[]);
   });
   const molRecords = useMolStore((s) => s.records);
-  const { molByWarehouse, molByKey } = useMemo(() => {
+  const { molByWarehouse, molByKey, molPhoneByKey } = useMemo(() => {
     const COLOR = { ok: '#3FB950', error: '#F85149', neutral: '#9AA0A6' } as const;
     const byWh = new Map<string, FlowMolOption[]>();
     const byKey = new Map<string, { fio: string; color: string }>();
+    // Телефон МОЛа по ключу ФИО — для файла «Экспедиторам» (задача 12): если в снимке
+    // строки телефона нет (МОЛ выбран из списка = только ФИО), берём из справочника.
+    const phoneByKey = new Map<string, string>();
     for (const r of molRecords) {
       if (!r.fio) continue;
       const color = COLOR[molStatusKind(r.status)];
       const k = personKey(r.fio);
       if (k && !byKey.has(k)) byKey.set(k, { fio: r.fio, color });
+      if (k && !phoneByKey.has(k)) {
+        const ph = r.mobile || r.work || '';
+        if (ph) phoneByKey.set(k, ph);
+      }
       const wid = whKey(r.warehouseId);
       if (!wid) continue;
       const phone = r.mobile || r.work || '';
@@ -911,7 +963,7 @@ export function FlowPlanGrid({
         return ra !== rb ? ra - rb : a.fio.localeCompare(b.fio, 'ru');
       });
     }
-    return { molByWarehouse: byWh, molByKey: byKey };
+    return { molByWarehouse: byWh, molByKey: byKey, molPhoneByKey: phoneByKey };
   }, [molRecords]);
   const molsForWh = useCallback(
     (wh: string): readonly FlowMolOption[] => whMapGet(molByWarehouse, wh) ?? [],
@@ -1416,14 +1468,35 @@ export function FlowPlanGrid({
     }
     return out;
   }, [rows]);
-  /** Ярлык FIX по ЖИВОМУ порядку фиксаций дня (1=план, 2=доп.1…). */
-  const fixLabelOf = useCallback(
-    (r: FlowDeliveryRow): string => {
-      if (Number(r.fixation_id) <= 0) return '';
-      const rank = batchRankByDate.get((r.plan_date || '').slice(0, 10))?.get(Number(r.batch_seq) || 0) ?? 0;
-      return rank <= 0 ? '' : rank === 1 ? 'план' : `доп. ${rank - 1}`;
+  /** Эффективный ранг FIX: ручной override `fix_manual` (з.8) главнее живого по batch_seq. */
+  const fixRankOf = useCallback(
+    (r: FlowDeliveryRow): number => {
+      if (Number(r.fixation_id) <= 0) return 0;
+      const manual = Number(r.fix_manual) || 0;
+      if (manual > 0) return manual;
+      return batchRankByDate.get((r.plan_date || '').slice(0, 10))?.get(Number(r.batch_seq) || 0) ?? 0;
     },
     [batchRankByDate],
+  );
+  /** Ярлык FIX (1=план, 2=доп.1…) с учётом ручного override. */
+  const fixLabelOf = useCallback(
+    (r: FlowDeliveryRow): string => {
+      const rank = fixRankOf(r);
+      return rank <= 0 ? '' : rank === 1 ? 'план' : `доп. ${rank - 1}`;
+    },
+    [fixRankOf],
+  );
+  /** Опции выпадашки FIX для дня строки: план + доп.1..N (по числу живых батчей + запас на новый). */
+  const fixOptionsFor = useCallback(
+    (r: FlowDeliveryRow): string[] => {
+      const d = (r.plan_date || '').slice(0, 10);
+      const live = batchRankByDate.get(d)?.size ?? 0;
+      const max = Math.max(live, fixRankOf(r), 1);
+      const opts = ['план'];
+      for (let i = 1; i <= max; i++) opts.push(`доп. ${i}`); // +1 запас = «новый доп.»
+      return opts;
+    },
+    [batchRankByDate, fixRankOf],
   );
 
   // Эффективное кол-во ДЛЯ ПОКАЗА: в Отчёте — фактическое из zm_vl (что реально провели), если есть;
@@ -1449,7 +1522,7 @@ export function FlowPlanGrid({
       if (!day) return { label: 'нет', soon: false };
       const todayIso = todayIsoLocal();
       const ref = /^\d{4}-\d{2}-\d{2}/.test(r.plan_date || '') ? (r.plan_date || '').slice(0, 10) : todayIso;
-      const near = nearestGraphDate(day, ref, meta?.holidays ?? []);
+      const near = nearestGraphDate(day, ref, meta?.holidays ?? [], graphHoliday);
       if (near && near === ref) return { label: 'да', soon: true };
       if (!near) return { label: 'нет', soon: false };
       // дата графика: «июл 22» / «июл 22 2025»
@@ -1460,7 +1533,7 @@ export function FlowPlanGrid({
       const label = yy !== curY ? `${mon} ${dd} ${yy}` : `${mon} ${dd}`;
       return { label, soon: graphDateSoon(near, todayIso) };
     },
-    [whByKey, scheduleMetaMap],
+    [whByKey, scheduleMetaMap, graphHoliday],
   );
   const cellText = useCallback(
     (spec: PlanColSpec, r: FlowDeliveryRow): string => {
@@ -1499,8 +1572,8 @@ export function FlowPlanGrid({
         case 'day_plan':
           return fmtPlanDate(r.plan_date);
         case 'day_fact': {
-          const iso = String(r.day_fact || '').slice(0, 10);
-          return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? fmtPlanDate(iso) : (r.day_fact || '');
+          const iso = shownFactIso(r);
+          return iso ? fmtPlanDate(iso) : '';
         }
         case 'transfer': {
           const td = transferDateOf(r);
@@ -1553,12 +1626,19 @@ export function FlowPlanGrid({
         }
         case 'kg': {
           const q = effQty(r);
+          // З.18: зафикс. строка без фактического пересчёта → замороженный снап (не дрейфует с ВГХ).
+          if (Number(r.fixation_id) > 0 && r.snap_weight != null && q === r.qty) {
+            return fmtNum3(Math.round(Number(r.snap_weight) * 1000) / 1000);
+          }
           const w = vghByKey.get(normVghKey(r.no_num))?.weight_kg;
           if (w != null && q != null) return fmtNum3(Math.round(q * w * 1000) / 1000);
           return '—';
         }
         case 'v': {
           const q = effQty(r);
+          if (Number(r.fixation_id) > 0 && r.snap_volume != null && q === r.qty) {
+            return fmtSmart(Number(r.snap_volume), 3);
+          }
           const vol = vghByKey.get(normVghKey(r.no_num))?.volume_m3;
           if (vol != null && q != null) return fmtSmart(q * vol, 3);
           return '—';
@@ -1739,7 +1819,45 @@ export function FlowPlanGrid({
   const handleSelectionChange = useCallback((sel: GridSelection) => {
     selectionRef.current = sel;
     selLive.set(sel.rows.length);
-  }, [selLive]);
+    selGridLive.set(sel);
+  }, [selLive, selGridLive]);
+
+  // ── Аксессоры нижней панели агрегатов (задача 21) ─────────────────────────────
+  // Число+ЕИ по ячейке: QTY (ЕИ строки), KG/V — производные от ВГХ (как в гриде/xlsx).
+  const statNumAt = useCallback<NumCellAt>(
+    (col, row) => {
+      const spec = COLS[col];
+      const r = viewRows[row];
+      if (!spec || !r) return null;
+      const q = effQty(r);
+      if (typeof q !== 'number') return null;
+      if (spec.id === 'qty') return { value: q, unit: (r.uom || '').trim() || '—' };
+      if (spec.id === 'kg') {
+        const w = vghByKey.get(normVghKey(r.no_num))?.weight_kg;
+        return w != null ? { value: q * w, unit: 'кг' } : null;
+      }
+      if (spec.id === 'v') {
+        const vol = vghByKey.get(normVghKey(r.no_num))?.volume_m3;
+        return vol != null ? { value: q * vol, unit: 'м³' } : null;
+      }
+      return null;
+    },
+    [COLS, viewRows, effQty, vghByKey],
+  );
+  const statNormRowAt = useCallback<NormRowAt>(
+    (row) => {
+      const r = viewRows[row];
+      if (!r) return null;
+      const q = effQty(r);
+      if (typeof q !== 'number') return null;
+      return { qty: q, groupKey: `${r.fr}|${r.to_wh}`, noKey: normVghKey(r.no_num), uom: (r.uom || '').trim() };
+    },
+    [viewRows, effQty],
+  );
+  const statMinQtyOf = useCallback((noKey: string) => vghByKey.get(noKey)?.min_qty ?? null, [vghByKey]);
+  const statQtyCol = useMemo(() => COLS.findIndex((c) => c.id === 'qty'), [COLS]);
+  // «Ошибочно» НЕ считается в количестве позиций (юзер 2026-07-28): счётчик без таких строк.
+  const countedRowCount = useMemo(() => viewRows.reduce((n, r) => (isErroneousRow(r) ? n : n + 1), 0), [viewRows]);
   // Задать выделение извне (поиск-переход) и очистить (после удаления/переноса).
   const applyGridSelection = useCallback((sel: GridSelection) => {
     editorRef.current?.setSelection(sel);
@@ -1860,8 +1978,11 @@ export function FlowPlanGrid({
   // в Glide = лаг скролла на тысячах строк (юзер 2026-07-18). Текст MAT/NOTE
   // обрежется ellipsis; План (меньше строк/день) — переменная высота.
   // ПЛАН: precompute высот (approxWrapLines), O(1) на scroll.
+  // З.16 (owner 2026-07-28): и Отчёт переменной высоты — текст MAT «перенос+материал»/
+  // NOTE виден целиком. Высоты PRECOMPUTE'ятся (O(1) на скролл, не живой measure) — чтобы
+  // не вернуть лаг, ради которого Отчёт был фиксирован. ⚠️ перф-watch: если Glide лагает на
+  // тысячах строк переменной высоты — вернуть фикс. REPORT_ROW_H для report (1 строка).
   const planRowHeights = useMemo(() => {
-    if (mode === 'report') return null;
     const LINE = 13;
     const matW = (colWidths.mat ?? 280) - REPORT_HPAD * 2;
     const noteW = (colWidths.note ?? 230) - REPORT_HPAD * 2;
@@ -1882,11 +2003,14 @@ export function FlowPlanGrid({
       const pointLines = Math.max(1, pointSrc ? pointSrc.split('\n').filter(Boolean).length : 1);
       const vtypeLines = Math.max(1, splitMultiCell(rowVehicle(r)).length);
       const rideLines = Math.max(1, splitMultiCell(rowRide(r)).length);
+      // З.16: STAT тоже переносится (напр. «экспедиция · не по пути») — высота учитывает.
+      const statusLines = approxWrapLines(statusValue(r), (colWidths.status ?? 200) - REPORT_HPAD * 2);
       const expN = rowExpeditors(r).length;
       const h = Math.max(
         32,
         16 + (matLines - 1) * LINE,
         16 + (noteLines - 1) * LINE,
+        16 + (statusLines - 1) * LINE,
         16 + (vtypeLines - 1) * LINE,
         16 + (rideLines - 1) * LINE,
         16 + (pointLines - 1) * LINE,
@@ -1901,8 +2025,6 @@ export function FlowPlanGrid({
     (row: number): number => planRowHeights?.[row] ?? 40,
     [planRowHeights],
   );
-  /** Отчёт: константа — Glide не зовёт per-row measure на scroll. */
-  const REPORT_ROW_H = 36;
 
   // Склады без назначаемого МОЛа — Set один раз (для подсветки строк Плана).
   // Раньше molsForWh().some(...) на КАЖДОЙ строке при каждой отрисовке темы.
@@ -2007,6 +2129,18 @@ export function FlowPlanGrid({
           copyData: value,
           themeOverride: planCellTheme(spec.id),
           data: { kind: 'flow-dropdown', value, options: [...PRIORITY_OPTIONS] },
+        } satisfies FlowDropdownCell;
+      }
+      if (spec.id === 'fix') {
+        // З.8 FIX-override: на зафикс. строке — выпадашка план/доп.N (ручной ранг fix_manual).
+        const value = fixLabelOf(r);
+        const editable = Number(r.fixation_id) > 0 && !locked;
+        return {
+          kind: GridCellKind.Custom,
+          allowOverlay: editable,
+          copyData: value,
+          themeOverride: planCellTheme(spec.id),
+          data: { kind: 'flow-dropdown', value, options: editable ? fixOptionsFor(r) : [value].filter(Boolean) },
         } satisfies FlowDropdownCell;
       }
       if (spec.id === 'score') {
@@ -2167,7 +2301,9 @@ export function FlowPlanGrid({
           : '';
         const cell: FlowMatCell = {
           kind: GridCellKind.Custom,
-          allowOverlay: true,
+          // allowOverlay=false: двойной клик по Материалу открывает карточку ПРАВКИ ВГХ через
+          // onCellActivated (задача 18), а не read-only оверлей (он в План/Отчёте не рендерился).
+          allowOverlay: false,
           copyData: r.mat ?? '',
           data: {
             kind: 'flow-mat',
@@ -2261,6 +2397,7 @@ export function FlowPlanGrid({
             showPhoneInCell: false,
             selectedDrivers: names,
             maxSelected: 5, // юзер 2026-07-04: экспедиторов до пяти
+            allowCustom: true, // задача 20: можно вписать любое лицо руками (не только из базы)
           },
         };
         return cell;
@@ -2286,8 +2423,7 @@ export function FlowPlanGrid({
         let iso = '';
         if (spec.id === 'day_plan') iso = (r.plan_date || '').slice(0, 10);
         else if (spec.id === 'day_fact') {
-          const raw = String(r.day_fact || '').slice(0, 10);
-          iso = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : '';
+          iso = shownFactIso(r);
         } else {
           iso = transferDateOf(r);
         }
@@ -2329,7 +2465,7 @@ export function FlowPlanGrid({
         contentAlign: spec.id === 'qty' || spec.id === 'kg' || spec.id === 'v' ? 'right' : 'left',
       };
     },
-    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo, whStatusNote, rowExpeditors, rowVehicle, mapPoints, transferChainDates, routeNoteByRowId, vghByKey, prodCalByYear],
+    [viewRows, cellText, COLS, rowLocked, anchorByKey, molsForWh, molByKey, colWidths, expeditorsForWh, resolveExpeditorOpt, expeditorDisplayName, vehicleOptions, canEditMol, graphInfo, whStatusNote, rowExpeditors, rowVehicle, mapPoints, transferChainDates, routeNoteByRowId, vghByKey, prodCalByYear, fixLabelOf, fixOptionsFor],
   );
 
   /**
@@ -2726,15 +2862,10 @@ export function FlowPlanGrid({
       for (const fioStr of values) {
         const wantKey = personKey(fioStr);
         const opt = opts.find((o) => personKey(o.fio) === wantKey);
-        if (!opt) {
-          return {
-            value: '',
-            error: `${fioStr} не найден в справочнике контактов`,
-          };
-        }
-        out.push(opt.fio);
+        // Задача 20: имя не из базы — не ошибка, вписываем как есть (свободный ввод).
+        out.push(opt ? opt.fio : fioStr.trim());
       }
-      return { value: out.join('\n') };
+      return { value: out.filter(Boolean).join('\n') };
     },
     [expeditorsForWh],
   );
@@ -2743,7 +2874,10 @@ export function FlowPlanGrid({
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z') return;
-      if (!measureRef.current || measureRef.current.offsetParent === null) return;
+      // Вкладка скрыта? offsetParent===null ловит display:none; visibility:hidden
+      // (з.2/22 — так прячем неактивную вкладку) — через computed style.
+      const mel = measureRef.current;
+      if (!mel || mel.offsetParent === null || getComputedStyle(mel).visibility === 'hidden') return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       e.preventDefault();
@@ -2804,6 +2938,26 @@ export function FlowPlanGrid({
           setMsg('');
           return;
         }
+        if (spec.id === 'fix' && data.kind === 'flow-dropdown') {
+          // З.8 FIX-override: ярлык план/доп.N → ранг. Равен живому авто-рангу → сброс (0).
+          if (Number(r.fixation_id) <= 0) return;
+          const v = String(data.value ?? '').trim();
+          let rank = 0;
+          if (v === 'план') rank = 1;
+          else {
+            const m = /доп\.?\s*(\d+)/i.exec(v);
+            if (m) rank = Number(m[1]) + 1;
+          }
+          if (rank <= 0) return;
+          const autoRank = batchRankByDate.get((r.plan_date || '').slice(0, 10))?.get(Number(r.batch_seq) || 0) ?? 0;
+          const fixManual = rank === autoRank ? 0 : rank;
+          if (fixManual === (Number(r.fix_manual) || 0)) return;
+          const fields: Record<string, string | number | null> = { fix_manual: fixManual };
+          pushHistory({ id: r.id, before: captureBefore(r, fields), after: fields });
+          applyDlvFields(r.id, fields);
+          setMsg('');
+          return;
+        }
         if (spec.id === 'date' && data.kind === 'flow-day') {
           // Смена дня ручной строки Отчёта: сервер перецепит её к фиксации нового дня.
           const nd = String(data.value ?? '').slice(0, 10);
@@ -2848,8 +3002,8 @@ export function FlowPlanGrid({
               fields.fail_reason = `перенос на другой день: ${td}`;
               fields.day_fact = td;
             }
-          } else if (isStatusDone(decoded.done_stat, decoded.stat)) {
-            // «выполнено» → DAY факт = план, если факт пуст
+          } else if (isStatusDone(decoded.done_stat, decoded.stat, decoded.stat_sub)) {
+            // Вывезено (выполнено / цех·самовывоз) → DAY факт = план, если факт пуст (з.ФАКТ).
             const plan = (r.plan_date || '').slice(0, 10);
             const curFact = String(r.day_fact || '').slice(0, 10);
             if (plan && !/^\d{4}-\d{2}-\d{2}$/.test(curFact)) fields.day_fact = plan;
@@ -2952,6 +3106,18 @@ export function FlowPlanGrid({
         return;
       }
 
+      if (spec.id === 'request') {
+        // ЗАПРОС (кто просил) — поле ЯКОРЯ формирования: правка отражается во всех видах
+        // и течёт обратно в Формирование (юзер 2026-07-26, задача 15). Серверное поле.
+        const anchor = anchorByKey.get(`${r.ord}|${r.it}`);
+        if (!anchor) {
+          setMsg('Не нашёл позицию формирования для этой поставки');
+          return;
+        }
+        applyAnchorFields(anchor, { request: raw });
+        return;
+      }
+
       if (spec.id === 'note') {
         // Комментарий (юзер 2026-06-15): ОТЧЁТ — правим snap_note строки в окне 7 дней (rowLocked
         // уже отбил старше; сервер пускает snap_note на зафикс. строку). ПЛАН — комментарий ЯКОРЯ.
@@ -2998,7 +3164,7 @@ export function FlowPlanGrid({
         }
         if (iso) {
           fields.plan_date = iso;
-          if (isStatusDone(String(r.done_stat || ''), String(r.stat || ''))) {
+          if (isStatusDone(String(r.done_stat || ''), String(r.stat || ''), String(r.stat_sub || ''))) {
             fields.day_fact = iso;
           }
         }
@@ -3009,8 +3175,8 @@ export function FlowPlanGrid({
           setMsg('DAY факт: дата (ISO / ДД.ММ.ГГГГ / «12 июня»)');
           return;
         }
-        if (iso && !isStatusDone(String(r.done_stat || ''), String(r.stat || ''))) {
-          setMsg('DAY факт только для статуса «выполнено»');
+        if (iso && !isStatusDone(String(r.done_stat || ''), String(r.stat || ''), String(r.stat_sub || ''))) {
+          setMsg('DAY факт только для вывезено (выполнено / цех·самовывоз)');
           return;
         }
         fields.day_fact = iso;
@@ -3123,6 +3289,7 @@ export function FlowPlanGrid({
       vehicleOptions,
       vehicleByGarage,
       mapPoints,
+      batchRankByDate,
     ],
   );
 
@@ -3189,7 +3356,7 @@ export function FlowPlanGrid({
           };
           if (d.stat_sub === 'перенос') {
             /* day_fact/fail_reason — через колонку ПЕРЕНОС */
-          } else if (isStatusDone(d.done_stat, d.stat)) {
+          } else if (isStatusDone(d.done_stat, d.stat, d.stat_sub)) {
             const plan = (r.plan_date || '').slice(0, 10);
             const curFact = String(r.day_fact || '').slice(0, 10);
             if (plan && !/^\d{4}-\d{2}-\d{2}$/.test(curFact)) fields.day_fact = plan;
@@ -3203,7 +3370,7 @@ export function FlowPlanGrid({
           if (raw && !iso) return { error: 'DAY план: дата (ISO / ДД.ММ / «12 июня»)' };
           if (!iso) return { fields: {} };
           const fields: Record<string, string | number | null> = { plan_date: iso };
-          if (isStatusDone(String(r.done_stat || ''), String(r.stat || ''))) {
+          if (isStatusDone(String(r.done_stat || ''), String(r.stat || ''), String(r.stat_sub || ''))) {
             fields.day_fact = iso;
           }
           return { fields };
@@ -3211,8 +3378,8 @@ export function FlowPlanGrid({
         case 'day_fact': {
           const iso = normalizeDayInput(raw);
           if (raw && !iso) return { error: 'DAY факт: дата (ISO / ДД.ММ / «12 июня»)' };
-          if (iso && !isStatusDone(String(r.done_stat || ''), String(r.stat || ''))) {
-            return { error: 'DAY факт только для статуса «выполнено»' };
+          if (iso && !isStatusDone(String(r.done_stat || ''), String(r.stat || ''), String(r.stat_sub || ''))) {
+            return { error: 'DAY факт только для вывезено (выполнено / цех·самовывоз)' };
           }
           return { fields: { day_fact: iso } };
         }
@@ -3337,7 +3504,11 @@ export function FlowPlanGrid({
       const spec = COLS[col];
       const r = viewRows[row];
       if (!spec || !r) return;
-      if (spec.id === 'no' && !isManualRow(r)) openVghCard(r);
+      // Карточка правки ВГХ (номенклатура) — по «Ном №» И по «Материал» (юзер проваливается
+      // в номенклатуру по названию; задача 18). onCellActivated в План/Отчёте срабатывает
+      // надёжно — открываем карточку прямо тут (read-only оверлей Материала здесь отключён).
+      // Ручные строки правятся прямо в ячейке — не карточка.
+      if ((spec.id === 'no' || spec.id === 'mat') && !isManualRow(r)) openVghCard(r);
       else if (spec.id === 'history') openHistoryCard(r);
     },
     [COLS, viewRows, openVghCard, openHistoryCard],
@@ -3348,6 +3519,9 @@ export function FlowPlanGrid({
     (row: number): Partial<Theme> | undefined => {
       const r = viewRows[row];
       if (!r) return undefined;
+      // «Ошибочно» (экспедиция·ошибочно, юзер 2026-07-28): позиция-ошибка → СЕРАЯ приглушённая
+      // в План И Отчёте (не считается/не переносится/не в белом отчёте — см. isErroneousRow).
+      if (isErroneousRow(r)) return { bgCell: '#E7E5E0', textDark: '#9A968E' };
       // P5: дубль/ERROR-подсветка — только в Плане (в Отчёте поставка одна и та же).
       if (mode === 'plan') {
         // Зафиксированный слепок в Плане — СЕРОВАТАЯ ЗАЛИВКА, не только текст (юзер
@@ -3366,16 +3540,25 @@ export function FlowPlanGrid({
         // Зеркало исходного отчёта: выполнено = зелёный, причина (не увезено) = серый,
         // ожидание (по умолчанию) = нейтральный.
         if (r.done_stat === STATUS_DONE || r.done_stat === 'увезли') return { bgCell: '#EAF5EA' };
+        // Статус «цех самовывоз» — красим как «выполнено» (зелёный, юзер 2026-07-28, задача 5).
+        // Проверяем оба поля (иерархия «цех · самовывоз» и standalone «самовывоз»).
+        if (`${r.stat ?? ''} ${r.stat_sub ?? ''}`.toLowerCase().includes('самовывоз'))
+          return { bgCell: '#EAF5EA' };
         if (r.fail_reason || r.done_stat === 'не увезли') return { bgCell: '#F0F0EE', textDark: '#6B6862' };
+        // STAT «вопрос» — токсично-жёлтая строка (юзер 2026-07-26, задача 19): требует
+        // внимания. Проверяем оба поля (иерархия «цех · вопрос» и standalone «вопрос»).
+        if (`${r.stat ?? ''} ${r.stat_sub ?? ''}`.toLowerCase().includes('вопрос'))
+          return { bgCell: '#EDF23A', textDark: '#2E2E00' };
         if (rowLocked(r)) return { textDark: '#8C8983' }; // закрытый отчёт (>7 дней) — приглушён
         // Ручная пастельная ЗАЛИВКА (кисть, юзер 2026-07-04) — раскидка по машинам ДО
         // отметок; приоритетнее авто-тона по гаражному. В гриде — смягчённый тон
         // (пиллы контрастнее, юзер 2026-07-05); в xlsx — полный цвет.
         if ((r.row_fill || '').trim()) return { bgCell: softenRowFill(`#${r.row_fill}`) };
-        // Ожидание + выбран гаражный → свой пастельный тон машины (юзер 2026-07-03:
-        // «каждый гаражный получит свой уникальный цвет — визуально группировать машины»).
-        const garage = splitMultiCell(r.ride_id || '')[0];
-        if (garage) return { bgCell: garageRowColor(garage) };
+        // Ожидание + выбраны машины → свой пастельный тон по ВСЕМУ набору машин строки
+        // (задача 23: каждый гаражный — свой цвет; две машины на строке — ещё один уникальный).
+        // Авто-цвет ДЕРИВАТ от ride_id: снял машину → цвет ушёл (не пишем в row_fill).
+        const rideKey = garageColorKey(r.ride_id || '');
+        if (rideKey) return { bgCell: garageRowColor(rideKey) };
       }
       if (!(r.dlv || '').trim()) return { textDark: '#5A5752' };
       return undefined;
@@ -3452,7 +3635,7 @@ export function FlowPlanGrid({
             patch.fail_reason = `перенос на другой день: ${td}`;
             patch.day_fact = td;
           }
-        } else if (isStatusDone(fields.done_stat, fields.stat)) {
+        } else if (isStatusDone(fields.done_stat, fields.stat, fields.stat_sub)) {
           const plan = (t.plan_date || '').slice(0, 10);
           const cur = String(t.day_fact || '').slice(0, 10);
           if (plan && !/^\d{4}-\d{2}-\d{2}$/.test(cur)) patch.day_fact = plan;
@@ -3523,20 +3706,19 @@ export function FlowPlanGrid({
   // Выгрузка .xlsx на выбранную дату — план / доп.N / весь день / экспедиторам.
   // Доступна и из ОТЧЁТА, и из ПЛАНА (юзер 2026-07-04): в Плане качается тот же
   // зафиксированный слепок, формат одинаковый.
+  // З.10: группировка экспорта по ЭФФЕКТИВНОМУ рангу FIX (fixRankOf) — ручной override
+  // fix_manual перекладывает строку в файл нужного плана/допа. Без override = живой авто-ранг.
   const reportBatches = useMemo(() => {
-    if (!selectedDay) return [] as { batch: number; rank: number }[];
-    const ranks = batchRankByDate.get(selectedDay);
+    if (!selectedDay) return [] as { rank: number }[];
     const s = new Set<number>();
     for (const r of rows) {
       if (Number(r.fixation_id) > 0 && Number(r.reserved) !== 1 && (r.plan_date || '').slice(0, 10) === selectedDay) {
-        s.add(Number(r.batch_seq) || 0);
+        const rank = fixRankOf(r);
+        if (rank > 0) s.add(rank);
       }
     }
-    return [...s]
-      .filter((b) => b > 0)
-      .map((batch) => ({ batch, rank: ranks?.get(batch) ?? batch }))
-      .sort((a, b) => a.rank - b.rank);
-  }, [mode, selectedDay, rows, batchRankByDate]);
+    return [...s].sort((a, b) => a - b).map((rank) => ({ rank }));
+  }, [selectedDay, rows, fixRankOf]);
   // Раскладка выгрузки — СЕРВЕРНАЯ (кэш на сессию): формат правится без обновления
   // приложения; сервер недоступен → встроенный дефолт.
   const xlsxLayoutRef = useRef<FlowXlsxLayout | null | undefined>(undefined);
@@ -3555,8 +3737,9 @@ export function FlowPlanGrid({
           Number(x.fixation_id) > 0 &&
           Number(x.reserved) !== 1 &&
           (x.plan_date || '').slice(0, 10) === selectedDay &&
-          (batch === 'all' || batch === 'exped' || Number(x.batch_seq) === batch) &&
-          !isDone(x),
+          (batch === 'all' || batch === 'exped' || fixRankOf(x) === batch) &&
+          !isDone(x) &&
+          !isErroneousRow(x), // «ошибочно» — не в белом/чёрном отчёте (юзер 2026-07-28)
       );
       if (dayRows.length === 0) {
         setMsg('Нет строк для выгрузки на этот день (выполненные в файл не идут)');
@@ -3569,30 +3752,40 @@ export function FlowPlanGrid({
       // скачка): раскидка по машинам (гаражный), схлопывание одинаковых получатель+
       // отправитель+материал (МОЛ тот же, комменты не отличаются), разрыв по машине.
       if (batch === 'exped') {
-        const expInputs: ExpedXlsxRow[] = dayRows.map((x) => {
+        const expInputs: ExpedXlsxRow[] = dayRows.flatMap((x) => {
           const vgh = vghByKey.get(normVghKey(x.no_num));
           const q = effQty(x);
           const molFio = parseMol(x.snap_mol || '')?.fio ?? (x.snap_mol || '');
           const clstRaw = (whMapGet(whByKey, x.to_wh)?.cluster ?? '').trim();
-          const garage = splitMultiCell(x.ride_id || '')[0] ?? '';
-          return {
+          const base = {
             fr: x.fr, to_wh: x.to_wh, dlv: x.dlv, dlv_pos: x.dlv_pos, mat: x.mat,
             no_num: x.no_num, qty: q,
             clst: clstRaw === 'ВЫЕЗД' || clstRaw === 'КХП' ? clstRaw : '',
-            garage,
             vehicleType: splitMultiCell(x.vehicle || '').join(', '),
             // ПОЛНЫЕ ФИО выбранных экспедиторов машины (юзер 2026-07-04) — в шапку группы.
             expeditors: deliveryExpeditors(x).map((n) => resolveExpeditorOpt(n)?.fio ?? expeditorDisplayName(n)),
             mol: compactFio(molFio),
-            // Сотовый МОЛа «8 901 438 8831» — в ячейку МОЛ файла (юзер 2026-07-04).
-            molPhone: formatMobilePhone(parseMol(x.snap_mol || '')?.phone ?? ''),
+            // Сотовый МОЛа «8 901 438 8831» — 2-й строкой в ячейке МОЛ (юзер 2026-07-04).
+            // Задача 12: если в снимке телефона нет (МОЛ выбран из списка = только ФИО) —
+            // берём из справочника МОЛ по ключу ФИО.
+            molPhone: formatMobilePhone(
+              parseMol(x.snap_mol || '')?.phone || molPhoneByKey.get(personKey(molFio)) || '',
+            ),
             uom: x.uom || '',
             kg: vgh?.weight_kg != null && q != null ? q * vgh.weight_kg : null,
             v: vgh?.volume_m3 != null && q != null ? q * vgh.volume_m3 : null,
             note: x.snap_note || '',
             matNote: (vgh?.tech_name || '').trim(),
-            fillArgb: garage ? garageFillArgb(garage) : '',
           };
+          // Задача 24: ДВЕ (и более) машины на строке → строка попадает в группу КАЖДОЙ
+          // машины со своими складами откуда/куда (FR/TO). Без машины — одна строка «без машины».
+          const garages = splitMultiCell(x.ride_id || '');
+          const list = garages.length > 0 ? garages : [''];
+          return list.map((garage) => ({
+            ...base,
+            garage,
+            fillArgb: garage ? garageFillArgb(garage) : '',
+          }));
         });
         const book = buildExpedXlsxBook(selectedDay, expInputs, xlsxLayoutRef.current);
         downloadXlsx(expedXlsxFilename(selectedDay), book.sheets, { definedNames: book.definedNames });
@@ -3612,6 +3805,7 @@ export function FlowPlanGrid({
           ord: x.ord || '',
           ord_pos: x.it || '',
           clst: clstRaw === 'ВЫЕЗД' || clstRaw === 'КХП' ? clstRaw : '',
+          transfer: Number(x.transfer_src) > 0, // з.16: перенос от FR → блоком впереди
           request: anchor?.request ?? '',
           pr: x.snap_pr || '',
           graph: graphInfo(x)?.label ?? '',
@@ -3620,8 +3814,13 @@ export function FlowPlanGrid({
           mol: compactFio(molFio),
           q: x.q_spec || '',
           uom: x.uom || '',
-          kg: vgh?.weight_kg != null && q != null ? q * vgh.weight_kg : null,
-          v: vgh?.volume_m3 != null && q != null ? q * vgh.volume_m3 : null,
+          // З.18: зафикс. строка без факт-пересчёта → замороженный снап kg/v (как в гриде).
+          kg: Number(x.fixation_id) > 0 && x.snap_weight != null && q === x.qty
+            ? Number(x.snap_weight)
+            : (vgh?.weight_kg != null && q != null ? q * vgh.weight_kg : null),
+          v: Number(x.fixation_id) > 0 && x.snap_volume != null && q === x.qty
+            ? Number(x.snap_volume)
+            : (vgh?.volume_m3 != null && q != null ? q * vgh.volume_m3 : null),
           note: x.snap_note || '',
           // Как в гриде (юзер 2026-07-05): экспедиторы «1. Фамилия Имя О.» по строкам,
           // типы ТС и гаражные — друг под другом. Из Плана — СЛЕПОК фиксации (rowExpeditors
@@ -3651,8 +3850,8 @@ export function FlowPlanGrid({
           fillArgb: (() => {
             const fill = (isSnapRow(x) ? x.snap_fill || '' : x.row_fill || '').trim();
             if (fill) return `FF${fill}`;
-            const g = splitMultiCell(rowRide(x))[0] ?? '';
-            return g ? garageFillArgb(g) : '';
+            const key = garageColorKey(rowRide(x)); // цвет по набору машин (как в гриде, задача 23)
+            return key ? garageFillArgb(key) : '';
           })(),
         };
       });
@@ -3665,10 +3864,8 @@ export function FlowPlanGrid({
       }
       const lists: PlanXlsxLists = { expeditors: [], molsByWh };
       // Имена (юзер 2026-07-03): «План экспедиции на июль 3 2026.xlsx» /
-      // «Доп. 1 к плану экспедиции на …» — по ЖИВОМУ рангу фиксации, не по сырому batch_seq.
-      const nameBatch = typeof batch === 'number'
-        ? batchRankByDate.get(selectedDay)?.get(batch) ?? batch
-        : batch;
+      // «Доп. 1 к плану экспедиции на …». batch УЖЕ = эффективный ранг FIX (з.10), не batch_seq.
+      const nameBatch = batch;
       const book = buildPlanXlsxSheets(selectedDay, nameBatch, inputs, xlsxLayoutRef.current, lists);
       // «Кладовщикам экспедиторы» из Отчёта (batch='all') — своё имя файла (юзер 2026-07-04).
       const fileName = mode === 'report' && batch === 'all'
@@ -3677,22 +3874,35 @@ export function FlowPlanGrid({
       downloadXlsx(fileName, book.sheets, { definedNames: book.definedNames });
       setMsg(`Выгружено в Excel: ${dayRows.length} строк`);
     },
-    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, resolveExpeditorOpt, molsForWh, fixLabelOf, batchRankByDate, mode, isSnapRow, rowExpeditors, rowVehicle, rowRide],
+    [selectedDay, rows, anchorByKey, vghByKey, whByKey, effQty, graphInfo, expeditorDisplayName, resolveExpeditorOpt, molsForWh, fixLabelOf, fixRankOf, batchRankByDate, mode, isSnapRow, rowExpeditors, rowVehicle, rowRide, molPhoneByKey],
   );
 
   // Пустая ручная строка «как в обычной таблице» (юзер 2026-07-03): клик по хвостовой
   // строке грида — данные пишутся прямо в ячейки (склады/номенклатура/наименование/ЕИ/
   // кол-во/МОЛ/коммент/поставка+заказ — MANUAL_EDIT_IDS), или вставка SAP из буфера.
-  const addEmptyRow = useCallback(() => {
-    const planDate = mode === 'plan' ? selectedDay : selectedDay ?? isoTodayLocal();
-    if (!planDate) {
-      setMsg('Выберите день в календаре — строка добавляется на конкретный день');
-      return;
-    }
-    void flowDeliveryAdd(api, { target: mode, planDate })
-      .then(() => setMsg(`Пустая строка добавлена на ${fmtPlanDate(planDate)} — заполните ячейки`))
-      .catch((e) => setMsg(`Не удалось добавить: ${(e instanceof Error ? e.message : String(e)).slice(0, 90)}`));
-  }, [mode, selectedDay]);
+  // §6 (юзер 2026-07-26): «+ строку» с вводом КОЛИЧЕСТВА — добавляет N пустых ручных
+  // строк на выбранный день (их потом можно править и удалять, как одиночную).
+  const [addRowsOpen, setAddRowsOpen] = useState(false);
+  const [addRowsN, setAddRowsN] = useState('1');
+  const addRows = useCallback(
+    async (count: number) => {
+      const n = Math.max(1, Math.min(100, Math.floor(count) || 1));
+      const planDate = mode === 'plan' ? selectedDay : selectedDay ?? isoTodayLocal();
+      if (!planDate) {
+        setMsg('Выберите день в календаре — строки добавляются на конкретный день');
+        return;
+      }
+      try {
+        await Promise.all(
+          Array.from({ length: n }, () => flowDeliveryAdd(api, { target: mode, planDate })),
+        );
+        setMsg(`Добавлено пустых строк: ${n} на ${fmtPlanDate(planDate)} — заполните ячейки`);
+      } catch (e) {
+        setMsg(`Не удалось добавить: ${(e instanceof Error ? e.message : String(e)).slice(0, 90)}`);
+      }
+    },
+    [mode, selectedDay],
+  );
 
   // Кнопка «Вставить из буфера» (юзер 2026-07-02): явная вставка без фокуса в гриде.
   const pasteFromBuffer = useCallback(async () => {
@@ -3879,6 +4089,8 @@ export function FlowPlanGrid({
         blocked++;
         continue;
       }
+      // «Ошибочно» — не переносим (будто позиции не было в плане/отчёте, юзер 2026-07-28).
+      if (isErroneousRow(r)) continue;
       ids.push(r.id);
     }
     if (ids.length === 0) {
@@ -3971,6 +4183,48 @@ export function FlowPlanGrid({
           <ClipboardPaste size={13} strokeWidth={1.75} />
           Буфер
         </button>
+        {/* §6 (юзер 2026-07-26): «+ строку» — ввод количества → N пустых строк на день. */}
+        <div className="relative flex shrink-0">
+          <button
+            type="button"
+            onClick={() => setAddRowsOpen((v) => !v)}
+            title="Добавить пустые строки на выбранный день (введите количество)"
+            className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-1.5 text-[12px] text-[#3F3D38] outline-none transition-colors hover:border-black/25 hover:text-[#0A0A0A]"
+          >
+            <Plus size={13} strokeWidth={1.75} />
+            строку
+          </button>
+          {addRowsOpen && (
+            <div className="absolute left-0 top-7 z-30 flex items-center gap-1 rounded-md border border-black/10 bg-[#FDFDFB] px-1.5 py-1 shadow-[0_8px_24px_rgba(0,0,0,0.14)]">
+              <input
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                autoFocus
+                inputMode="numeric"
+                value={addRowsN}
+                onChange={(e) => setAddRowsN(e.target.value.replace(/[^\d]/g, '').slice(0, 3))}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    void addRows(Number(addRowsN) || 1);
+                    setAddRowsOpen(false);
+                  } else if (e.key === 'Escape') {
+                    setAddRowsOpen(false);
+                  }
+                }}
+                className="h-6 w-12 rounded border border-black/10 bg-transparent px-1 text-[12px] tabular-nums text-[#0A0A0A] outline-none focus:border-accent-clay/60"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  void addRows(Number(addRowsN) || 1);
+                  setAddRowsOpen(false);
+                }}
+                className="h-6 rounded-md border border-accent-clay/60 px-2 text-[12px] text-[#0A0A0A] transition-colors hover:bg-accent-clay/10"
+              >
+                Добавить
+              </button>
+            </div>
+          )}
+        </div>
         {/* §4 + T6 (юзер 2026-07-13): один поповер «Колонки» вместо россыпи кнопок —
             тумблеры служебных/жёлтых колонок + «Перестановка». В xlsx/печать не идут. */}
         <FlowColumnsMenu
@@ -3993,7 +4247,11 @@ export function FlowPlanGrid({
             >
               <span
                 className="h-3.5 w-3.5 rounded-sm border border-black/15"
-                style={{ background: `#${paintColor}` }}
+                style={
+                  paintColor
+                    ? { background: `#${paintColor}` }
+                    : { background: '#fff', backgroundImage: 'linear-gradient(to top right, transparent 45%, #E5484D 46%, #E5484D 54%, transparent 55%)' }
+                }
               />
               Заливка
             </button>
@@ -4008,6 +4266,16 @@ export function FlowPlanGrid({
             {paintOpen && (
               <div className="absolute left-0 top-7 z-50 w-[168px] rounded-lg border border-border-subtle bg-bg-surface p-2 shadow-lg">
                 <div className="grid grid-cols-5 gap-1.5">
+                  {/* Пустой цвет — убрать заливку строки (задача 23). */}
+                  <button
+                    type="button"
+                    onClick={() => { setPaintColor(''); setPaintOpen(false); }}
+                    title="Убрать заливку"
+                    className={`h-6 w-6 rounded-md border bg-white transition-transform hover:scale-110 ${
+                      paintColor === '' ? 'border-accent-clay ring-1 ring-accent-clay/50' : 'border-black/10'
+                    }`}
+                    style={{ backgroundImage: 'linear-gradient(to top right, transparent 45%, #E5484D 46%, #E5484D 54%, transparent 55%)' }}
+                  />
                   {FLOW_FILL_PALETTE.map((c) => (
                     <button
                       key={c}
@@ -4047,8 +4315,8 @@ export function FlowPlanGrid({
             </option>
             {mode === 'plan' ? (
               <>
-                {reportBatches.map(({ batch, rank }) => (
-                  <option key={batch} value={batch}>
+                {reportBatches.map(({ rank }) => (
+                  <option key={rank} value={rank}>
                     {rank === 1 ? 'Кладовщикам план' : `Кладовщикам доп. ${rank - 1}`}
                   </option>
                 ))}
@@ -4110,15 +4378,23 @@ export function FlowPlanGrid({
           </div>
         )}
         {!loading && viewRows.length === 0 && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-[13px] text-[#6B6862]">
-            <span className="text-[14px] font-medium text-[#2A2925]">
-              {mode === 'report' ? 'Отчёт пуст' : 'План пуст'}
-            </span>
-            <span>
-              {mode === 'report'
-                ? 'Зафиксируйте план на день (кнопка «Зафиксировать» на этапе План).'
-                : 'Проставьте даты в колонке DAY формирования и нажмите «Сформировать план».'}
-            </span>
+          // Задача 17 (юзер уточнил): оверлей НЕ перекрывает заголовок (pointer-events-none) —
+          // сброс фильтра делается в самом ▾ колонки, куда клик теперь проходит.
+          <div className="pointer-events-none absolute inset-0 z-[5] flex flex-col items-center justify-center gap-1 text-[13px] text-[#6B6862]">
+            {colFilters.hasAnyFilter ? (
+              <span className="text-[12px]">Все строки скрыты фильтром — сбросьте его в ▾ заголовка колонки</span>
+            ) : (
+              <>
+                <span className="text-[14px] font-medium text-[#2A2925]">
+                  {mode === 'report' ? 'Отчёт пуст' : 'План пуст'}
+                </span>
+                <span>
+                  {mode === 'report'
+                    ? 'Зафиксируйте план на день (кнопка «Зафиксировать» на этапе План).'
+                    : 'Проставьте даты в колонке DAY формирования и нажмите «Сформировать план».'}
+                </span>
+              </>
+            )}
           </div>
         )}
         {size.width > 0 && size.height > 0 && (
@@ -4137,10 +4413,8 @@ export function FlowPlanGrid({
             onCellEdited={onCellEdited}
             onCellsEdited={onCellsEdited}
             onPaste={onPaste}
-            // «Как обычная таблица» (юзер 2026-07-03): хвостовая строка добавляет пустую
-            // ручную строку на выбранный день — данные пишутся прямо в ячейки.
-            onRowAppended={addEmptyRow}
-            trailingRowOptions={{ tint: true, sticky: false }}
+            // Хвостовая строка-«+» убрана (юзер 2026-07-28): добавление строк — через
+            // кнопку «+ строку» (с вводом количества, задача 6), не строкой в таблице.
             getRowThemeOverride={getRowThemeOverride}
             customRenderers={PLAN_RENDERERS}
             getCellsForSelection
@@ -4149,7 +4423,7 @@ export function FlowPlanGrid({
             rowSelect="multi"
             columnSelect="none"
             rangeSelect="multi-rect"
-            rowHeight={mode === 'report' ? REPORT_ROW_H : getPlanRowHeight}
+            rowHeight={getPlanRowHeight}
             headerHeight={24}
             highlightRegions={gridSearch.highlightRegions}
             onVisibleRegionChanged={gridSearch.onVisibleRegionChanged}
@@ -4166,6 +4440,22 @@ export function FlowPlanGrid({
           />
         )}
         </div>
+      </div>
+      {/* Нижняя панель агрегатов (задача 21): суммы/среднее/норма по выделению + всего строк
+          (по выбранному дню/фильтру). Как в Формировании; протяжка не ре-рендерит лист. */}
+      <div className="flex h-7 shrink-0 items-center gap-2 border-t border-black/[0.06] px-4 text-[12px] text-[#6B6862]">
+        <FlowSelStats
+          selLive={selGridLive}
+          rowCount={viewRows.length}
+          colCount={COLS.length}
+          numAt={statNumAt}
+          qtyCol={statQtyCol}
+          normRowAt={statNormRowAt}
+          minQtyOf={statMinQtyOf}
+        />
+        <span className="ml-auto">
+          <span className="tabular-nums text-[#2A2925]">{countedRowCount.toLocaleString('ru-RU')}</span> строк
+        </span>
       </div>
       {/* Меню колонки (▾): сорт + поиск по колонке + чек-лист значений — как в Формировании.
           Объединённые ПОСТАВКА/ЗАКАЗ фильтруются по склейке (поиск в меню сужает по под-значению). */}
