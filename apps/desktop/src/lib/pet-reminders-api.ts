@@ -147,6 +147,15 @@ export type AiReminderParse =
       error?: string;
     };
 
+/** Диагностика в ~/Desktop/pyn-debug.log — чтобы на корп-ПК видеть реальную причину. */
+function remindDebug(msg: string): void {
+  try {
+    window.pyn?.debugLog?.('pet:remind', msg);
+  } catch {
+    /* */
+  }
+}
+
 export async function parseReminderViaAi(text: string): Promise<AiReminderParse> {
   try {
     const r = await api.call<{
@@ -162,7 +171,8 @@ export async function parseReminderViaAi(text: string): Promise<AiReminderParse>
     }>(
       'ai_pet_reminder_parse',
       { text, now_iso: new Date().toISOString() },
-      { timeoutMs: 15_000 },
+      // DeepSeek на корп-канале бывает медленным; чат терпит 90с — здесь тоже даём запас.
+      { timeoutMs: 30_000 },
     );
 
     if (r.ok && r.fire_at && r.body) {
@@ -179,6 +189,9 @@ export async function parseReminderViaAi(text: string): Promise<AiReminderParse>
       };
     }
 
+    // Сервер ответил, но не ok — логируем точную причину (forbidden / pet_ai_unconfigured /
+    // deepseek_http_* / remind_*_cap / bad_json / incomplete), чтобы не чинить вслепую.
+    if (r.error) remindDebug(`server not-ok: error=${r.error} need=${r.need ?? '-'}`);
     return {
       ok: false,
       need: r.need || (r.error ? 'clarify' : 'time'),
@@ -188,7 +201,10 @@ export async function parseReminderViaAi(text: string): Promise<AiReminderParse>
       error: r.error,
     };
   } catch (err) {
+    // Сеть/таймаут/прокси — не дошли до сервера. На корп-ПК это ключевой признак.
+    const msg = err instanceof Error ? err.message : String(err);
     console.warn('[pyn:reminders] ai parse failed', err);
+    remindDebug(`network/timeout: ${msg.slice(0, 160)}`);
     return { ok: false, error: 'network', need: 'clarify' };
   }
 }

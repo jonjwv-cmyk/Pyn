@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   type DataEditorRef,
   GridCellKind,
@@ -729,10 +729,13 @@ function isoTodayLocal(): string {
 export function FlowPlanGrid({
   mode = 'plan',
   onSelectedDayChange,
+  active = true,
 }: {
   mode?: 'plan' | 'report';
   /** Выбранный день календаря — наружу (кнопка «Создание поставок» этапа План). */
   onSelectedDayChange?: (day: string | null) => void;
+  /** Вкладка активна (видима). З.2/22: восстановление скролла при возврате. */
+  active?: boolean;
 }): JSX.Element {
   // §3/T5: скрываемые колонки (🟡) — тумблеры в панели; в xlsx свой набор.
   const [visibleHidden, setVisibleHidden] = useState<ReadonlySet<string>>(() => new Set());
@@ -763,6 +766,69 @@ export function FlowPlanGrid({
   // мыши обновляет только панель-подписчик, монолит-лист не ре-рендерится.
   const selGridLive = useRef(createLiveValue<GridSelection>(EMPTY_GRID_SELECTION)).current;
   const gridRef = useRef<DataEditorRef | null>(null);
+  // З.2/22: память скролла вкладки (display:none сбрасывает scrollTop glide). Сохраняем
+  // верхнюю видимую строку пока активна, восстанавливаем при возврате.
+  // ПЕР-РЕЖИМ: План и Отчёт — один компонент (mode), но НЕЗАВИСИМЫ — своя прокрутка у каждого
+  // (не синхроним). Локально в приложении (рефы), без сервера.
+  const savedTopRef = useRef<{ plan: number; report: number }>({ plan: 0, report: 0 });
+  const scrollModeRef = useRef(mode);
+  scrollModeRef.current = mode;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const restoringRef = useRef(false);
+  // Цель восстановления + ретраи: glide не сразу готов к scrollTo — доводим до сохранённой
+  // строки ТЕКУЩЕГО режима по его же onVisibleRegionChanged. Восстанавливаем ВСЕГДА (в т.ч.
+  // в начало = 0), иначе не-скролленный режим унаследует позицию другого (синхрон).
+  const pendingRef = useRef<{ target: number; tries: number } | null>(null);
+  const onVisibleRegion = useCallback((range: { y: number; height: number }) => {
+    if (!activeRef.current) return;
+    const p = pendingRef.current;
+    if (p) {
+      if (Math.abs(range.y - p.target) > 1 && p.tries < 14) {
+        p.tries += 1;
+        gridRef.current?.scrollTo(0, p.target, 'vertical', 0, 0, { vAlign: 'start' });
+      } else {
+        pendingRef.current = null;
+        restoringRef.current = false;
+      }
+    } else if (!restoringRef.current) {
+      savedTopRef.current[scrollModeRef.current] = range.y;
+    }
+  }, []);
+  const kickRestore = useCallback(() => {
+    restoringRef.current = true;
+    pendingRef.current = { target: savedTopRef.current[scrollModeRef.current], tries: 0 };
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const p = pendingRef.current;
+        if (p) gridRef.current?.scrollTo(0, p.target, 'vertical', 0, 0, { vAlign: 'start' });
+      }),
+    );
+  }, []);
+  // Показ вкладки (active) ИЛИ смена режима План↔Отчёт (один компонент, без display:none) →
+  // восстанавливаем скролл ИМЕННО этого режима.
+  useLayoutEffect(() => {
+    if (active) {
+      kickRestore();
+    } else {
+      restoringRef.current = false;
+      pendingRef.current = null;
+    }
+  }, [active, mode, kickRestore]);
+  // Полноэкранное скрытие (Поток↔Транспорт/Карта — active НЕ меняется): ловим видимость
+  // `.flow-grid` через IntersectionObserver.
+  useEffect(() => {
+    const el = measureRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) restoringRef.current = true;
+        else kickRestore();
+      }
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [kickRestore]);
   // §7-B: карточка ИЗМЕНЕНИЯ материала (вес/объём/норма) — двойной клик по NO.№ (как в
   // Формировании). Правка пересчитывает KG/V live (подписка vgh_changed). Для Плана действует
   // до фиксации; зафикс.строки/допы — снимок, не меняются.
@@ -4426,7 +4492,10 @@ export function FlowPlanGrid({
             rowHeight={getPlanRowHeight}
             headerHeight={24}
             highlightRegions={gridSearch.highlightRegions}
-            onVisibleRegionChanged={gridSearch.onVisibleRegionChanged}
+            onVisibleRegionChanged={(range) => {
+              onVisibleRegion(range);
+              gridSearch.onVisibleRegionChanged?.(range);
+            }}
             onColumnMoved={onColumnMoved}
             onHeaderMenuClick={colFilters.handleHeaderMenuClick}
             onKeyDown={(e) => {

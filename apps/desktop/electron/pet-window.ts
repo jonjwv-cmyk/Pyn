@@ -7,24 +7,12 @@
 import { BrowserWindow, ipcMain, screen, app, type Rectangle, type Display } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  setGlobalInputHandler,
-  startGlobalInput,
-  stopGlobalInput,
-  hasInputPermission,
-  openInputPermissionSettings,
-  isGlobalInputRunning,
-  getGlobalInputState,
-} from './global-input';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let petWindow: BrowserWindow | null = null;
 let visible = false;
 let displayListenersBound = false;
-/** Периодический retry Accessibility → uiohook (пока pet виден). */
-let globalInputRetryTimer: ReturnType<typeof setInterval> | null = null;
-let accessibilityPrompted = false;
 
 /**
  * Размеры под контент (правый-нижний якорь).
@@ -238,64 +226,6 @@ export function isPetVisible(): boolean {
   return visible && !!getPetWindow()?.isVisible();
 }
 
-function notifyGlobalInput(win: BrowserWindow, payload: { ok: boolean; reason?: string; running?: boolean }) {
-  try {
-    win.webContents.send('pyn:pet:global-input', payload);
-  } catch {
-    /* */
-  }
-}
-
-/** Старт/ретрай system-wide input; статус → pet overlay. */
-async function ensureGlobalInput(win: BrowserWindow): Promise<void> {
-  setGlobalInputHandler((ev) => sendPetActivity(ev));
-  if (isGlobalInputRunning()) {
-    notifyGlobalInput(win, { ok: true, running: true });
-    return;
-  }
-  // Mac: один раз показать системный prompt Accessibility
-  if (process.platform === 'darwin' && !hasInputPermission() && !accessibilityPrompted) {
-    accessibilityPrompted = true;
-    try {
-      openInputPermissionSettings();
-    } catch {
-      /* */
-    }
-  }
-  const r = await startGlobalInput();
-  if (!r.ok) {
-    console.warn('[pyn:pet] global input not active:', r.reason);
-    notifyGlobalInput(win, {
-      ok: false,
-      reason: r.reason ?? 'unknown',
-      running: false,
-    });
-    return;
-  }
-  notifyGlobalInput(win, { ok: true, running: true });
-}
-
-function startGlobalInputRetryLoop(win: BrowserWindow): void {
-  if (globalInputRetryTimer) return;
-  globalInputRetryTimer = setInterval(() => {
-    if (!visible) return;
-    const w = getPetWindow();
-    if (!w || w.isDestroyed()) return;
-    if (isGlobalInputRunning()) {
-      // уже ок — сообщим UI раз, если вдруг был false
-      return;
-    }
-    void ensureGlobalInput(w);
-  }, 12_000);
-}
-
-function stopGlobalInputRetryLoop(): void {
-  if (globalInputRetryTimer) {
-    clearInterval(globalInputRetryTimer);
-    globalInputRetryTimer = null;
-  }
-}
-
 export function showPetWindow(): void {
   const win = createPetWindow();
   ensurePetOnScreen();
@@ -307,9 +237,8 @@ export function showPetWindow(): void {
   if (!win.isVisible()) win.showInactive(); // не красть фокус у текущего app
   visible = true;
   broadcastVisible(true);
-  // Системные хуки: клава/мышь везде, пока питомец виден
-  void ensureGlobalInput(win);
-  startGlobalInputRetryLoop(win);
+  // Активность питомца — только in-app: клавиши шлёт main (before-input-event),
+  // мышь — рендерер Pyn через pyn:pet:report-activity. Системных хуков нет.
 }
 
 export function hidePetWindow(): void {
@@ -317,9 +246,6 @@ export function hidePetWindow(): void {
   if (win) win.hide();
   visible = false;
   broadcastVisible(false);
-  stopGlobalInputRetryLoop();
-  stopGlobalInput();
-  setGlobalInputHandler(null);
 }
 
 export function togglePetWindow(): boolean {
@@ -437,27 +363,9 @@ export function setupPetBridge(): void {
     }
     return true;
   });
-  ipcMain.handle('pyn:pet:global-input-status', () => {
-    const st = getGlobalInputState();
-    return {
-      ok: st.running,
-      permitted: st.permitted,
-      running: st.running,
-      platform: st.platform,
-    };
-  });
-  ipcMain.handle('pyn:pet:open-accessibility', () => {
-    openInputPermissionSettings();
-    return true;
-  });
-  /** UI: «включил доступ» → немедленный retry хуков. */
-  ipcMain.handle('pyn:pet:retry-global-input', async () => {
-    const win = getPetWindow();
-    if (!win || !visible) {
-      return { ok: false, reason: 'pet_hidden' };
-    }
-    await ensureGlobalInput(win);
-    return getGlobalInputState();
+  /** In-app активность (мышь) из рендерера Pyn → оверлей питомца. */
+  ipcMain.on('pyn:pet:report-activity', (_e, payload: unknown) => {
+    if (payload && typeof payload === 'object') sendPetActivity(payload);
   });
 
   /**
@@ -490,8 +398,4 @@ export function setupPetBridge(): void {
   });
 
   bindDisplayListeners();
-  // При quit — снять хуки
-  app.on('will-quit', () => {
-    stopGlobalInput();
-  });
 }

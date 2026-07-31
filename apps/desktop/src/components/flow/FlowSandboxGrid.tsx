@@ -1,4 +1,4 @@
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   CompactSelection,
   type DataEditorRef,
@@ -876,7 +876,7 @@ function rowsFingerprint(rows: readonly { id: number; row_version?: number }[]):
 }
 let flowRowsFp = '';
 
-export function FlowSandboxGrid(): JSX.Element {
+export function FlowSandboxGrid({ active = true }: { active?: boolean } = {}): JSX.Element {
   // Стартуем из кэша (мгновенно) если он есть; иначе пусто + спиннер до первой загрузки.
   const [rows, setRows] = useState<FlowSandboxRow[]>(() => flowRowsCache ?? []);
   const [loading, setLoading] = useState(() => flowRowsCache === null);
@@ -1428,13 +1428,77 @@ export function FlowSandboxGrid(): JSX.Element {
   // ячейку каждый кадр (тот же путь, что у встроенных анимаций Glide) и сам встаёт, когда
   // NEW-строки уходят из обзора. gridPxWidthRef — диапазон волн (ширина видимого листа).
   const gridPxWidthRef = useRef(0);
+  // З.2/22: память скролла вкладки. display:none сбрасывает scrollTop glide → сохраняем
+  // верхнюю видимую строку пока вкладка активна и восстанавливаем при возврате (activeRef/
+  // restoringRef защищают от перезаписи нулём во время скрытия/восстановления).
+  const savedTopRef = useRef(0);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const restoringRef = useRef(false);
+  // Цель восстановления + счётчик ретраев: glide после display:flex сбрасывает скролл и
+  // не сразу готов к scrollTo — доводим до сохранённой строки по его же onVisibleRegionChanged.
+  const pendingRef = useRef<{ target: number; tries: number } | null>(null);
   const handleVisibleRegionChanged = useCallback((range: Rectangle) => {
     visibleRef.current = { start: range.y, end: range.y + range.height };
+    if (activeRef.current) {
+      const p = pendingRef.current;
+      if (p) {
+        if (p.target > 0 && Math.abs(range.y - p.target) > 1 && p.tries < 14) {
+          p.tries += 1;
+          gridRef.current?.scrollTo(0, p.target, 'vertical', 0, 0, { vAlign: 'start' });
+        } else {
+          pendingRef.current = null;
+          restoringRef.current = false;
+        }
+      } else if (!restoringRef.current) {
+        savedTopRef.current = range.y;
+      }
+    }
     // Подсветка поиска следует за прокруткой (только при открытом поиске).
     if (!searchOpenRef.current) return;
     setVisibleWindow((prev) =>
       Math.abs(prev.start - range.y) >= 8 ? { start: range.y, end: range.y + range.height } : prev,
     );
+  }, []);
+  useLayoutEffect(() => {
+    if (active) {
+      restoringRef.current = true;
+      pendingRef.current = { target: savedTopRef.current, tries: 0 };
+      const raf = requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          const p = pendingRef.current;
+          if (p && p.target > 0) gridRef.current?.scrollTo(0, p.target, 'vertical', 0, 0, { vAlign: 'start' });
+        }),
+      );
+      return () => cancelAnimationFrame(raf);
+    }
+    restoringRef.current = false;
+    pendingRef.current = null;
+    return undefined;
+  }, [active]);
+  // Полноэкранное скрытие (Поток↔Транспорт/Карта — App-навигация, active НЕ меняется):
+  // ловим видимость `.flow-grid` через IntersectionObserver и доводим до сохранённой строки.
+  useEffect(() => {
+    const el = measureRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) {
+          restoringRef.current = true; // не сохраняем во время скрытия; savedTop держит позицию
+        } else {
+          restoringRef.current = true;
+          pendingRef.current = { target: savedTopRef.current, tries: 0 };
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              const p = pendingRef.current;
+              if (p && p.target > 0) gridRef.current?.scrollTo(0, p.target, 'vertical', 0, 0, { vAlign: 'start' });
+            }),
+          );
+        }
+      }
+    });
+    io.observe(el);
+    return () => io.disconnect();
   }, []);
   // При открытии поиска — синхронизируем окно с текущей зоной видимости (а не с нулём).
   useEffect(() => {

@@ -35,6 +35,11 @@ const FAST_KEYS = 55;
 const BUSY_MOUSE_PX = 12_000;
 const BUSY_MOUSE_EVENTS = 80;
 
+/** Троттлинг проброса мыши из окна Pyn в оверлей питомца (клавиши шлёт main). */
+const FORWARD_MOUSE_MS = 120;
+/** Оверлей питомца — отдельное окно (#pet); оно НЕ пробрасывает активность себе. */
+const IS_PET_OVERLAY = typeof window !== 'undefined' && window.location.hash === '#pet';
+
 /** Ситуации, где DeepSeek уместен (комплименты / болтовня). Факты — локально. */
 const AI_SITUATIONS = new Set<PhraseKind>([
   'idle',
@@ -86,6 +91,20 @@ export function PetActivityBridge() {
   const mouseTs = useRef<number[]>([]);
   const mousePx = useRef(0);
   const lastMouse = useRef<{ x: number; y: number } | null>(null);
+  const lastFwdMouse = useRef(0);
+
+  /** Проброс мыши из окна Pyn в оверлей питомца (in-app, без системных хуков). */
+  const forwardMouse = (x: number, y: number) => {
+    if (IS_PET_OVERLAY) return;
+    const now = Date.now();
+    if (now - lastFwdMouse.current < FORWARD_MOUSE_MS) return;
+    lastFwdMouse.current = now;
+    try {
+      window.pyn?.pet?.reportActivity?.({ kind: 'mouse', x, y });
+    } catch {
+      /* */
+    }
+  };
 
   const prune = (arr: number[], now: number) => {
     const cut = now - METRIC_WINDOW_MS;
@@ -218,7 +237,10 @@ export function PetActivityBridge() {
         noteKey();
       }
     };
-    const onMove = (e: MouseEvent) => noteMouse(e.clientX, e.clientY);
+    const onMove = (e: MouseEvent) => {
+      noteMouse(e.clientX, e.clientY);
+      forwardMouse(e.clientX, e.clientY);
+    };
     const onPointer = (e: PointerEvent) => {
       if (e.pointerType === 'mouse' || e.pointerType === 'pen') noteMouse(e.clientX, e.clientY);
     };

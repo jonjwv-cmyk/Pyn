@@ -32,6 +32,18 @@ export const INO_KHK_PLAYLIST_FALLBACK = 'PLKk2oXKFvy810nV4AmNSnO1GLHsfeqCht';
 
 export const YT_PLAYLIST_PRIMARY = INO_KHK_UPLOADS;
 
+/**
+ * Радио-волны (2–4) через VPS: корп-прокси/Касперский видят только TLS к
+ * `45-12-239-5.sslip.io` (та же схема, что API/bridge), содержимое зашифровано.
+ * nginx на VPS проксирует `/pyn-radio/<up>/<path>` → апстрим Icecast.
+ *
+ * Стратегия без регресса: VPS — ПЕРВИЧНЫЙ url, прямые адреса остаются в
+ * `streamFallbacks`. Пока nginx-локейшены не задеплоены (или VPS недоступен),
+ * VPS-url отвалится → плеер сам перейдёт на прямой fallback (работает на Mac вне
+ * корп-сети). После деплоя nginx корп-ПК играет через VPS.
+ */
+const VPS_RADIO = 'https://45-12-239-5.sslip.io/pyn-radio';
+
 export const MUSIC_WAVES: readonly MusicWave[] = [
   {
     n: 1,
@@ -47,9 +59,10 @@ export const MUSIC_WAVES: readonly MusicWave[] = [
     label: 'StreamAfrica Lofi',
     shortLabel: 'Lofi Radio',
     kind: 'stream',
-    // Прямой Icecast edge (play.streamafrica.net → 302, CORS/crossOrigin ломал play)
-    streamUrl: 'https://boxradio-edge-00.streamafrica.net/lofi',
+    // Через VPS; прямой Icecast edge — fallback (play.streamafrica.net → 302).
+    streamUrl: `${VPS_RADIO}/streamafrica/lofi`,
     streamFallbacks: [
+      'https://boxradio-edge-00.streamafrica.net/lofi',
       'https://play.streamafrica.net/lofiradio',
       'https://boxradio-edge-01.streamafrica.net/lofi',
     ],
@@ -60,8 +73,9 @@ export const MUSIC_WAVES: readonly MusicWave[] = [
     label: 'Nightride FM (Synth)',
     shortLabel: 'Nightride',
     kind: 'stream',
-    streamUrl: 'https://stream.nightride.fm/nightride.mp3',
+    streamUrl: `${VPS_RADIO}/nightride/nightride.mp3`,
     streamFallbacks: [
+      'https://stream.nightride.fm/nightride.mp3',
       'https://stream.nightride.fm/nightride.m4a',
       'https://stream.nightride.fm/chillsynth.mp3',
     ],
@@ -73,8 +87,9 @@ export const MUSIC_WAVES: readonly MusicWave[] = [
     shortLabel: 'Datawave',
     kind: 'stream',
     // plaza.one/mp3 сейчас 404 — Datawave как city-pop/vapor live
-    streamUrl: 'https://stream.nightride.fm/datawave.mp3',
+    streamUrl: `${VPS_RADIO}/nightride/datawave.mp3`,
     streamFallbacks: [
+      'https://stream.nightride.fm/datawave.mp3',
       'https://stream.nightride.fm/chillsynth.mp3',
       'https://stream.nightride.fm/darksynth.mp3',
     ],

@@ -329,30 +329,15 @@ declare global {
       onUserActivity?: (
         handler: (ev: { kind: 'key' | 'mouse'; x?: number; y?: number }) => void,
       ) => () => void;
-      /** Always-on-top pet overlay + system-wide input. */
+      /** Always-on-top pet overlay (активность — только внутри Pyn, без системных хуков). */
       pet?: {
         toggle: () => Promise<boolean>;
         show: () => Promise<boolean>;
         hide: () => Promise<boolean>;
         isVisible: () => Promise<boolean>;
         onVisible: (handler: (visible: boolean) => void) => () => void;
-        globalInputStatus: () => Promise<{
-          ok: boolean;
-          permitted?: boolean;
-          running?: boolean;
-          platform: string;
-        }>;
-        openAccessibility: () => Promise<boolean>;
-        /** После выдачи Accessibility — перезапуск uiohook. */
-        retryGlobalInput: () => Promise<{
-          ok?: boolean;
-          running?: boolean;
-          permitted?: boolean;
-          reason?: string;
-        }>;
-        onGlobalInput: (
-          handler: (ev: { ok: boolean; reason?: string; running?: boolean }) => void,
-        ) => () => void;
+        /** Проброс in-app активности (мышь) из окна Pyn в оверлей питомца. */
+        reportActivity: (ev: { kind: 'key' | 'mouse'; x?: number; y?: number }) => void;
         getBounds: () => Promise<{ x: number; y: number; width: number; height: number } | null>;
         setBounds: (bounds: {
           x?: number;

@@ -78,8 +78,6 @@ export function PetOverlayApp() {
   const setClarify = usePetRemindersStore((s) => s.setClarify);
   const [ackingId, setAckingId] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
-  /** system-wide input (Accessibility + uiohook). null = ещё не знаем. */
-  const [globalInputOk, setGlobalInputOk] = useState<boolean | null>(null);
   const dueList = useMemo(() => dueReminders(reminderItems), [reminderItems, tick]);
   const remainingPct = useAiStore((s) => s.remainingPct);
   const setMessages = useAiStore((s) => s.setMessages);
@@ -146,44 +144,6 @@ export function PetOverlayApp() {
       window.clearInterval(tickId);
     };
   }, [session]);
-
-  // System-wide keyboard/mouse (за пределами Pyn) — статус Accessibility
-  const globalInputOkRef = useRef(globalInputOk);
-  globalInputOkRef.current = globalInputOk;
-  const accessTipShown = useRef(false);
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      try {
-        const st = await window.pyn?.pet?.globalInputStatus?.();
-        if (cancelled || !st) return;
-        setGlobalInputOk(!!(st.ok || st.running));
-      } catch {
-        /* */
-      }
-    };
-    void refresh();
-    const unsub = window.pyn?.pet?.onGlobalInput?.((ev) => {
-      setGlobalInputOk(!!ev.ok);
-      if (!ev.ok && ev.reason === 'accessibility' && !accessTipShown.current) {
-        accessTipShown.current = true;
-        say('Чтобы видеть набор вне Pyn — включи Универсальный доступ ⚙️', 7000);
-      }
-    });
-    const id = window.setInterval(() => {
-      void refresh();
-      if (globalInputOkRef.current === false) {
-        void window.pyn?.pet?.retryGlobalInput?.().then((r) => {
-          if (r?.running || r?.ok) setGlobalInputOk(true);
-        });
-      }
-    }, 15_000);
-    return () => {
-      cancelled = true;
-      unsub?.();
-      window.clearInterval(id);
-    };
-  }, [say]);
 
   // When due — bubble once per reminder id
   const announcedDue = useRef<Set<number>>(new Set());
@@ -721,37 +681,6 @@ export function PetOverlayApp() {
             >
               {schedBadge}
             </div>
-          )}
-
-          {/* Нет Accessibility → питомец не видит клаву/мышь вне Pyn */}
-          {globalInputOk === false && (
-            <button
-              type="button"
-              data-pet-hit
-              className={cn(
-                'pointer-events-auto mb-1.5 w-full rounded-xl border border-amber-500/40 px-2 py-1.5',
-                'text-center text-[10px] font-medium leading-snug text-amber-200/95',
-                PANEL_SOLID,
-              )}
-              style={{ backgroundColor: ELEVATED }}
-              onClick={() => {
-                void window.pyn?.pet?.openAccessibility?.();
-                window.setTimeout(() => {
-                  void window.pyn?.pet?.retryGlobalInput?.().then((r) => {
-                    if (r?.running || r?.ok) {
-                      setGlobalInputOk(true);
-                      say('Теперь вижу набор везде! 👀', 4000);
-                    } else {
-                      say('Включи Electron/Pyn в Универсальном доступе, потом кликни снова', 6000);
-                    }
-                  });
-                }, 800);
-              }}
-            >
-              Вне Pyn не вижу клаву/мышь.
-              <br />
-              Нажми: Универсальный доступ
-            </button>
           )}
 
           {/* Due reminders — full card + ack; текст можно выделять и копировать (⌘C / ПКМ) */}

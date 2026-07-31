@@ -488,8 +488,11 @@ let trRowsCache: FlowTransportRow[] | null = null;
 /** Имя дискового кэша строк Транспорта (pyn:cache, шифрованный). */
 const FLOW_DISK_CACHE_TR = 'flow_rows_transport';
 let trVehCache: FlowVehicle[] | null = null;
-/** Позиция скролла грида + фильтр дней — восстанавливаем при возврате в раздел (ТЗ п.4). */
+/** Позиция скролла грида + фильтр дней — восстанавливаем при возврате в раздел (ТЗ п.4).
+ *  trScrollCache — ЖИВАЯ (обновляется onVisibleRegionChanged); trScrollSaved — закоммиченная
+ *  на скрытие вкладки (до сброса display:none), из неё восстанавливаем на показ. */
 let trScrollCache: { col: number; row: number } | null = null;
+let trScrollSaved: { col: number; row: number } | null = null;
 let trDaySelCache: Set<string> | null = null;
 
 /** Колонка-маркер выбора строк: ДАТА (если видна) иначе ИСТОРИЯ (юзер 2026-07-14). */
@@ -578,6 +581,9 @@ export function FlowTransportGrid(): JSX.Element {
   const [forceEdit, setForceEdit] = useState<{ row: FlowTransportRow } | null>(null);
   const [timeEdit, setTimeEdit] = useState<{ row: FlowTransportRow; field: 'fact_start' | 'fact_end' } | null>(null);
   const gridRef = useRef<DataEditorRef | null>(null);
+  // Ретрай восстановления прокрутки (glide после показа не сразу готов к scrollTo).
+  const trPendingRef = useRef<{ col: number; row: number; tries: number } | null>(null);
+  const trRestoringRef = useRef(false);
   // Контейнер грида — нужен и для замера размера, и чтобы понять, ВИДИМА ли вкладка
   // Транспорт (экран display-toggle, компонент остаётся монтирован) для ⌘Z-хоткея.
   const measureRef = useRef<HTMLDivElement | null>(null);
@@ -1895,10 +1901,33 @@ export function FlowTransportGrid(): JSX.Element {
     trDaySelCache = new Set(daySel);
   }, [daySel]);
 
+  // Восстановление прокрутки Транспорта. Вкладка — display-toggle (компонент НЕ
+  // размонтируется), App не перерисовывает грид на показ → ловим видимость через
+  // IntersectionObserver: на СКРЫТИЕ коммитим живую прокрутку (до сброса display:none),
+  // на ПОКАЗ — восстанавливаем из закоммиченной (race-free, не затирается нулём).
   useEffect(() => {
-    if (loading || viewRows.length === 0 || !gridRef.current || !trScrollCache) return;
-    gridRef.current.scrollTo(trScrollCache.col, trScrollCache.row, 'both', 0, 0);
-  }, [loading, viewRows.length]);
+    const el = measureRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) {
+          if (trScrollCache) trScrollSaved = trScrollCache;
+        } else if (gridRef.current && trScrollSaved) {
+          // Ретрай через onVisibleRegionChanged (glide не сразу готов к scrollTo).
+          trRestoringRef.current = true;
+          trPendingRef.current = { col: trScrollSaved.col, row: trScrollSaved.row, tries: 0 };
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              const p = trPendingRef.current;
+              if (p) gridRef.current?.scrollTo(p.col, p.row, 'both', 0, 0);
+            }),
+          );
+        }
+      }
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
 
   // Реалтайм: кто-то изменил ОБЩИЙ вид. Автора/наличие обновляем всегда; ПРИМЕНЯЕМ только
   // если я в «Общем» и это не моё эхо. Дни чужого вида не сносят локальный выбор сессии
@@ -2322,7 +2351,20 @@ export function FlowTransportGrid(): JSX.Element {
               headerHeight={22}
               highlightRegions={gridSearch.highlightRegions}
               onVisibleRegionChanged={(region) => {
-                trScrollCache = { col: region.x, row: region.y };
+                const p = trPendingRef.current;
+                if (p) {
+                  if ((p.row > 0 || p.col > 0)
+                    && (Math.abs(region.y - p.row) > 1 || Math.abs(region.x - p.col) > 1)
+                    && p.tries < 14) {
+                    p.tries += 1;
+                    gridRef.current?.scrollTo(p.col, p.row, 'both', 0, 0);
+                  } else {
+                    trPendingRef.current = null;
+                    trRestoringRef.current = false;
+                  }
+                } else if (!trRestoringRef.current) {
+                  trScrollCache = { col: region.x, row: region.y };
+                }
                 gridSearch.onVisibleRegionChanged(region);
               }}
               onHeaderMenuClick={colFilters.handleHeaderMenuClick}

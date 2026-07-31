@@ -399,22 +399,12 @@ contextBridge.exposeInMainWorld('pyn', {
         ipcRenderer.removeListener('pyn:pet:visible', wrapped);
       };
     },
-    /** Статус system-wide input (Mac Accessibility + uiohook running). */
-    globalInputStatus: function pynPetGlobalInputStatus() {
-      return ipcRenderer.invoke('pyn:pet:global-input-status');
-    },
-    openAccessibility: function pynPetOpenAccessibility() {
-      return ipcRenderer.invoke('pyn:pet:open-accessibility');
-    },
-    retryGlobalInput: function pynPetRetryGlobalInput() {
-      return ipcRenderer.invoke('pyn:pet:retry-global-input');
-    },
-    onGlobalInput: function pynPetOnGlobalInput(handler) {
-      const wrapped = (_e, payload) => handler(payload || {});
-      ipcRenderer.on('pyn:pet:global-input', wrapped);
-      return function unsubscribe() {
-        ipcRenderer.removeListener('pyn:pet:global-input', wrapped);
-      };
+    /**
+     * Проброс in-app активности (мышь) из окна Pyn в оверлей питомца.
+     * Клавиши уже пробрасывает main через before-input-event. Fire-and-forget.
+     */
+    reportActivity: function pynPetReportActivity(payload) {
+      ipcRenderer.send('pyn:pet:report-activity', payload && typeof payload === 'object' ? payload : {});
     },
     getBounds: function pynPetGetBounds() {
       return ipcRenderer.invoke('pyn:pet:get-bounds');

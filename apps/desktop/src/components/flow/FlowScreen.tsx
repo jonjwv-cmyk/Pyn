@@ -135,30 +135,23 @@ export function FlowScreen(): JSX.Element {
             • План/Отчёт — один FlowPlanGrid (mode), без повторной сети;
             • данные Плана подгружаются уже на «Формировании» → вход мгновенный.
             (П0 скорость 2026-07-18: «слетает день / грузит заново».) */}
-        {/* З.2/22: вкладки скрываем `visibility`, НЕ `display:none` — иначе браузер
-            обнуляет размер glide и сбрасывает scrollTop (скролл слетает в начало при
-            возврате). `absolute inset-0` держит обе панели в полный размер → скролл,
-            выбранный день и фильтры живут нативно, «будто и не уходили». */}
+        {/* Вкладки always-mounted, переключение display-toggle. Память скролла — не через
+            позиционирование (ломало оверлеи glide), а явным save/restore в самих гридах. */}
         <div
-          className="absolute inset-0 flex min-h-0 flex-col"
-          style={{
-            visibility: stage === 'form' ? 'visible' : 'hidden',
-            pointerEvents: stage === 'form' ? 'auto' : 'none',
-          }}
+          className="flex min-h-0 flex-1 flex-col"
+          style={{ display: stage === 'form' ? 'flex' : 'none' }}
         >
-          <FlowSandboxGrid />
+          <FlowSandboxGrid active={stage === 'form'} />
         </div>
         {planVisited && (
           <div
-            className="absolute inset-0 flex min-h-0 flex-col"
-            style={{
-              visibility: stage !== 'form' ? 'visible' : 'hidden',
-              pointerEvents: stage !== 'form' ? 'auto' : 'none',
-            }}
+            className="flex min-h-0 flex-1 flex-col"
+            style={{ display: stage !== 'form' ? 'flex' : 'none' }}
           >
             <FlowPlanGrid
               mode={stage === 'report' ? 'report' : 'plan'}
               onSelectedDayChange={setPlanDay}
+              active={stage !== 'form'}
             />
           </div>
         )}
