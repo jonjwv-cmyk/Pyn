@@ -135,6 +135,22 @@ export interface ReportTreeShop {
 /** Как колонка ГРАФ: on=«да», off=дата (день ≠ график), none=нет в графике. */
 export type ReportGraphKind = 'on' | 'off' | 'none';
 
+/**
+ * Срез «нет в графике» / «вне графика»:
+ * % цехов от всех цехов, позиции и % от плана, склады (точки) и % от всех складов.
+ */
+export interface ReportSliceStats {
+  shops: number;
+  /** % цехов от shopCount. */
+  shopPct: number;
+  positions: number;
+  /** % позиций от total. */
+  positionPct: number;
+  warehouses: number;
+  /** % складов (to_wh) от warehouseCount. */
+  warehousePct: number;
+}
+
 export interface ReportComputeResult {
   mode: ReportMode;
   total: number;
@@ -142,6 +158,10 @@ export interface ReportComputeResult {
   percent: number;
   /** Не вывезенные (для дерева причин). */
   notShipped: number;
+  /** Уникальные цеха в периоде (все позиции отчёта). */
+  shopCount: number;
+  /** Уникальные склады получения (to_wh) за период. */
+  warehouseCount: number;
   /**
    * Цеха, которых нет в графике (ГРАФ = «нет» / «—»).
    * Пустой массив → блок «Нет в графике» не показываем.
@@ -152,6 +172,8 @@ export interface ReportComputeResult {
    * Пустой → блок «Вне графика» не показываем.
    */
   offScheduleShops: string[];
+  notInStats: ReportSliceStats;
+  offStats: ReportSliceStats;
   tree: ReportTreeShop[];
 }
 
@@ -192,12 +214,45 @@ function effectiveForMode(
  * Расчёт White/Black по строкам ОТЧЁТА (fixation_id>0), **построчно**.
  * Дерево — только невывезенные, группировка по цеху (не по номеру склада).
  */
+function emptySlice(): ReportSliceStats {
+  return {
+    shops: 0,
+    shopPct: 0,
+    positions: 0,
+    positionPct: 0,
+    warehouses: 0,
+    warehousePct: 0,
+  };
+}
+
+function emptyReportResult(mode: ReportMode): ReportComputeResult {
+  return {
+    mode,
+    total: 0,
+    shipped: 0,
+    percent: 0,
+    notShipped: 0,
+    shopCount: 0,
+    warehouseCount: 0,
+    notInScheduleShops: [],
+    offScheduleShops: [],
+    notInStats: emptySlice(),
+    offStats: emptySlice(),
+    tree: [],
+  };
+}
+
 export function computeFlowReport(
   rows: readonly FlowDeliveryRow[],
   mode: ReportMode,
   selectedDays?: readonly string[],
   opts?: FlowReportOpts,
 ): ReportComputeResult {
+  // Пустой выбор дней → нулевой отчёт (не «все дни»). undefined = без фильтра (legacy).
+  if (selectedDays !== undefined && selectedDays.length === 0) {
+    return emptyReportResult(mode);
+  }
+
   const daySet =
     selectedDays && selectedDays.length > 0
       ? new Set(selectedDays.map((d) => String(d).slice(0, 10)))
@@ -221,9 +276,15 @@ export function computeFlowReport(
   // Невывезенные: shop → total; reasons только при реальном STAT (не «без статуса»).
   // «выполнено»/shipped — только в total/percent, в дерево не идёт.
   const shopCounts = new Map<string, number>();
+  const allShops = new Set<string>();
+  const allWh = new Set<string>();
   const map = new Map<string, Map<string, Map<string, number>>>();
   const notInSet = new Set<string>();
   const offShopSet = new Set<string>();
+  let notInPositions = 0;
+  let offPositions = 0;
+  const notInWh = new Set<string>();
+  const offWh = new Set<string>();
 
   const kindOf = (r: FlowDeliveryRow): ReportGraphKind => {
     if (opts?.graphKind) return opts.graphKind(r);
@@ -232,11 +293,23 @@ export function computeFlowReport(
     return 'on';
   };
 
+  const whKeyOf = (r: FlowDeliveryRow): string => String(r.to_wh || '').trim() || '—';
+
   for (const r of reportRows) {
     const shop = shopOf(r);
+    const wh = whKeyOf(r);
+    allShops.add(shop);
+    allWh.add(wh);
     const gk = kindOf(r);
-    if (gk === 'none') notInSet.add(shop);
-    else if (gk === 'off') offShopSet.add(shop);
+    if (gk === 'none') {
+      notInSet.add(shop);
+      notInPositions += 1;
+      notInWh.add(wh);
+    } else if (gk === 'off') {
+      offShopSet.add(shop);
+      offPositions += 1;
+      offWh.add(wh);
+    }
 
     const raw = rowStat(r);
     const eff = effectiveForMode(mode, raw.stat, raw.sub);
@@ -265,6 +338,24 @@ export function computeFlowReport(
   const total = reportRows.length;
   const notShipped = total - shipped;
   const percent = total > 0 ? Math.round((shipped / total) * 1000) / 10 : 0;
+  const shopCount = allShops.size;
+  const warehouseCount = allWh.size;
+
+  const pctOf = (n: number, d: number): number =>
+    d > 0 ? Math.round((n / d) * 1000) / 10 : 0;
+
+  const sliceOf = (
+    shops: number,
+    positions: number,
+    warehouses: number,
+  ): ReportSliceStats => ({
+    shops,
+    shopPct: pctOf(shops, shopCount),
+    positions,
+    positionPct: pctOf(positions, total),
+    warehouses,
+    warehousePct: pctOf(warehouses, warehouseCount),
+  });
 
   const tree: ReportTreeShop[] = [...shopCounts.entries()]
     .map(([shop, count]) => {
@@ -297,8 +388,12 @@ export function computeFlowReport(
     shipped,
     percent,
     notShipped,
+    shopCount,
+    warehouseCount,
     notInScheduleShops,
     offScheduleShops,
+    notInStats: sliceOf(notInScheduleShops.length, notInPositions, notInWh.size),
+    offStats: sliceOf(offScheduleShops.length, offPositions, offWh.size),
     tree,
   };
 }

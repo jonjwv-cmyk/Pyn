@@ -1687,4 +1687,24 @@
   border-radius: 999px;
   background: rgba(217, 119, 87, 0.7);
 }
+/* Статус дня (режим single — Разнарядка): черновик/факт/оба. Не путать с has-data (Транспорт). */
+.pyn-cal-day.is-draft:not(.is-selected) {
+  background: rgba(244, 63, 94, 0.16);
+  color: #fda4af;
+}
+.pyn-cal-day.is-fixed:not(.is-selected) {
+  background: rgba(16, 185, 129, 0.16);
+  color: #6ee7b7;
+}
+.pyn-cal-day.is-mixed:not(.is-selected) {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fcd34d;
+}
+.pyn-cal-day.is-disabled {
+  cursor: not-allowed;
+  color: rgba(229, 229, 226, 0.25);
+}
+.pyn-cal-day.is-disabled:hover {
+  background: transparent;
+}
 

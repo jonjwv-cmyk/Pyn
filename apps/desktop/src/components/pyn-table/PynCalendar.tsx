@@ -1,6 +1,11 @@
 /**
  * Календарь: три кнопки (Сегодня | Все дни | Сброс) + навигация месяца + дни.
  * Без чипов месяцев.
+ *
+ * Два режима (юзер 2026-08-02: единый календарь для Разнарядки и Транспорта):
+ *  · multi (по умолчанию) — драг/клик мультивыбор дней, «has-data» точка (Транспорт);
+ *  · single — клик сразу выбирает один день, доступна раскраска по статусу
+ *    draft/fixed/mixed (Разнарядка: черновик/факт) и disabled-дни.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -20,30 +25,56 @@ function dayNum(iso: string): number {
   return Number(iso.slice(8, 10)) || 0;
 }
 
+export type PynCalDayStatus = 'draft' | 'fixed' | 'mixed';
+
 export function PynCalendar({
   selected,
   onChange,
   dataDays,
-  onSelectMonth,
   onReset,
   resetEnabled = false,
+  mode = 'multi',
+  dayStatus,
+  dayTitle,
+  isDateEnabled,
+  initialMonth,
+  showActions = true,
+  primaryActionLabel = 'Сегодня',
+  onPrimaryAction,
 }: {
   selected: Set<string>;
   onChange: (next: Set<string>) => void;
   dataDays?: Set<string>;
-  /** Все дни открытого месяца (YYYY-MM). */
-  onSelectMonth?: (ym: string) => void;
   onReset?: () => void;
   resetEnabled?: boolean;
   /** @deprecated чипы месяцев убраны */
   monthsWithData?: string[];
+  /** single — клик по дню сразу выбирает один день (без драг-мультивыбора). */
+  mode?: 'multi' | 'single';
+  /** Раскраска дня по статусу (режим single, напр. Разнарядка: черновик/факт/оба). */
+  dayStatus?: (iso: string) => PynCalDayStatus | undefined;
+  /** title-подсказка дня (hover). */
+  dayTitle?: (iso: string) => string | undefined;
+  /** Заблокировать выбор дня (недоступная дата). */
+  isDateEnabled?: (iso: string) => boolean;
+  /** Открыть конкретный месяц (YYYY-MM), если выбора/сегодня недостаточно. */
+  initialMonth?: string;
+  /** Скрыть встроенную строку Сегодня/Все дни/Сброс — свои кнопки у консьюмера. */
+  showActions?: boolean;
+  /** Текст первой кнопки действий (по умолчанию «Сегодня»). */
+  primaryActionLabel?: string;
+  /** Своя логика первой кнопки — напр. «Последнее» (ближайший день с данными)
+   * вместо жёсткого перехода на сегодня (юзер 2026-08-02). */
+  onPrimaryAction?: () => void;
 }): JSX.Element {
   const today = useMemo(() => isoToday(), []);
   const firstSel = [...selected].sort()[0];
   const [ym, setYm] = useState(() => {
-    const base = firstSel || today;
+    const base = initialMonth ? `${initialMonth}-01` : firstSel || today;
     return { y: Number(base.slice(0, 4)), m: Number(base.slice(5, 7)) };
   });
+
+  const isSingle = mode === 'single';
 
   const drag = useRef<{ base: Set<string>; anchor: string; moved: boolean } | null>(null);
   useEffect(() => {
@@ -55,7 +86,6 @@ export function PynCalendar({
   }, []);
 
   const iso = (d: number): string => `${ym.y}-${pad2(ym.m)}-${pad2(d)}`;
-  const ymKey = `${ym.y}-${pad2(ym.m)}`;
 
   const rangeOf = (a: string, b: string): string[] => {
     const lo = Math.min(dayNum(a), dayNum(b));
@@ -66,11 +96,13 @@ export function PynCalendar({
   };
 
   const onDown = (dIso: string): void => {
+    if (isDateEnabled && !isDateEnabled(dIso)) return;
     drag.current = { base: new Set(selected), anchor: dIso, moved: false };
   };
   const onEnter = (dIso: string): void => {
     const dr = drag.current;
     if (!dr) return;
+    if (isDateEnabled && !isDateEnabled(dIso)) return;
     dr.moved = true;
     const next = new Set(dr.base);
     for (const r of rangeOf(dr.anchor, dIso)) next.add(r);
@@ -88,6 +120,11 @@ export function PynCalendar({
     drag.current = null;
   };
 
+  const onSingleClick = (dIso: string): void => {
+    if (isDateEnabled && !isDateEnabled(dIso)) return;
+    onChange(new Set([dIso]));
+  };
+
   const first = new Date(ym.y, ym.m - 1, 1);
   const startWd = (first.getDay() + 6) % 7;
   const daysIn = new Date(ym.y, ym.m, 0).getDate();
@@ -102,13 +139,23 @@ export function PynCalendar({
     onChange(new Set([t]));
   };
 
+  // «Все дни» — тумблер открытого месяца (юзер 2026-08-02): месяц целиком выбран →
+  // жмём ещё раз → снимаем именно этот месяц; не весь целиком (снял один день руками) →
+  // жмём → доливаем недостающие. Другие месяцы, выбранные раньше, не трогаем — копятся.
+  const monthDays = useMemo(() => {
+    const out: string[] = [];
+    for (let d = 1; d <= daysIn; d += 1) out.push(iso(d));
+    return out;
+  }, [ym.y, ym.m, daysIn]);
+  const isMonthFull = monthDays.length > 0 && monthDays.every((d) => selected.has(d));
+
   const selectAllDays = (): void => {
-    if (onSelectMonth) {
-      onSelectMonth(ymKey);
-      return;
+    const next = new Set(selected);
+    if (isMonthFull) {
+      for (const d of monthDays) next.delete(d);
+    } else {
+      for (const d of monthDays) next.add(d);
     }
-    const next = new Set<string>();
-    for (let d = 1; d <= daysIn; d += 1) next.add(iso(d));
     onChange(next);
   };
 
@@ -116,25 +163,29 @@ export function PynCalendar({
 
   return (
     <div className="pyn-cal">
-      <div className="pyn-cal-actions">
-        <button type="button" className="pyn-cal-action pyn-cal-action--primary" onClick={jumpToday}>
-          Сегодня
-        </button>
-        <button type="button" className="pyn-cal-action pyn-cal-action--primary" onClick={selectAllDays}>
-          Все дни
-        </button>
-        <button
-          type="button"
-          className="pyn-cal-action"
-          disabled={!canReset}
-          onClick={() => {
-            onChange(new Set());
-            onReset?.();
-          }}
-        >
-          Сброс
-        </button>
-      </div>
+      {showActions && (
+        <div className="pyn-cal-actions">
+          <button type="button" className="pyn-cal-action pyn-cal-action--primary" onClick={onPrimaryAction ?? jumpToday}>
+            {primaryActionLabel}
+          </button>
+          {!isSingle && (
+            <button type="button" className="pyn-cal-action pyn-cal-action--primary" onClick={selectAllDays}>
+              Все дни
+            </button>
+          )}
+          <button
+            type="button"
+            className="pyn-cal-action"
+            disabled={!canReset}
+            onClick={() => {
+              onChange(new Set());
+              onReset?.();
+            }}
+          >
+            Сброс
+          </button>
+        </div>
+      )}
 
       <div className="pyn-cal-nav">
         <button
@@ -171,18 +222,25 @@ export function PynCalendar({
           const sel = selected.has(dIso);
           const hasData = dataDays?.has(dIso);
           const isToday = dIso === today;
+          const st = dayStatus?.(dIso);
+          const disabled = isDateEnabled ? !isDateEnabled(dIso) : false;
           return (
             <button
               key={dIso}
               type="button"
-              onPointerDown={() => onDown(dIso)}
-              onPointerEnter={() => onEnter(dIso)}
-              onPointerUp={() => onUp(dIso)}
+              disabled={disabled}
+              title={dayTitle?.(dIso)}
+              onPointerDown={isSingle ? undefined : () => onDown(dIso)}
+              onPointerEnter={isSingle ? undefined : () => onEnter(dIso)}
+              onPointerUp={isSingle ? undefined : () => onUp(dIso)}
+              onClick={isSingle ? () => onSingleClick(dIso) : undefined}
               className={[
                 'pyn-cal-day',
                 sel ? 'is-selected' : '',
                 isToday ? 'is-today' : '',
                 hasData ? 'has-data' : '',
+                st === 'mixed' ? 'is-mixed' : st === 'fixed' ? 'is-fixed' : st === 'draft' ? 'is-draft' : '',
+                disabled ? 'is-disabled' : '',
               ]
                 .filter(Boolean)
                 .join(' ')}

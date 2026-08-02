@@ -1,11 +1,14 @@
 /**
- * Блок 2 Сводки: сбор машин (как шапка файла «Экспедиторам»).
+ * Блок 3 Сводки: сбор машин (как шапка «Экспедиторам»).
  *
- * Несколько дней в сводке = ОДИН пул:
- *  · ТС — уникальные гаражные № (без гаражного не считается);
- *  · экспедиторы — уникальные по id (фамилия+инициал / табельный), не «на каждый день».
+ * Несколько дней = ОДИН пул:
+ *  · только строки с гаражным № (машина указана);
+ *  · только вывезенные (выполнено / самовывоз / цех·самовывоз);
+ *  · без машины + не вывезено → в блок 3 НЕ попадает (ошибка «фантомных» складов);
+ *  · экспедиторы в счётчике — по роли потока (см. countFleetPeople).
  */
 import type { FlowDeliveryRow } from '@pyn/core';
+import { isFlowStatShipped } from '@pyn/core';
 import {
   buildExpedGroups,
   type ExpedGroup,
@@ -74,10 +77,20 @@ export function uniqExpeditorLabels(fios: readonly string[]): string[] {
   return [...byId.values()];
 }
 
+function rowStatRaw(r: FlowDeliveryRow): { stat: string; sub: string } {
+  const stat = String(r.stat || '').trim();
+  const sub = String(r.stat_sub || '').trim();
+  if (stat) return { stat, sub };
+  const ds = String(r.done_stat || '').trim();
+  if (ds === 'выполнено' || ds === 'увезли') return { stat: 'выполнено', sub: '' };
+  if (ds === 'самовывоз') return { stat: 'самовывоз', sub: '' };
+  return { stat: '', sub: '' };
+}
+
 /**
  * Зафиксированные строки выбранных дней → группы машин.
- * Все дни сливаются: один гаражный = одна машина, От/СП — объединение.
- * Пустой результат → блок 2 не показываем.
+ * Все дни сливаются: один гаражный = одна машина, От/СП — только с этой машины.
+ * Пустой результат → блок 3 не показываем.
  */
 export function buildReportFleetGroups(
   rows: readonly FlowDeliveryRow[],
@@ -96,10 +109,17 @@ export function buildReportFleetGroups(
     const pd = String(r.plan_date || '').slice(0, 10);
     if (!daySet.has(pd)) continue;
 
+    // Только с машиной (гаражный). Без № → в блок 3 не пишем (даже если есть От/СП).
     const garageRaw = splitMulti(r.ride_id || '')[0] ?? '';
     const gKey = normGarageKey(garageRaw);
-    if (gKey && !garageDisplay.has(gKey)) {
-      // display: без «ГР. №», как введённый номер
+    if (!gKey) continue;
+
+    // Только вывезенное. Не выполнено / не самовывоз + нет машины уже отсечено;
+    // с машиной, но не вывезено — в сводку машин тоже не тащим.
+    const { stat, sub } = rowStatRaw(r);
+    if (!isFlowStatShipped(stat, sub)) continue;
+
+    if (!garageDisplay.has(gKey)) {
       const disp = garageRaw
         .trim()
         .replace(/^(гр\.?\s*№\s*|гр\.?\s*№?|№\s*)/i, '')
@@ -109,7 +129,6 @@ export function buildReportFleetGroups(
 
     const vehicleType = splitMulti(r.vehicle || '').join(', ');
     const exps = deliveryExps(r);
-    if (!gKey && !vehicleType && exps.length === 0 && !r.fr && !r.to_wh) continue;
 
     inputs.push({
       fr: String(r.fr || '').trim(),
@@ -120,7 +139,6 @@ export function buildReportFleetGroups(
       no_num: String(r.no_num || '').trim(),
       qty: r.qty ?? null,
       clst: '',
-      // ключ слияния по дням — нормализованный гаражный
       garage: gKey,
       vehicleType,
       expeditors: exps,
@@ -136,15 +154,17 @@ export function buildReportFleetGroups(
   }
 
   const groups = buildExpedGroups(inputs);
-  // display-гаражный + уникальные экспедиторы (один человек на N дней)
-  return groups.map((g) => {
-    const key = normGarageKey(g.garage);
-    return {
-      ...g,
-      garage: key ? garageDisplay.get(key) || g.garage : '',
-      expeditors: uniqExpeditorLabels(g.expeditors),
-    };
-  });
+  // пустой гаражный (если buildExpedGroups вдруг сгруппировал) — выкинуть
+  return groups
+    .filter((g) => !!normGarageKey(g.garage))
+    .map((g) => {
+      const key = normGarageKey(g.garage);
+      return {
+        ...g,
+        garage: key ? garageDisplay.get(key) || g.garage : '',
+        expeditors: uniqExpeditorLabels(g.expeditors),
+      };
+    });
 }
 
 /** ТС = уникальные гаражные №; «Без машины» = 0. */
@@ -157,16 +177,56 @@ export function countFleetVehicles(groups: readonly ExpedGroup[]): number {
   return keys.size;
 }
 
-/** Экспедиторы = уникальные id по всем машинам/дням (не × число дней). */
-export function countFleetExpeditors(groups: readonly ExpedGroup[]): number {
-  const seen = new Set<string>();
+/** Роль потока контакта (broadcastGroup). */
+export type FleetFlowRole = 'expeditor' | 'driver_expeditor' | 'other';
+
+/**
+ * Уникальные лица из шапок машин, разбитые по роли потока:
+ *  · Экспедиторы — только «Экспедиторы»;
+ *  · Водители-экспедиторы — «Водители-экспедиторы»;
+ *  · Иные — указаны в exp, но роли потока нет.
+ * resolveRole(fio) → роль по базе контактов (null = иной).
+ */
+export function countFleetPeople(
+  groups: readonly ExpedGroup[],
+  resolveRole: (fio: string) => FleetFlowRole | null,
+): { expeditors: number; driverExpeditors: number; others: number } {
+  const byRole = {
+    expeditor: new Set<string>(),
+    driver_expeditor: new Set<string>(),
+    other: new Set<string>(),
+  };
   for (const g of groups) {
     for (const fio of g.expeditors) {
       const id = expeditorId(fio);
-      if (id) seen.add(id);
+      if (!id) continue;
+      const role = resolveRole(fio) ?? 'other';
+      byRole[role].add(id);
     }
   }
-  return seen.size;
+  return {
+    expeditors: byRole.expeditor.size,
+    driverExpeditors: byRole.driver_expeditor.size,
+    others: byRole.other.size,
+  };
+}
+
+/** @deprecated → countFleetPeople; оставляет только роль «Экспедиторы». */
+export function countFleetExpeditors(
+  groups: readonly ExpedGroup[],
+  resolveRole?: (fio: string) => FleetFlowRole | null,
+): number {
+  if (!resolveRole) {
+    const seen = new Set<string>();
+    for (const g of groups) {
+      for (const fio of g.expeditors) {
+        const id = expeditorId(fio);
+        if (id) seen.add(id);
+      }
+    }
+    return seen.size;
+  }
+  return countFleetPeople(groups, resolveRole).expeditors;
 }
 
 /** Однострочный заголовок машины (как xlsx line1). */
@@ -176,7 +236,7 @@ export function fleetGroupLine1(g: ExpedGroup): string {
     : g.vehicleType
       ? `Без №   ${g.vehicleType}`
       : 'Без машины';
-  if (g.expeditors.length === 0) return base;
+  if (g.expeditors.length === 0) return `${base}   Экспедитор не указан`;
   const exp = g.expeditors.map((f, i) => `${i + 1}. ${f}`).join('   ');
   return `${base}   ${exp}`;
 }

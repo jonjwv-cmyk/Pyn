@@ -9,7 +9,7 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { ArrowDownUp, Check, ClipboardPaste, Plus, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { ArrowDownUp, Check, ClipboardPaste, Copy, History, Plus, Redo2, Trash2, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
 import { BODY_TYPES } from './flow-body-types';
@@ -846,7 +846,27 @@ export function FlowPlanGrid({
   // Контейнер DataEditor — также для проверки видимости вкладки в ⌘Z-хоткее.
   const measureRef = useRef<HTMLDivElement | null>(null);
   const autoDriverRoleSigRef = useRef('');
-  const [msg, setMsg] = useState('');
+  // Лог сообщений (юзер 2026-08-02: инлайн-текст между панелями ломал раскладку кнопок) —
+  // вместо растущего текста копим историю, кнопка открывает поповер со списком + копированием.
+  const msgIdRef = useRef(0);
+  const [msgLog, setMsgLog] = useState<{ id: number; text: string; ts: number }[]>([]);
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [msgFlash, setMsgFlash] = useState(false);
+  const msgLogRef = useRef<HTMLDivElement | null>(null);
+  const setMsg = useCallback((text: string) => {
+    if (!text) return;
+    msgIdRef.current += 1;
+    setMsgLog((log) => [{ id: msgIdRef.current, text, ts: Date.now() }, ...log].slice(0, 40));
+    setMsgFlash(true);
+  }, []);
+  useEffect(() => {
+    if (!msgOpen) return;
+    const onDown = (e: MouseEvent): void => {
+      if (msgLogRef.current && !msgLogRef.current.contains(e.target as Node)) setMsgOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [msgOpen]);
   // Календарь дня: План и Отчёт хранят РАЗНЫЕ значения (module-cache).
   // null на Отчёте = весь месяц; на Плане null → auto-default (см. effect ниже).
   const [selectedDay, setSelectedDay] = useState<string | null>(() => {
@@ -4397,12 +4417,49 @@ export function FlowPlanGrid({
         {/* Кнопка «+ Строка» УБРАНА (юзер 2026-07-03): пустая ручная строка добавляется
             «как в обычной таблице» — клик по хвостовой строке грида (trailing row). */}
         {/* Счётчики/подсказки убраны (юзер 2026-07-02: «лишний текстовый мусор — барахло»).
-            Остаются только сообщения об операциях (msg). */}
-        {msg && (
-          <span className="max-w-[300px] truncate text-[11px] text-danger" title={msg}>
-            {msg}
-          </span>
-        )}
+            Сообщения об операциях (msg) — не инлайн-текст (ломал раскладку кнопок,
+            юзер 2026-08-02), а история в поповере: список + копирование по клику. */}
+        <div className="relative flex shrink-0" ref={msgLogRef}>
+          <button
+            type="button"
+            onClick={() => { setMsgOpen((o) => !o); setMsgFlash(false); }}
+            title="История сообщений"
+            className={`flex h-6 items-center gap-1 rounded-md border px-1.5 text-[11px] transition-colors ${
+              msgFlash
+                ? 'border-danger/50 text-danger'
+                : 'border-black/10 text-[#6B6862] hover:border-black/25 hover:text-[#0A0A0A]'
+            }`}
+          >
+            <History size={13} strokeWidth={1.75} />
+            {msgLog.length > 0 && <span className="tabular-nums">{msgLog.length}</span>}
+          </button>
+          {msgOpen && (
+            <div className="absolute left-0 top-7 z-50 max-h-[320px] w-[340px] overflow-y-auto rounded-lg border border-border-subtle bg-bg-surface p-1.5 shadow-lg">
+              {msgLog.length === 0 ? (
+                <div className="px-2 py-3 text-center text-[11px] text-zinc-500">Пока пусто</div>
+              ) : (
+                msgLog.map((m) => (
+                  <div
+                    key={m.id}
+                    className="group flex items-start gap-1.5 rounded-md px-1.5 py-1 hover:bg-black/[0.03]"
+                  >
+                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[11px] leading-snug text-[#3F3D38]">
+                      {m.text}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void navigator.clipboard.writeText(m.text)}
+                      title="Скопировать"
+                      className="shrink-0 rounded p-0.5 text-[#9B9890] opacity-0 transition-opacity hover:text-[#0A0A0A] group-hover:opacity-100"
+                    >
+                      <Copy size={12} strokeWidth={1.75} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
         {/* Поиск как в Формировании: панель-поповер по колонкам, подсветка + перелёт (⌘F).
             Не фильтрует строки. Замена скрыта (живая серверная база). */}
         <FlowSearchPanel

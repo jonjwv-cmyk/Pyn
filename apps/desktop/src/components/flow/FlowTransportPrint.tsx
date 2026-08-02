@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Printer, X } from 'lucide-react';
 import type { FlowTransportRow, FlowVehicle } from '@pyn/core';
@@ -97,6 +97,9 @@ export function FlowTransportPrint({
   printDok,
   printOkalina,
   onClose,
+  /** Без превью: сразу dialog (печать) или save (PDF) и закрыть. */
+  autoMode,
+  onAutoDone,
 }: {
   days: string[];
   rows: FlowTransportRow[];
@@ -105,11 +108,15 @@ export function FlowTransportPrint({
   printDok: boolean;
   printOkalina: boolean;
   onClose: () => void;
+  autoMode?: 'dialog' | 'save';
+  onAutoDone?: (msg: string) => void;
 }): JSX.Element {
+  const silent = !!autoMode;
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   /** false = обычная печать (страницы сами); true = вписать на 1 лист. */
   const [fitOne, setFitOne] = useState(false);
+  const autoStarted = useRef(false);
   const prodCalByYear = useProdCalendarStore((st) => st.byYear);
 
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -182,37 +189,76 @@ export function FlowTransportPrint({
   const fitScale = fitOne && needsFit ? Math.max(0.5, PAGE_H / h) : 1;
   const pages = fitOne ? 1 : naturalPages;
 
-  // Превью: уменьшить лист, чтобы ширина PAGE_W влезла в стол (не в PDF).
-  const viewScale = deskW > 48 ? Math.min(1, (deskW - 32) / PAGE_W) : 1;
+  // Превью: уменьшить лист в стол; silent — всегда 1:1 для PDF.
+  const viewScale = silent ? 1 : deskW > 48 ? Math.min(1, (deskW - 32) / PAGE_W) : 1;
 
-  const run = async (mode: 'dialog' | 'save'): Promise<void> => {
-    if (busy) return;
-    setBusy(true);
-    setMsg('');
-    // На время PDF: viewScale=1 (transform off), fit zoom остаётся — то, что уйдёт в PDF.
-    document.body.classList.add('tr-printing');
-    try {
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      await new Promise((r) => setTimeout(r, 80));
-      const name = `Транспорт ${fmtDaysSummary(days) || 'лист'}`.slice(0, 80);
-      const pyn = window.pyn?.print;
-      const opts = { landscape: true as const };
-      if (pyn) {
-        const res = mode === 'save' ? await pyn.savePdf(name, opts) : await pyn.dialog(name, opts);
-        if (!res?.ok && res?.error) setMsg(`Печать: ${res.error}`);
-        else if (mode === 'save' && res && 'path' in res && res.path) {
-          setMsg(`Сохранено: ${String(res.path).split('/').pop()}`);
+  const busyRef = useRef(false);
+  const run = useCallback(
+    async (mode: 'dialog' | 'save'): Promise<string> => {
+      if (busyRef.current) return '';
+      busyRef.current = true;
+      setBusy(true);
+      setMsg('');
+      document.body.classList.add('tr-printing');
+      let out = '';
+      try {
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        await new Promise((r) => setTimeout(r, silent ? 120 : 80));
+        const name = `Транспорт ${fmtDaysSummary(days) || 'лист'}`.slice(0, 80);
+        const pyn = window.pyn?.print;
+        const opts = { landscape: true as const };
+        if (pyn) {
+          const res = mode === 'save' ? await pyn.savePdf(name, opts) : await pyn.dialog(name, opts);
+          if (!res?.ok && res?.error) out = `Печать: ${res.error}`;
+          else if (mode === 'save' && res && 'path' in res && res.path) {
+            out = `PDF: ${String(res.path).split('/').pop()}`;
+          } else if (mode === 'save' && res && 'canceled' in res && res.canceled) {
+            out = '';
+          } else if (mode === 'dialog') {
+            out = 'Печать';
+          }
+        } else {
+          window.print();
+          out = mode === 'save' ? 'PDF' : 'Печать';
         }
-      } else {
-        window.print();
+        if (out) setMsg(out);
+      } catch (e) {
+        out = `Печать: ${(e instanceof Error ? e.message : String(e)).slice(0, 100)}`;
+        setMsg(out);
+      } finally {
+        document.body.classList.remove('tr-printing');
+        busyRef.current = false;
+        setBusy(false);
       }
-    } catch (e) {
-      setMsg(`Печать: ${(e instanceof Error ? e.message : String(e)).slice(0, 100)}`);
-    } finally {
-      document.body.classList.remove('tr-printing');
-      setBusy(false);
-    }
-  };
+      return out;
+    },
+    [days, silent],
+  );
+
+  // Silent: без превью — сверстали off-screen → print/PDF → close.
+  // jobKey снаружи гарантирует remount; здесь сбрасываем guard при смене job.
+  useEffect(() => {
+    autoStarted.current = false;
+  }, [autoMode, days.join('|')]);
+
+  useEffect(() => {
+    if (!autoMode || autoStarted.current) return;
+    // ждём хотя бы один measure (contentH>0) или пустой набор строк
+    if (printRows.length > 0 && contentH <= 0) return;
+    autoStarted.current = true;
+    let cancelled = false;
+    void (async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      if (cancelled) return;
+      const m = await run(autoMode);
+      if (cancelled) return;
+      onAutoDone?.(m);
+      onClose();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [autoMode, contentH, printRows.length, run, onClose, onAutoDone, days.join('|')]);
 
   const close = () => {
     setBusy(false);
@@ -226,13 +272,37 @@ export function FlowTransportPrint({
   const slotH = Math.round(paperH * viewScale);
 
   return createPortal(
-    <div className="tr-print-overlay">
+    <div className={silent ? 'tr-print-overlay tr-print-silent' : 'tr-print-overlay'}>
       <style>{`
         .tr-print-overlay {
           position: fixed; inset: 0; z-index: 60;
           background: rgba(0,0,0,0.5);
           display: flex; align-items: center; justify-content: center;
           padding: 12px; box-sizing: border-box;
+        }
+        /* Silent: лист вне экрана, без UI — только paint для printToPDF */
+        .tr-print-overlay.tr-print-silent {
+          background: transparent;
+          pointer-events: none;
+          opacity: 0;
+          left: -10000px;
+          top: 0;
+          width: ${PAGE_W + 40}px;
+          height: auto;
+          overflow: visible;
+          padding: 0;
+        }
+        .tr-print-overlay.tr-print-silent .tr-print-frame {
+          width: ${PAGE_W}px;
+          height: auto;
+          box-shadow: none;
+          border-radius: 0;
+          background: #fff;
+        }
+        .tr-print-overlay.tr-print-silent .tr-print-desk {
+          padding: 0;
+          background: #fff;
+          overflow: visible;
         }
         .tr-print-frame {
           display: flex; flex-direction: column;
@@ -262,27 +332,31 @@ export function FlowTransportPrint({
         }
         .tr-fit { transform-origin: top left; }
         .tr-print-sheet {
-          background: #fff; color: #111;
+          background: #fff; color: #000;
           padding: 10px 12px;
           font-family: 'Inter Variable', system-ui, sans-serif;
           position: relative;
           box-sizing: border-box;
           width: ${PAGE_W}px;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
         }
-        .tr-print-sheet h1 { font-size: 14px; margin: 0 0 2px; color: #111; font-weight: 700; }
-        .tr-print-sheet .tr-sub { font-size: 9.5px; color: #111; margin: 0 0 7px; }
-        .tr-print-sheet .tr-sub strong { font-weight: 700; }
-        .tr-print-sheet .tr-sub-sep { margin: 0 0.3em; color: #666; }
+        .tr-print-sheet, .tr-print-sheet * { color: #000; }
+        .tr-print-sheet h1 { font-size: 15px; margin: 0 0 3px; color: #000; font-weight: 700; letter-spacing: -0.01em; }
+        .tr-print-sheet .tr-sub { font-size: 9.5px; color: #000; margin: 0 0 8px; }
+        .tr-print-sheet .tr-sub strong { font-weight: 700; color: #000; }
+        .tr-print-sheet .tr-sub-sep { margin: 0 0.3em; color: #000; opacity: 0.45; }
         .tr-print-sheet table {
           width: 100%; border-collapse: collapse; font-size: 9.5px;
-          table-layout: fixed; color: #111;
+          table-layout: fixed; color: #000;
         }
         .tr-print-sheet th, .tr-print-sheet td {
-          border: 0.5px solid #999; padding: 2px 4px; text-align: left; vertical-align: middle;
-          color: #111; line-height: 1.2;
+          border: 0.5px solid #bbb; padding: 3px 5px; text-align: left; vertical-align: middle;
+          color: #000; line-height: 1.25;
         }
         .tr-print-sheet th {
-          background: #EFEDE8; font-weight: 600; font-size: 9px; white-space: nowrap;
+          background: #f3f1ec; font-weight: 700; font-size: 9px; white-space: nowrap;
+          letter-spacing: 0.02em; color: #000;
         }
         .tr-print-sheet td { white-space: nowrap; }
         .tr-print-sheet td.tr-work {
@@ -309,24 +383,24 @@ export function FlowTransportPrint({
         .tr-print-sheet col.c-out { width: 3.5%; }
         .tr-print-sheet col.c-driver { width: 17%; }
         .tr-print-sheet col.c-comment { width: 20%; }
-        .tr-print-sheet .tr-print-gray td { color: #111; background: #D9D9D9; }
-        .tr-print-sheet .tr-time { font-variant-numeric: tabular-nums; }
+        .tr-print-sheet .tr-print-gray td { color: #000; background: #e4e4e4; }
+        .tr-print-sheet .tr-time { font-variant-numeric: tabular-nums; color: #000; }
         .tr-print-sheet .tr-time-bold { font-weight: 700; }
-        .tr-print-sheet .tr-garage { font-weight: 700; font-variant-numeric: tabular-nums; }
-        .tr-print-sheet .tr-sub2 { color: #333; font-size: 8.5px; }
+        .tr-print-sheet .tr-garage { font-weight: 700; font-variant-numeric: tabular-nums; color: #000; }
+        .tr-print-sheet .tr-sub2 { color: #000; font-size: 8.5px; opacity: 0.72; }
         .tr-print-sheet .tr-drsub {
           white-space: nowrap; font-size: 8.5px;
-          overflow: hidden; text-overflow: ellipsis; display: block;
+          overflow: hidden; text-overflow: ellipsis; display: block; color: #000;
         }
-        .tr-print-sheet .tr-phone { font-weight: 700; color: #111; font-variant-numeric: tabular-nums; }
-        .tr-print-sheet .tr-mol { color: #8A4B2E; font-weight: 600; }
-        .tr-print-sheet .tr-cluster-line td { border-top: 1.5px solid #111; }
-        .tr-print-sheet .tr-status-sep td { border-top: 2px solid #111; }
+        .tr-print-sheet .tr-phone { font-weight: 700; color: #000; font-variant-numeric: tabular-nums; }
+        .tr-print-sheet .tr-mol { color: #000; font-weight: 700; opacity: 0.75; }
+        .tr-print-sheet .tr-cluster-line td { border-top: 1.5px solid #000; }
+        .tr-print-sheet .tr-status-sep td { border-top: 2px solid #000; }
         .tr-print-sheet .tr-print-dok td,
-        .tr-print-sheet .tr-print-okalina td { background: #D9D9D9; color: #111; }
+        .tr-print-sheet .tr-print-okalina td { background: #e4e4e4; color: #000; }
         .tr-print-sheet .tr-dayhead td {
-          background: #FBEDE7; color: #8A4B2E; font-weight: 700; font-size: 9.5px;
-          border-top: 2px solid #D97757; padding: 3px 4px;
+          background: #f5f0eb; color: #000; font-weight: 700; font-size: 10px;
+          border-top: 2px solid #000; padding: 4px 5px;
         }
         .tr-page-break-mark {
           position: absolute; left: 0; right: 0; height: 0;
@@ -375,64 +449,70 @@ export function FlowTransportPrint({
       `}</style>
 
       <div className="tr-print-frame">
-        <div className="tr-print-toolbar tr-noprint">
-          <span className="font-medium">Предпросмотр · Транспорт {title}</span>
-          <span className="rounded-md bg-white/15 px-2 py-0.5 tabular-nums">
-            {contentH === 0
-              ? '…'
-              : fitOne
-                ? `1 стр.${fitScale < 0.999 ? ` · ${Math.round(fitScale * 100)}%` : ''}`
-                : pages === 1
-                  ? '1 страница'
-                  : `${pages} страницы`}
-          </span>
-          {msg && <span className="text-white/70 max-w-[220px] truncate" title={msg}>{msg}</span>}
-          <span className="ml-auto flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setFitOne((v) => !v)}
-              disabled={!needsFit && !fitOne}
-              className={cn(
-                'flex h-7 items-center rounded-md border px-2.5 font-medium transition-colors disabled:opacity-40',
-                fitOne ? 'border-white bg-white text-[#1a1a1a]' : 'border-white/30 hover:bg-white/10',
-              )}
-              title={
-                !needsFit && !fitOne
-                  ? 'Уже на 1 странице'
-                  : fitOne
-                    ? 'Обычный масштаб — страницы сами'
-                    : 'Вписать весь лист на 1 страницу A4 (как «вписать выделенное» в Sheets)'
-              }
-            >
-              Вписать на 1 страницу
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void run('dialog')}
-              className="flex h-7 items-center gap-1.5 rounded-md border border-white/30 px-2.5 transition-colors hover:bg-white/10 disabled:opacity-50"
-            >
-              <Printer size={13} strokeWidth={1.75} />
-              Печать{pages > 1 ? ` (${pages})` : ''}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void run('save')}
-              className="flex h-7 items-center rounded-md border border-white/30 px-2.5 transition-colors hover:bg-white/10 disabled:opacity-50"
-            >
-              PDF
-            </button>
-            <button
-              type="button"
-              onClick={close}
-              className="flex h-7 w-7 items-center justify-center rounded-md border border-white/30 transition-colors hover:bg-white/10"
-              title="Закрыть"
-            >
-              <X size={14} strokeWidth={1.75} />
-            </button>
-          </span>
-        </div>
+        {!silent && (
+          <div className="tr-print-toolbar tr-noprint">
+            <span className="font-medium">Предпросмотр · Транспорт {title}</span>
+            <span className="rounded-md bg-white/15 px-2 py-0.5 tabular-nums">
+              {contentH === 0
+                ? '…'
+                : fitOne
+                  ? `1 стр.${fitScale < 0.999 ? ` · ${Math.round(fitScale * 100)}%` : ''}`
+                  : pages === 1
+                    ? '1 страница'
+                    : `${pages} страницы`}
+            </span>
+            {msg && (
+              <span className="max-w-[220px] truncate text-white/70" title={msg}>
+                {msg}
+              </span>
+            )}
+            <span className="ml-auto flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setFitOne((v) => !v)}
+                disabled={!needsFit && !fitOne}
+                className={cn(
+                  'flex h-7 items-center rounded-md border px-2.5 font-medium transition-colors disabled:opacity-40',
+                  fitOne ? 'border-white bg-white text-[#1a1a1a]' : 'border-white/30 hover:bg-white/10',
+                )}
+                title={
+                  !needsFit && !fitOne
+                    ? 'Уже на 1 странице'
+                    : fitOne
+                      ? 'Обычный масштаб — страницы сами'
+                      : 'Вписать весь лист на 1 страницу A4'
+                }
+              >
+                Вписать на 1 страницу
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void run('dialog')}
+                className="flex h-7 items-center gap-1.5 rounded-md border border-white/30 px-2.5 transition-colors hover:bg-white/10 disabled:opacity-50"
+              >
+                <Printer size={13} strokeWidth={1.75} />
+                Печать{pages > 1 ? ` (${pages})` : ''}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void run('save')}
+                className="flex h-7 items-center rounded-md border border-white/30 px-2.5 transition-colors hover:bg-white/10 disabled:opacity-50"
+              >
+                PDF
+              </button>
+              <button
+                type="button"
+                onClick={close}
+                className="flex h-7 w-7 items-center justify-center rounded-md border border-white/30 transition-colors hover:bg-white/10"
+                title="Закрыть"
+              >
+                <X size={14} strokeWidth={1.75} />
+              </button>
+            </span>
+          </div>
+        )}
 
         <div className="tr-print-desk" ref={deskRef}>
           {/*

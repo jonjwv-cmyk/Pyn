@@ -199,6 +199,14 @@ export function hoursFromStartEnd(start: string, end: string): number {
   return Math.round((d / 60) * 10) / 10;
 }
 
+/**
+ * Машина реально «в этом дне» только если есть план ИЛИ факт (юзер 2026-08-02: пустые
+ * строки без времени — не работа, не должны считаться/подсвечиваться в календаре).
+ */
+export function rowHasActivity(r: Pick<TransportKpiRow, 'time_range' | 'fact_start' | 'fact_end'>): boolean {
+  return hoursFromRange(r.time_range) > 0 || hoursFromStartEnd(r.fact_start, r.fact_end) > 0;
+}
+
 function pad(n: number): string {
   return String(n).padStart(2, '0');
 }
@@ -261,7 +269,7 @@ function fmtDayMonthYear(iso: string): string {
   return `${Number(m[3])} ${MONTH_GEN[mo] ?? m[2]} ${m[1]}`;
 }
 
-function fmtDayMonth(iso: string): string {
+export function fmtDayMonth(iso: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!m?.[1] || !m[2] || !m[3]) return iso;
   const mo = Number(m[2]) - 1;
@@ -381,43 +389,6 @@ export function periodBounds(
     prevEnd: toIso(new Date(y - 1, 11, 31)),
     label: String(y),
   };
-}
-
-export function yearsFromRows(rows: { tdate: string }[], now = new Date()): number[] {
-  const set = new Set<number>([now.getFullYear()]);
-  for (const r of rows) {
-    const y = Number((r.tdate || '').slice(0, 4));
-    if (y >= 2000 && y <= 2100) set.add(y);
-  }
-  return [...set].sort((a, b) => b - a);
-}
-
-export interface WeekOption {
-  mon: string;
-  sun: string;
-  label: string;
-}
-
-export function weeksOfMonth(year: number, month: number): WeekOption[] {
-  const first = new Date(year, month - 1, 1);
-  const last = new Date(year, month, 0);
-  let mon = startOfWeekMon(first);
-  const out: WeekOption[] = [];
-  for (let i = 0; i < 6; i++) {
-    const sun = addDays(mon, 6);
-    if (sun >= first && mon <= last) {
-      const monIso = toIso(mon);
-      const sunIso = toIso(sun);
-      out.push({
-        mon: monIso,
-        sun: sunIso,
-        label: `${fmtDayMonth(monIso)} – ${fmtDayMonth(sunIso)}`.replace(/\s+/g, ' ').trim(),
-      });
-    }
-    mon = addDays(mon, 7);
-    if (mon > last) break;
-  }
-  return out;
 }
 
 function inRange(tdate: string, start: string, end: string): boolean {
@@ -580,6 +551,8 @@ function byVehicleType(rows: TransportKpiRow[]): VehicleTypeStat[] {
   }
   const den = totalFact || 1;
   return [...map.entries()]
+    // Только план без факта (ещё не выполнено) — юзер 2026-08-02: «в факте не показываем».
+    .filter(([, v]) => v.fact > 0)
     .map(([type, v]) => ({
       type,
       works: v.works,
@@ -608,6 +581,8 @@ function driverStats(
   }
   const den = totalFactHours || 1;
   return [...map.entries()]
+    // Только план без факта (ещё не выполнено) — юзер 2026-08-02: «в факте не показываем».
+    .filter(([, v]) => v.factHours > 0)
     .map(([fio, v]) => ({
       fio,
       phone: v.phone,
@@ -639,6 +614,8 @@ export function computeTransportKpis(
   } else if (opts.includedWorks && opts.includedWorks.size === 0) {
     cur = [];
   }
+  // Пустые строки (нет ни плана, ни факта) не считаем «машиной в этом дне».
+  cur = cur.filter(rowHasActivity);
 
   let periodLabel: string;
   let chartRange: AnalyticsRange = range;
@@ -757,6 +734,52 @@ export function daysOfYear(year: number): string[] {
   return out;
 }
 
+/**
+ * Зерно графика — не кнопка, а вывод из формы выбранных дней (юзер 2026-08-02:
+ * «зерно графика убираем, в календаре уже настроено»):
+ *  · есть хоть один НЕполный месяц → по дням (сравнивать нечего/дни вперемешку);
+ *  · один полный месяц → по дням (сравнивать не с чем);
+ *  · 2+ полных месяца, из них год целиком → по месяцам (год разбит на месяцы);
+ *  · 2+ полных месяца, ровно целые кварталы → по кварталам;
+ *  · 2+ полных месяца иначе → по месяцам.
+ */
+export function inferChartGrain(days: ReadonlySet<string>): PeriodGrain {
+  if (days.size === 0) return 'day';
+  const countByMonth = new Map<string, number>();
+  for (const d of days) {
+    const ym = d.slice(0, 7);
+    countByMonth.set(ym, (countByMonth.get(ym) ?? 0) + 1);
+  }
+  const wholeMonths: string[] = [];
+  for (const [ym, count] of countByMonth) {
+    const y = Number(ym.slice(0, 4));
+    const m = Number(ym.slice(5, 7));
+    if (count !== daysOfMonth(y, m).length) return 'day';
+    wholeMonths.push(ym);
+  }
+  if (wholeMonths.length <= 1) return 'day';
+
+  const monthsByYear = new Map<string, Set<number>>();
+  for (const ym of wholeMonths) {
+    const y = ym.slice(0, 4);
+    const m = Number(ym.slice(5, 7));
+    (monthsByYear.get(y) ?? monthsByYear.set(y, new Set()).get(y)!).add(m);
+  }
+  for (const months of monthsByYear.values()) {
+    if (months.size === 12) return 'month';
+  }
+
+  const quarterOf = (m: number): number => Math.floor((m - 1) / 3) + 1;
+  for (const months of monthsByYear.values()) {
+    for (const m of months) {
+      const q = quarterOf(m);
+      const qMonths = [1, 2, 3].map((i) => (q - 1) * 3 + i);
+      if (!qMonths.every((qm) => months.has(qm))) return 'month';
+    }
+  }
+  return 'quarter';
+}
+
 /** Дни недели (пн–вс), monIso = понедельник. */
 export function daysOfWeekFromMon(monIso: string): string[] {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(monIso)) return [];
@@ -769,6 +792,23 @@ export function daysOfWeekFromMon(monIso: string): string[] {
 /** Текущий месяц целиком (по умолчанию для дашборда). */
 export function defaultPeriodDays(now = new Date()): string[] {
   return daysOfMonth(now.getFullYear(), now.getMonth() + 1);
+}
+
+/**
+ * Ближайший день с реальными данными (юзер 2026-08-02: «самый актуальный день по
+ * стандарту» — если сегодня 2-е число, а машин нет, показать 3-е). Идём вперёд/назад
+ * от `from` по одному дню; при равном расстоянии — вперёд (в будущее) побеждает.
+ */
+export function nearestDataDay(dataDays: ReadonlySet<string>, from: string, maxScan = 120): string | null {
+  if (dataDays.has(from)) return from;
+  const base = new Date(from + 'T12:00:00');
+  for (let i = 1; i <= maxScan; i += 1) {
+    const fwd = toIso(addDays(base, i));
+    if (dataDays.has(fwd)) return fwd;
+    const back = toIso(addDays(base, -i));
+    if (dataDays.has(back)) return back;
+  }
+  return null;
 }
 
 /** Подпись периода из набора дней. */
@@ -799,9 +839,11 @@ export function grainBucketKey(tdate: string, grain: PeriodGrain): string {
 
 export function grainBucketLabel(key: string, grain: PeriodGrain): string {
   if (grain === 'day') {
+    // Юзер 2026-08-02: под осью — голое число дня (без ведущих нулей, без месяца);
+    // месяц(ы) читаются по group-полосе (monthGroupsFromDayKeys) под осью.
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
     if (!m?.[1] || !m[2] || !m[3]) return key;
-    return `${Number(m[3])}.${m[2]}`;
+    return `${Number(m[3])}`;
   }
   if (grain === 'week') {
     const mon = key;

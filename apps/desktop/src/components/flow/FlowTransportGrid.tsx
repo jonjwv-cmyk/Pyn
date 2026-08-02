@@ -11,7 +11,7 @@ import {
   type Item,
   type Theme,
 } from '@glideapps/glide-data-grid';
-import { ChevronLeft, ChevronRight, ClipboardPaste, History, Plus, Printer, Redo2, RefreshCw, Trash2, Undo2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ClipboardPaste, History, Plus, Printer, Redo2, RefreshCw, Trash2, Truck, Undo2 } from 'lucide-react';
 import '@glideapps/glide-data-grid/dist/index.css';
 import * as Popover from '@radix-ui/react-popover';
 import { FLOW_GRID_THEME } from './flow-grid-theme';
@@ -449,7 +449,7 @@ function whKey(code: string): string {
   return m ? `${m[1]}0` : s; // 824Т → «8240» < «8024»? нет: «8240» > «8024». Нужен спец-ключ:
 }
 /** Сравнение складов: по числу, Т-код раньше обычного того же куста (824Т → 8024). */
-function cmpWh(a: string, b: string): number {
+export function cmpWh(a: string, b: string): number {
   const norm = (x: string) => x.trim().toUpperCase().replace(/T/g, 'Т');
   const A = norm(a);
   const B = norm(b);
@@ -2769,8 +2769,9 @@ export function FlowDayMultiPicker({
  * РЕЙС — история машины за день из ОТЧЁТА: по зафиксированным поставкам с
  * ID == гаражный №: экспедиторы + склады ОТ/СП (план и факт). Склад зелёный,
  * если ХОТЬ ОДНА его поставка «увезли»; серый — всё отменено/не увезено.
+ * Экспорт: Grok-разнарядка (иконка машины, не история ячеек).
  */
-function TransportTripCard({
+export function TransportTripCard({
   row,
   x,
   y,
@@ -2839,13 +2840,15 @@ function TransportTripCard({
 
   return (
     <>
-      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="fixed inset-0 z-40 bg-black/25" onClick={onClose} />
       <div
-        className="fixed z-50 w-[280px] -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-surface p-3 shadow-xl"
-        style={{ left: x, top: y + 4 }}
+        className="fixed z-50 w-[min(320px,calc(100vw-24px))] -translate-x-1/2 rounded-xl border border-border-subtle bg-bg-surface p-3.5 shadow-2xl"
+        style={{ left: x, top: Math.max(12, y + 4) }}
+        role="dialog"
+        aria-label="Рейс машины"
       >
         <div className="flex items-center gap-1.5 text-[12px] font-medium text-text-strong">
-          <History size={13} strokeWidth={1.75} className="text-accent-clay" />
+          <Truck size={14} strokeWidth={1.75} className="text-accent-clay" />
           Машина {row.garage_no} · {fmtDay(row.tdate)}
         </div>
         {(row.fact_start || row.fact_end) && (

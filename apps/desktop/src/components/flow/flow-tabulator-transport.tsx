@@ -33,10 +33,12 @@ import {
   TransportTimeModal,
   VehicleSpecCard,
 } from './FlowTransportGrid';
+import { FlowTransportPrint } from './FlowTransportPrint';
+import { TransportMachineSheet } from './TransportMachineSheet';
 import { PynCalendar } from '@/components/pyn-table/PynCalendar';
 import { FlowDriverPickPopover } from './flow-driver-pick-popover';
 import { shouldShowTimeBold } from './flow-transport-shift';
-import { formatMonthRu } from './flow-transport-kpi';
+import { formatMonthRu, nearestDataDay, rowHasActivity } from './flow-transport-kpi';
 import { BODY_TYPES } from './flow-body-types';
 import * as Popover from '@radix-ui/react-popover';
 import { api } from '@/lib/api';
@@ -45,7 +47,6 @@ import { useProdCalendarStore } from '@/lib/prod-calendar';
 import { usePersonsStore } from '@/lib/persons-store';
 import { initPersons } from '@/lib/persons-repo';
 import { formatMobilePhone, molStatusKind } from '@/lib/mol-format';
-import { downloadXlsx, type XlsxSheet } from '@/lib/xlsx-lite';
 import { FlowColumnsMenu, type FlowColumnToggle } from './FlowColumnsMenu';
 import { FlowViewSwitch } from './FlowViewSwitch';
 import type { FlowViewMode } from './flow-view';
@@ -56,8 +57,9 @@ import {
   Palette,
   PaintBucket,
   Printer,
-  FileSpreadsheet,
+  FileDown,
   History,
+  Truck,
   Plus,
   Trash2,
   ClipboardPaste,
@@ -66,6 +68,9 @@ import {
   ChevronUp,
   PanelLeftClose,
   PanelLeftOpen,
+  Bell,
+  Copy,
+  CalendarDays,
 } from 'lucide-react';
 
 /**
@@ -561,7 +566,27 @@ export function FlowTabulatorTransport({
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState('');
+  // Лог сообщений (юзер 2026-08-02: инлайн-текст между панелями ломал раскладку кнопок) —
+  // вместо растущего текста копим историю, кнопка открывает поповер со списком + копированием.
+  const msgIdRef = useRef(0);
+  const [msgLog, setMsgLog] = useState<{ id: number; text: string; ts: number }[]>([]);
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [msgFlash, setMsgFlash] = useState(false);
+  const msgLogRef = useRef<HTMLDivElement | null>(null);
+  const setMsg = useCallback((text: string) => {
+    if (!text) return;
+    msgIdRef.current += 1;
+    setMsgLog((log) => [{ id: msgIdRef.current, text, ts: Date.now() }, ...log].slice(0, 40));
+    setMsgFlash(true);
+  }, []);
+  useEffect(() => {
+    if (!msgOpen) return;
+    const onDown = (e: MouseEvent): void => {
+      if (msgLogRef.current && !msgLogRef.current.contains(e.target as Node)) setMsgOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [msgOpen]);
   const [historyPanel, setHistoryPanel] = useState<{ rowId: number; field: string } | 'all' | null>(null);
   const [historyTick, setHistoryTick] = useState(0);
   /** Серверная история конкретной ячейки (право-клик) — «как в Google», переживает рестарт/видна всем. */
@@ -602,7 +627,24 @@ export function FlowTabulatorTransport({
   const [monthScope, setMonthScope] = useState<string | null>(null);
   const [dayPickerOpen, setDayPickerOpen] = useState(false);
   const currentMonthPrefix = useMemo(() => new Date().toISOString().slice(0, 7), []);
-  const allDaysSet = useMemo(() => new Set(allRows.map((r) => r.tdate)), [allRows]);
+  // Только дни с реальным планом/фактом (юзер 2026-08-02: пустые строки без времени
+  // не должны подсвечиваться как «есть машина»).
+  const allDaysSet = useMemo(
+    () => new Set(allRows.filter(rowHasActivity).map((r) => r.tdate).filter(Boolean)),
+    [allRows],
+  );
+  // По умолчанию — самый актуальный день, а не весь текущий месяц (юзер 2026-08-02:
+  // «если 2-е число, а машин нет, покажет 3-е»). Один раз, после первой загрузки строк;
+  // выбор юзера дальше не трогаем.
+  const smartDefaultRef = useRef(false);
+  useEffect(() => {
+    if (smartDefaultRef.current || allRows.length === 0) return;
+    smartDefaultRef.current = true;
+    const n = new Date();
+    const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+    const d = nearestDataDay(allDaysSet, today);
+    if (d) setDaySel(new Set([d]));
+  }, [allRows.length, allDaysSet]);
   const prodCalByYear = useProdCalendarStore((st) => st.byYear);
   const persons = usePersonsStore((s) => s.persons);
   useEffect(() => {
@@ -2022,23 +2064,162 @@ export function FlowTabulatorTransport({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handlePrint = useCallback(() => {
-    tableRef.current?.print('all', true);
+  /** Печать | PDF — отдельные поповеры календаря (без превью). */
+  const [printOpen, setPrintOpen] = useState(false);
+  const [pdfOpen, setPdfOpen] = useState(false);
+  const [printSel, setPrintSel] = useState<Set<string>>(() => new Set());
+  const [printDok, setPrintDok] = useState(false);
+  const [printOkalina, setPrintOkalina] = useState(false);
+  /** Silent print job: без превью — сразу dialog | save PDF. id = каждый запуск заново. */
+  const [printJob, setPrintJob] = useState<{
+    id: number;
+    days: string[];
+    mode: 'dialog' | 'save';
+  } | null>(null);
+  const printJobSeq = useRef(0);
+  /** Сводка по машине (Блок 3-style) — не история правок. */
+  const [machineSheet, setMachineSheet] = useState<FlowTransportRow | null>(null);
+
+  const preparePrintSel = useCallback(() => {
+    // Подхватить текущий фильтр дней; иначе дни таблицы / месяц-скоуп.
+    if (daySel.size > 0) {
+      setPrintSel(new Set(daySel));
+      return;
+    }
+    const days = new Set<string>();
+    for (const r of allRows) {
+      if (r.tdate) days.add(r.tdate);
+    }
+    if (monthScope) {
+      setPrintSel(new Set([...days].filter((d) => d.startsWith(monthScope))));
+    } else {
+      setPrintSel(days);
+    }
+  }, [daySel, allRows, monthScope]);
+
+  const openPrintPicker = useCallback(() => {
+    preparePrintSel();
+    setPdfOpen(false);
+    setPrintOpen(true);
+  }, [preparePrintSel]);
+
+  const openPdfPicker = useCallback(() => {
+    preparePrintSel();
+    setPrintOpen(false);
+    setPdfOpen(true);
+  }, [preparePrintSel]);
+
+  const launchPrint = useCallback(
+    (mode: 'dialog' | 'save') => {
+      if (printSel.size === 0) {
+        setMsg('Выберите дни');
+        return;
+      }
+      setPrintOpen(false);
+      setPdfOpen(false);
+      // Сначала снять прошлый job (если завис), затем новый id → remount silent print.
+      printJobSeq.current += 1;
+      const id = printJobSeq.current;
+      setPrintJob(null);
+      requestAnimationFrame(() => {
+        setPrintJob({ id, days: [...printSel].sort(), mode });
+      });
+    },
+    [printSel],
+  );
+
+  const printFooter = (mode: 'dialog' | 'save') => (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-white/10 pt-2">
+      <button
+        type="button"
+        onClick={() => setPrintDok((v) => !v)}
+        className={`rounded-md border px-2 py-1 text-[11px] ${
+          printDok
+            ? 'border-[#d97757]/50 bg-[#d97757]/15 text-[#e8a48a]'
+            : 'border-white/15 text-zinc-400 hover:text-zinc-200'
+        }`}
+        title="Включить работы ДОК (6.x)"
+      >
+        ДОК
+      </button>
+      <button
+        type="button"
+        onClick={() => setPrintOkalina((v) => !v)}
+        className={`rounded-md border px-2 py-1 text-[11px] ${
+          printOkalina
+            ? 'border-[#d97757]/50 bg-[#d97757]/15 text-[#e8a48a]'
+            : 'border-white/15 text-zinc-400 hover:text-zinc-200'
+        }`}
+        title="Включить работы ОКАЛИНА (8.x)"
+      >
+        ОКАЛИНА
+      </button>
+      <button
+        type="button"
+        disabled={printSel.size === 0}
+        onClick={() => launchPrint(mode)}
+        className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-[#d97757]/50 bg-[#d97757]/20 px-2.5 text-[11.5px] font-medium text-[#e8a48a] disabled:opacity-40"
+      >
+        {mode === 'dialog' ? (
+          <>
+            <Printer size={12} strokeWidth={1.75} />
+            Печать
+          </>
+        ) : (
+          <>
+            <FileDown size={12} strokeWidth={1.75} />
+            Скачать
+          </>
+        )}
+      </button>
+    </div>
+  );
+
+  const rowToTransport = useCallback((r: Row): FlowTransportRow => {
+    return {
+      id: r.id,
+      tdate: r.tdate,
+      order_no: r.order_no,
+      status: r.status,
+      work: r.work,
+      vehicle_type: r.vehicle_type,
+      time_range: r.time_range,
+      time_bold: r.time_bold,
+      fact_start: r.fact_start,
+      fact_end: r.fact_end,
+      force_json: r.force_json || '[]',
+      garage_no: r.garage_no,
+      out_status: r.out_status,
+      driver: r.driver,
+      driver_phone: r.driver_phone,
+      no_exp_status: r.no_exp ? 'ДА' : '',
+      comment: r.comment,
+      expeditors: '',
+      ot: '',
+      sp: '',
+      row_version: r.row_version,
+      created_by: '',
+      created_at: '',
+    } as FlowTransportRow;
   }, []);
 
-  const handleExportXlsx = useCallback(() => {
-    const table = tableRef.current;
-    if (!table) return;
-    const cols = table
-      .getColumnDefinitions()
-      .filter((c) => c.field && c.field !== '_statusRank' && c.field !== '_workRank' && c.field !== '_canonSort');
-    const visibleRows = table.getData('active') as Row[];
-    const header = cols.map((c) => c.title ?? '');
-    const body = visibleRows.map((r) => cols.map((c) => String((r as unknown as Record<string, unknown>)[c.field ?? ''] ?? '')));
-    downloadXlsx(`Транспорт_${new Date().toISOString().slice(0, 10)}.xlsx`, [
-      { name: 'Транспорт', rows: [header, ...body], autoFilter: true, freezeTop: true },
-    ] as XlsxSheet[]);
-  }, []);
+  const handleMachineTrip = useCallback(() => {
+    const rowId = getFocusedRowId();
+    if (rowId == null) {
+      setMsg('Встаньте на строку машины');
+      return;
+    }
+    const row = rowsByIdRef.current.get(rowId);
+    if (!row) {
+      setMsg('Строка не найдена');
+      return;
+    }
+    if (!(row.garage_no || '').trim()) {
+      setMsg('У строки нет гаражного №');
+      return;
+    }
+    setMachineSheet(rowToTransport(row));
+  }, [getFocusedRowId, rowToTransport]);
 
   const handleAddRow = useCallback(async () => {
     // День «где сидим» (фокус) → иначе верх видимого списка (multi) / фильтр дня.
@@ -2288,19 +2469,20 @@ export function FlowTabulatorTransport({
             <Popover.Trigger asChild>
               <button
                 type="button"
-                title="Дни / месяц (как в Glide: текущий месяц или выбор дней)"
-                className="flow-tab-tool-btn max-w-[200px] truncate px-2"
+                title={
+                  daySel.size > 0
+                    ? daySel.size === 1
+                      ? fmtDate([...daySel][0] ?? '')
+                      : fmtDaysSummary([...daySel])
+                    : monthScope
+                      ? formatMonthRu(monthScope)
+                      : 'Текущий месяц'
+                }
+                className="flow-tab-tool-btn px-2"
                 data-active={daySel.size > 0 || monthScope ? 'true' : 'false'}
               >
-                {daySel.size > 0
-                  ? daySel.size === 1
-                    ? fmtDate([...daySel][0] ?? '')
-                    : daySel.size <= 4
-                      ? fmtDaysSummary([...daySel])
-                      : `${daySel.size} дней`
-                  : monthScope
-                    ? formatMonthRu(monthScope)
-                    : 'Текущий месяц'}
+                <CalendarDays size={14} strokeWidth={1.75} />
+                Календарь
               </button>
             </Popover.Trigger>
             <Popover.Portal>
@@ -2313,12 +2495,16 @@ export function FlowTabulatorTransport({
                     setDaySel(next);
                     setMonthScope(null);
                   }}
-                  onSelectMonth={(ym) => {
-                    setDaySel(new Set());
-                    setMonthScope(ym);
-                  }}
                   onReset={() => {
                     setDaySel(new Set());
+                    setMonthScope(null);
+                  }}
+                  primaryActionLabel="Последнее"
+                  onPrimaryAction={() => {
+                    const n = new Date();
+                    const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+                    const d = nearestDataDay(allDaysSet, today) ?? today;
+                    setDaySel(new Set([d]));
                     setMonthScope(null);
                   }}
                 />
@@ -2374,9 +2560,45 @@ export function FlowTabulatorTransport({
             }}
           />
         </div>
-        {msg && (
-          <span className={`min-w-0 max-w-[240px] truncate text-[11px] ${isGrok ? 'text-zinc-500' : 'text-[#6B6862]'}`}>{msg}</span>
-        )}
+        {/* Сообщения об операциях — не инлайн-текст (ломал раскладку кнопок, юзер 2026-08-02),
+            а история в поповере: список + копирование по клику. */}
+        <div className="relative flex shrink-0" ref={msgLogRef}>
+          <button
+            type="button"
+            onClick={() => { setMsgOpen((o) => !o); setMsgFlash(false); }}
+            title="История сообщений"
+            className={`flow-tab-tool-btn ${msgFlash ? 'border-danger/50 text-danger' : ''}`}
+          >
+            <Bell size={14} strokeWidth={1.75} />
+            {msgLog.length > 0 && <span className="tabular-nums">{msgLog.length}</span>}
+          </button>
+          {msgOpen && (
+            <div className="absolute left-0 top-7 z-50 max-h-[320px] w-[340px] overflow-y-auto rounded-lg border border-border-subtle bg-bg-surface p-1.5 shadow-lg">
+              {msgLog.length === 0 ? (
+                <div className="px-2 py-3 text-center text-[11px] text-zinc-500">Пока пусто</div>
+              ) : (
+                msgLog.map((m) => (
+                  <div
+                    key={m.id}
+                    className="group flex items-start gap-1.5 rounded-md px-1.5 py-1 hover:bg-black/[0.03]"
+                  >
+                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[11px] leading-snug text-[#3F3D38]">
+                      {m.text}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void navigator.clipboard.writeText(m.text)}
+                      title="Скопировать"
+                      className="shrink-0 rounded p-0.5 text-[#9B9890] opacity-0 transition-opacity hover:text-[#0A0A0A] group-hover:opacity-100"
+                    >
+                      <Copy size={12} strokeWidth={1.75} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
         <div className="flow-tab-toolbar ml-auto flex shrink-0 items-center gap-0.5 p-0.5">
           <button type="button" title="Вставить из буфера (1С/шаблон)" className="flow-tab-tool-btn" disabled={busy} onClick={handlePasteBuffer}>
             <ClipboardPaste size={14} strokeWidth={1.75} />
@@ -2407,15 +2629,106 @@ export function FlowTabulatorTransport({
             <PaintBucket size={14} strokeWidth={1.75} />
           </button>
           <span className={`mx-0.5 h-4 w-px ${isGrok ? 'bg-white/10' : 'bg-black/10'}`} />
-          <button type="button" title="Печать" className="flow-tab-tool-btn" onClick={handlePrint}>
-            <Printer size={14} strokeWidth={1.75} />
-          </button>
-          <button type="button" title="Скачать .xlsx" className="flow-tab-tool-btn" onClick={handleExportXlsx}>
-            <FileSpreadsheet size={14} strokeWidth={1.75} />
+          {/* Печать: календарь → только «Печать» */}
+          <Popover.Root
+            open={printOpen}
+            onOpenChange={(o) => {
+              setPrintOpen(o);
+              if (o) {
+                setPdfOpen(false);
+                preparePrintSel();
+              }
+            }}
+          >
+            <Popover.Trigger asChild>
+              <button
+                type="button"
+                title="Печать разнарядки"
+                className="flow-tab-tool-btn"
+                data-active={printOpen ? 'true' : 'false'}
+              >
+                <Printer size={14} strokeWidth={1.75} />
+              </button>
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Content align="end" sideOffset={8} className="pyn-popover z-50 w-[300px] p-3">
+                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                  Печать
+                </div>
+                <PynCalendar
+                  selected={printSel}
+                  onChange={setPrintSel}
+                  dataDays={allDaysSet}
+                  onReset={() => setPrintSel(new Set())}
+                  resetEnabled={printSel.size > 0}
+                  primaryActionLabel="Последнее"
+                  onPrimaryAction={() => {
+                    const n = new Date();
+                    const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+                    const d = nearestDataDay(allDaysSet, today) ?? today;
+                    setPrintSel(new Set([d]));
+                  }}
+                />
+                {printFooter('dialog')}
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
+          {/* PDF: календарь → ДОК · ОКАЛИНА · Скачать */}
+          <Popover.Root
+            open={pdfOpen}
+            onOpenChange={(o) => {
+              setPdfOpen(o);
+              if (o) {
+                setPrintOpen(false);
+                preparePrintSel();
+              }
+            }}
+          >
+            <Popover.Trigger asChild>
+              <button
+                type="button"
+                title="Скачать PDF"
+                className="flow-tab-tool-btn"
+                data-active={pdfOpen ? 'true' : 'false'}
+              >
+                <FileDown size={14} strokeWidth={1.75} />
+              </button>
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Content align="end" sideOffset={8} className="pyn-popover z-50 w-[300px] p-3">
+                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                  Скачать PDF
+                </div>
+                <PynCalendar
+                  selected={printSel}
+                  onChange={setPrintSel}
+                  dataDays={allDaysSet}
+                  onReset={() => setPrintSel(new Set())}
+                  resetEnabled={printSel.size > 0}
+                  primaryActionLabel="Последнее"
+                  onPrimaryAction={() => {
+                    const n = new Date();
+                    const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+                    const d = nearestDataDay(allDaysSet, today) ?? today;
+                    setPrintSel(new Set([d]));
+                  }}
+                />
+                {printFooter('save')}
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
+          <button
+            type="button"
+            title="Сводка по машине (рейс · склады · экспедиторы)"
+            className="flow-tab-tool-btn"
+            data-active={machineSheet ? 'true' : 'false'}
+            onClick={handleMachineTrip}
+          >
+            <Truck size={14} strokeWidth={1.75} />
           </button>
           <button
             type="button"
-            title="История выделенной строки"
+            title="История правок ячейки / строки"
             className="flow-tab-tool-btn"
             data-active={historyPanel && historyPanel !== 'all' ? 'true' : 'false'}
             onClick={() => handleToolbarHistory()}
@@ -2427,6 +2740,37 @@ export function FlowTabulatorTransport({
       <div className="flex min-h-0 min-w-0 flex-1">
         {panelOpen && (
           <div className="flow-tab-panel flex w-64 shrink-0 flex-col gap-3 overflow-y-auto p-2.5">
+            {/* Печать / PDF / машина — боковая панель */}
+            <div className="flex flex-col gap-1.5 rounded-lg border border-white/[0.08] p-2">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
+                Печать
+              </div>
+              <button
+                type="button"
+                className="flow-tab-tool-btn w-full justify-start gap-2 px-2"
+                onClick={() => openPrintPicker()}
+              >
+                <Printer size={14} strokeWidth={1.75} />
+                Печать
+              </button>
+              <button
+                type="button"
+                className="flow-tab-tool-btn w-full justify-start gap-2 px-2"
+                onClick={() => openPdfPicker()}
+              >
+                <FileDown size={14} strokeWidth={1.75} />
+                Скачать PDF
+              </button>
+              <button
+                type="button"
+                className="flow-tab-tool-btn w-full justify-start gap-2 px-2"
+                data-active={machineSheet ? 'true' : 'false'}
+                onClick={handleMachineTrip}
+              >
+                <Truck size={14} strokeWidth={1.75} />
+                Сводка по машине
+              </button>
+            </div>
             <div className="flow-tab-search flex items-center gap-1.5 rounded-md px-2 py-1.5">
               <Search size={13} className="opacity-50" />
               <input
@@ -2803,6 +3147,52 @@ export function FlowTabulatorTransport({
           )}
         </div>
       </div>
+
+      {printJob && (
+        <FlowTransportPrint
+          key={printJob.id}
+          days={printJob.days}
+          autoMode={printJob.mode}
+          rows={allRows
+            .filter((r) => printJob.days.includes(r.tdate))
+            .sort(
+              (a, b) =>
+                (a.tdate || '').localeCompare(b.tdate || '') ||
+                printStatusGroup(a.status) - printStatusGroup(b.status) ||
+                workKey(a.work) - workKey(b.work) ||
+                (a.garage_no || '').localeCompare(b.garage_no || '', 'ru') ||
+                a.id - b.id,
+            )
+            .map(rowToTransport)}
+          vehByGarage={new Map(vehiclesRef.current.map((v) => [v.garage_no, v] as const))}
+          driverByFio={
+            new Map(
+              [...driverByFio.entries()].map(([k, o]) => [
+                k,
+                {
+                  fio: o.fio,
+                  phone: o.phone,
+                  phoneDisplay: formatMobilePhone(o.phone) || o.phone,
+                  position: '',
+                  status: '',
+                  until: '',
+                  color: o.color,
+                  isMol: o.isMol,
+                },
+              ]),
+            )
+          }
+          printDok={printDok}
+          printOkalina={printOkalina}
+          onClose={() => setPrintJob(null)}
+          onAutoDone={(m) => {
+            if (m) setMsg(m);
+          }}
+        />
+      )}
+      {machineSheet && (
+        <TransportMachineSheet row={machineSheet} onClose={() => setMachineSheet(null)} />
+      )}
     </div>
   );
 }

@@ -8,13 +8,13 @@ import type { ApexOptions } from 'apexcharts';
 import {
   computeTransportKpis,
   labelFromSelectedDays,
-  daysOfMonth,
   daysOfQuarter,
   daysOfYear,
-  daysOfWeekFromMon,
   defaultPeriodDays,
-  weeksOfMonth,
-  yearsFromRows,
+  rowHasActivity,
+  nearestDataDay,
+  inferChartGrain,
+  fmtDayMonth,
   type PeriodGrain,
   type TransportKpiRow,
   type VehicleTypeStat,
@@ -22,7 +22,7 @@ import {
   type ChartMonthGroup,
 } from './flow-transport-kpi';
 import * as Popover from '@radix-ui/react-popover';
-import { CalendarDays, Layers, ListChecks, RotateCcw } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, ListChecks } from 'lucide-react';
 import { PynCalendar } from '@/components/pyn-table/PynCalendar';
 import '@/components/pyn-dash/pyn-dash.css';
 import {
@@ -41,32 +41,7 @@ import {
   DashLegDot,
   DashLegSep,
   DashChip,
-  DashSegment,
-  DashSegBtn,
 } from '@/components/pyn-dash';
-
-const MONTHS_SHORT = [
-  'янв',
-  'фев',
-  'мар',
-  'апр',
-  'май',
-  'июн',
-  'июл',
-  'авг',
-  'сен',
-  'окт',
-  'ноя',
-  'дек',
-];
-
-const GRAIN_OPTS: { id: PeriodGrain; label: string; hint: string }[] = [
-  { id: 'day', label: 'Дни', hint: 'Выбор дней → график по дням' },
-  { id: 'week', label: 'Нед.', hint: 'Недели → график по неделям' },
-  { id: 'month', label: 'Мес.', hint: 'Месяцы → график по месяцам' },
-  { id: 'quarter', label: 'Кварт.', hint: 'Кварталы → график по кварталам' },
-  { id: 'year', label: 'Год', hint: 'Год → график по годам' },
-];
 
 function worksWord(n: number): string {
   const a = Math.abs(n) % 100;
@@ -77,270 +52,161 @@ function worksWord(n: number): string {
   return 'работ';
 }
 
-function mergeDays(base: Set<string>, add: string[]): Set<string> {
-  const next = new Set(base);
-  for (const d of add) next.add(d);
-  return next;
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+function isoToday(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 export interface AnalyticsToolbarProps {
   rows: TransportKpiRow[];
-  /** Зерно: как выбираем и как рисуем график. */
-  grain: PeriodGrain;
-  onGrainChange: (g: PeriodGrain) => void;
   /** Выбранные дни YYYY-MM-DD (фильтр строк; всегда дни с машинами в KPI). */
   selectedDays: Set<string>;
   onSelectedDaysChange: (s: Set<string>) => void;
   workFilter: Set<string> | null;
   onWorkFilterChange: (s: Set<string> | null) => void;
   availableWorks: string[];
-  onReset: () => void;
 }
 
 /**
- * Период дашборда:
- *  · зерно (Дни|Нед|Мес|Кварт|Год) — и UI выбора, и бакеты графика
- *  · дни/недели/месяцы… → selectedDays (фильтр строк)
- *  · на графике только периоды, где есть машины
+ * Период дашборда: календарь — какие дни в анализе (клик/протяжка, «Все дни»
+ * тумблер месяца, «Последнее», Год·кварталы); зерно графика выводится из формы
+ * выбора (inferChartGrain), отдельной кнопки для него нет (юзер 2026-08-02).
  */
 export function AnalyticsToolbar({
   rows,
-  grain,
-  onGrainChange,
   selectedDays,
   onSelectedDaysChange,
   workFilter,
   onWorkFilterChange,
   availableWorks,
-  onReset,
 }: AnalyticsToolbarProps): JSX.Element {
   const [pickOpen, setPickOpen] = useState(false);
   const [worksOpen, setWorksOpen] = useState(false);
-  const [blockYear, setBlockYear] = useState(() => new Date().getFullYear());
-  const [weekMonth, setWeekMonth] = useState(() => {
-    const n = new Date();
-    return { y: n.getFullYear(), m: n.getMonth() + 1 };
-  });
+  const [qYear, setQYear] = useState(() => new Date().getFullYear());
 
-  const years = useMemo(() => yearsFromRows(rows), [rows]);
-  const dataDays = useMemo(() => new Set(rows.map((r) => r.tdate).filter(Boolean)), [rows]);
+  // Подсветка «есть данные» — только дни с реальным планом/фактом (юзер 2026-08-02:
+  // пустые строки без времени подсвечивали дни, где машины на деле не было).
+  const dataDays = useMemo(
+    () => new Set(rows.filter(rowHasActivity).map((r) => r.tdate).filter(Boolean)),
+    [rows],
+  );
   const sorted = useMemo(() => [...selectedDays].sort(), [selectedDays]);
   const periodLabel = useMemo(() => labelFromSelectedDays(sorted), [sorted]);
-  const weekOpts = useMemo(() => weeksOfMonth(weekMonth.y, weekMonth.m), [weekMonth.y, weekMonth.m]);
 
   const worksTotal = availableWorks.length;
   const worksOn = workFilter == null ? worksTotal : workFilter.size;
   const worksPartial = workFilter != null && workFilter.size < worksTotal;
 
-  const setOnly = (days: string[]) => {
-    onSelectedDaysChange(new Set(days));
-    setPickOpen(false);
+  /**
+   * Единый календарь (юзер 2026-08-02): один поповер — клик/протяжка по дням это
+   * свои даты, «Все дни» (встроено в PynCalendar) — тумблер открытого месяца,
+   * «Последнее» — ближайший день с данными (не жёстко сегодня). Год·кварталы —
+   * отдельный блок ниже. Какие дни ВЫБРАНЫ и как рисовать график (зерно, отдельным
+   * переключателем в тулбаре) — не связаны: юзер решает и то, и то, независимо.
+   */
+  const quarterDays = (q: 1 | 2 | 3 | 4): string[] => daysOfQuarter(qYear, q);
+  const quarterOn = (q: 1 | 2 | 3 | 4): boolean => {
+    const d = quarterDays(q);
+    return d.length > 0 && d.every((x) => selectedDays.has(x));
+  };
+  const toggleQuarter = (q: 1 | 2 | 3 | 4): void => {
+    const d = quarterDays(q);
+    const next = new Set(selectedDays);
+    if (quarterOn(q)) {
+      for (const x of d) next.delete(x);
+    } else {
+      for (const x of d) next.add(x);
+    }
+    onSelectedDaysChange(next);
+  };
+  const yearOn = ([1, 2, 3, 4] as const).every((q) => quarterOn(q));
+  // Подсветка года в шаге-степпере (юзер 2026-08-02): «иначе не видно визуально,
+  // что кликнули» — листаем годы стрелками, а какие уже что-то содержат — видно.
+  const yearHasSelection = daysOfYear(qYear).some((d) => selectedDays.has(d));
+  const toggleYear = (): void => {
+    const days = daysOfYear(qYear);
+    if (yearOn) {
+      const next = new Set(selectedDays);
+      for (const d of days) next.delete(d);
+      onSelectedDaysChange(next);
+    } else {
+      onSelectedDaysChange(new Set([...selectedDays, ...days]));
+    }
   };
 
   return (
     <>
-      <DashSegment scroll aria-label="Зерно периода">
-        {GRAIN_OPTS.map((o) => (
-          <DashSegBtn
-            key={o.id}
-            active={grain === o.id}
-            title={o.hint}
-            onClick={() => {
-              onGrainChange(o.id);
-              setPickOpen(true);
-            }}
-          >
-            {o.label}
-          </DashSegBtn>
-        ))}
-      </DashSegment>
-
       <Popover.Root open={pickOpen} onOpenChange={setPickOpen}>
         <Popover.Trigger asChild>
           <button
             type="button"
-            className="flow-tab-tool-btn max-w-[240px] truncate px-2"
+            className="flow-tab-tool-btn px-2"
             data-active="true"
-            title="Выбор периода"
+            title={periodLabel}
           >
-            {grain === 'day' ? <CalendarDays size={14} strokeWidth={1.75} /> : <Layers size={14} strokeWidth={1.75} />}
-            <span className="truncate">{periodLabel}</span>
+            <CalendarDays size={14} strokeWidth={1.75} />
+            Календарь
           </button>
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Content align="start" sideOffset={8} className="pyn-popover z-50 w-[300px] p-3">
-            {grain === 'day' && (
-              <>
-                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Дни · график по дням (только с машинами)
+            <PynCalendar
+              selected={selectedDays}
+              onChange={onSelectedDaysChange}
+              dataDays={dataDays}
+              onReset={() => onSelectedDaysChange(new Set())}
+              resetEnabled={selectedDays.size > 0}
+              primaryActionLabel="Последнее"
+              onPrimaryAction={() => {
+                const d = nearestDataDay(dataDays, isoToday()) ?? isoToday();
+                onSelectedDaysChange(new Set([d]));
+              }}
+            />
+            <div className="mt-2 border-t border-white/10 pt-2">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                  Год · кварталы
                 </div>
-                <PynCalendar
-                  selected={selectedDays}
-                  onChange={onSelectedDaysChange}
-                  dataDays={dataDays}
-                  onSelectMonth={(ym) => {
-                    const y = Number(ym.slice(0, 4));
-                    const m = Number(ym.slice(5, 7));
-                    onSelectedDaysChange(new Set(daysOfMonth(y, m)));
-                  }}
-                  onReset={() => onSelectedDaysChange(new Set())}
-                  resetEnabled={selectedDays.size > 0}
-                />
-              </>
-            )}
-
-            {grain === 'week' && (
-              <>
-                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Недели · график по неделям
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    className="flex h-5 w-5 items-center justify-center rounded text-zinc-500 hover:text-zinc-200"
+                    onClick={() => setQYear((y) => y - 1)}
+                    aria-label="Предыдущий год"
+                  >
+                    <ChevronLeft size={13} strokeWidth={1.75} />
+                  </button>
+                  <span
+                    className={`w-9 text-center text-[11px] tabular-nums ${
+                      yearHasSelection ? 'font-semibold text-[#e8a48a]' : 'text-zinc-300'
+                    }`}
+                  >
+                    {qYear}
+                  </span>
+                  <button
+                    type="button"
+                    className="flex h-5 w-5 items-center justify-center rounded text-zinc-500 hover:text-zinc-200"
+                    onClick={() => setQYear((y) => y + 1)}
+                    aria-label="Следующий год"
+                  >
+                    <ChevronRight size={13} strokeWidth={1.75} />
+                  </button>
                 </div>
-                <div className="mb-2 text-[10.5px] font-medium text-zinc-500">Месяц для списка недель</div>
-                <div className="mb-2 flex flex-wrap gap-1">
-                  {(years.length ? years : [weekMonth.y]).map((y) => (
-                    <DashChip key={y} active={weekMonth.y === y} onClick={() => setWeekMonth((p) => ({ ...p, y }))}>
-                      {y}
-                    </DashChip>
-                  ))}
-                </div>
-                <div className="mb-2 flex flex-wrap gap-1">
-                  {MONTHS_SHORT.map((name, i) => (
-                    <DashChip
-                      key={name}
-                      active={weekMonth.m === i + 1}
-                      onClick={() => setWeekMonth((p) => ({ ...p, m: i + 1 }))}
-                    >
-                      {name}
-                    </DashChip>
-                  ))}
-                </div>
-                <div className="flex flex-col gap-1">
-                  {weekOpts.map((w, idx) => {
-                    const weekDays = daysOfWeekFromMon(w.mon);
-                    const allOn = weekDays.length > 0 && weekDays.every((d) => selectedDays.has(d));
-                    return (
-                      <DashChip
-                        key={w.mon}
-                        active={allOn}
-                        onClick={() => {
-                          if (allOn) {
-                            const next = new Set(selectedDays);
-                            for (const d of weekDays) next.delete(d);
-                            onSelectedDaysChange(next);
-                          } else {
-                            onSelectedDaysChange(mergeDays(selectedDays, weekDays));
-                          }
-                        }}
-                      >
-                        Нед. {idx + 1} · {w.label}
-                      </DashChip>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-
-            {grain === 'month' && (
-              <>
-                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Месяцы · график по месяцам
-                </div>
-                <div className="mb-2 text-[10.5px] font-medium text-zinc-500">Год</div>
-                <div className="mb-2 flex flex-wrap gap-1">
-                  {(years.length ? years : [blockYear]).map((y) => (
-                    <DashChip key={y} active={blockYear === y} onClick={() => setBlockYear(y)}>
-                      {y}
-                    </DashChip>
-                  ))}
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {MONTHS_SHORT.map((name, i) => {
-                    const days = daysOfMonth(blockYear, i + 1);
-                    const allOn = days.every((d) => selectedDays.has(d));
-                    return (
-                      <DashChip
-                        key={name}
-                        active={allOn}
-                        onClick={() => {
-                          if (allOn) {
-                            const next = new Set(selectedDays);
-                            for (const d of days) next.delete(d);
-                            onSelectedDaysChange(next);
-                          } else {
-                            onSelectedDaysChange(mergeDays(selectedDays, days));
-                          }
-                        }}
-                      >
-                        {name}
-                      </DashChip>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-
-            {grain === 'quarter' && (
-              <>
-                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Кварталы · график по кварталам
-                </div>
-                <div className="mb-2 flex flex-wrap gap-1">
-                  {(years.length ? years : [blockYear]).map((y) => (
-                    <DashChip key={y} active={blockYear === y} onClick={() => setBlockYear(y)}>
-                      {y}
-                    </DashChip>
-                  ))}
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {([1, 2, 3, 4] as const).map((q) => {
-                    const days = daysOfQuarter(blockYear, q);
-                    const allOn = days.every((d) => selectedDays.has(d));
-                    return (
-                      <DashChip
-                        key={q}
-                        active={allOn}
-                        onClick={() => {
-                          if (allOn) {
-                            const next = new Set(selectedDays);
-                            for (const d of days) next.delete(d);
-                            onSelectedDaysChange(next);
-                          } else {
-                            onSelectedDaysChange(mergeDays(selectedDays, days));
-                          }
-                        }}
-                      >
-                        Q{q}
-                      </DashChip>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-
-            {grain === 'year' && (
-              <>
-                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Год · график по годам
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {(years.length ? years : [blockYear]).map((y) => {
-                    const days = daysOfYear(y);
-                    const allOn = days.length > 0 && days.every((d) => selectedDays.has(d));
-                    return (
-                      <DashChip
-                        key={y}
-                        active={allOn}
-                        onClick={() => {
-                          if (allOn) onSelectedDaysChange(new Set());
-                          else setOnly(days);
-                        }}
-                      >
-                        {y}
-                      </DashChip>
-                    );
-                  })}
-                </div>
-              </>
-            )}
+              </div>
+              <div className="flex flex-wrap gap-1">
+                <DashChip active={yearOn} onClick={toggleYear}>
+                  Весь год
+                </DashChip>
+                {([1, 2, 3, 4] as const).map((q) => (
+                  <DashChip key={q} active={quarterOn(q)} onClick={() => toggleQuarter(q)}>
+                    Q{q}
+                  </DashChip>
+                ))}
+              </div>
+            </div>
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
@@ -414,10 +280,6 @@ export function AnalyticsToolbar({
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
-
-      <button type="button" className="flow-tab-tool-btn px-1.5" title="Сброс к текущему месяцу" onClick={onReset}>
-        <RotateCcw size={13} strokeWidth={1.75} />
-      </button>
     </>
   );
 }
@@ -438,12 +300,17 @@ function tipDiffHtml(p: number, f: number): string {
 
 function PlanFactChart({
   labels,
+  keys,
+  grain,
   plan,
   fact,
   mode,
   groups,
 }: {
   labels: string[];
+  /** Сырые ключи бакетов (ISO-день/YYYY-MM/…) — для полной даты в тултипе. */
+  keys: string[];
+  grain: PeriodGrain;
   plan: number[];
   fact: number[];
   mode: 'bar' | 'line';
@@ -456,10 +323,10 @@ function PlanFactChart({
   // Стабильный ключ — не гоняем effect на каждый новый [] reference
   const dataKey = useMemo(
     () =>
-      `${mode}|${labels.length}|${labels.join('·')}|${plan.join(',')}|${fact.join(',')}|${groups
+      `${mode}|${grain}|${labels.length}|${labels.join('·')}|${plan.join(',')}|${fact.join(',')}|${groups
         .map((g) => `${g.title}:${g.cols}`)
         .join(';')}`,
-    [mode, labels, plan, fact, groups],
+    [mode, grain, labels, plan, fact, groups],
   );
 
   useEffect(() => {
@@ -468,6 +335,7 @@ function PlanFactChart({
 
     // снимок данных для этого прогона
     const cats = labels.slice();
+    const keysSnap = keys.slice();
     const planData = plan.map((n) => Number(n) || 0);
     const factData = fact.map((n) => Number(n) || 0);
     const isBar = mode === 'bar';
@@ -485,11 +353,19 @@ function PlanFactChart({
         // очистить DOM — Apex 6 иногда оставляет мусор
         hostRef.current.innerHTML = '';
 
+        // Заголовок тултипа (юзер 2026-08-02): день — «3 августа» (месяц словом,
+        // день без ведущего нуля); остальные зёрна — как на оси (уже читаемо).
+        const tipDate = (i: number): string => {
+          const k = keysSnap[i];
+          if (grain === 'day' && k) return fmtDayMonth(k);
+          return cats[i] || 'Период';
+        };
+
         const tipHtml = (i: number) => {
           const p = planData[i] ?? 0;
           const f = factData[i] ?? 0;
           return `<div class="pyn-apex-tip">
-            <div class="pyn-apex-tip-x">${cats[i] || 'Период'}</div>
+            <div class="pyn-apex-tip-x">${tipDate(i)}</div>
             <div><span style="color:#a6a39b">План</span> · ${p} ч</div>
             <div><span style="color:#d97757">Факт</span> · ${f} ч</div>
             ${tipDiffHtml(p, f)}
@@ -520,16 +396,19 @@ function PlanFactChart({
             ? {
                 enabled: true,
                 offsetY: -14,
-                style: { fontSize: '11px', colors: ['#ceccc5'] },
-                formatter: (val, opts) => {
-                  if (!opts || opts.seriesIndex !== 1) return '';
-                  const i = opts.dataPointIndex ?? 0;
-                  const p = planData[i] ?? 0;
-                  const f = Number(val) || 0;
-                  const d = Math.round((f - p) * 10) / 10;
-                  if (Math.abs(d) <= POINT_EPS) return '0';
-                  return d > 0 ? `+${d}` : `${d}`;
+                // Тёмный чип под текстом (юзер 2026-08-02: «серый на сером не видно») —
+                // подпись может лечь на любую из двух серий, чип держит контраст всегда.
+                style: { fontSize: '11px', colors: ['#f5f4ef'] },
+                background: {
+                  enabled: true,
+                  backgroundColor: 'rgba(22, 20, 17, 0.85)',
+                  borderRadius: 4,
+                  padding: 4,
+                  borderWidth: 0,
                 },
+                // Юзер 2026-08-02: «показана разница, а должен быть факт» — обе серии
+                // подписаны своим значением (план/факт), разница — в тултипе по ховеру.
+                formatter: (val) => `${Number(val) || 0}`,
               }
             : { enabled: false },
           stroke: isBar
@@ -808,16 +687,16 @@ export function FlowTransportAnalytics({
   rows,
   molByFio,
   selectedDays,
-  grain,
   workFilter,
 }: {
   rows: TransportKpiRow[];
   molByFio?: ReadonlyMap<string, boolean>;
   selectedDays: Set<string>;
-  grain: PeriodGrain;
   workFilter: Set<string> | null;
 }): JSX.Element {
   const customDays = useMemo(() => [...selectedDays].sort(), [selectedDays]);
+  // Зерно графика — не кнопка, вывод из формы выбранных дней (юзер 2026-08-02).
+  const grain = useMemo(() => inferChartGrain(selectedDays), [selectedDays]);
 
   const kpis = useMemo(
     () =>
@@ -831,6 +710,9 @@ export function FlowTransportAnalytics({
   );
 
   const diff = kpis.hoursDiff;
+  // % от плана (юзер 2026-08-02: рядом с часами разницы — на сколько % меньше/больше
+  // плана). Без плана процент не считаем — делить не на что.
+  const diffPct = kpis.totalPlanHours > 0 ? Math.round((diff / kpis.totalPlanHours) * 1000) / 10 : null;
   const factWorks = kpis.doneCount + kpis.extraCount;
   const showChart =
     kpis.chartLabels.length >= 1 &&
@@ -880,6 +762,12 @@ export function FlowTransportAnalytics({
         meta={
           <>
             разница <DashDelta value={diff} suffix=" ч" />
+            {diffPct != null ? (
+              <>
+                {' · '}
+                <DashDelta value={diffPct} suffix="%" />
+              </>
+            ) : null}
           </>
         }
       />
@@ -910,6 +798,8 @@ export function FlowTransportAnalytics({
         >
           <PlanFactChart
             labels={kpis.chartLabels}
+            keys={kpis.chartKeys}
+            grain={grain}
             plan={kpis.planHours}
             fact={kpis.factHours}
             mode={kpis.chartMode}

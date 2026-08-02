@@ -340,6 +340,7 @@ export {
   type ReportTreeReason,
   type ReportTreeShop,
   type ReportComputeResult,
+  type ReportSliceStats,
   type ReportGraphKind,
   type FlowReportOpts,
 } from './flow-report';

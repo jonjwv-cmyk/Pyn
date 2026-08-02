@@ -3,7 +3,7 @@
  * Одна chrome-строка: вкладки + тулбары списка (не две полосы).
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flowTransportGet, type FlowTransportRow } from '@pyn/core';
 import { api } from '@/lib/api';
 import '@/components/pyn-table/pyn-table-theme.css';
@@ -13,7 +13,7 @@ import {
   FlowTransportAnalytics,
   useTransportAvailableWorks,
 } from './flow-transport-analytics';
-import { defaultPeriodDays, type PeriodGrain, type TransportKpiRow } from './flow-transport-kpi';
+import { defaultPeriodDays, nearestDataDay, rowHasActivity, type TransportKpiRow } from './flow-transport-kpi';
 import { usePersonsStore } from '@/lib/persons-store';
 import { initPersons } from '@/lib/persons-repo';
 
@@ -46,8 +46,6 @@ function TransportDashboardPane({ chromeLeading }: { chromeLeading: ReactNode })
   const [rows, setRows] = useState<TransportKpiRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
-  /** Зерно: дни / недели / месяцы / кварталы / год — и выбор, и график. */
-  const [grain, setGrain] = useState<PeriodGrain>('month');
   /** Фильтр строк: календарные дни выбранного периода. */
   const [selectedDays, setSelectedDays] = useState<Set<string>>(
     () => new Set(defaultPeriodDays()),
@@ -86,6 +84,20 @@ function TransportDashboardPane({ chromeLeading }: { chromeLeading: ReactNode })
     void load();
   }, [load]);
 
+  // По умолчанию — самый актуальный день, а не весь месяц (юзер 2026-08-02: «если
+  // 2-е число, а машин нет, покажет 3-е»). Срабатывает один раз, после первой
+  // загрузки строк, и не трогает выбор, если юзер уже сам его поменял.
+  const smartDefaultRef = useRef(false);
+  useEffect(() => {
+    if (smartDefaultRef.current || rows.length === 0) return;
+    smartDefaultRef.current = true;
+    const activeDays = new Set(rows.filter(rowHasActivity).map((r) => r.tdate).filter(Boolean));
+    const n = new Date();
+    const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+    const d = nearestDataDay(activeDays, today);
+    if (d) setSelectedDays(new Set([d]));
+  }, [rows]);
+
   const availableWorks = useTransportAvailableWorks(rows, selectedDays);
 
   useEffect(() => {
@@ -110,11 +122,6 @@ function TransportDashboardPane({ chromeLeading }: { chromeLeading: ReactNode })
         <div className="flow-tab-toolbar flex min-w-0 flex-1 flex-wrap items-center gap-0.5 p-0.5">
           <AnalyticsToolbar
             rows={rows}
-            grain={grain}
-            onGrainChange={(g) => {
-              setGrain(g);
-              setWorkFilter(null);
-            }}
             selectedDays={selectedDays}
             onSelectedDaysChange={(s) => {
               setSelectedDays(s);
@@ -123,11 +130,6 @@ function TransportDashboardPane({ chromeLeading }: { chromeLeading: ReactNode })
             workFilter={workFilter}
             onWorkFilterChange={setWorkFilter}
             availableWorks={availableWorks}
-            onReset={() => {
-              setGrain('month');
-              setSelectedDays(new Set(defaultPeriodDays()));
-              setWorkFilter(null);
-            }}
           />
           <button
             type="button"
@@ -149,7 +151,6 @@ function TransportDashboardPane({ chromeLeading }: { chromeLeading: ReactNode })
             rows={rows}
             molByFio={molByFio}
             selectedDays={selectedDays}
-            grain={grain}
             workFilter={workFilter}
           />
         )}

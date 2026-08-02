@@ -1,11 +1,6 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  CalendarDays,
-  Download,
-  FileText,
-  Loader2,
-  Printer,
-} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { CalendarDays, ChevronLeft, ChevronRight, Loader2, Printer } from 'lucide-react';
+import * as Popover from '@radix-ui/react-popover';
 import {
   computeFlowReport,
   emptyReportManualDay,
@@ -20,7 +15,6 @@ import {
   type ReportManualLine,
   type ReportMode,
 } from '@pyn/core';
-import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { nearestGraphDate } from '@/components/flow/flow-sandbox.fixtures';
 import { whKey, whMapGet } from '@/components/flow/flow-warehouse';
 import { api } from '@/lib/api';
@@ -32,30 +26,30 @@ import {
 } from '@/lib/schedule/use-schedule-sync';
 import { useWsEvent } from '@/lib/ws';
 import { useWarehousesStore } from '@/lib/warehouses-store';
+import '@/components/pyn-dash/pyn-dash.css';
+import {
+  DashShell,
+  DashHeader,
+  DashPanel,
+  DashList,
+  DashRow,
+  DashEmpty,
+  DashChip,
+} from '@/components/pyn-dash';
+import { PynCalendar } from '@/components/pyn-table/PynCalendar';
+import { daysOfQuarter, daysOfYear, nearestDataDay } from '@/components/flow/flow-transport-kpi';
 import { ReportPrint } from './ReportPrint';
+import { usePersonsStore } from '@/lib/persons-store';
+import { initPersons } from '@/lib/persons-repo';
 import {
   buildReportFleetGroups,
-  countFleetExpeditors,
+  countFleetPeople,
   countFleetVehicles,
+  expeditorId,
   fleetGroupLine1,
   type ExpedGroup,
+  type FleetFlowRole,
 } from './report-fleet';
-
-const MONTHS_RU = [
-  'Январь',
-  'Февраль',
-  'Март',
-  'Апрель',
-  'Май',
-  'Июнь',
-  'Июль',
-  'Август',
-  'Сентябрь',
-  'Октябрь',
-  'Ноябрь',
-  'Декабрь',
-];
-const WEEKDAYS_SHORT = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
 
 function isoToday(): string {
   const n = new Date();
@@ -87,8 +81,10 @@ function frozenWeekdayOf(
   return null;
 }
 
-/** Multi-select календарь дней отчёта.
- *  Popover в `fixed` — тулбар/экран Сводки с overflow:hidden иначе обрезают absolute. */
+/**
+ * Календарь дней сводки — как в Транспорте (PynCalendar):
+ * месяц, «все дни», сброс, кварталы/год, подсветка дней с отчётом.
+ */
 function ReportDayPicker({
   selected,
   onChange,
@@ -100,182 +96,136 @@ function ReportDayPicker({
   dayHints: Map<string, boolean>;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
-  const btnRef = useRef<HTMLButtonElement | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const [panelPos, setPanelPos] = useState<{ top: number; right: number } | null>(null);
-  const today = isoToday();
+  const [qYear, setQYear] = useState(() => new Date().getFullYear());
   const selSet = useMemo(() => new Set(selected), [selected]);
   const sorted = useMemo(() => [...selected].sort(), [selected]);
+  const dataDays = useMemo(() => {
+    const s = new Set<string>();
+    for (const [iso, ok] of dayHints) if (ok) s.add(iso);
+    return s;
+  }, [dayHints]);
 
-  const [view, setView] = useState(() => {
-    const base = sorted[0] || today;
-    return { y: Number(base.slice(0, 4)), m: Number(base.slice(5, 7)) };
-  });
+  const setSel = (next: Set<string>): void => {
+    onChange([...next].sort());
+  };
 
-  const placePanel = useCallback(() => {
-    const el = btnRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setPanelPos({
-      top: Math.round(r.bottom + 4),
-      right: Math.round(window.innerWidth - r.right),
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!open) {
-      setPanelPos(null);
-      return;
+  const quarterDays = (q: 1 | 2 | 3 | 4): string[] => daysOfQuarter(qYear, q);
+  const quarterOn = (q: 1 | 2 | 3 | 4): boolean => {
+    const d = quarterDays(q);
+    return d.length > 0 && d.every((x) => selSet.has(x));
+  };
+  const toggleQuarter = (q: 1 | 2 | 3 | 4): void => {
+    const d = quarterDays(q);
+    const next = new Set(selSet);
+    if (quarterOn(q)) {
+      for (const x of d) next.delete(x);
+    } else {
+      for (const x of d) next.add(x);
     }
-    placePanel();
-    const onDown = (e: MouseEvent): void => {
-      const t = e.target as Node;
-      if (btnRef.current?.contains(t) || panelRef.current?.contains(t)) return;
-      setOpen(false);
-    };
-    const onReposition = (): void => placePanel();
-    document.addEventListener('mousedown', onDown);
-    window.addEventListener('resize', onReposition);
-    window.addEventListener('scroll', onReposition, true);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      window.removeEventListener('resize', onReposition);
-      window.removeEventListener('scroll', onReposition, true);
-    };
-  }, [open, placePanel]);
-
-  const cells = useMemo(() => {
-    const first = new Date(view.y, view.m - 1, 1);
-    // mon=0
-    const startPad = (first.getDay() + 6) % 7;
-    const daysInMonth = new Date(view.y, view.m, 0).getDate();
-    const out: Array<{ iso: string; day: number } | null> = [];
-    for (let i = 0; i < startPad; i++) out.push(null);
-    for (let d = 1; d <= daysInMonth; d++) {
-      const iso = `${view.y}-${String(view.m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      out.push({ iso, day: d });
+    setSel(next);
+  };
+  const yearOn = ([1, 2, 3, 4] as const).every((q) => quarterOn(q));
+  const yearHasSelection = daysOfYear(qYear).some((d) => selSet.has(d));
+  const toggleYear = (): void => {
+    const days = daysOfYear(qYear);
+    if (yearOn) {
+      const next = new Set(selSet);
+      for (const d of days) next.delete(d);
+      setSel(next);
+    } else {
+      setSel(new Set([...selSet, ...days]));
     }
-    return out;
-  }, [view]);
-
-  const toggle = (iso: string): void => {
-    if (selSet.has(iso)) onChange(selected.filter((x) => x !== iso));
-    else onChange([...selected, iso].sort());
   };
 
   const label =
     sorted.length === 0
       ? 'Выбрать дни'
       : sorted.length === 1
-        ? sorted[0]
-        : `${sorted.length} дн.: ${formatReportDaysTitle(sorted) || sorted.join(', ')}`;
+        ? formatReportDaysTitle(sorted) || sorted[0]
+        : `${formatReportDaysTitle(sorted)} · дней ${sorted.length}`;
 
   const active = selected.length > 0;
 
   return (
-    <>
-      {/* Как LayerToggle на Карте: h-6, border, clay когда выбрано */}
-      <button
-        ref={btnRef}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        title="Выбор дней сводки"
-        className={cn(
-          'flex h-6 max-w-[220px] items-center gap-1 rounded-md border px-2 text-[12px] outline-none transition-colors',
-          active || open
-            ? 'border-accent-clay/55 bg-accent-clay-bg text-accent-clay'
-            : 'border-border-subtle text-text-muted hover:bg-bg-hover hover:text-text-secondary',
-        )}
-      >
-        <CalendarDays className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
-        <span className="min-w-0 truncate">{label}</span>
-      </button>
-      {open && panelPos && (
-        <div
-          ref={panelRef}
-          className="fixed z-[200] w-[280px] rounded-lg border border-border-subtle bg-bg-elevated p-2 shadow-xl"
-          style={{ top: panelPos.top, right: panelPos.right }}
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          title="Выбор дней сводки"
+          className={cn(
+            'flex h-6 max-w-[260px] items-center gap-1 rounded-md border px-2 text-[12px] outline-none transition-colors',
+            active || open
+              ? 'border-accent-clay/55 bg-accent-clay-bg text-accent-clay'
+              : 'border-border-subtle text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+          )}
         >
-          <div className="mb-1.5 flex items-center justify-between px-0.5">
-            <button
-              type="button"
-              className="rounded px-1.5 py-0.5 text-[12px] text-text-muted hover:bg-white/[0.06]"
-              onClick={() =>
-                setView((v) =>
-                  v.m === 1 ? { y: v.y - 1, m: 12 } : { y: v.y, m: v.m - 1 },
-                )
-              }
-            >
-              ‹
-            </button>
-            <span className="text-[12px] font-medium text-text-primary">
-              {MONTHS_RU[view.m - 1]} {view.y}
-            </span>
-            <button
-              type="button"
-              className="rounded px-1.5 py-0.5 text-[12px] text-text-muted hover:bg-white/[0.06]"
-              onClick={() =>
-                setView((v) =>
-                  v.m === 12 ? { y: v.y + 1, m: 1 } : { y: v.y, m: v.m + 1 },
-                )
-              }
-            >
-              ›
-            </button>
-          </div>
-          <div className="mb-0.5 grid grid-cols-7 gap-0.5">
-            {WEEKDAYS_SHORT.map((w) => (
-              <div key={w} className="text-center text-[10px] text-text-muted">
-                {w}
+          <CalendarDays className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+          <span className="min-w-0 truncate">{label}</span>
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={8}
+          className="pyn-popover z-[200] w-[300px] border border-white/10 bg-[#2a2926] p-3 shadow-xl"
+        >
+          <PynCalendar
+            selected={selSet}
+            onChange={setSel}
+            dataDays={dataDays}
+            onReset={() => onChange([])}
+            resetEnabled={selected.length > 0}
+            primaryActionLabel="Последнее"
+            onPrimaryAction={() => {
+              const d = nearestDataDay(dataDays, isoToday()) ?? isoToday();
+              onChange([d]);
+            }}
+          />
+          <div className="mt-2 border-t border-white/10 pt-2">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                Год · кварталы
               </div>
-            ))}
-          </div>
-          <div className="grid grid-cols-7 gap-0.5">
-            {cells.map((c, i) => {
-              if (!c) return <div key={`e${i}`} />;
-              const on = selSet.has(c.iso);
-              const hasReport = dayHints.get(c.iso);
-              return (
+              <div className="flex items-center gap-0.5">
                 <button
-                  key={c.iso}
                   type="button"
-                  onClick={() => toggle(c.iso)}
-                  className={cn(
-                    'relative h-7 rounded text-[12px] outline-none transition-colors',
-                    on
-                      ? 'bg-accent-clay text-white'
-                      : 'text-text-primary hover:bg-white/[0.08]',
-                    c.iso === today && !on && 'ring-1 ring-accent-clay/50',
-                  )}
-                  title={hasReport ? 'есть отчёт' : undefined}
+                  className="flex h-5 w-5 items-center justify-center rounded text-zinc-500 hover:text-zinc-200"
+                  onClick={() => setQYear((y) => y - 1)}
+                  aria-label="Предыдущий год"
                 >
-                  {c.day}
-                  {hasReport && !on && (
-                    <span className="absolute bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-emerald-400" />
-                  )}
+                  <ChevronLeft size={13} strokeWidth={1.75} />
                 </button>
-              );
-            })}
+                <span
+                  className={`w-9 text-center text-[11px] tabular-nums ${
+                    yearHasSelection ? 'font-semibold text-[#e8a48a]' : 'text-zinc-300'
+                  }`}
+                >
+                  {qYear}
+                </span>
+                <button
+                  type="button"
+                  className="flex h-5 w-5 items-center justify-center rounded text-zinc-500 hover:text-zinc-200"
+                  onClick={() => setQYear((y) => y + 1)}
+                  aria-label="Следующий год"
+                >
+                  <ChevronRight size={13} strokeWidth={1.75} />
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              <DashChip active={yearOn} onClick={toggleYear}>
+                Весь год
+              </DashChip>
+              {([1, 2, 3, 4] as const).map((q) => (
+                <DashChip key={q} active={quarterOn(q)} onClick={() => toggleQuarter(q)}>
+                  Q{q}
+                </DashChip>
+              ))}
+            </div>
           </div>
-          <div className="mt-1.5 flex items-center justify-between border-t border-border-subtle pt-1.5">
-            <button
-              type="button"
-              className="text-[11px] text-text-muted hover:text-text-primary"
-              onClick={() => onChange([])}
-            >
-              Сбросить
-            </button>
-            <button
-              type="button"
-              className="text-[11px] text-accent-clay hover:underline"
-              onClick={() => setOpen(false)}
-            >
-              Готово
-            </button>
-          </div>
-        </div>
-      )}
-    </>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -320,7 +270,7 @@ function ManualNum({
       autoComplete="off"
       spellCheck={false}
       className={cn(
-        'h-6 w-12 rounded border border-border-subtle/80 bg-transparent px-1 text-left text-[12px] tabular-nums text-text-primary outline-none focus:border-accent-clay/50 disabled:opacity-40',
+        'h-6 w-12 rounded border border-[var(--pd-border)] bg-black/20 px-1 text-left text-[12px] tabular-nums text-[var(--pd-text)] outline-none focus:border-[var(--pd-accent)]/50 disabled:opacity-40',
         className,
       )}
       value={text}
@@ -372,10 +322,8 @@ function ManualBlock({
   byDay: Record<string, ReportManualDay>;
   onPatchDay: (day: string, patch: Partial<ReportManualDay>) => void;
 }): JSX.Element {
-  const [open, setOpen] = useState(true);
-
   const headCls =
-    'text-[12px] font-semibold uppercase tracking-wide text-text-muted whitespace-nowrap text-left';
+    'text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--pd-faint,#a6a39b)] whitespace-nowrap text-left';
   const rowH = 'h-7';
   const labelW = 'w-[13.5rem]';
   const unitW = 'w-8';
@@ -417,22 +365,6 @@ function ManualBlock({
     { kind: 'data', label: 'Перескладировка', unit: 'т', valueOf: (d) => tonsOf(d, 'restow'), onChange: (d, v) => setTons(d, 'restow', v) },
   ];
 
-  /** Свёрнуто: только «Блок 1». */
-  if (!open) {
-    return (
-      <div className="min-w-0 w-full">
-        <button
-          type="button"
-          className={cn(headCls, 'flex items-center gap-1 hover:text-text-primary')}
-          onClick={() => setOpen(true)}
-        >
-          <span className="w-2.5 text-[10px] opacity-70">▶</span>
-          Блок 1
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="box-border min-w-0 w-full max-w-full overflow-hidden">
       {/*
@@ -441,21 +373,10 @@ function ManualBlock({
       */}
       <div className="flex w-full min-w-0 max-w-full">
         {/* ─── фиксация: название + ЕИ ─── */}
-        <div className="z-[1] shrink-0 bg-bg-surface pr-2">
-          {/* шапка: Блок 1 | ЕИ */}
+        <div className="z-[1] shrink-0 bg-[var(--pd-elevated,#302f2d)] pr-2">
+          {/* шапка: Показатель | ЕИ */}
           <div className={cn('flex items-center gap-2', rowH)}>
-            <button
-              type="button"
-              className={cn(
-                headCls,
-                labelW,
-                'flex shrink-0 items-center gap-1 hover:text-text-primary',
-              )}
-              onClick={() => setOpen(false)}
-            >
-              <span className="w-2.5 text-[10px] opacity-70">▼</span>
-              Блок 1
-            </button>
+            <span className={cn(headCls, labelW, 'shrink-0')}>Показатель</span>
             <span className={cn(headCls, unitW, 'shrink-0')}>ЕИ</span>
           </div>
           {rows.map((r, i) =>
@@ -466,15 +387,17 @@ function ManualBlock({
                 style={{ width: 'calc(13.5rem + 0.5rem + 2rem)' }}
               >
                 {/* ОТЛ/ДОК/… + тонкая линия от середины вправо (без боковой) */}
-                <span className={cn(headCls, 'mr-2 shrink-0')}>{r.title}</span>
-                <span className="h-px min-w-[1rem] flex-1 bg-border-subtle/70" />
+                <span className={cn(headCls, 'mr-2 shrink-0 text-[var(--pd-accent-soft)]')}>
+                  {r.title}
+                </span>
+                <span className="h-px min-w-[1rem] flex-1 bg-[var(--pd-border)]" />
               </div>
             ) : (
               <div key={`L-d-${i}`} className={cn('flex items-center gap-2', rowH)}>
                 <span
                   className={cn(
                     labelW,
-                    'shrink-0 truncate text-left text-[12px] leading-none text-text-primary/90',
+                    'shrink-0 truncate text-left text-[12px] leading-none text-[var(--pd-text)]',
                   )}
                   title={r.label}
                 >
@@ -483,7 +406,7 @@ function ManualBlock({
                 <span
                   className={cn(
                     unitW,
-                    'shrink-0 text-left text-[12px] tabular-nums text-text-muted/55',
+                    'shrink-0 text-left text-[12px] tabular-nums text-[var(--pd-faint)]',
                   )}
                 >
                   {r.unit}
@@ -499,10 +422,9 @@ function ManualBlock({
           style={{ flex: '1 1 0%', width: 0 }}
         >
           <div className="inline-block min-w-full">
-            {/* даты — один раз, строка Блок 1 */}
             <div className={cn('flex items-center', rowH)}>
               {days.length === 0 ? (
-                <span className="px-1 text-[12px] text-text-muted/60">выберите дни →</span>
+                <span className="px-1 text-[12px] text-[var(--pd-faint)]">выберите дни →</span>
               ) : (
                 days.map((d) => (
                   <div key={d} className={cn(headCls, dayW, 'shrink-0 px-1')}>
@@ -514,9 +436,8 @@ function ManualBlock({
             {days.length > 0 &&
               rows.map((r, i) =>
                 r.kind === 'head' ? (
-                  /* линия продолжается через колонки дней */
                   <div key={`R-h-${i}`} className={cn('relative flex items-center', rowH)}>
-                    <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border-subtle/70" />
+                    <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-[var(--pd-border)]" />
                     {days.map((d) => (
                       <div key={d} className={cn(dayW, 'relative z-[1] shrink-0 px-1')} />
                     ))}
@@ -542,69 +463,40 @@ function ManualBlock({
 }
 
 /**
- * Блок 2: машины / тип ТС / экспедиторы / От·СП (как шапка «Экспедиторам»).
- * Сворачивается как Блок 1. Если групп нет — null (блок скрыт).
- * Заголовок: «Блок 2 · ТС n · Экспедиторы m»
+ * Блок 2: машины / тип ТС / экспедиторы / От·СП.
+ * embedded — внутри DashPanel (без своего заголовка).
  */
-function FleetBlock({ groups }: { groups: ExpedGroup[] }): JSX.Element | null {
-  const [open, setOpen] = useState(true);
+function FleetBlock({
+  groups,
+  embedded = false,
+}: {
+  groups: ExpedGroup[];
+  embedded?: boolean;
+}): JSX.Element | null {
   if (groups.length === 0) return null;
-
-  const tsCount = countFleetVehicles(groups);
-  const expCount = countFleetExpeditors(groups);
-  const countsLabel = (
-    <span className="ml-1.5 font-normal normal-case tracking-normal text-text-muted">
-      · ТС {tsCount} · Экспедиторы {expCount}
-    </span>
-  );
-
-  const headCls =
-    'text-[12px] font-semibold uppercase tracking-wide text-text-muted whitespace-nowrap text-left';
-
-  if (!open) {
-    return (
-      <div className="min-w-0 w-full">
-        <button
-          type="button"
-          className={cn(headCls, 'flex items-center gap-1 hover:text-text-primary')}
-          onClick={() => setOpen(true)}
-        >
-          <span className="w-2.5 text-[10px] opacity-70">▶</span>
-          Блок 2
-          {countsLabel}
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="box-border min-w-0 w-full max-w-full overflow-hidden">
-      <button
-        type="button"
-        className={cn(headCls, 'mb-1.5 flex items-center gap-1 hover:text-text-primary')}
-        onClick={() => setOpen(false)}
+      <div
+        className={cn(
+          'max-h-[min(40vh,320px)] min-w-0 overflow-y-auto overflow-x-hidden',
+          !embedded && 'rounded-lg border border-[var(--pd-border)]',
+        )}
       >
-        <span className="w-2.5 text-[10px] opacity-70">▼</span>
-        Блок 2
-        {countsLabel}
-      </button>
-      <div className="max-h-[min(40vh,280px)] min-w-0 overflow-y-auto overflow-x-hidden rounded-lg border border-border-subtle">
         <ul className="m-0 list-none space-y-0 p-0">
           {groups.map((g, i) => (
             <li
               key={`${g.garage || 'none'}-${i}`}
-              className={cn(
-                'border-b border-border-subtle/70 px-2.5 py-1.5 last:border-b-0',
-                'text-[12px] leading-snug text-text-primary',
-              )}
+              className="border-b border-[var(--pd-border)] px-1 py-2 last:border-b-0 text-[12.5px] leading-snug text-[var(--pd-text)]"
             >
-              {/* 1: машина · тип · экспедиторы; 2: От; 3: СП — всегда отдельно, с переносом */}
-              <p className="m-0 break-words font-medium text-text-strong">{fleetGroupLine1(g)}</p>
-              <p className="m-0 mt-0.5 break-words text-[11px] text-text-secondary">
-                <span className="text-text-muted">От:</span> {g.frList || '—'}
+              <p className="m-0 break-words font-medium text-[var(--pd-text-strong)]">
+                {fleetGroupLine1(g)}
               </p>
-              <p className="m-0 mt-0.5 break-words text-[11px] text-text-secondary">
-                <span className="text-text-muted">СП:</span> {g.toList || '—'}
+              <p className="m-0 mt-0.5 break-words text-[11px] text-[var(--pd-muted)]">
+                <span className="text-[var(--pd-faint)]">От:</span> {g.frList || '—'}
+              </p>
+              <p className="m-0 mt-0.5 break-words text-[11px] text-[var(--pd-muted)]">
+                <span className="text-[var(--pd-faint)]">СП:</span> {g.toList || '—'}
               </p>
             </li>
           ))}
@@ -614,12 +506,318 @@ function FleetBlock({ groups }: { groups: ExpedGroup[] }): JSX.Element | null {
   );
 }
 
+function shopWord(n: number): string {
+  if (n === 1) return 'цех';
+  if (n > 1 && n < 5) return 'цеха';
+  return 'цехов';
+}
+
+function whWord(n: number): string {
+  if (n === 1) return 'склад';
+  if (n > 1 && n < 5) return 'склада';
+  return 'складов';
+}
+
+function shippedTone(p: number): 'ok' | 'accent' | 'danger' {
+  if (p >= 90) return 'ok';
+  if (p >= 60) return 'accent';
+  return 'danger';
+}
+
+function pctOf(n: number, d: number): number {
+  return d > 0 ? Math.round((n / d) * 1000) / 10 : 0;
+}
+
+/** ISO → день недели графика (ПН…ВС). */
+function isoToWeekdayRu(iso: string): string {
+  const d = new Date(`${iso.slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return '';
+  return ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ'][d.getDay()] ?? '';
+}
+
+function normWd(s: string): string {
+  return String(s || '')
+    .trim()
+    .toUpperCase()
+    .replace(/Ё/g, 'Е');
+}
+
 /**
- * Колонка White/Black (Блок 3):
- *  · сверху фикс: % вывоза + вне графика (нумерация) + заголовок «Из невывезенных»
- *  · прокрутка только списка цехов (шапка таблицы №|Цех|поз. sticky)
+ * План по графику за выбранные дни: уникальные цеха и склады (to_wh),
+ * которые по графику должны получать в эти дни.
  */
-function ReportColumn({
+function computePlanFromSchedule(
+  days: readonly string[],
+  scheduleMetaMap: Map<
+    string,
+    {
+      exists: boolean;
+      shops: ReadonlyArray<{
+        name: string;
+        rows: ReadonlyArray<{
+          weekday: string;
+          warehouses: ReadonlyArray<{ code: string }>;
+        }>;
+      }>;
+    }
+  >,
+  whByKey: Map<string, { id: string; shop_name?: string; in_schedule?: number; delivery_day?: string | null }>,
+): { planShops: number; planWarehouses: number } {
+  const shopSet = new Set<string>();
+  const whSet = new Set<string>();
+
+  for (const iso of days) {
+    const wd = normWd(isoToWeekdayRu(iso));
+    if (!wd) continue;
+    const m = monthOfDate(iso);
+    if (!m) continue;
+    const meta = scheduleMetaMap.get(monthKey(m.year, m.month));
+
+    if (meta?.shops?.length) {
+      for (const shop of meta.shops) {
+        const shopName = (shop.name || '').trim() || '—';
+        for (const row of shop.rows) {
+          if (normWd(row.weekday) !== wd) continue;
+          for (const w of row.warehouses) {
+            const code = whKey(w.code);
+            if (!code) continue;
+            whSet.add(code);
+            shopSet.add(shopName);
+          }
+        }
+      }
+      continue;
+    }
+
+    if (
+      canUseLiveWarehouseScheduleForMonth(m.year, m.month) &&
+      (!meta || meta.exists !== false)
+    ) {
+      for (const w of whByKey.values()) {
+        if (Number(w.in_schedule) !== 1) continue;
+        if (normWd(String(w.delivery_day || '')) !== wd) continue;
+        const code = whKey(w.id);
+        if (!code) continue;
+        whSet.add(code);
+        const shop = (w.shop_name || '').trim() || code;
+        shopSet.add(shop);
+      }
+    }
+  }
+
+  return { planShops: shopSet.size, planWarehouses: whSet.size };
+}
+
+/** Плитка KPI: верх = White, низ = Black. half = 2 колонки сетки. */
+function SplitKpi({
+  label,
+  white,
+  black,
+  half,
+}: {
+  label: string;
+  white: { value: ReactNode; meta?: ReactNode; tone?: 'ok' | 'accent' | 'danger' | 'default' };
+  black: { value: ReactNode; meta?: ReactNode; tone?: 'ok' | 'accent' | 'danger' | 'default' };
+  half?: boolean;
+}): JSX.Element {
+  const toneCls = (t?: string) =>
+    t === 'ok'
+      ? 'text-[var(--pd-ok-text)]'
+      : t === 'accent'
+        ? 'text-[var(--pd-accent-soft)]'
+        : t === 'danger'
+          ? 'text-[var(--pd-danger-soft)]'
+          : 'text-[var(--pd-text-strong)]';
+
+  const halfRow = (
+    side: 'W' | 'B',
+    data: { value: ReactNode; meta?: ReactNode; tone?: string },
+  ) => (
+    <div
+      className={cn(
+        'flex min-w-0 flex-1 flex-col justify-center px-3.5 py-3',
+        side === 'B' && 'bg-black/15',
+      )}
+    >
+      <div className="mb-1 flex items-center gap-1.5">
+        <span
+          className={cn(
+            'h-1.5 w-1.5 rounded-full',
+            side === 'W' ? 'bg-amber-300/90' : 'bg-slate-300/80',
+          )}
+        />
+        <span
+          className={cn(
+            'text-[9px] font-semibold uppercase tracking-[0.12em]',
+            side === 'W' ? 'text-amber-200/75' : 'text-slate-300/75',
+          )}
+        >
+          {side}
+        </span>
+      </div>
+      <div
+        className={cn(
+          'text-[1.55rem] font-semibold tabular-nums leading-none tracking-tight',
+          toneCls(data.tone),
+        )}
+      >
+        {data.value}
+      </div>
+      {data.meta != null ? (
+        <div className="mt-1.5 text-[12px] leading-snug tabular-nums text-[var(--pd-muted)]">
+          {data.meta}
+        </div>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <article
+      className={cn(
+        'pyn-dash-kpi !min-h-0 !p-0 overflow-hidden',
+        half && 'pyn-dash-span-half',
+      )}
+    >
+      <div className="border-b border-[var(--pd-border)] px-3.5 py-2">
+        <span className="pyn-dash-kpi-label !mb-0">{label}</span>
+      </div>
+      <div className="flex min-h-[5.5rem] divide-x divide-[var(--pd-border)]">
+        {halfRow('W', white)}
+        {halfRow('B', black)}
+      </div>
+    </article>
+  );
+}
+
+/** Большой блок: нет/вне графика + склады (% позиций/складов от плана). */
+function GraphDetailPanel({
+  result,
+  planWarehouses,
+}: {
+  result: ReportComputeResult;
+  planWarehouses: number;
+}): JSX.Element {
+  const ni = result.notInStats;
+  const of = result.offStats;
+  const whTotal = result.warehouseCount;
+  const planPos = result.total; // позиции плана периода = все зафиксированные
+  const posPct = (n: number) => pctOf(n, planPos);
+  const whPct = (n: number) => pctOf(n, planWarehouses);
+  const whPlanPct = pctOf(whTotal, planWarehouses);
+
+  const sliceLines = (s: typeof ni) => (
+    <>
+      <div>
+        {s.positions}{' '}
+        {s.positions === 1 ? 'позиция' : s.positions > 1 && s.positions < 5 ? 'позиции' : 'позиций'}
+        {planPos > 0 ? (
+          <>
+            {' '}
+            <span className="text-[var(--pd-muted)]">{posPct(s.positions)}% от плана</span>
+          </>
+        ) : null}
+      </div>
+      <div>
+        {s.warehouses} {whWord(s.warehouses)}
+        {planWarehouses > 0 ? (
+          <>
+            {' '}
+            <span className="text-[var(--pd-muted)]">{whPct(s.warehouses)}% от плана</span>
+          </>
+        ) : null}
+      </div>
+    </>
+  );
+
+  return (
+    <DashPanel full tightHead title="График и склады" className="pyn-dash-span-full">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border border-[var(--pd-border)] bg-black/10 px-3 py-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
+            Нет в графике
+          </div>
+          <div
+            className={cn(
+              'mt-1 text-[1.45rem] font-semibold tabular-nums leading-none',
+              ni.shops > 0 ? 'text-[var(--pd-danger-soft)]' : 'text-[var(--pd-text-strong)]',
+            )}
+          >
+            {ni.shops}
+            <span className="ml-1.5 text-[0.95rem] font-medium text-[var(--pd-muted)]">
+              {shopWord(ni.shops)}
+            </span>
+          </div>
+          <div className="mt-1.5 space-y-0.5 text-[11px] leading-snug text-[var(--pd-faint)]">
+            {sliceLines(ni)}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-[var(--pd-border)] bg-black/10 px-3 py-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
+            Вне графика
+          </div>
+          <div
+            className={cn(
+              'mt-1 text-[1.45rem] font-semibold tabular-nums leading-none',
+              of.shops > 0 ? 'text-[var(--pd-accent-soft)]' : 'text-[var(--pd-text-strong)]',
+            )}
+          >
+            {of.shops}
+            <span className="ml-1.5 text-[0.95rem] font-medium text-[var(--pd-muted)]">
+              {shopWord(of.shops)}
+            </span>
+          </div>
+          <div className="mt-1.5 space-y-0.5 text-[11px] leading-snug text-[var(--pd-faint)]">
+            {sliceLines(of)}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-[var(--pd-border)] bg-black/10 px-3 py-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
+            Склады
+          </div>
+          <div className="mt-1 text-[1.45rem] font-semibold tabular-nums leading-none text-[var(--pd-text-strong)]">
+            {planWarehouses > 0 ? (
+              <>
+                {whPlanPct}
+                <span className="text-[0.95rem] font-medium text-[var(--pd-muted)]">%</span>
+              </>
+            ) : (
+              whTotal
+            )}
+          </div>
+          <div className="mt-1.5 space-y-0.5 text-[11px] leading-snug text-[var(--pd-faint)]">
+            <div>
+              {planWarehouses > 0 ? (
+                <>
+                  {whTotal} из {planWarehouses}
+                </>
+              ) : (
+                <>{whTotal}</>
+              )}
+            </div>
+            <div>
+              нет в графике {ni.warehouses}
+              {planWarehouses > 0 ? (
+                <span className="text-[var(--pd-muted)]"> ({whPct(ni.warehouses)}%)</span>
+              ) : null}
+              {' · '}
+              вне {of.warehouses}
+              {planWarehouses > 0 ? (
+                <span className="text-[var(--pd-muted)]"> ({whPct(of.warehouses)}%)</span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </div>
+    </DashPanel>
+  );
+}
+
+/**
+ * Панель White / Black — без дубля KPI: списки + причины (PDF = Блок 1).
+ */
+function ModePanel({
   mode,
   title,
   result,
@@ -637,162 +835,144 @@ function ReportColumn({
   const shops = result.tree;
   const emptyHint = !daysTitle && result.total === 0;
 
-  const shopWord = (n: number): string =>
-    n === 1 ? 'цех' : n > 1 && n < 5 ? 'цеха' : 'цехов';
-
   return (
-    <div
-      className={cn(
-        'flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border border-border-subtle',
-        mode === 'white' ? 'bg-white/[0.03]' : 'bg-black/20',
-      )}
-      data-report-mode={mode}
-    >
-      {/* шапка колонки */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border-subtle px-3 py-2">
-        <FileText
-          className={cn(
-            'h-4 w-4',
-            mode === 'white' ? 'text-amber-200' : 'text-slate-300',
-          )}
-          strokeWidth={1.75}
-        />
-        <span className="text-[13px] font-semibold text-text-primary">{title}</span>
+    <DashPanel
+      half
+      tightHead
+      title={
+        <span className="inline-flex items-center gap-2">
+          <span
+            className={cn(
+              'inline-block h-2 w-2 rounded-full',
+              mode === 'white' ? 'bg-amber-300/90' : 'bg-slate-300/80',
+            )}
+            aria-hidden
+          />
+          {title}
+        </span>
+      }
+      headRight={
         <button
           type="button"
-          disabled={daysTitle === '' && result.total === 0}
+          disabled={emptyHint}
           onClick={onPrint}
           title="Печать / PDF"
-          className="ml-auto flex h-7 items-center gap-1.5 rounded-md bg-accent-clay-bg px-2.5 text-[12px] font-medium text-accent-clay outline-none transition-colors hover:bg-accent-clay/20 disabled:opacity-40"
+          className="flex h-7 items-center gap-1.5 rounded-md border border-white/[0.1] bg-white/[0.04] px-2.5 text-[11.5px] font-medium text-[var(--pd-text)] outline-none transition-colors hover:border-[var(--pd-accent)]/40 hover:bg-[var(--pd-accent-dim)] hover:text-[var(--pd-accent-soft)] disabled:opacity-40"
         >
           <Printer className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Печать
+          PDF
         </button>
-      </div>
-
+      }
+      className={mode === 'white' ? 'ring-1 ring-amber-200/10' : 'ring-1 ring-slate-300/10'}
+    >
       {emptyHint ? (
-        <div className="px-3 py-2 text-[12px] text-text-muted">Выберите дни для расчёта</div>
+        <DashEmpty>Выберите дни для расчёта</DashEmpty>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col px-3 pt-2 pb-0">
-          {/* фиксированный блок сводки */}
-          <div className="shrink-0 space-y-1.5 text-[12px] text-text-primary">
-            <p className="m-0 leading-snug">
-              По плану экспедиции вывезено{' '}
-              <span className="font-semibold">{result.shipped}</span> из{' '}
-              <span className="font-semibold">{result.total}</span> позиций —{' '}
-              <span className="font-semibold">{result.percent}%</span>
-            </p>
-            {/* Нет в графике — только если есть; нумерованный список цехов */}
-            {notIn.length > 0 && (
-              <div>
-                <p className="m-0 leading-snug">
-                  Нет в графике:{' '}
-                  <span className="font-semibold">{notIn.length}</span> {shopWord(notIn.length)}
-                </p>
-                <ol className="m-0 mt-0.5 list-none space-y-0.5 p-0 text-text-muted">
-                  {notIn.map((name, i) => (
-                    <li key={name} className="flex gap-1.5 leading-snug">
-                      <span className="w-5 shrink-0 text-center tabular-nums">{i + 1}.</span>
-                      <span className="min-w-0">{name}</span>
-                    </li>
-                  ))}
-                </ol>
+        <div className="flex flex-col gap-3">
+          {notIn.length > 0 && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
+                Нет в графике · {notIn.length} {shopWord(notIn.length)}
               </div>
-            )}
-            {/* Вне графика — только если есть */}
-            {off.length > 0 && (
-              <div>
-                <p className="m-0 leading-snug">
-                  Вне графика:{' '}
-                  <span className="font-semibold">{off.length}</span> {shopWord(off.length)}
-                </p>
-                <ol className="m-0 mt-0.5 list-none space-y-0.5 p-0 text-text-muted">
-                  {off.map((name, i) => (
-                    <li key={name} className="flex gap-1.5 leading-snug">
-                      <span className="w-5 shrink-0 text-center tabular-nums">{i + 1}.</span>
-                      <span className="min-w-0">{name}</span>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            )}
-            <p className="m-0 pb-1 font-semibold leading-snug">Из невывезенных</p>
-          </div>
+              <DashList>
+                {notIn.map((name, i) => (
+                  <DashRow
+                    key={name}
+                    titleWrap
+                    leading={
+                      <span className="w-4 shrink-0 pt-0.5 text-center text-[12px] tabular-nums text-[var(--pd-faint)]">
+                        {i + 1}.
+                      </span>
+                    }
+                    title={name}
+                  />
+                ))}
+              </DashList>
+            </div>
+          )}
 
-          {/* прокрутка только списка цехов; шапка таблицы sticky */}
-          <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+          {off.length > 0 && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
+                Вне графика · {off.length} {shopWord(off.length)}
+              </div>
+              <DashList>
+                {off.map((name, i) => (
+                  <DashRow
+                    key={name}
+                    titleWrap
+                    leading={
+                      <span className="w-4 shrink-0 pt-0.5 text-center text-[12px] tabular-nums text-[var(--pd-faint)]">
+                        {i + 1}.
+                      </span>
+                    }
+                    title={name}
+                  />
+                ))}
+              </DashList>
+            </div>
+          )}
+
+          <div>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
+              Из невывезенных
+            </div>
             {shops.length === 0 ? (
-              <p className="m-0 text-[12px] text-text-muted">
+              <DashEmpty>
                 {result.total === 0
                   ? 'Нет зафиксированных позиций отчёта за выбранные дни.'
                   : 'Все позиции вывезены — причин невывоза нет.'}
-              </p>
+              </DashEmpty>
             ) : (
-              <table className="w-auto max-w-full border-collapse text-[12px]">
-                <thead className="sticky top-0 z-[1] bg-bg-surface">
-                  <tr className="text-left text-[11px] text-text-muted">
-                    <th className="border-b border-border-subtle bg-bg-surface py-0.5 pr-2 text-center font-medium">
-                      №
-                    </th>
-                    <th className="border-b border-border-subtle bg-bg-surface py-0.5 pr-2 font-medium">
-                      Цех
-                    </th>
-                    <th className="border-b border-border-subtle bg-bg-surface py-0.5 text-left font-medium">
-                      поз.
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shops.map((shop, i) => (
-                    <Fragment key={shop.shop}>
-                      <tr>
-                        <td className="py-0.5 pr-2 text-center align-middle tabular-nums text-text-muted">
-                          {i + 1}
-                        </td>
-                        <td className="py-0.5 pr-2 align-top font-medium leading-snug">
-                          {shop.shop}
-                        </td>
-                        <td className="py-0.5 text-left align-top tabular-nums">
-                          <strong>[{shop.count}]</strong>
-                        </td>
-                      </tr>
-                      {shop.reasons.length > 0 && (
-                        <tr>
-                          <td />
-                          <td colSpan={2} className="pb-1.5 pl-0.5">
-                            <ul className="m-0 list-none space-y-0.5 border-l border-border-subtle p-0 pl-2">
-                              {shop.reasons.map((r) => (
-                                <li key={r.label}>
-                                  <div className="leading-snug">
-                                    {r.label} <strong>[{r.count}]</strong>
-                                  </div>
-                                  {r.notes.length > 0 && (
-                                    <ul className="ml-2 mt-0.5 list-none space-y-0.5 p-0 text-[11px] text-text-muted">
-                                      {r.notes.map((n) => (
-                                        <li key={n.note} className="leading-snug">
-                                          {n.note}
-                                          {n.count > 1 ? (
-                                            <strong> ×{n.count}</strong>
-                                          ) : null}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  )}
-                                </li>
-                              ))}
-                            </ul>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
+              <div className="space-y-0">
+                {shops.map((shop, i) => (
+                  <div
+                    key={shop.shop}
+                    className="border-b border-[var(--pd-border)] py-1.5 last:border-b-0"
+                  >
+                    <div className="flex items-start gap-2 text-[12.5px] leading-snug">
+                      <span className="w-5 shrink-0 text-center tabular-nums text-[var(--pd-faint)]">
+                        {i + 1}
+                      </span>
+                      <span className="min-w-0 flex-1 font-medium text-[var(--pd-text-strong)]">
+                        {shop.shop}
+                      </span>
+                      <span className="shrink-0 tabular-nums font-semibold text-[var(--pd-accent-soft)]">
+                        [{shop.count}]
+                      </span>
+                    </div>
+                    {shop.reasons.length > 0 && (
+                      <ul className="m-0 ml-7 mt-1 list-none space-y-0.5 border-l border-[var(--pd-border)] p-0 pl-2.5">
+                        {shop.reasons.map((r) => (
+                          <li key={r.label} className="text-[12px] leading-snug text-[var(--pd-text)]">
+                            {r.label}{' '}
+                            <strong className="tabular-nums text-[var(--pd-text-strong)]">
+                              [{r.count}]
+                            </strong>
+                            {r.notes.length > 0 && (
+                              <ul className="m-0 ml-1.5 mt-0.5 list-none space-y-0.5 p-0 text-[11px] text-[var(--pd-muted)]">
+                                {r.notes.map((n) => (
+                                  <li key={n.note} className="leading-snug">
+                                    {n.note}
+                                    {n.count > 1 ? (
+                                      <strong className="text-[var(--pd-text)]"> ×{n.count}</strong>
+                                    ) : null}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>
       )}
-    </div>
+    </DashPanel>
   );
 }
 
@@ -994,59 +1174,173 @@ export function ReportScreen(): JSX.Element {
     [scheduleSave],
   );
 
-  /** Блок 2: машины на выбранные дни (fixation). */
+  /** Блок 3: машины (только с гаражным + вывезено). */
   const fleetGroups = useMemo(
     () => buildReportFleetGroups(rows, sortedDays),
     [rows, sortedDays],
   );
 
+  const persons = usePersonsStore((s) => s.persons);
+  useEffect(() => {
+    void initPersons();
+  }, []);
+
+  /** ФИО (exp) → роль потока по базе контактов. */
+  const resolveFleetRole = useMemo(() => {
+    const byId = new Map<string, FleetFlowRole>();
+    for (const p of persons) {
+      const g = String(p.broadcastGroup || '');
+      let role: FleetFlowRole | null = null;
+      if (g === 'Экспедиторы') role = 'expeditor';
+      else if (g === 'Водители-экспедиторы') role = 'driver_expeditor';
+      if (!role) continue;
+      const id = expeditorId(p.fio);
+      if (id) byId.set(id, role);
+    }
+    return (fio: string): FleetFlowRole | null => {
+      const id = expeditorId(fio);
+      if (!id) return null;
+      return byId.get(id) ?? null;
+    };
+  }, [persons]);
+
+  const fleetPeople = useMemo(
+    () => countFleetPeople(fleetGroups, resolveFleetRole),
+    [fleetGroups, resolveFleetRole],
+  );
+
+  const fleetTitle = useMemo(() => {
+    const bits = [`ТС ${countFleetVehicles(fleetGroups)}`];
+    bits.push(`Экспедиторы ${fleetPeople.expeditors}`);
+    if (fleetPeople.driverExpeditors > 0) {
+      bits.push(`Водители-экспедиторы ${fleetPeople.driverExpeditors}`);
+    }
+    if (fleetPeople.others > 0) {
+      bits.push(`Иные ${fleetPeople.others}`);
+    }
+    return `Блок 3 · ${bits.join(' · ')}`;
+  }, [fleetGroups, fleetPeople]);
+
+  const periodMeta =
+    sortedDays.length === 0
+      ? 'выберите дни в календаре'
+      : sortedDays.length === 1
+        ? '1 день'
+        : `дней ${sortedDays.length}`;
+
+  const plan = useMemo(
+    () => computePlanFromSchedule(sortedDays, scheduleMetaMap, whByKey),
+    [sortedDays, scheduleMetaMap, whByKey],
+  );
+
+  const shopFactPct = (fact: number): number => pctOf(fact, plan.planShops);
+
   return (
-    <div className="report-screen flex h-full min-h-0 min-w-0 w-full max-w-full flex-1 flex-col overflow-hidden">
-      {/* Тулбар как на Карте: заголовок слева, действия ml-auto справа */}
-      <div className="drag-region flex h-9 w-full min-w-0 shrink-0 items-center gap-2 overflow-hidden px-4">
-        <span className="no-drag-region shrink-0 text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
+    <div className="report-screen flex h-full min-h-0 min-w-0 w-full max-w-full flex-1 flex-col overflow-hidden bg-[var(--pd-bg,#1f1e1b)]">
+      <div className="drag-region flex h-9 w-full min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-white/[0.06] px-4">
+        <span className="no-drag-region shrink-0 text-[13px] font-semibold tracking-[-0.005em] text-[var(--pd-text-strong,#f5f4ef)]">
           Сводка
         </span>
         <div className="no-drag-region ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
           {loading && (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-text-muted" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--pd-faint)]" />
           )}
           <ReportDayPicker selected={days} onChange={setDays} dayHints={dayHints} />
         </div>
       </div>
-      <WorkspaceCard>
-        <div className="flex h-full min-h-0 min-w-0 w-full max-w-full flex-1 flex-col gap-1.5 overflow-hidden p-1.5">
-          <div className="min-w-0 w-full max-w-full shrink-0 overflow-hidden">
-            <ManualBlock
-              days={sortedDays}
-              byDay={manual}
-              onPatchDay={onPatchDay}
-            />
-          </div>
-          {/* Блок 2 — сбор машин; скрыт, если нет данных */}
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <DashShell aria-label="Дашборд сводки">
+          <DashHeader
+            full
+            title={daysTitle || 'Период не выбран'}
+            meta={periodMeta}
+          />
+
+          <SplitKpi
+            half
+            label="Вывезено позиций"
+            white={{
+              value: `${white.percent}%`,
+              meta: (
+                <>
+                  {white.shipped} из {white.total}
+                </>
+              ),
+              tone: shippedTone(white.percent),
+            }}
+            black={{
+              value: `${black.percent}%`,
+              meta: (
+                <>
+                  {black.shipped} из {black.total}
+                </>
+              ),
+              tone: shippedTone(black.percent),
+            }}
+          />
+          <SplitKpi
+            half
+            label="Цеха всего"
+            white={{
+              value:
+                plan.planShops > 0
+                  ? `${shopFactPct(white.shopCount)}%`
+                  : white.shopCount,
+              meta:
+                plan.planShops > 0 ? (
+                  <>
+                    {white.shopCount} из {plan.planShops}
+                  </>
+                ) : (
+                  white.shopCount
+                ),
+            }}
+            black={{
+              value:
+                plan.planShops > 0
+                  ? `${shopFactPct(black.shopCount)}%`
+                  : black.shopCount,
+              meta:
+                plan.planShops > 0 ? (
+                  <>
+                    {black.shopCount} из {plan.planShops}
+                  </>
+                ) : (
+                  black.shopCount
+                ),
+            }}
+          />
+
+          <GraphDetailPanel result={white} planWarehouses={plan.planWarehouses} />
+
+          <ModePanel
+            mode="white"
+            title="White"
+            result={white}
+            daysTitle={daysTitle}
+            onPrint={() => setPrintMode('white')}
+          />
+          <ModePanel
+            mode="black"
+            title="Black"
+            result={black}
+            daysTitle={daysTitle}
+            onPrint={() => setPrintMode('black')}
+          />
+
+          <DashPanel full tightHead title="Блок 2">
+            <ManualBlock days={sortedDays} byDay={manual} onPatchDay={onPatchDay} />
+          </DashPanel>
+
           {fleetGroups.length > 0 && (
-            <div className="min-w-0 w-full max-w-full shrink-0 overflow-hidden">
-              <FleetBlock groups={fleetGroups} />
-            </div>
+            <DashPanel full tightHead title={fleetTitle}>
+              <FleetBlock groups={fleetGroups} embedded />
+            </DashPanel>
           )}
-          <div className="flex min-h-0 min-w-0 w-full max-w-full flex-1 gap-1.5 overflow-hidden">
-            <ReportColumn
-              mode="white"
-              title="White"
-              result={white}
-              daysTitle={daysTitle}
-              onPrint={() => setPrintMode('white')}
-            />
-            <ReportColumn
-              mode="black"
-              title="Black"
-              result={black}
-              daysTitle={daysTitle}
-              onPrint={() => setPrintMode('black')}
-            />
-          </div>
-        </div>
-      </WorkspaceCard>
+        </DashShell>
+      </div>
+
       {printMode && (
         <ReportPrint
           mode={printMode}
@@ -1055,6 +1349,9 @@ export function ReportScreen(): JSX.Element {
           byDay={manual}
           result={printMode === 'white' ? white : black}
           fleetGroups={fleetGroups}
+          planShops={plan.planShops}
+          planWarehouses={plan.planWarehouses}
+          fleetPeople={fleetPeople}
           onClose={() => setPrintMode(null)}
         />
       )}
