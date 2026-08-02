@@ -1,0 +1,477 @@
+/*
+ * Дизайн Tabulator-спайка Транспорта — 1:1 палитра листа «Поток» (canon
+ * flow-grid-theme.ts, glide): лист ВСЕГДА тёплый светлый документ, независимо
+ * от тёмного хрома приложения (сайдбар/карточка). Юзер 2026-08-01: старый
+ * вариант тянул чужие shadcn/openstatus-токены → разнобой с остальным Flow +
+ * оверлеи Tabulator (edit-list/menu) портятся в document.body МИМО этого
+ * скоупа (не наши правила, а браузерный дефолт — оттуда «огромный текст» и
+ * «нет выравнивания» в выпадашках). Фикс структуры — `popupContainer:
+ * containerRef.current` в flow-tabulator-transport.tsx, чтобы оверлеи стали
+ * потомками `.flow-tabulator-root` и эти правила реально попадали в них.
+ */
+
+.flow-tabulator-root {
+  --bg-cell: #fdfdfb;
+  --bg-cell-alt: #f6f5f1;
+  --bg-header: #f2f1ec;
+  --bg-header-hover: #ecebe5;
+  --text-strong: #0a0a0a;
+  --text-medium: #33312e;
+  --text-muted: #6b6862;
+  --border-hair: rgba(0, 0, 0, 0.09);
+  --border-soft: rgba(0, 0, 0, 0.13);
+  --border-strong: rgba(0, 0, 0, 0.18);
+  --accent: #d97757;
+  --accent-bg: rgba(217, 119, 87, 0.16);
+  --radius: 8px;
+
+  font-family: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-medium);
+  background: var(--bg-cell);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===================== Тулбар/панель ===================== */
+.flow-tabulator-root .flow-tab-btn {
+  display: flex;
+  height: 24px;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  padding: 0 7px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: transparent;
+  transition: color 0.1s ease, border-color 0.1s ease;
+}
+.flow-tabulator-root .flow-tab-btn:hover {
+  color: var(--text-strong);
+  border-color: var(--border-strong);
+}
+.flow-tabulator-root .flow-tab-btn[data-active='true'] {
+  color: var(--text-strong);
+  border-color: var(--accent);
+}
+.flow-tabulator-root .flow-tab-toolbar {
+  background: var(--bg-cell);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+}
+.flow-tabulator-root .flow-tab-toolbar button {
+  color: var(--text-muted);
+  border-radius: 5px;
+}
+.flow-tabulator-root .flow-tab-toolbar button:hover:not(:disabled) {
+  background: var(--bg-header);
+  color: var(--text-strong);
+}
+.flow-tabulator-root .flow-tab-toolbar button:disabled {
+  opacity: 0.4;
+}
+.flow-tabulator-root .flow-tab-panel {
+  background: var(--bg-cell);
+  border-right: 1px solid var(--border-hair);
+  color: var(--text-medium);
+}
+.flow-tabulator-root .flow-tab-search {
+  background: var(--bg-cell-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  color: var(--text-strong);
+}
+.flow-tabulator-root .flow-tab-search input::placeholder {
+  color: var(--text-muted);
+}
+.flow-tabulator-root .flow-tab-facet {
+  border-color: var(--border-hair);
+}
+.flow-tabulator-root .flow-tab-facet button {
+  color: var(--text-muted);
+}
+.flow-tabulator-root .flow-tab-facet-badge {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+.flow-tabulator-root .flow-tab-facet-search {
+  background: var(--bg-cell-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  color: var(--text-strong);
+}
+.flow-tabulator-root .flow-tab-facet-list {
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+}
+.flow-tabulator-root .flow-tab-facet-list label,
+.flow-tabulator-root .flow-tab-facet-list button {
+  border-color: var(--border-hair);
+  background: transparent;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.flow-tabulator-root .flow-tab-facet-list label:hover,
+.flow-tabulator-root .flow-tab-facet-list button:hover {
+  background: var(--bg-header);
+}
+.flow-tabulator-root .flow-tab-facet-list .flow-tab-facet-item--on {
+  background: var(--accent-bg);
+}
+/* pyn-tick в панели фильтров (classic) */
+.flow-tabulator-root .flow-tab-facet-list .pyn-tick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  background: rgba(0, 0, 0, 0.03);
+  color: transparent;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.flow-tabulator-root .flow-tab-facet-list .pyn-tick--on {
+  border-color: rgba(217, 119, 87, 0.55);
+  background: rgba(217, 119, 87, 0.12);
+  color: #c46a4a;
+}
+
+/* Глобальный thumb полосы прокрутки — белёсый (rgba(255,255,255,.06), index.css),
+ * на нашем светлом листе (#FDFDFB) практически невидим → юзер не видел, что можно
+ * крутить по горизонтали, «таблица обрезана». Тот же приём, что у `.flow-grid`
+ * (index.css) — тёмный thumb на светлом листе. */
+.flow-tabulator-root ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.28);
+  background-clip: padding-box;
+}
+.flow-tabulator-root ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.44);
+  background-clip: padding-box;
+}
+
+/* ===================== Таблица (Tabulator) ===================== */
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator {
+  background: var(--bg-cell);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  color: var(--text-medium);
+  font-size: 12px;
+}
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-header {
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border-strong);
+}
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-col {
+  background: var(--bg-header);
+  border-right: none !important;
+  padding: 0 !important;
+}
+.flow-tabulator-root .tabulator-col-content {
+  padding: 6px 10px !important;
+}
+.flow-tabulator-root .tabulator-col-title {
+  padding: 0 !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  color: var(--text-medium);
+  text-transform: uppercase;
+}
+.flow-tabulator-root .tabulator-col-title-holder {
+  min-height: 0 !important;
+}
+/* Сортировка в шапке выключена (classic: applyOurSort; grok: тоже канон + без UI). */
+.flow-tabulator-root .tabulator-col-sorter {
+  display: none;
+}
+.flow-tabulator-root .tabulator-row {
+  min-height: 40px;
+  background: var(--bg-cell);
+  border-bottom: 1px solid var(--border-hair);
+  color: var(--text-medium);
+  border-left: 3px solid transparent;
+  transition: background-color 0.1s ease;
+}
+/* Только classic: светлый hover. Grok перебивает токенами + !important в pyn-table-theme. */
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-row:hover {
+  background: var(--bg-cell-alt);
+}
+.flow-tabulator-root .tabulator-row.tabulator-row-even {
+  background: var(--bg-cell);
+}
+.flow-tabulator-root .tabulator-cell {
+  padding: 5px 10px !important;
+  font-size: 12px !important;
+  font-weight: 400;
+  line-height: 1.3;
+  border-right: none !important;
+}
+
+/* Портированные (popupContainer) оверлеи — теперь реальные потомки корня. */
+.flow-tabulator-root .tabulator-popup-container {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+/* Classic only — light sheet + dark popover. Grok: pyn-table-theme.css */
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-edit-list,
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-menu {
+  background: #302f2d;
+  border: 1px solid rgba(234, 221, 216, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  color: #e5e5e2;
+  font-size: 12px;
+  padding: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-edit-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  background-clip: padding-box;
+}
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-edit-list-item {
+  border-radius: 6px;
+  padding: 5px 8px !important;
+  color: #e5e5e2;
+}
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-edit-list-item:hover {
+  background: rgba(217, 119, 87, 0.2) !important;
+  color: #e5e5e2 !important;
+}
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-edit-list-item.active,
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-edit-list-item.focused {
+  background: rgba(217, 119, 87, 0.25) !important;
+  color: #f5f4ef !important;
+}
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-edit-list-placeholder {
+  color: #a6a39b;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-edit-list-group {
+  color: #a6a39b;
+  border-color: rgba(255, 255, 255, 0.07);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* Богатая карточка водителя внутри выпадашки (itemFormatter «Водитель») — ФИО цветом
+ * статуса + телефон снизу + пилюля МОЛ, 1:1 с glide FlowDriverEditor. */
+.flow-tab-opt-driver {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.25;
+}
+.flow-tab-opt-driver-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: #e5e5e2;
+}
+.flow-tab-opt-driver-phone {
+  font-size: 10.5px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  color: #a6a39b;
+}
+.flow-tab-opt-mol-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 5px;
+  border: 1px solid rgba(217, 119, 87, 0.3);
+  border-radius: 6px;
+  background: rgba(217, 119, 87, 0.2);
+  color: #d97757;
+  font-size: 9.5px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+/* Classic: светлый инпут. Grok — pyn-table-theme (flush cell). */
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-cell.tabulator-editing input,
+.flow-tabulator-root:not([data-pyn-table-theme='grok']) .tabulator-cell.tabulator-editing select {
+  background: var(--bg-cell);
+  color: var(--text-strong);
+  font-size: 12px;
+  font-family: inherit;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+/* Даты/время — моноширинные, приглушённые, по центру (юзер: «нет выравнивания»). */
+.flow-tabulator-root .tabulator-cell[tabulator-field='tdate'],
+.flow-tabulator-root .tabulator-cell[tabulator-field='time_range'],
+.flow-tabulator-root .tabulator-cell[tabulator-field='fact_start'],
+.flow-tabulator-root .tabulator-cell[tabulator-field='fact_end'] {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11px !important;
+  color: var(--text-muted);
+}
+
+/* Стек №·ГОС — гаражный сверху, гос номер мельче/бледнее снизу. */
+.flow-tab-garage-stack {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.flow-tab-garage-stack b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.flow-tab-garage-stack span {
+  font-size: 10.5px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  color: var(--text-muted);
+}
+
+/* Стек Водитель — ФИО (цвет статуса) сверху, телефон жирным снизу (как в глиде). */
+.flow-tab-driver-stack {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+  gap: 1px;
+}
+.flow-tab-driver-stack > span:first-child {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-strong);
+}
+.flow-tab-driver-sub {
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  color: var(--text-muted);
+}
+.flow-tab-mol-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: #8a4b2e;
+  font-size: 9px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+/* Панель «История» — наш dark clay sheet */
+.pyn-hist-sheet {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 40;
+  width: min(340px, calc(100% - 20px));
+  max-height: min(72%, 480px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid rgba(234, 221, 216, 0.12);
+  background: #302f2d;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  color: #e5e5e2;
+  font-family: var(--app-font, Inter, system-ui, sans-serif);
+  overflow: hidden;
+}
+.pyn-hist-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.pyn-hist-sheet-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #f5f4ef;
+}
+.pyn-hist-sheet-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #a6a39b;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.pyn-hist-sheet-close:hover {
+  color: #f5f4ef;
+  background: rgba(255, 255, 255, 0.06);
+}
+.pyn-hist-sheet-body {
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+.pyn-hist-empty {
+  padding: 28px 12px;
+  text-align: center;
+  font-size: 12.5px;
+  color: #a6a39b;
+}
+.pyn-hist-item {
+  padding: 10px 8px;
+  border-radius: 8px;
+  transition: background 0.1s ease;
+}
+.pyn-hist-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.pyn-hist-item + .pyn-hist-item {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.pyn-hist-col {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #a6a39b;
+  margin-bottom: 4px;
+}
+.pyn-hist-change {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.45rem;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #f5f4ef;
+}
+.pyn-hist-old {
+  color: #a6a39b;
+  text-decoration: line-through;
+  text-decoration-color: rgba(166, 163, 155, 0.45);
+}
+.pyn-hist-arrow {
+  color: #71717a;
+  font-size: 11px;
+}
+.pyn-hist-new {
+  color: #e8a48a;
+  font-weight: 500;
+}
+.pyn-hist-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #71717a;
+  line-height: 1.35;
+}

@@ -9,23 +9,24 @@ interface FlowViewSwitchProps {
   mode: FlowViewMode;
   /** Сменить режим (Общий ↔ Личный). */
   onModeChange: (m: FlowViewMode) => void;
-  /** Кто последний поставил общий вид (ФИО + когда). Пусто — общий вид не задан. */
+  /** Кто последний поставил общий вид (ФИО + когда). */
   sharedAuthor: { updatedBy: string; updatedByName: string; updatedAt: string };
-  /** Есть ли непустой ОБЩИЙ вид (показ автора + доступность «Сбросить общий»). */
+  /** Есть непустой общий вид (для default-меню сброса). */
   hasSharedView: boolean;
-  /** Есть ли непустой ЛИЧНЫЙ вид (доступность «Сбросить личный»). */
+  /** Есть непустой личный вид (для default-меню сброса). */
   hasPersonalView: boolean;
-  /** Сбросить вид к стандарту (снять все фильтры/сортировку) — личный или общий. */
-  onReset: (target: FlowViewMode) => void;
+  /** Сброс вида — только default (Glide/Формирование). Grok: без сброса. */
+  onReset?: (target: FlowViewMode) => void;
+  /**
+   * grok — один ползунок «Личный»: вкл = свой, выкл = общий. Без сброса.
+   * default — выпадашка Общий/Личный + сброс (как раньше).
+   */
+  variant?: 'default' | 'grok';
 }
 
 /**
- * Переключатель видов раздела «Поток» — «Общий / Личный» (filter-views, как в Google-
- * таблицах). Вид = UI-слой над данными (фильтры/сортировка/масштаб), строки не меняет.
- *   • Общий  — синхронный, на сервере, виден всем; кто поставил — ФИО + дата по Екб.
- *   • Личный — приватный, в localStorage, виден только себе.
- * Кнопка называется «Вид» и показывает текущий режим (Общий/Личный) — не нужно раскрывать,
- * чтобы вспомнить. В выпадашке 4 пункта: Общий · Личный · Сбросить личный · Сбросить общий.
+ * Переключатель видов: Общий (сервер) / Личный (localStorage).
+ * Grok: ползунок «Личный» (вкл по умолчанию), сброса нет — настроил и сохранил.
  */
 export function FlowViewSwitch({
   mode,
@@ -34,20 +35,45 @@ export function FlowViewSwitch({
   hasSharedView,
   hasPersonalView,
   onReset,
+  variant = 'default',
 }: FlowViewSwitchProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const setAt = useFormatYek(sharedAuthor.updatedAt || undefined);
   const authorName = sharedAuthor.updatedByName || sharedAuthor.updatedBy;
-  // Автора показываем только когда есть НЕПУСТОЙ общий вид и известно, кто поставил.
   const showAuthor = hasSharedView && !!sharedAuthor.updatedBy;
   const modeLabel = mode === 'shared' ? 'Общий' : 'Личный';
+  const isGrok = variant === 'grok';
+  const isPersonal = mode === 'personal';
+
+  if (isGrok) {
+    return (
+      <button
+        type="button"
+        role="switch"
+        aria-checked={isPersonal}
+        title={
+          isPersonal
+            ? 'Личный вид (свой). Выкл — общий вид для всех'
+            : 'Общий вид. Вкл — личный (свой)'
+        }
+        onClick={() => onModeChange(isPersonal ? 'shared' : 'personal')}
+        className="flow-tab-tool-btn flow-view-toggle gap-2 px-2"
+        data-active={isPersonal ? 'true' : 'false'}
+      >
+        <span className="flow-view-switch-track" data-on={isPersonal ? 'true' : 'false'} aria-hidden>
+          <span className="flow-view-switch-thumb" />
+        </span>
+        <span className="text-[11.5px] font-medium">{isPersonal ? 'Личный' : 'Общий'}</span>
+      </button>
+    );
+  }
 
   const switchTo = (m: FlowViewMode) => {
     if (m !== mode) onModeChange(m);
     setOpen(false);
   };
   const reset = (target: FlowViewMode) => {
-    onReset(target);
+    onReset?.(target);
     setOpen(false);
   };
 
@@ -73,7 +99,6 @@ export function FlowViewSwitch({
           sideOffset={6}
           className="z-30 w-[256px] rounded-lg border border-white/[0.08] bg-bg-elevated p-1.5 text-text-primary shadow-2xl outline-none"
         >
-          {/* Общий — синхронный серверный вид; под ним «кто поставил». */}
           <ModeRow
             active={mode === 'shared'}
             icon={<Users size={14} strokeWidth={1.75} />}
@@ -81,7 +106,6 @@ export function FlowViewSwitch({
             onClick={() => switchTo('shared')}
           >
             {showAuthor && (
-              // Полное ФИО + дата-время по Екб — во всю ширину (под иконкой), переносим, НЕ режем.
               <div className="mt-1 whitespace-normal break-words text-[10.5px] leading-snug text-text-muted/80">
                 {authorName}
                 {setAt ? ` · ${setAt}` : ''}
@@ -89,7 +113,6 @@ export function FlowViewSwitch({
             )}
           </ModeRow>
 
-          {/* Личный — приватный вид (localStorage), виден только себе. */}
           <ModeRow
             active={mode === 'personal'}
             icon={<User size={14} strokeWidth={1.75} />}
@@ -97,21 +120,23 @@ export function FlowViewSwitch({
             onClick={() => switchTo('personal')}
           />
 
-          <div className="mx-1 my-1 h-px bg-white/[0.07]" />
-
-          {/* Сброс к стандарту (снять все фильтры/сортировку) — личный или общий. */}
-          <ResetRow
-            label="Сбросить личный"
-            disabled={!hasPersonalView}
-            title="Снять все фильтры и сортировку в вашем личном виде"
-            onClick={() => reset('personal')}
-          />
-          <ResetRow
-            label="Сбросить общий"
-            disabled={!hasSharedView}
-            title="Снять все фильтры и сортировку в общем виде — у всех"
-            onClick={() => reset('shared')}
-          />
+          {onReset && (
+            <>
+              <div className="mx-1 my-1 h-px bg-white/[0.07]" />
+              <ResetRow
+                label="Сбросить личный"
+                disabled={!hasPersonalView}
+                title="Снять все фильтры и сортировку в вашем личном виде"
+                onClick={() => reset('personal')}
+              />
+              <ResetRow
+                label="Сбросить общий"
+                disabled={!hasSharedView}
+                title="Снять все фильтры и сортировку в общем виде — у всех"
+                onClick={() => reset('shared')}
+              />
+            </>
+          )}
 
           <Popover.Arrow className="fill-bg-elevated" />
         </Popover.Content>
@@ -120,7 +145,6 @@ export function FlowViewSwitch({
   );
 }
 
-/** Строка выбора режима: иконка + название + галка активного (+ опц. под-строка автора). */
 function ModeRow({
   active,
   icon,
@@ -157,7 +181,6 @@ function ModeRow({
   );
 }
 
-/** Строка сброса вида (личный / общий) — снять все фильтры и сортировку к стандарту. */
 function ResetRow({
   label,
   disabled,

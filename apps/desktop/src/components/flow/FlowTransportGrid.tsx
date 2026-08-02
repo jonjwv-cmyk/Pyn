@@ -204,11 +204,17 @@ export function vehicleBrand(model: string): string {
   return tokens[0] ?? '';
 }
 
-/** YYYY-MM-DD → «июнь 8» (единый формат «Потока»: сначала месяц, потом число). */
-function fmtDay(s: string): string {
+/** Полные имена месяцев в именительном (дата в транспорте: «август 3»). */
+const MONTH_NOM_RU = [
+  'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
+] as const;
+
+/** YYYY-MM-DD → «август 3» (месяц целиком + число, без ведущего нуля). */
+export function fmtDay(s: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || '');
   if (!m) return s || '';
-  return `${MONTH_ABBR_RU[parseInt(m[2] ?? '1', 10) - 1] ?? ''} ${parseInt(m[3] ?? '1', 10)}`;
+  return `${MONTH_NOM_RU[parseInt(m[2] ?? '1', 10) - 1] ?? ''} ${parseInt(m[3] ?? '1', 10)}`;
 }
 
 /** Полное имя дня недели (для заголовка печати одного дня). */
@@ -290,9 +296,28 @@ export function fmtDaysTitle(days: string[]): string {
   return fmtDaysSummary(sorted);
 }
 
-/** «08:00-20:00» → «8:00-20:00» (ведущие нули из показа убраны). */
+/** Одна метка «HH:MM» → «8» если :00, иначе «8:15» (без ведущего нуля часа). */
+function fmtHmCompact(hm: string): string {
+  const m = /^(\d{1,2}):(\d{2})$/.exec((hm || '').trim());
+  if (!m) return (hm || '').trim();
+  const h = String(Number(m[1]));
+  const min = m[2] ?? '00';
+  return min === '00' ? h : `${h}:${min}`;
+}
+
+/**
+ * Время для показа: «08:00-20:00» → «8-20»; «08:15-17:00» → «8:15-17»;
+ * «08:00» → «8»; «08:30» → «8:30». Минуты :00 не пишем.
+ */
 export function fmtTimeRange(s: string): string {
-  return (s || '').replace(/(^|[^\d])0(\d:)/g, '$1$2');
+  const raw = (s || '').trim();
+  if (!raw) return '';
+  const range = /^(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})$/.exec(raw);
+  if (range) return `${fmtHmCompact(range[1]!)}-${fmtHmCompact(range[2]!)}`;
+  const single = /^(\d{1,2}:\d{2})$/.exec(raw);
+  if (single) return fmtHmCompact(single[1]!);
+  // fallback: убрать ведущие нули часов, если формат нестандартный
+  return raw.replace(/\b0(\d):/g, '$1:');
 }
 
 /** «20:00» → «8:00 pm» (24-часовое хранение → 12-часовой показ). */
@@ -395,7 +420,7 @@ function approxWrapLines(text: string, maxW: number, fontPx = 10): number {
 }
 
 /** Ключ сортировки РАБОТЫ по числовому префиксу. */
-function workKey(w: string): number {
+export function workKey(w: string): number {
   const m = /^(\d+)(?:\.(\d+))?/.exec((w || '').trim());
   if (!m) return 9_000_000;
   return Number(m[1]) * 1000 + Number(m[2] ?? 0);
@@ -2619,7 +2644,7 @@ export function FlowMiniCalendar({
  * заполняя пропущенные при переходе на новую строку недели). Точка под числом —
  * день, по которому есть данные. «Применение» — сразу, по ходу протяжки.
  */
-function FlowDayMultiPicker({
+export function FlowDayMultiPicker({
   selected,
   onChange,
   dataDays,
@@ -2861,7 +2886,8 @@ function TransportTripCard({
   );
 }
 
-function TransportTimeModal({
+/** Колесо часа/минуты — общее для Glide и Tabulator (факт нач/кон, форс-м). */
+export function TransportTimeModal({
   title,
   value,
   onClose,
@@ -2964,7 +2990,8 @@ function TimeWheel({ value, onChange }: { value: string; onChange: (value: strin
   );
 }
 
-function ForceMajorModal({
+/** Модалка ФОРС М (несколько записей + время) — общая для Glide и Tabulator. */
+export function ForceMajorModal({
   row,
   onClose,
   onSave,
@@ -3078,10 +3105,9 @@ function ForceMajorModal({
 
 /**
  * Карточка характеристик машины (двойной клик по №·ГОС) — как карточка MAT в формировании.
- * ЧИСТО UI-показ: данные из базы машин (flow_vehicles), на сервере поля хранятся отдельно.
- * Порядок (юзер 2026-06-12): ТИП · ДОП.ТН · ТН · Длина · Ширина · Высота от площадки (метры).
+ * Вверху: замена гаражного; ниже: данные 1С / ТС. Общая для Glide и Tabulator.
  */
-function VehicleSpecCard({
+export function VehicleSpecCard({
   row,
   garage,
   veh,
@@ -3093,16 +3119,28 @@ function VehicleSpecCard({
   row: FlowTransportRow;
   garage: string;
   veh: FlowVehicle | null;
-  x: number;
-  y: number;
+  /** Центр/якорь; если не заданы — по центру экрана. */
+  x?: number;
+  y?: number;
   onClose: () => void;
   onGarageChange: (garage: string) => void;
 }): JSX.Element {
   const [nextGarage, setNextGarage] = useState(row.garage_no || garage);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const ourCapacityKg = adjustedBodyTypeCapacityKg(row.vehicle_type || '', {
     capacityKg: veh?.capacity_kg ?? null,
     maxMassKg: veh?.max_mass_kg ?? null,
   });
+  const centered = x == null || y == null;
+  const tryCommit = (): void => {
+    const after = nextGarage.trim();
+    const before = (row.garage_no || garage).trim();
+    if (!after || after === before) {
+      onClose();
+      return;
+    }
+    setConfirmOpen(true);
+  };
   const Row = ({ label, value, strong = false, muted = false }: { label: string; value: string; strong?: boolean; muted?: boolean }): JSX.Element => (
     <div className="flex items-baseline justify-between gap-3">
       <span className="text-[10px] uppercase tracking-wide text-text-muted/60">{label}</span>
@@ -3113,10 +3151,14 @@ function VehicleSpecCard({
   );
   return (
     <>
-      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
       <div
-        className="fixed z-50 w-[252px] -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-surface p-3 text-[12px] shadow-xl"
-        style={{ left: x, top: y + 4 }}
+        className={
+          centered
+            ? 'fixed left-1/2 top-1/2 z-50 w-[280px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-subtle bg-bg-elevated p-3.5 text-[12px] shadow-2xl'
+            : 'fixed z-50 w-[252px] -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-surface p-3 text-[12px] shadow-xl'
+        }
+        style={centered ? undefined : { left: x, top: (y ?? 0) + 4 }}
       >
         <div className="flex items-baseline gap-2 text-[12px] font-medium text-text-strong">
           Машина {garage}
@@ -3125,14 +3167,20 @@ function VehicleSpecCard({
         <label className="mt-2 flex flex-col gap-1 text-[10px] uppercase tracking-wide text-text-muted/60">
           Заменить гаражный
           <input
+            // eslint-disable-next-line jsx-a11y/no-autofocus
+            autoFocus
             value={nextGarage}
             onChange={(e) => setNextGarage(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key !== 'Enter') return;
-              e.preventDefault();
-              onGarageChange(nextGarage);
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                tryCommit();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                onClose();
+              }
             }}
-            className="h-7 rounded-md border border-border-subtle bg-transparent px-2 text-[12px] normal-case tabular-nums text-text-primary outline-none focus:border-accent-clay/60"
+            className="h-8 rounded-md border border-border-subtle bg-transparent px-2 text-[12px] normal-case tabular-nums text-text-primary outline-none focus:border-accent-clay/60"
           />
         </label>
         {!veh ? (
@@ -3150,7 +3198,55 @@ function VehicleSpecCard({
             <Row label="Высота от площадки" value={veh.hei_mm != null ? `${meters(veh.hei_mm)} м` : ''} />
           </div>
         )}
+        <div className="mt-3 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-7 rounded-md border border-border-subtle px-2.5 text-[11.5px] text-text-secondary hover:text-text-strong"
+          >
+            Закрыть
+          </button>
+          <button
+            type="button"
+            onClick={tryCommit}
+            className="h-7 rounded-md border border-accent-clay/50 bg-accent-clay/15 px-2.5 text-[11.5px] font-medium text-text-strong hover:bg-accent-clay/25"
+          >
+            Применить
+          </button>
+        </div>
       </div>
+      {confirmOpen && (
+        <>
+          <div className="fixed inset-0 z-[60] bg-black/50" onClick={() => setConfirmOpen(false)} />
+          <div className="fixed left-1/2 top-1/2 z-[70] w-[300px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-subtle bg-bg-elevated p-4 shadow-2xl">
+            <div className="text-[13px] font-semibold text-text-strong">Заменить гаражный?</div>
+            <div className="mt-2 text-[12.5px] tabular-nums text-text-secondary">
+              <span className="text-text-muted">{(row.garage_no || garage).trim() || '—'}</span>
+              <span className="mx-2 text-text-muted">→</span>
+              <span className="font-semibold text-accent-clay">{nextGarage.trim()}</span>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(false)}
+                className="h-8 rounded-md border border-border-subtle px-3 text-[12px] text-text-secondary hover:text-text-strong"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmOpen(false);
+                  onGarageChange(nextGarage.trim());
+                }}
+                className="h-8 rounded-md border border-accent-clay/50 bg-accent-clay/20 px-3 text-[12px] font-medium text-text-strong hover:bg-accent-clay/30"
+              >
+                Да, заменить
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }

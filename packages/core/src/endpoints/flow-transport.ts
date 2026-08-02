@@ -334,15 +334,13 @@ export function parseTransport1cPaste(tsv: string): FlowTransportPasteRow[] {
     return -1;
   };
   const iOrder = idxOf('номер');
-  const iType = idxOf('треб тс тип', 'треб тс', 'тип тс');
-  // «Треб. ТС (тип)» → norm «треб тс тип»
-  const iTypeAlt = iType >= 0 ? iType : keys.findIndex((h) => h.includes('треб') && h.includes('тс'));
   const iStatus = idxOf('статус');
   const iWork = idxOf('комментарий');
-  const iGos = idxOf('гос номер', 'госномер', 'гос');
   const iDepart = idxOf('отправление');
   const iArrive = idxOf('прибытие');
   if (iStatus < 0) return [];
+  // «Треб. ТС (тип)» и «Гос номер» — 1С-шные, НЕ наши: ТИП ТС/gos_no остаются
+  // своими (наследуются на сервере), 1С-текст в них не льём (юзер 2026-08-02).
 
   const out: FlowTransportPasteRow[] = [];
   for (let li = 1; li < lines.length; li++) {
@@ -351,8 +349,6 @@ export function parseTransport1cPaste(tsv: string): FlowTransportPasteRow[] {
     const order = iOrder >= 0 ? pick(parts, iOrder) : '';
     const status = iStatus >= 0 ? pick(parts, iStatus) : '';
     const work = iWork >= 0 ? pick(parts, iWork) : '';
-    const gos = iGos >= 0 ? pick(parts, iGos) : '';
-    const vtype = iTypeAlt >= 0 ? pick(parts, iTypeAlt) : '';
     const dep = parse1cDateTime(iDepart >= 0 ? pick(parts, iDepart) : '');
     const arr = parse1cDateTime(iArrive >= 0 ? pick(parts, iArrive) : '');
     const tdate = dep.date || arr.date;
@@ -362,9 +358,11 @@ export function parseTransport1cPaste(tsv: string): FlowTransportPasteRow[] {
     endHm = normalizeFridayEndHm(tdate, endHm);
     const startHm = dep.hm;
     const time_range = startHm && endHm ? `${startHm}-${endHm}` : startHm || endHm || '';
-    const fact = time_range ? time_range : '';
-    const factParts = fact
-      ? [...fact.matchAll(/(\d{1,2}):(\d{2})/g)].map((m) => `${Number(m[1])}:${m[2]}`)
+    // Факт нач/кон — только для Размещён/Дополнение (юзер 2026-08-02); для
+    // Отклонён/Отмена/Открыт и т.д. остаются пустыми (план виден, факт — нет).
+    const factApplies = status === 'Размещен' || status === 'Дополнение';
+    const factParts = factApplies
+      ? [...time_range.matchAll(/(\d{1,2}):(\d{2})/g)].map((m) => `${Number(m[1])}:${m[2]}`)
       : [];
     out.push({
       tdate,
@@ -372,7 +370,7 @@ export function parseTransport1cPaste(tsv: string): FlowTransportPasteRow[] {
       color: '',
       vtype: '',
       model: '',
-      gos_no: gos,
+      gos_no: '',
       max_mass_kg: '',
       capacity_kg: '',
       len_mm: '',
@@ -389,7 +387,6 @@ export function parseTransport1cPaste(tsv: string): FlowTransportPasteRow[] {
       ot: '',
       sp: '',
       order_no: order,
-      vehicle_type: vtype,
       fact_start: factParts[0] || '',
       fact_end: factParts[1] || '',
     });
@@ -507,4 +504,53 @@ export async function flowTransportAdd(
 export async function flowTransportDelete(client: ApiClient, ids: number[]): Promise<number[]> {
   const wire = await client.call<{ deleted?: number[] }>('flow_transport_delete', { ids });
   return Array.isArray(wire.deleted) ? wire.deleted : [];
+}
+
+/** Одна запись истории правок строки (право-клик ячейки, юзер 2026-08-02). */
+export interface FlowTransportHistoryEntry {
+  id: number;
+  rowId: number;
+  /** Имя поля ('(строка)' — событие уровня строки: вставлена/добавлена). */
+  field: string;
+  oldValue: string;
+  newValue: string;
+  /** 'edit' | 'paste' | 'paste_auto' | 'add'. */
+  kind: string;
+  changedBy: string;
+  changedByName: string;
+  changedAt: string;
+}
+
+interface FlowTransportHistoryWire {
+  id?: number;
+  row_id?: number;
+  field?: string;
+  old_value?: string;
+  new_value?: string;
+  kind?: string;
+  changed_by?: string;
+  changed_by_name?: string;
+  changed_at?: string;
+}
+
+/** История правок одной строки (все поля) — для право-клика ячейки в гриде. */
+export async function flowTransportHistoryGet(
+  client: ApiClient,
+  rowId: number,
+): Promise<FlowTransportHistoryEntry[]> {
+  const wire = await client.call<{ rows?: FlowTransportHistoryWire[] }>('flow_transport_history_get', {
+    row_id: rowId,
+  });
+  const rows = Array.isArray(wire.rows) ? wire.rows : [];
+  return rows.map((w) => ({
+    id: Number(w.id) || 0,
+    rowId: Number(w.row_id) || 0,
+    field: w.field ?? '',
+    oldValue: w.old_value ?? '',
+    newValue: w.new_value ?? '',
+    kind: w.kind ?? '',
+    changedBy: w.changed_by ?? '',
+    changedByName: w.changed_by_name ?? '',
+    changedAt: w.changed_at ?? '',
+  }));
 }

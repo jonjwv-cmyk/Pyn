@@ -29,6 +29,7 @@
     "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tanstack/react-virtual": "^3.14.5",
+    "apexcharts": "^6.6.1",
     "clsx": "^2.1.1",
     "emoji-picker-react": "^4.19.1",
     "https-proxy-agent": "^9.0.0",
@@ -42,15 +43,18 @@
     "react-dom": "^18.3.1",
     "react-i18next": "^17.0.8",
     "react-responsive-carousel": "^3.2.23",
+    "tabulator-tables": "6.5.2",
     "tailwind-merge": "^2.5.5",
     "uiohook-napi": "^1.5.5",
     "ws": "^8.20.1"
   },
   "devDependencies": {
+    "@pyn/core": "workspace:*",
     "@pyn/tsconfig": "workspace:*",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/tabulator-tables": "6.3.6",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
@@ -61,8 +65,7 @@
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
     "vite-plugin-electron": "^0.28.8",
-    "vite-plugin-electron-renderer": "^0.14.6",
-    "@pyn/core": "workspace:*"
+    "vite-plugin-electron-renderer": "^0.14.6"
   },
   "build": {
     "appId": "app.pyn.desktop",

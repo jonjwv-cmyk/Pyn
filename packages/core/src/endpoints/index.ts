@@ -359,6 +359,7 @@ export {
   flowTransportEdit,
   flowTransportAdd,
   flowTransportDelete,
+  flowTransportHistoryGet,
   parseTransportPaste,
   parseTransport1cPaste,
   isTransport1cPaste,
@@ -369,6 +370,7 @@ export {
   type FlowTransportPasteResult,
   type FlowTransportPasteMode,
   type FlowTransportEdit,
+  type FlowTransportHistoryEntry,
 } from './flow-transport';
 
 export {

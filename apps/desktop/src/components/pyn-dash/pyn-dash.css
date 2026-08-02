@@ -1,0 +1,880 @@
+/**
+ * PYN Dashboard Kit — конструктор блоков для любых дашбордов.
+ *
+ * Ориентир (не цвета):
+ *  · Tailwind / GitHub density — micro-labels, tabular, border-first, snappy hover
+ *  · Svelte site — soft enter, ease-out motion, airy rhythm, живой hover
+ *
+ * Цвета = наш warm-dark + clay. Подключение:
+ *   import '@/components/pyn-dash/pyn-dash.css';
+ *   import { DashShell, DashKpi, … } from '@/components/pyn-dash';
+ */
+
+/* ── Tokens ─────────────────────────────────────────────── */
+.pyn-dash {
+  --pd-bg: #1f1e1b;
+  --pd-elevated: #302f2d;
+  --pd-deep: #161611;
+  --pd-row-hover: rgba(255, 255, 255, 0.045);
+  --pd-border: rgba(234, 221, 216, 0.1);
+  --pd-border-strong: rgba(234, 221, 216, 0.16);
+  --pd-text: #e5e5e2;
+  --pd-text-strong: #f5f4ef;
+  --pd-muted: #a6a39b;
+  --pd-faint: #71717a;
+  --pd-accent: #d97757;
+  --pd-accent-soft: #e8a48a;
+  --pd-accent-dim: rgba(217, 119, 87, 0.16);
+  --pd-ok: #7dc061;
+  --pd-ok-text: #86efac;
+  --pd-warn: #ffb72b;
+  --pd-danger: #e57373;
+  --pd-danger-soft: #fda4af;
+  --pd-radius: 12px;
+  --pd-radius-sm: 8px;
+  --pd-radius-xs: 6px;
+  --pd-gap: 1rem;
+  --pd-pad: 1rem 1.1rem 2rem;
+  --pd-max: 1320px;
+  /* Motion: snappy UI (TW) + soft enter (Svelte) */
+  --pd-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --pd-ease-ui: cubic-bezier(0.2, 0, 0, 1);
+  --pd-dur-fast: 120ms;
+  --pd-dur-ui: 180ms;
+  --pd-dur-enter: 340ms;
+  --pd-shadow-soft: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+  --pd-shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.22), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  --pd-font: var(--app-font), -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+  font-family: var(--pd-font);
+  color: var(--pd-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Shell ──────────────────────────────────────────────── */
+.pyn-dash-shell {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--pd-gap);
+  padding: var(--pd-pad);
+  max-width: var(--pd-max);
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (min-width: 900px) {
+  .pyn-dash-shell {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1200px) {
+  .pyn-dash-shell {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* Stagger enter (Svelte-soft) */
+.pyn-dash-shell[data-enter='true'] > * {
+  animation: pyn-dash-enter var(--pd-dur-enter) var(--pd-ease-out) both;
+}
+.pyn-dash-shell[data-enter='true'] > *:nth-child(1) { animation-delay: 0ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(2) { animation-delay: 28ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(3) { animation-delay: 56ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(4) { animation-delay: 84ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(5) { animation-delay: 112ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(6) { animation-delay: 140ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(7) { animation-delay: 168ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(8) { animation-delay: 196ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(9) { animation-delay: 224ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(10) { animation-delay: 252ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(11) { animation-delay: 280ms; }
+.pyn-dash-shell[data-enter='true'] > *:nth-child(12) { animation-delay: 308ms; }
+
+@keyframes pyn-dash-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pyn-dash-shell[data-enter='true'] > * {
+    animation: none;
+  }
+  .pyn-dash-kpi,
+  .pyn-dash-panel,
+  .pyn-dash-row,
+  .pyn-dash-chip,
+  .pyn-dash-seg > button {
+    transition: none !important;
+  }
+}
+
+/* Span helpers */
+.pyn-dash-span-full {
+  grid-column: 1 / -1;
+}
+
+/* Три равных блока в ряд (статусы · типы · водители) */
+.pyn-dash-trio {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--pd-gap, 1rem);
+  min-width: 0;
+}
+@media (min-width: 900px) {
+  .pyn-dash-trio {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.pyn-dash-trio > .pyn-dash-panel {
+  min-width: 0;
+  height: 100%;
+}
+.pyn-dash-span-2 {
+  grid-column: span 1;
+}
+@media (min-width: 900px) {
+  .pyn-dash-span-2 {
+    grid-column: span 2;
+  }
+}
+.pyn-dash-span-half {
+  grid-column: 1 / -1;
+}
+@media (min-width: 900px) {
+  .pyn-dash-span-half {
+    grid-column: span 1;
+  }
+}
+@media (min-width: 1200px) {
+  .pyn-dash-span-half {
+    grid-column: span 2;
+  }
+}
+
+/* ── Surface card base ──────────────────────────────────── */
+.pyn-dash-surface {
+  border-radius: var(--pd-radius);
+  border: 1px solid var(--pd-border);
+  background: var(--pd-elevated);
+  box-shadow: var(--pd-shadow-soft);
+  transition:
+    border-color var(--pd-dur-ui) var(--pd-ease-ui),
+    box-shadow var(--pd-dur-ui) var(--pd-ease-ui),
+    transform var(--pd-dur-ui) var(--pd-ease-ui);
+}
+.pyn-dash-surface--interactive:hover {
+  border-color: var(--pd-border-strong);
+  box-shadow: var(--pd-shadow-hover);
+  transform: translateY(-1px);
+}
+
+/* ── Header (period / page title) ───────────────────────── */
+.pyn-dash-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.55rem 0.85rem;
+  padding: 0 2px 2px;
+  min-width: 0;
+}
+.pyn-dash-header-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--pd-text-strong);
+  text-transform: capitalize;
+  line-height: 1.25;
+}
+.pyn-dash-header-meta {
+  font-size: 12px;
+  color: var(--pd-muted);
+  font-variant-numeric: tabular-nums;
+}
+.pyn-dash-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+/* ── KPI card ───────────────────────────────────────────── */
+.pyn-dash-kpi {
+  border-radius: var(--pd-radius);
+  border: 1px solid var(--pd-border);
+  background: var(--pd-elevated);
+  padding: 1.05rem 1.15rem 1.05rem;
+  min-height: 118px;
+  box-shadow: var(--pd-shadow-soft);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  transition:
+    border-color var(--pd-dur-ui) var(--pd-ease-ui),
+    box-shadow var(--pd-dur-ui) var(--pd-ease-ui),
+    transform var(--pd-dur-ui) var(--pd-ease-ui);
+}
+.pyn-dash-kpi:hover {
+  border-color: var(--pd-border-strong);
+  box-shadow: var(--pd-shadow-hover);
+  transform: translateY(-1px);
+}
+.pyn-dash-kpi--accent {
+  border-color: rgba(217, 119, 87, 0.28);
+}
+.pyn-dash-kpi--danger {
+  border-color: rgba(244, 63, 94, 0.22);
+}
+.pyn-dash-kpi--ok {
+  border-color: rgba(125, 192, 97, 0.22);
+}
+.pyn-dash-kpi-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--pd-faint);
+  margin-bottom: 0.55rem;
+}
+.pyn-dash-kpi-value {
+  font-size: 1.7rem;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  color: var(--pd-text-strong);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.pyn-dash-kpi-value--sm {
+  font-size: 1.35rem;
+}
+.pyn-dash-kpi-value--xs {
+  font-size: 1.2rem;
+}
+.pyn-dash-kpi-value--accent {
+  color: var(--pd-accent-soft);
+}
+.pyn-dash-kpi-value--ok {
+  color: var(--pd-ok-text);
+}
+.pyn-dash-kpi-value--danger {
+  color: var(--pd-danger-soft);
+}
+.pyn-dash-kpi-meta {
+  margin-top: auto;
+  padding-top: 0.45rem;
+  font-size: 11.5px;
+  color: var(--pd-faint);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  line-height: 1.35;
+}
+.pyn-dash-kpi-meta .pd-up {
+  color: var(--pd-ok-text);
+}
+.pyn-dash-kpi-meta .pd-down {
+  color: var(--pd-danger-soft);
+}
+.pyn-dash-kpi-meta .pd-flat {
+  color: var(--pd-faint);
+}
+.pyn-dash-kpi-meta .pd-accent {
+  color: var(--pd-accent-soft);
+}
+
+/* ── Panel (chart / list / table block) ─────────────────── */
+.pyn-dash-panel {
+  border-radius: var(--pd-radius);
+  border: 1px solid var(--pd-border);
+  background: var(--pd-elevated);
+  padding: 1rem 1.15rem 0.9rem;
+  box-shadow: var(--pd-shadow-soft);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  transition:
+    border-color var(--pd-dur-ui) var(--pd-ease-ui),
+    box-shadow var(--pd-dur-ui) var(--pd-ease-ui);
+}
+.pyn-dash-panel:hover {
+  border-color: var(--pd-border-strong);
+}
+.pyn-dash-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.pyn-dash-panel-head--tight {
+  margin-bottom: 0.55rem;
+}
+.pyn-dash-panel-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--pd-text-strong);
+  line-height: 1.3;
+}
+.pyn-dash-panel-sub {
+  margin-top: 0.2rem;
+  font-size: 11px;
+  color: var(--pd-faint);
+  line-height: 1.35;
+}
+.pyn-dash-panel-body {
+  min-width: 0;
+  flex: 1;
+}
+
+/* ── Legend ─────────────────────────────────────────────── */
+.pyn-dash-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.85rem;
+  font-size: 11px;
+  color: var(--pd-muted);
+}
+.pyn-dash-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.pyn-dash-leg-line {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--pd-muted);
+}
+.pyn-dash-leg-line--plan {
+  background: #a6a39b;
+}
+.pyn-dash-leg-line--fact {
+  background: #d97757;
+  height: 2.5px;
+}
+.pyn-dash-leg-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(31, 30, 27, 0.85);
+}
+.pyn-dash-leg-dot--match {
+  background: #e8a48a;
+}
+.pyn-dash-leg-dot--over {
+  background: #7dc061;
+}
+.pyn-dash-leg-sep {
+  width: 1px;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+/* ── Dense list / row ───────────────────────────────────── */
+.pyn-dash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 420px;
+  overflow-y: auto;
+  margin: 0 -0.35rem;
+  padding: 0 0.35rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+.pyn-dash-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.55rem 0.45rem;
+  border-radius: var(--pd-radius-sm);
+  transition: background var(--pd-dur-fast) var(--pd-ease-ui);
+}
+.pyn-dash-row:hover {
+  background: var(--pd-row-hover);
+}
+.pyn-dash-row-main {
+  min-width: 0;
+  flex: 1;
+}
+.pyn-dash-row-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--pd-text-strong);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* ФИО и длинные имена — перенос, без обрезки */
+.pyn-dash-row-title--wrap {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+.pyn-dash-row-sub {
+  font-size: 11px;
+  color: var(--pd-muted);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 0.12rem;
+}
+/* телефон + бейдж МОЛ в одну строку */
+.pyn-dash-row-sub--meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.45rem;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+}
+.pyn-dash-row-sub--meta .pyn-dash-phone {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--pd-muted);
+}
+.pyn-dash-row-side {
+  flex-shrink: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding-top: 0.05rem;
+}
+.pyn-dash-row-metric {
+  font-size: 12.5px;
+  color: #e4e4e7;
+  line-height: 1.3;
+}
+.pyn-dash-row-hint {
+  font-size: 10.5px;
+  color: var(--pd-muted);
+  line-height: 1.35;
+}
+.pyn-dash-row-faint {
+  font-size: 10.5px;
+  color: var(--pd-faint);
+  line-height: 1.35;
+}
+
+/* ── Track / progress ───────────────────────────────────── */
+.pyn-dash-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  margin-top: 0.35rem;
+}
+.pyn-dash-track--sm {
+  height: 3px;
+  margin-top: 0.25rem;
+}
+.pyn-dash-track-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(217, 119, 87, 0.55), rgba(232, 164, 138, 0.9));
+  min-width: 3px;
+  transition: width 0.35s var(--pd-ease-out);
+}
+.pyn-dash-track-fill--ok {
+  background: linear-gradient(90deg, rgba(125, 192, 97, 0.45), rgba(125, 192, 97, 0.9));
+}
+.pyn-dash-track-fill--danger {
+  background: linear-gradient(90deg, rgba(229, 115, 115, 0.4), rgba(229, 115, 115, 0.85));
+}
+.pyn-dash-track-fill--muted {
+  background: rgba(166, 163, 155, 0.55);
+}
+.pyn-dash-track-fill--accent,
+.pyn-dash-track-fill.pyn-dash-track-fill--accent {
+  background: linear-gradient(90deg, rgba(217, 119, 87, 0.45), rgba(232, 164, 138, 0.95));
+}
+
+/* ── Segment control ────────────────────────────────────── */
+.pyn-dash-seg {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 9px;
+  border: 1px solid var(--pd-border);
+  background: var(--pd-bg);
+  gap: 2px;
+}
+.pyn-dash-seg--scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+.pyn-dash-seg > button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--pd-faint);
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: inherit;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--pd-radius-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--pd-dur-fast) var(--pd-ease-ui),
+    color var(--pd-dur-fast) var(--pd-ease-ui),
+    box-shadow var(--pd-dur-fast) var(--pd-ease-ui);
+}
+.pyn-dash-seg > button:hover {
+  color: #e4e4e7;
+}
+.pyn-dash-seg > button[data-active='true'] {
+  background: var(--pd-accent-dim);
+  color: var(--pd-text-strong);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+/* ── Chip ───────────────────────────────────────────────── */
+.pyn-dash-chip {
+  appearance: none;
+  border: 1px solid var(--pd-border);
+  background: transparent;
+  color: var(--pd-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: inherit;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background var(--pd-dur-fast) var(--pd-ease-ui),
+    border-color var(--pd-dur-fast) var(--pd-ease-ui),
+    color var(--pd-dur-fast) var(--pd-ease-ui);
+}
+.pyn-dash-chip:hover {
+  color: var(--pd-text);
+  border-color: var(--pd-border-strong);
+  background: rgba(255, 255, 255, 0.04);
+}
+.pyn-dash-chip[data-active='true'] {
+  background: var(--pd-accent-dim);
+  border-color: rgba(217, 119, 87, 0.35);
+  color: var(--pd-text-strong);
+}
+
+/* ── Empty / micro ──────────────────────────────────────── */
+.pyn-dash-empty {
+  padding: 1.25rem 0.5rem;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--pd-muted);
+}
+.pyn-dash-mol {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--pd-accent-soft);
+  background: var(--pd-accent-dim);
+  border: 1px solid rgba(217, 119, 87, 0.28);
+  flex-shrink: 0;
+}
+.pyn-dash-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.pyn-dash-stack--tight {
+  gap: 0.35rem;
+}
+
+/* Status bar row (compact breakdown) */
+.pyn-dash-stat {
+  min-width: 0;
+}
+.pyn-dash-stat-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 12px;
+}
+.pyn-dash-stat-name {
+  color: #d4d4d8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pyn-dash-stat-val {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: #a1a1aa;
+}
+.pyn-dash-stat-val span {
+  color: var(--pd-faint);
+}
+
+/* ── Backward-compatible aliases (старые pyn-* классы) ──── */
+.pyn-analytics {
+  /* use with .pyn-dash for tokens */
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--pd-gap, 1rem);
+  padding: var(--pd-pad, 1rem 1.1rem 2rem);
+  max-width: var(--pd-max, 1320px);
+  margin: 0 auto;
+}
+@media (min-width: 900px) {
+  .pyn-analytics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1200px) {
+  .pyn-analytics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.pyn-kpi-span-full {
+  grid-column: 1 / -1;
+}
+.pyn-analytics-period-label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 2px 2px;
+}
+/* re-map dense list if used outside dash shell */
+.pyn-dense-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.pyn-dense-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.45rem;
+  border-radius: 8px;
+  transition: background 120ms ease;
+}
+.pyn-dense-row:hover {
+  background: rgba(255, 255, 255, 0.045);
+}
+.pyn-type-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  margin-top: 0.35rem;
+}
+.pyn-type-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(217, 119, 87, 0.55), rgba(232, 164, 138, 0.9));
+  min-width: 3px;
+  transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pyn-type-fill--danger {
+  background: linear-gradient(90deg, rgba(229, 115, 115, 0.4), rgba(229, 115, 115, 0.85));
+}
+.pyn-mol-micro {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #e8a48a;
+  background: rgba(217, 119, 87, 0.16);
+  border: 1px solid rgba(217, 119, 87, 0.28);
+}
+.pyn-period-chip {
+  appearance: none;
+  border: 1px solid rgba(234, 221, 216, 0.1);
+  background: transparent;
+  color: #a6a39b;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: inherit;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
+}
+.pyn-period-chip:hover {
+  color: #e5e5e2;
+  border-color: rgba(234, 221, 216, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+}
+.pyn-period-chip[data-active='true'] {
+  background: rgba(217, 119, 87, 0.16);
+  border-color: rgba(217, 119, 87, 0.35);
+  color: #f5f4ef;
+}
+.pyn-segment {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 9px;
+  border: 1px solid rgba(234, 221, 216, 0.1);
+  background: #1f1e1b;
+  gap: 2px;
+}
+.pyn-segment--scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+.pyn-segment > button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #71717a;
+  font-size: 11.5px;
+  font-weight: 500;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.pyn-segment > button:hover {
+  color: #e4e4e7;
+}
+.pyn-segment > button[data-active='true'] {
+  background: rgba(217, 119, 87, 0.16);
+  color: #f5f4ef;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.pyn-chart-card {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #302f2d;
+  padding: 1rem 1.15rem 0.85rem;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+}
+.pyn-chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.pyn-chart-head--legend {
+  align-items: center;
+}
+.pyn-chart-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #f5f4ef;
+}
+.pyn-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.85rem;
+  font-size: 11px;
+  color: #a6a39b;
+}
+.pyn-chart-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.pyn-chart-leg-line {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+  background: #a6a39b;
+}
+.pyn-chart-leg-line--plan {
+  background: #a6a39b;
+}
+.pyn-chart-leg-line--fact {
+  background: #d97757;
+  height: 2.5px;
+}
+.pyn-chart-leg-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(31, 30, 27, 0.85);
+}
+.pyn-chart-leg-dot--match {
+  background: #e8a48a;
+}
+.pyn-chart-leg-dot--over {
+  background: #7dc061;
+}
+.pyn-chart-leg-sep {
+  width: 1px;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.pyn-kpi-card {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #302f2d;
+  padding: 1.05rem 1.15rem 1.1rem;
+  min-height: 118px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+}
+.pyn-kpi-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #71717a;
+  margin-bottom: 0.55rem;
+}
+.pyn-kpi-value {
+  font-size: 1.7rem;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  color: #fafafa;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.pyn-kpi-value--neon {
+  color: #e8a48a;
+}
+.pyn-kpi-meta {
+  margin-top: 0.45rem;
+  font-size: 11.5px;
+  color: #71717a;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
