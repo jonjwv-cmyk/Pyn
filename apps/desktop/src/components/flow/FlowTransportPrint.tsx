@@ -9,7 +9,7 @@ import { formatUntilDate } from './flow-sandbox.fixtures';
 import {
   vehicleBrand,
   fmtTimeRange,
-  workIsSeven,
+  workIsSixPlus,
   fmtDaysTitle,
   fmtDaysSummary,
   weekdayRu,
@@ -33,6 +33,51 @@ import type { FlowDriverOption } from './flow-driver-cell';
 /** Printable A4 landscape @96dpi, margin 10mm (как printToPDF 0.3937"). */
 const PAGE_W = 1047;
 const PAGE_H = 718;
+
+/** Реальное фактическое время: непустое и не «0:00»/«00:00» (1С-заглушка). */
+function hasRealFactTime(t: string | undefined | null): boolean {
+  const s = (t || '').trim();
+  if (!s) return false;
+  return !/^0{1,2}:00$/.test(s);
+}
+
+/** Факта нет вообще (обе колонки пустые или нулевые) — строку красим серым,
+ *  даже если статус «Размещен» (юзер 2026-08-02: «время ноль» и «факта нет»). */
+function noFactTime(r: FlowTransportRow): boolean {
+  return !hasRealFactTime(r.fact_start) && !hasRealFactTime(r.fact_end);
+}
+
+/**
+ * Границы блока ДОК/ОГНЕУПОРЫ/ОКАЛИНА (работы 6/7/8) — РОВНО две жирные линии на
+ * день: сверху первой строки блока и снизу последней. Блок 7 печатается всегда,
+ * поэтому линий всегда две; ДОК/ОКАЛИНА лишь расширяют тот же блок, своих линий
+ * не добавляют (юзер 2026-08-02: «если из трёх блоков хоть один есть — отделяем,
+ * их всегда будет две»).
+ *
+ * ⚠️ Считаем по дню целиком, а НЕ по соседям (prev/next): сортировка печати —
+ * (дата, статус-группа, работа), поэтому по соседям выходило до 4 линий.
+ * ⚠️ Учитываем только основную статус-группу: «красные» статусы (Отклонён/Отмена/…)
+ * идут отдельным серым блоком сверху и уже отделены своей линией — их работы 6+
+ * не должны утаскивать верхнюю границу в начало дня.
+ */
+function computeClusterEdges(rows: FlowTransportRow[]): { top: Set<number>; bottom: Set<number> } {
+  const firstByDay = new Map<string, number>();
+  const lastByDay = new Map<string, number>();
+  rows.forEach((r, i) => {
+    if (printStatusGroup(r.status) !== 1) return;
+    if (!workIsSixPlus(r.work)) return;
+    const d = r.tdate || '';
+    if (!firstByDay.has(d)) firstByDay.set(d, i);
+    lastByDay.set(d, i);
+  });
+  const bottom = new Set<number>();
+  for (const i of lastByDay.values()) {
+    // Последнюю строку ВСЕЙ таблицы не подчёркиваем: там уже край таблицы, и
+    // выходила третья лишняя линия (юзер 2026-08-02).
+    if (i < rows.length - 1) bottom.add(i);
+  }
+  return { top: new Set(firstByDay.values()), bottom };
+}
 
 function uniqGarageCountByDay(rows: FlowTransportRow[]): number {
   const byDay = new Map<string, Set<string>>();
@@ -131,6 +176,7 @@ export function FlowTransportPrint({
     () => rows.filter((r) => shouldPrintTransportRow(r.work, printDok, printOkalina)),
     [rows, printDok, printOkalina],
   );
+  const clusterEdges = useMemo(() => computeClusterEdges(printRows), [printRows]);
 
   const multiDay = days.length > 1;
   const title = fmtDaysTitle(days);
@@ -235,6 +281,17 @@ export function FlowTransportPrint({
     [days, silent],
   );
 
+  // onClose/onAutoDone — свежие инлайн-функции у родителя на КАЖДЫЙ его
+  // ре-рендер (WS-пуши идут постоянно). Раньше они были в deps эффекта ниже —
+  // при ре-рендере родителя ВНУТРИ 60мс-паузы React гонял cleanup (cancelled
+  // = true) ДО вызова run(autoMode), печать тихо не запускалась вовсе (юзер
+  // 2026-08-02: «нажимаю печать — ничего не происходит»). Через ref — эффект
+  // не зависит от их идентичности, дергается ровно один раз за job.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const onAutoDoneRef = useRef(onAutoDone);
+  onAutoDoneRef.current = onAutoDone;
+
   // Silent: без превью — сверстали off-screen → print/PDF → close.
   // jobKey снаружи гарантирует remount; здесь сбрасываем guard при смене job.
   useEffect(() => {
@@ -252,13 +309,13 @@ export function FlowTransportPrint({
       if (cancelled) return;
       const m = await run(autoMode);
       if (cancelled) return;
-      onAutoDone?.(m);
-      onClose();
+      onAutoDoneRef.current?.(m);
+      onCloseRef.current();
     })();
     return () => {
       cancelled = true;
     };
-  }, [autoMode, contentH, printRows.length, run, onClose, onAutoDone, days.join('|')]);
+  }, [autoMode, contentH, printRows.length, run, days.join('|')]);
 
   const close = () => {
     setBusy(false);
@@ -368,10 +425,13 @@ export function FlowTransportPrint({
         .tr-print-sheet td.tr-grow {
           white-space: normal; overflow-wrap: break-word;
         }
-        /* ФИО одной строкой; телефон/МОЛ — второй строкой (не рвать фамилию) */
+        /* ФИО целиком, БЕЗ обрезки (юзер 2026-08-02): длинное ФИО переносится по
+           пробелам на вторую строку. Ранее было nowrap + ellipsis — фамилия
+           резалась «…». overflow-wrap: break-word рвёт само слово только если
+           оно не влезает даже в отдельную строку. */
         .tr-print-sheet td.tr-driver { white-space: normal; }
         .tr-print-sheet .tr-fio {
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+          white-space: normal; overflow-wrap: break-word;
           max-width: 100%; display: block;
         }
         .tr-print-sheet col.c-status { width: 7%; }
@@ -381,20 +441,26 @@ export function FlowTransportPrint({
         .tr-print-sheet col.c-brand { width: 8%; }
         .tr-print-sheet col.c-garage { width: 6.5%; }
         .tr-print-sheet col.c-out { width: 3.5%; }
-        .tr-print-sheet col.c-driver { width: 17%; }
-        .tr-print-sheet col.c-comment { width: 20%; }
+        /* +2% водителю за счёт комментария — чтобы ФИО чаще влезало в одну строку. */
+        .tr-print-sheet col.c-driver { width: 19%; }
+        .tr-print-sheet col.c-comment { width: 18%; }
         .tr-print-sheet .tr-print-gray td { color: #000; background: #e4e4e4; }
         .tr-print-sheet .tr-time { font-variant-numeric: tabular-nums; color: #000; }
         .tr-print-sheet .tr-time-bold { font-weight: 700; }
         .tr-print-sheet .tr-garage { font-weight: 700; font-variant-numeric: tabular-nums; color: #000; }
         .tr-print-sheet .tr-sub2 { color: #000; font-size: 8.5px; opacity: 0.72; }
+        /* Телефон/МОЛ — тоже без «…»: переносим, а не режем. */
         .tr-print-sheet .tr-drsub {
-          white-space: nowrap; font-size: 8.5px;
-          overflow: hidden; text-overflow: ellipsis; display: block; color: #000;
+          white-space: normal; font-size: 8.5px;
+          overflow-wrap: break-word; display: block; color: #000;
         }
         .tr-print-sheet .tr-phone { font-weight: 700; color: #000; font-variant-numeric: tabular-nums; }
         .tr-print-sheet .tr-mol { color: #000; font-weight: 700; opacity: 0.75; }
-        .tr-print-sheet .tr-cluster-line td { border-top: 1.5px solid #000; }
+        /* Границы блока 6/7/8. 2px + !important: при border-collapse тонкая линия
+           конфликтует с 0.5px-границей соседней строки и в PDF терялась
+           (юзер 2026-08-02: «в пдф нет этой линии»). */
+        .tr-print-sheet .tr-cluster-line td { border-top: 2px solid #000 !important; }
+        .tr-print-sheet .tr-cluster-line-bottom td { border-bottom: 2px solid #000 !important; }
         .tr-print-sheet .tr-status-sep td { border-top: 2px solid #000; }
         .tr-print-sheet .tr-print-dok td,
         .tr-print-sheet .tr-print-okalina td { background: #e4e4e4; color: #000; }
@@ -424,27 +490,42 @@ export function FlowTransportPrint({
         }
         @media print {
           @page { size: A4 landscape; margin: 10mm; }
-          body.tr-printing #root { display: none !important; }
-          .tr-print-overlay { position: static; background: none; display: block; padding: 0; }
-          .tr-print-frame {
+          /* ⚠️ ВСЁ внутри @media print скоупим на body.tr-printing. Без скоупа
+             правила ниже оживляли лист Транспорта и в ЧУЖОЙ печати (Сводка):
+             оверлей — портал в <body>, #root его не прячет, и в PDF попадали
+             обе бумаги сразу (юзер 2026-08-02). */
+          /* Печатаем ТОЛЬКО свой лист: любой другой прямой ребёнок body
+             (#root, портал Сводки, тосты) скрыт. */
+          body.tr-printing > *:not(.tr-print-overlay) { display: none !important; }
+          body.tr-printing .tr-print-overlay {
+            position: static; background: none; display: block; padding: 0;
+          }
+          /* Silent-режим (без превью) держит лист вне экрана с opacity:0 —
+             под печатью его нужно вернуть в видимый вид, иначе PDF/печать пустые. */
+          body.tr-printing .tr-print-overlay.tr-print-silent {
+            opacity: 1; left: auto; top: auto; width: auto; height: auto;
+          }
+          body.tr-printing .tr-print-frame {
             width: auto; height: auto; border-radius: 0; overflow: visible;
             background: #fff; box-shadow: none;
           }
-          .tr-print-desk { display: block; overflow: visible; padding: 0; background: #fff; }
-          .tr-print-slot { width: auto !important; height: auto !important; }
-          .tr-print-paper {
+          body.tr-printing .tr-print-desk {
+            display: block; overflow: visible; padding: 0; background: #fff;
+          }
+          body.tr-printing .tr-print-slot { width: auto !important; height: auto !important; }
+          body.tr-printing .tr-print-paper {
             transform: none !important; width: auto !important; height: auto !important;
             overflow: visible !important; box-shadow: none !important;
           }
-          .tr-print-sheet {
+          body.tr-printing .tr-print-sheet {
             width: 100%; padding: 0;
             -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;
           }
-          .tr-noprint { display: none !important; }
-          .tr-page-break-mark { display: none !important; }
-          .tr-print-sheet tr { break-inside: avoid; }
-          .tr-print-sheet thead { display: table-header-group; }
-          .tr-print-sheet .tr-dayhead { break-after: avoid; }
+          body.tr-printing .tr-noprint { display: none !important; }
+          body.tr-printing .tr-page-break-mark { display: none !important; }
+          body.tr-printing .tr-print-sheet tr { break-inside: avoid; }
+          body.tr-printing .tr-print-sheet thead { display: table-header-group; }
+          body.tr-printing .tr-print-sheet .tr-dayhead { break-after: avoid; }
         }
       `}</style>
 
@@ -592,7 +673,7 @@ export function FlowTransportPrint({
                     <tbody>
                       {printRows.map((r, i) => {
                         const veh = vehByGarage.get(r.garage_no);
-                        const grayStatus = isPrintGrayStatus(r.status);
+                        const grayStatus = isPrintGrayStatus(r.status) || noFactTime(r);
                         const brand = veh?.model ? vehicleBrand(veh.model) : '';
                         const out = r.out_status || '';
                         const driver = r.driver || veh?.driver || '';
@@ -601,11 +682,9 @@ export function FlowTransportPrint({
                         const phoneDisplay = phone ? formatMobilePhone(phone) : '';
                         const prev = i > 0 ? printRows[i - 1] : undefined;
                         const dayChanged = !prev || prev.tdate !== r.tdate;
-                        const clusterLine =
-                          !!prev &&
-                          prev.tdate === r.tdate &&
-                          !workIsSeven(prev.work) &&
-                          workIsSeven(r.work);
+                        // Ровно две жирные на день — см. computeClusterEdges().
+                        const clusterLine = clusterEdges.top.has(i);
+                        const clusterLineBottom = clusterEdges.bottom.has(i);
                         const statusSep =
                           !!prev &&
                           prev.tdate === r.tdate &&
@@ -634,6 +713,7 @@ export function FlowTransportPrint({
                                 cn(
                                   grayStatus && 'tr-print-gray',
                                   clusterLine && 'tr-cluster-line',
+                                  clusterLineBottom && 'tr-cluster-line-bottom',
                                   statusSep && 'tr-status-sep',
                                   dok && 'tr-print-dok',
                                   okalina && 'tr-print-okalina',

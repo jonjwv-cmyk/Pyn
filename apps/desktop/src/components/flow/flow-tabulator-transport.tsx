@@ -839,7 +839,10 @@ export function FlowTabulatorTransport({
             if (!days.has(data.tdate)) return false;
           } else if (exactMonth) {
             if ((data.tdate || '').slice(0, 7) !== monthPrefix) return false;
-          } else if ((data.tdate || '').slice(0, 7) < monthPrefix) {
+          } else {
+            // Ни дней, ни месяца (после «Сброс») — разнарядка ПУСТА, пока не выберут
+            // день (юзер 2026-08-02). Раньше показывали всё от текущего месяца и
+            // дальше, из-за чего «нажал сброс, а машины всё равно висят».
             return false;
           }
           // Поиск слева = фильтр по ВСЕМ колонкам (заказ, статус, работа, ТП/ТС…).
@@ -2093,7 +2096,10 @@ export function FlowTabulatorTransport({
     if (monthScope) {
       setPrintSel(new Set([...days].filter((d) => d.startsWith(monthScope))));
     } else {
-      setPrintSel(days);
+      // Ничего не выбрано — НЕ подставляем все даты подряд: календарь открывается
+      // на самой ранней выбранной дате и уезжал в январь (юзер 2026-08-02).
+      // Пустой выбор → календарь открывается на текущем месяце.
+      setPrintSel(new Set());
     }
   }, [daySel, allRows, monthScope]);
 
@@ -2905,7 +2911,7 @@ export function FlowTabulatorTransport({
                       brand: veh?.model ? vehicleBrand(veh.model) : '',
                       color: veh?.color ?? '',
                       gos_no: veh?.gos_no ?? '',
-                      row_version: saved?.row_version ?? r.row_version + 1,
+                      row_version: saved?.row_version ?? r.row_version,
                     };
                     rowsByIdRef.current.set(r.id, { ...r, ...patch });
                     setAllRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, ...patch } : x)));
@@ -2952,7 +2958,7 @@ export function FlowTabulatorTransport({
                     const patch = {
                       driver: o.fio,
                       driver_phone: o.phone,
-                      row_version: saved?.row_version ?? r.row_version + 1,
+                      row_version: saved?.row_version ?? r.row_version,
                     };
                     rowsByIdRef.current.set(r.id, { ...r, ...patch });
                     setAllRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, ...patch } : x)));
@@ -3018,7 +3024,7 @@ export function FlowTabulatorTransport({
                     const patch = {
                       force_json: nextJson,
                       force: summary,
-                      row_version: saved?.row_version ?? r.row_version + 1,
+                      row_version: saved?.row_version ?? r.row_version,
                     };
                     const updated = { ...r, ...patch };
                     rowsByIdRef.current.set(r.id, updated);
@@ -3067,7 +3073,7 @@ export function FlowTabulatorTransport({
                     const saved = res.rows[0];
                     const patch = {
                       [field]: value,
-                      row_version: saved?.row_version ?? r.row_version + 1,
+                      row_version: saved?.row_version ?? r.row_version,
                     } as Partial<Row> & { row_version: number };
                     const updated = { ...r, ...patch };
                     rowsByIdRef.current.set(r.id, updated);
@@ -3110,7 +3116,7 @@ export function FlowTabulatorTransport({
                       return;
                     }
                     const saved = res.rows[0];
-                    const patch = { tdate: iso, row_version: saved?.row_version ?? r.row_version + 1 };
+                    const patch = { tdate: iso, row_version: saved?.row_version ?? r.row_version };
                     const updated = { ...r, ...patch };
                     rowsByIdRef.current.set(r.id, updated);
                     setAllRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, ...patch } : x)));

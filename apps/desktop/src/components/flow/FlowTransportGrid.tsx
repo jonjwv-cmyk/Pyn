@@ -46,7 +46,7 @@ import { loadFlowDiskCache, saveFlowDiskCacheDebounced } from '@/lib/flow-disk-c
 import { usePersonsStore } from '@/lib/persons-store';
 import { initPersons } from '@/lib/persons-repo';
 import { fmtSmart } from '@/components/vgh/vgh-staging.fixtures';
-import { MONTH_ABBR_RU } from './flow-sandbox.fixtures';
+import { MONTH_ABBR_RU, MONTH_FULL_RU } from './flow-sandbox.fixtures';
 import { flowDriverRenderer, type FlowDriverCell, type FlowDriverOption } from './flow-driver-cell';
 import { flowStackRenderer, type FlowStackCell } from './flow-stack-cell';
 import { flowHistoryRenderer, type FlowHistoryCell } from './flow-history-cell';
@@ -258,10 +258,11 @@ function collapseDays(days: number[]): string {
  * разных лет: заход на следующий год — обе части с годом; будущий год до наступления — с годом;
  * когда он наступил и стал текущим — без года.
  */
-export function fmtDaysSummary(days: string[]): string {
+export function fmtDaysSummary(days: string[], opts?: { full?: boolean }): string {
   const sorted = [...new Set(days)].filter((d) => /^\d{4}-\d{2}-\d{2}/.test(d)).sort();
   if (sorted.length === 0) return '';
   const cur = new Date().getFullYear();
+  const months = opts?.full ? MONTH_FULL_RU : MONTH_ABBR_RU;
   // Группируем подряд идущие даты по (год, месяц) — sorted уже по возрастанию.
   type Grp = { year: number; month: number; days: number[] };
   const groups: Grp[] = [];
@@ -279,21 +280,22 @@ export function fmtDaysSummary(days: string[]): string {
   groups.forEach((g, i) => lastIdxOfYear.set(g.year, i));
   return groups
     .map((g, i) => {
-      const mo = MONTH_ABBR_RU[g.month - 1] ?? '';
+      const mo = months[g.month - 1] ?? '';
       const showYear = (g.year !== cur || distinctYears > 1) && lastIdxOfYear.get(g.year) === i;
       return `${mo} ${collapseDays(g.days)}${showYear ? ` ${g.year}` : ''}`;
     })
     .join(' ');
 }
 
-/** Заголовок печати: один день — «Пятница, 8 июня» (+год если не текущий), иначе — сводка. */
+/** Заголовок печати: один день — «Пятница, 8 июня» (+год если не текущий), иначе — сводка.
+ *  Месяц — целиком (не сокращение), юзер 2026-08-02. */
 export function fmtDaysTitle(days: string[]): string {
   const sorted = [...new Set(days)].sort();
   if (sorted.length === 1) {
     const wd = weekdayRu(sorted[0] ?? '');
-    return `${wd ? wd + ', ' : ''}${fmtDaysSummary(sorted)}`;
+    return `${wd ? wd + ', ' : ''}${fmtDaysSummary(sorted, { full: true })}`;
   }
-  return fmtDaysSummary(sorted);
+  return fmtDaysSummary(sorted, { full: true });
 }
 
 /** Одна метка «HH:MM» → «8» если :00, иначе «8:15» (без ведущего нуля часа). */

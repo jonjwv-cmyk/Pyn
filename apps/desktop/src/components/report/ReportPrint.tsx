@@ -1,8 +1,6 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Printer, X } from 'lucide-react';
 import type { ReportComputeResult, ReportManualDay, ReportMode } from '@pyn/core';
-import { cn } from '@/lib/cn';
 import {
   countFleetVehicles,
   fleetGroupLine1,
@@ -261,7 +259,6 @@ function SheetBody({
           <>
             <p className="rp-line rp-warn">
               Нет в графике: <strong>{notIn.length}</strong> {shopWord(notIn.length)}
-              <span className="rp-muted"> · {sliceMetaPlan(ni)}</span>
             </p>
             <div className="rp-compact">
               <table className="rp-off">
@@ -282,7 +279,6 @@ function SheetBody({
           <>
             <p className="rp-line rp-accent">
               Вне графика: <strong>{off.length}</strong> {shopWord(off.length)}
-              <span className="rp-muted"> · {sliceMetaPlan(of)}</span>
             </p>
             <div className="rp-compact">
               <table className="rp-off">
@@ -439,7 +435,10 @@ export function ReportPrint({
   planShops = 0,
   planWarehouses = 0,
   fleetPeople = { expeditors: 0, driverExpeditors: 0, others: 0 },
-  onClose,
+  includeFleet,
+  /** Без превью: сразу dialog (печать) или save (PDF) и unmount. Как Транспорт. */
+  autoMode,
+  onDone,
 }: {
   mode: ReportMode;
   daysTitle: string;
@@ -450,148 +449,73 @@ export function ReportPrint({
   planShops?: number;
   planWarehouses?: number;
   fleetPeople?: { expeditors: number; driverExpeditors: number; others: number };
-  onClose: () => void;
+  includeFleet: boolean;
+  autoMode: 'dialog' | 'save';
+  onDone: (msg: string) => void;
 }): JSX.Element {
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState('');
-  /** Превью и PDF по умолчанию без Блока 3. */
-  const [includeFleet, setIncludeFleet] = useState(false);
-  /** Спросить про Блок 3 перед печатью/PDF. */
-  const [fleetAsk, setFleetAsk] = useState<'dialog' | 'save' | null>(null);
-  /**
-   * После выбора «с/без блока 3» — job на следующий paint (includeFleet уже в DOM).
-   */
-  const [printJob, setPrintJob] = useState<'dialog' | 'save' | null>(null);
-  const title = reportPrintTitle(mode, daysTitle, days.length);
   const fileName = reportPdfFileName(mode, daysTitle);
-  const hasFleet = fleetGroups.length > 0;
-
-  const close = useCallback(() => {
-    setBusy(false);
-    setFleetAsk(null);
-    setPrintJob(null);
-    document.body.classList.remove('rp-printing');
-    onClose();
-  }, [onClose]);
+  const autoStarted = useRef(false);
+  // onDone — свежая инлайн-функция у родителя на каждый его ре-рендер (WS-пуши
+  // идут постоянно). Раньше была в deps эффекта — ре-рендер родителя внутри
+  // ~200мс паузы гонял cleanup (cancelled=true) ДО вызова pyn.print.*, печать
+  // тихо не запускалась (юзер 2026-08-02: «нажимаю печать — ничего не
+  // происходит»). Через ref эффект не зависит от её идентичности.
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        if (fleetAsk) {
-          setFleetAsk(null);
-          return;
-        }
-        close();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      document.body.classList.remove('rp-printing');
-    };
-  }, [close, fleetAsk]);
-
-  // printJob выставляется только после setIncludeFleet → React commit → SheetBody актуален.
-  useEffect(() => {
-    if (!printJob) return;
-    let cancelled = false;
-    setBusy(true);
-    setMsg('');
+    if (autoStarted.current) return;
+    autoStarted.current = true;
     document.body.classList.add('rp-printing');
+    let cancelled = false;
     void (async () => {
-      try {
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-        await new Promise((r) => setTimeout(r, 80));
-        if (cancelled) return;
-        const pyn = window.pyn?.print;
-        const opts = { landscape: false as const };
-        if (pyn) {
-          const res =
-            printJob === 'save'
-              ? await pyn.savePdf(fileName, opts)
-              : await pyn.dialog(fileName, opts);
-          if (cancelled) return;
-          if (!res?.ok && res?.error) setMsg(`Печать: ${res.error}`);
-          else if (printJob === 'save' && res && 'path' in res && res.path) {
-            setMsg(`Сохранено: ${String(res.path).split('/').pop()}`);
-          } else if (printJob === 'save' && res && 'canceled' in res && res.canceled) {
-            setMsg('');
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await new Promise((r) => setTimeout(r, 120));
+      let out = '';
+      if (!cancelled) {
+        try {
+          const pyn = window.pyn?.print;
+          const opts = { landscape: false as const };
+          if (pyn) {
+            const res =
+              autoMode === 'save' ? await pyn.savePdf(fileName, opts) : await pyn.dialog(fileName, opts);
+            if (!res?.ok && res?.error) out = `Печать: ${res.error}`;
+            else if (autoMode === 'save' && res && 'path' in res && res.path) {
+              out = `PDF: ${String(res.path).split('/').pop()}`;
+            } else if (autoMode === 'dialog') {
+              out = 'Печать';
+            }
+          } else {
+            window.print();
+            out = autoMode === 'save' ? 'PDF' : 'Печать';
           }
-        } else {
-          window.print();
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setMsg(`Печать: ${(e instanceof Error ? e.message : String(e)).slice(0, 100)}`);
-        }
-      } finally {
-        if (!cancelled) {
-          document.body.classList.remove('rp-printing');
-          setBusy(false);
-          setPrintJob(null);
-          setIncludeFleet(false);
+        } catch (e) {
+          out = `Печать: ${(e instanceof Error ? e.message : String(e)).slice(0, 100)}`;
         }
       }
+      document.body.classList.remove('rp-printing');
+      if (!cancelled) onDoneRef.current(out);
     })();
     return () => {
       cancelled = true;
+      document.body.classList.remove('rp-printing');
     };
-  }, [printJob, fileName]);
-
-  const startPrint = useCallback(
-    (kind: 'dialog' | 'save', withFleet: boolean) => {
-      if (busy || printJob) return;
-      setFleetAsk(null);
-      setIncludeFleet(withFleet);
-      setPrintJob(kind);
-    },
-    [busy, printJob],
-  );
-
-  const requestRun = useCallback(
-    (kind: 'dialog' | 'save') => {
-      if (busy || printJob) return;
-      if (hasFleet) {
-        setFleetAsk(kind);
-        return;
-      }
-      startPrint(kind, false);
-    },
-    [busy, printJob, hasFleet, startPrint],
-  );
+  }, [autoMode, fileName]);
 
   return createPortal(
     <div className="rp-print-overlay">
       <style>{`
+        /* Silent: лист вне экрана, без UI — только paint для printToPDF.
+           Offscreen через position/left (не opacity) — под печатью position:static
+           сам возвращает лист в поток, без риска забыть сбросить прозрачность. */
         .rp-print-overlay {
-          position: fixed; inset: 0; z-index: 60;
-          background: rgba(0,0,0,0.5);
-          display: flex; align-items: center; justify-content: center;
-          padding: 12px; box-sizing: border-box;
-        }
-        .rp-print-frame {
-          display: flex; flex-direction: column;
-          width: min(780px, calc(100vw - 24px));
-          height: min(92vh, calc(100vh - 24px));
-          border-radius: 8px; overflow: hidden;
-          background: #2a2926;
-          box-shadow: 0 12px 40px rgba(0,0,0,0.45);
-        }
-        .rp-print-toolbar {
-          flex: 0 0 auto;
-          display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-          padding: 10px 12px; color: #fff; font-size: 12px;
-        }
-        .rp-print-desk {
-          flex: 1 1 auto; min-height: 0; overflow: auto;
-          display: flex; justify-content: center; align-items: flex-start;
-          padding: 16px; box-sizing: border-box;
-          background: #3a3834;
+          position: fixed; left: -10000px; top: 0;
+          width: ${PAGE_W}px; height: auto;
+          pointer-events: none;
+          background: #fff;
         }
         .rp-print-paper {
           background: #fff;
-          box-shadow: 0 2px 16px rgba(0,0,0,0.35);
           width: ${PAGE_W}px;
         }
         .rp-print-sheet {
@@ -848,27 +772,16 @@ export function ReportPrint({
         }
         .rp-print-sheet .rp-note-list strong { font-weight: 700; color: var(--rp-ink); }
 
-        body.rp-printing .rp-noprint { display: none !important; }
-        body.rp-printing .rp-print-desk { background: #fff !important; padding: 0 !important; }
-        body.rp-printing .rp-print-paper {
-          box-shadow: none !important; width: auto !important;
-        }
         @media print {
           @page { size: A4 portrait; margin: 10mm; }
-          body.rp-printing #root { display: none !important; }
+          /* Печатаем ТОЛЬКО свой лист: любой другой прямой ребёнок body
+             (#root, портал Транспорта, тосты) скрыт — иначе в один PDF
+             попадали и сводка, и разнарядка (юзер 2026-08-02). */
+          body.rp-printing > *:not(.rp-print-overlay) { display: none !important; }
           body.rp-printing .rp-print-overlay {
-            position: static; background: none; display: block; padding: 0;
+            position: static; left: auto; top: auto; width: auto; height: auto;
           }
-          body.rp-printing .rp-print-frame {
-            width: auto; height: auto; border-radius: 0; overflow: visible;
-            background: #fff; box-shadow: none;
-          }
-          body.rp-printing .rp-print-desk {
-            display: block; overflow: visible; padding: 0; background: #fff;
-          }
-          body.rp-printing .rp-print-paper {
-            width: auto !important; box-shadow: none !important;
-          }
+          body.rp-printing .rp-print-paper { width: auto !important; }
           body.rp-printing .rp-print-sheet {
             width: 100%; padding: 0 0 12px;
             -webkit-print-color-adjust: exact !important;
@@ -890,92 +803,19 @@ export function ReportPrint({
         }
       `}</style>
 
-      <div className="rp-print-frame">
-        <div className="rp-print-toolbar rp-noprint">
-          <span className="font-medium">Предпросмотр · {title}</span>
-          {msg && (
-            <span className="max-w-[240px] truncate text-white/70" title={msg}>
-              {msg}
-            </span>
-          )}
-          <span className="ml-auto flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => requestRun('dialog')}
-              className="flex h-7 items-center gap-1.5 rounded-md border border-white/30 px-2.5 transition-colors hover:bg-white/10 disabled:opacity-50"
-            >
-              <Printer size={13} strokeWidth={1.75} />
-              Печать
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => requestRun('save')}
-              className="flex h-7 items-center gap-1.5 rounded-md border border-white/30 px-2.5 transition-colors hover:bg-white/10 disabled:opacity-50"
-            >
-              <Download size={13} strokeWidth={1.75} />
-              PDF
-            </button>
-            <button
-              type="button"
-              onClick={close}
-              className="flex h-7 w-7 items-center justify-center rounded-md border border-white/30 transition-colors hover:bg-white/10"
-              title="Закрыть (Esc)"
-            >
-              <X size={14} strokeWidth={1.75} />
-            </button>
-          </span>
-        </div>
-
-        {fleetAsk && (
-          <div className="rp-noprint flex flex-wrap items-center gap-2 border-t border-white/10 bg-black/30 px-3 py-2 text-[12px] text-white">
-            <span className="min-w-0 flex-1">
-              Включить Блок 3 (ТС и экспедиторы)?
-            </span>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => startPrint(fleetAsk, false)}
-              className="h-7 rounded-md border border-white/30 px-2.5 hover:bg-white/10 disabled:opacity-50"
-            >
-              Без блока 3
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => startPrint(fleetAsk, true)}
-              className="h-7 rounded-md border border-accent-clay/50 bg-accent-clay/20 px-2.5 text-accent-clay hover:bg-accent-clay/30 disabled:opacity-50"
-            >
-              С блоком 3
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setFleetAsk(null)}
-              className="h-7 rounded-md border border-white/20 px-2 text-white/70 hover:bg-white/10 disabled:opacity-50"
-            >
-              Отмена
-            </button>
-          </div>
-        )}
-
-        <div className="rp-print-desk">
-          <div className="rp-print-paper">
-            <SheetBody
-              mode={mode}
-              daysTitle={daysTitle}
-              days={days}
-              byDay={byDay}
-              result={result}
-              fleetGroups={fleetGroups}
-              includeFleet={includeFleet}
-              planShops={planShops}
-              planWarehouses={planWarehouses}
-              fleetPeople={fleetPeople}
-            />
-          </div>
-        </div>
+      <div className="rp-print-paper">
+        <SheetBody
+          mode={mode}
+          daysTitle={daysTitle}
+          days={days}
+          byDay={byDay}
+          result={result}
+          fleetGroups={fleetGroups}
+          includeFleet={includeFleet}
+          planShops={planShops}
+          planWarehouses={planWarehouses}
+          fleetPeople={fleetPeople}
+        />
       </div>
     </div>,
     document.body,

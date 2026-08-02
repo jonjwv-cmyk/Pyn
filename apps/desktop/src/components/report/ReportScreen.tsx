@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, Loader2, Printer } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Download, Loader2, Printer } from 'lucide-react';
 import * as Popover from '@radix-ui/react-popover';
 import {
   computeFlowReport,
@@ -822,18 +822,24 @@ function ModePanel({
   title,
   result,
   daysTitle,
+  hasFleet,
+  printMsg,
   onPrint,
 }: {
   mode: ReportMode;
   title: string;
   result: ReportComputeResult;
   daysTitle: string;
-  onPrint: () => void;
+  hasFleet: boolean;
+  printMsg?: string;
+  onPrint: (kind: 'dialog' | 'save', includeFleet: boolean) => void;
 }): JSX.Element {
   const notIn = result.notInScheduleShops;
   const off = result.offScheduleShops;
   const shops = result.tree;
   const emptyHint = !daysTitle && result.total === 0;
+  /** Тумблер «Блок 3» — по умолчанию выключен (юзер 2026-08-02). */
+  const [includeFleet, setIncludeFleet] = useState(false);
 
   return (
     <DashPanel
@@ -852,16 +858,52 @@ function ModePanel({
         </span>
       }
       headRight={
-        <button
-          type="button"
-          disabled={emptyHint}
-          onClick={onPrint}
-          title="Печать / PDF"
-          className="flex h-7 items-center gap-1.5 rounded-md border border-white/[0.1] bg-white/[0.04] px-2.5 text-[11.5px] font-medium text-[var(--pd-text)] outline-none transition-colors hover:border-[var(--pd-accent)]/40 hover:bg-[var(--pd-accent-dim)] hover:text-[var(--pd-accent-soft)] disabled:opacity-40"
-        >
-          <Printer className="h-3.5 w-3.5" strokeWidth={1.75} />
-          PDF
-        </button>
+        <span className="flex items-center gap-1.5">
+          {printMsg && (
+            <span className="max-w-[140px] truncate text-[10.5px] text-[var(--pd-faint)]" title={printMsg}>
+              {printMsg}
+            </span>
+          )}
+          {hasFleet && (
+            <button
+              type="button"
+              disabled={emptyHint}
+              onClick={() => setIncludeFleet((v) => !v)}
+              title={
+                includeFleet
+                  ? 'Блок 3 (ТС и экспедиторы) войдёт в печать/PDF'
+                  : 'Блок 3 (ТС и экспедиторы) не войдёт в печать/PDF'
+              }
+              className={cn(
+                'flex h-7 items-center rounded-md border px-2 text-[11.5px] font-medium outline-none transition-colors disabled:opacity-40',
+                includeFleet
+                  ? 'border-[var(--pd-accent)]/50 bg-[var(--pd-accent-dim)] text-[var(--pd-accent-soft)]'
+                  : 'border-white/[0.1] bg-white/[0.04] text-[var(--pd-text)] hover:border-[var(--pd-accent)]/40 hover:bg-[var(--pd-accent-dim)]',
+              )}
+            >
+              Блок 3
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={emptyHint}
+            onClick={() => onPrint('dialog', includeFleet)}
+            title="Печать"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.1] bg-white/[0.04] text-[var(--pd-text)] outline-none transition-colors hover:border-[var(--pd-accent)]/40 hover:bg-[var(--pd-accent-dim)] hover:text-[var(--pd-accent-soft)] disabled:opacity-40"
+          >
+            <Printer className="h-3.5 w-3.5" strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            disabled={emptyHint}
+            onClick={() => onPrint('save', includeFleet)}
+            title="Скачать PDF"
+            className="flex h-7 items-center gap-1.5 rounded-md border border-white/[0.1] bg-white/[0.04] px-2.5 text-[11.5px] font-medium text-[var(--pd-text)] outline-none transition-colors hover:border-[var(--pd-accent)]/40 hover:bg-[var(--pd-accent-dim)] hover:text-[var(--pd-accent-soft)] disabled:opacity-40"
+          >
+            <Download className="h-3.5 w-3.5" strokeWidth={1.75} />
+            PDF
+          </button>
+        </span>
       }
       className={mode === 'white' ? 'ring-1 ring-amber-200/10' : 'ring-1 ring-slate-300/10'}
     >
@@ -986,7 +1028,15 @@ export function ReportScreen(): JSX.Element {
   const [rows, setRows] = useState<FlowDeliveryRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [manual, setManual] = useState<Record<string, ReportManualDay>>({});
-  const [printMode, setPrintMode] = useState<ReportMode | null>(null);
+  /** Silent print job: без превью — сразу dialog | save PDF (как Транспорт). */
+  const [printJob, setPrintJob] = useState<{
+    id: number;
+    mode: ReportMode;
+    kind: 'dialog' | 'save';
+    includeFleet: boolean;
+  } | null>(null);
+  const printJobSeq = useRef(0);
+  const [printMsg, setPrintMsg] = useState<{ mode: ReportMode; text: string } | null>(null);
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const whById = useWarehousesStore((st) => st.byId);
@@ -1235,6 +1285,21 @@ export function ReportScreen(): JSX.Element {
 
   const shopFactPct = (fact: number): number => pctOf(fact, plan.planShops);
 
+  const launchPrint = useCallback(
+    (mode: ReportMode, kind: 'dialog' | 'save', includeFleet: boolean) => {
+      printJobSeq.current += 1;
+      setPrintMsg(null);
+      setPrintJob({ id: printJobSeq.current, mode, kind, includeFleet });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!printMsg) return;
+    const t = setTimeout(() => setPrintMsg(null), 4000);
+    return () => clearTimeout(t);
+  }, [printMsg]);
+
   return (
     <div className="report-screen flex h-full min-h-0 min-w-0 w-full max-w-full flex-1 flex-col overflow-hidden bg-[var(--pd-bg,#1f1e1b)]">
       <div className="drag-region flex h-9 w-full min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-white/[0.06] px-4">
@@ -1319,14 +1384,18 @@ export function ReportScreen(): JSX.Element {
             title="White"
             result={white}
             daysTitle={daysTitle}
-            onPrint={() => setPrintMode('white')}
+            hasFleet={fleetGroups.length > 0}
+            printMsg={printMsg?.mode === 'white' ? printMsg.text : undefined}
+            onPrint={(kind, includeFleet) => launchPrint('white', kind, includeFleet)}
           />
           <ModePanel
             mode="black"
             title="Black"
             result={black}
             daysTitle={daysTitle}
-            onPrint={() => setPrintMode('black')}
+            hasFleet={fleetGroups.length > 0}
+            printMsg={printMsg?.mode === 'black' ? printMsg.text : undefined}
+            onPrint={(kind, includeFleet) => launchPrint('black', kind, includeFleet)}
           />
 
           <DashPanel full tightHead title="Блок 2">
@@ -1341,18 +1410,24 @@ export function ReportScreen(): JSX.Element {
         </DashShell>
       </div>
 
-      {printMode && (
+      {printJob && (
         <ReportPrint
-          mode={printMode}
+          key={printJob.id}
+          mode={printJob.mode}
           daysTitle={daysTitle}
           days={sortedDays}
           byDay={manual}
-          result={printMode === 'white' ? white : black}
+          result={printJob.mode === 'white' ? white : black}
           fleetGroups={fleetGroups}
+          includeFleet={printJob.includeFleet}
           planShops={plan.planShops}
           planWarehouses={plan.planWarehouses}
           fleetPeople={fleetPeople}
-          onClose={() => setPrintMode(null)}
+          autoMode={printJob.kind}
+          onDone={(text) => {
+            setPrintJob(null);
+            if (text) setPrintMsg({ mode: printJob.mode, text });
+          }}
         />
       )}
     </div>

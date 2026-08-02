@@ -342,6 +342,38 @@ async function cleanupStaleTmpPdfs(): Promise<void> {
   }
 }
 
+/**
+ * Очередь на одну печать за раз. Без неё два быстрых клика подряд (Печать,
+ * затем сразу PDF, или двойной клик) запускают два withTransparentRoot
+ * ОДНОВРЕМЕННО на одном webContents — второй debugger.detach() и class-restore
+ * рвут ещё не завершённый первый printToPDF, и на выходе может оказаться PDF
+ * с «зависшим» экраном/скриншотом вместо листа (юзер 2026-08-02: «иногда
+ * качает скрин а не пдф»). Сериализуем: каждый следующий вызов ждёт конца
+ * предыдущего.
+ *
+ * ⚠️ Гейт на ТАЙМАУТЕ (не на самом fn()): если один job реально зависнет
+ * (напр. системный диалог печати открылся без фокуса и ждёт юзера) — БЕЗ
+ * таймаута очередь блокируется НАВСЕГДА и все следующие клики молчат до
+ * перезапуска (юзер 2026-08-02: «нажал — ничего, повторно тоже нет»). Через
+ * PRINT_LOCK_TIMEOUT_MS отпускаем следующий вызов, даже если предыдущий ещё
+ * не завершился — рискуем редкой гонкой, а не постоянной поломкой печати.
+ */
+const PRINT_LOCK_TIMEOUT_MS = 15_000;
+let printChain: Promise<unknown> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const result = printChain.then(fn, fn);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  const timeout = new Promise<void>((res) => {
+    const t = setTimeout(res, PRINT_LOCK_TIMEOUT_MS);
+    settled.then(() => clearTimeout(t));
+  });
+  printChain = Promise.race([settled, timeout]);
+  return result;
+}
+
 export function setupPrintBridge(): void {
   // Стартовая очистка stale-файлов от предыдущих сессий.
   void cleanupStaleTmpPdfs();
@@ -365,55 +397,57 @@ export function setupPrintBridge(): void {
       if (!win || win.isDestroyed()) {
         return { ok: false, error: 'no_window' };
       }
-      try {
-        const safeName = (defaultName || 'document').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
-        const tmpPath = path.join(
-          os.tmpdir(),
-          `pyn-print-${Date.now()}-${safeName}.pdf`,
-        );
-        const pdfBuf = await withTransparentRoot(win, () =>
-          win.webContents.printToPDF(pdfOptions(opts)),
-        );
-        await writeFile(tmpPath, pdfBuf);
-        // Загружаем PDF в hidden BrowserWindow (Chromium PDFium viewer),
-        // далее `webContents.print({ silent: false })` открывает системный
-        // print dialog СРАЗУ — никакого Preview / Cmd+P не требуется.
-        // Hidden окно закрывается после печати (или отмены).
-        const printWin = new BrowserWindow({
-          show: false,
-          width: 1,
-          height: 1,
-          webPreferences: {
-            offscreen: false,
-            sandbox: false,
-            plugins: true, // PDFium для рендера PDF
-          },
-        });
+      return serialize(async () => {
         try {
-          await printWin.loadFile(tmpPath);
-          // Дать PDFium время отрендерить PDF (иначе print с пустым контентом)
-          await new Promise((r) => setTimeout(r, 600));
-          await new Promise<void>((resolve) => {
-            printWin.webContents.print(
-              { silent: false, printBackground: true, color: true },
-              () => resolve(), // success / cancel — оба ok, нам важно только что dialog показали
-            );
+          const safeName = (defaultName || 'document').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+          const tmpPath = path.join(
+            os.tmpdir(),
+            `pyn-print-${Date.now()}-${safeName}.pdf`,
+          );
+          const pdfBuf = await withTransparentRoot(win, () =>
+            win.webContents.printToPDF(pdfOptions(opts)),
+          );
+          await writeFile(tmpPath, pdfBuf);
+          // Загружаем PDF в hidden BrowserWindow (Chromium PDFium viewer),
+          // далее `webContents.print({ silent: false })` открывает системный
+          // print dialog СРАЗУ — никакого Preview / Cmd+P не требуется.
+          // Hidden окно закрывается после печати (или отмены).
+          const printWin = new BrowserWindow({
+            show: false,
+            width: 1,
+            height: 1,
+            webPreferences: {
+              offscreen: false,
+              sandbox: false,
+              plugins: true, // PDFium для рендера PDF
+            },
           });
-        } finally {
           try {
-            printWin.close();
-          } catch {
-            /* ignore */
+            await printWin.loadFile(tmpPath);
+            // Дать PDFium время отрендерить PDF (иначе print с пустым контентом)
+            await new Promise((r) => setTimeout(r, 600));
+            await new Promise<void>((resolve) => {
+              printWin.webContents.print(
+                { silent: false, printBackground: true, color: true },
+                () => resolve(), // success / cancel — оба ok, нам важно только что dialog показали
+              );
+            });
+          } finally {
+            try {
+              printWin.close();
+            } catch {
+              /* ignore */
+            }
           }
+          schedulePrintCleanup(tmpPath);
+          return { ok: true };
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          };
         }
-        schedulePrintCleanup(tmpPath);
-        return { ok: true };
-      } catch (err) {
-        return {
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
+      });
     },
   );
 
@@ -441,19 +475,21 @@ export function setupPrintBridge(): void {
         return { ok: false, error: 'no_window' };
       }
       const safeName = (defaultName || 'document').replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
-      try {
-        const filePath = uniquePdfPath(app.getPath('downloads'), safeName);
-        const pdfBuf = await withTransparentRoot(win, () =>
-          win.webContents.printToPDF(pdfOptions(opts)),
-        );
-        await writeFile(filePath, pdfBuf);
-        return { ok: true, path: filePath };
-      } catch (err) {
-        return {
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
+      return serialize(async () => {
+        try {
+          const filePath = uniquePdfPath(app.getPath('downloads'), safeName);
+          const pdfBuf = await withTransparentRoot(win, () =>
+            win.webContents.printToPDF(pdfOptions(opts)),
+          );
+          await writeFile(filePath, pdfBuf);
+          return { ok: true, path: filePath };
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      });
     },
   );
 }
