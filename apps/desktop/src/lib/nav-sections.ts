@@ -1,4 +1,4 @@
-import { CalendarRange, Container, Database, FileBarChart2, History, MapPinned, MessageSquare, Newspaper, Rss, Scale, StickyNote, Truck, Waves } from 'lucide-react';
+import { CalendarRange, Container, Database, FileBarChart2, History, MapPinned, MessageSquare, Newspaper, Radio, Rss, Scale, StickyNote, Truck, Waves } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -146,6 +146,18 @@ export const NAV_TECH: NavSection = {
   // Поток-teal / Транспорт-amber / База-blue / Карта-emerald / Рассылка-rose.
   icon: Container,
   iconColor: 'text-orange-400',
+};
+
+/**
+ * «Волна» — SoundCloud webview (музыка). Partition = Google-таблицы
+ * (`persist:google-sheets`): SSO Google + bridge/PAC на корп-сети.
+ * Всем авторизованным; вне `NAV_SECTIONS`. См. `WaveScreen`.
+ */
+export const NAV_WAVE: NavSection = {
+  id: 'wave',
+  get label() { return i18next.t('sidebar.nav_wave', 'Волна'); },
+  icon: Radio,
+  iconColor: 'text-fuchsia-400',
 };
 
 // Группа «Лента».

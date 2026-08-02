@@ -188,6 +188,55 @@ contextBridge.exposeInMainWorld('pyn', {
     logout: function pynGoogleLogout() {
       return ipcRenderer.invoke('pyn:google:logout');
     },
+    /**
+     * §wave — main закрыл popup-окно Google Sign-In (открытое вместо
+     * сломанного window.open() в webview, см. main.ts did-attach-webview).
+     * Renderer (WaveScreen) перезагружает свой webview.
+     */
+    onPopupDone: function pynGoogleOnPopupDone(handler) {
+      const wrapped = () => handler();
+      ipcRenderer.on('pyn:google-popup-done', wrapped);
+      return function unsubscribe() {
+        ipcRenderer.removeListener('pyn:google-popup-done', wrapped);
+      };
+    },
+    /** §wave — открыть OAuth URL в окне на persist:google-sheets. */
+    openWaveAuth: function pynGoogleOpenWaveAuth(url) {
+      return ipcRenderer.invoke('pyn:wave:open-auth', String(url || ''));
+    },
+  },
+  /**
+   * §wave — host (WaveScreen) ловит console-message из webview и зовёт
+   * google.openWaveAuth. Здесь только alias для ясности.
+   */
+  wave: {
+    openAuth: function pynWaveOpenAuth(url) {
+      return ipcRenderer.invoke('pyn:wave:open-auth', String(url || ''));
+    },
+    /** BrowserWindow soundcloud.com на google-sheets partition (как Settings Google). */
+    openLogin: function pynWaveOpenLogin() {
+      return ipcRenderer.invoke('pyn:wave:open-login');
+    },
+    getGuestPreloadPath: function pynWaveGuestPreloadPath() {
+      return ipcRenderer.invoke('pyn:wave:guest-preload-path');
+    },
+    /**
+     * OAuth callback URL (id_token в hash) из main после Google Allow.
+     * WaveScreen грузит его в <webview> (не main.loadURL — ломает guest).
+     */
+    onAuthCallback: function pynWaveOnAuthCallback(handler) {
+      const wrapped = (_e, url) => {
+        try {
+          handler(String(url || ''));
+        } catch {
+          /* */
+        }
+      };
+      ipcRenderer.on('pyn:wave-auth-callback', wrapped);
+      return function unsubscribe() {
+        ipcRenderer.removeListener('pyn:wave-auth-callback', wrapped);
+      };
+    },
   },
   /**
    * Google-bridge: renderer после get_client_config отдаёт {url,ticket} в main,

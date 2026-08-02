@@ -1,6 +1,6 @@
 /**
  * Заметки / задачи — личные + общие (передача смены).
- * UI: раздел «Заметки» (TakeNote layout + Markpad markdown spirit).
+ * UI: «Мои заметки» / «Общие», drag между ними; галочки с кто/когда.
  */
 import type { ApiClient } from '../api/client';
 
@@ -11,11 +11,19 @@ export interface NoteItem {
   id: string;
   text: string;
   done: boolean;
+  /** login кто отметил */
+  done_by?: string | null;
+  /** ФИО кто отметил */
+  done_by_name?: string | null;
+  /** ISO when marked done */
+  done_at?: string | null;
 }
 
 export interface Note {
   id: number;
   owner_login: string;
+  /** ФИО автора (не login) */
+  owner_name?: string;
   scope: NoteScope;
   title: string;
   body_md: string;
@@ -23,6 +31,11 @@ export interface Note {
   status: NoteStatus;
   assignee_login: string | null;
   pinned: boolean;
+  /** soft-delete в «Общих»: карточка «Удалено · имя · время» */
+  deleted?: boolean;
+  deleted_by?: string | null;
+  deleted_by_name?: string | null;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -76,9 +89,25 @@ export async function notesItemToggle(
   return res.note;
 }
 
-export async function notesDelete(api: ApiClient, id: number): Promise<void> {
-  const res = await api.call<{ ok: boolean; error?: string }>('notes_delete', { id });
+/** Soft-delete → tombstone note (контент на сервере, 24ч restore). */
+export async function notesDelete(api: ApiClient, id: number): Promise<Note | null> {
+  const res = await api.call<{
+    ok: boolean;
+    note?: Note;
+    soft?: boolean;
+    error?: string;
+  }>('notes_delete', { id });
   if (!res?.ok) throw new Error(res?.error || 'notes_delete_failed');
+  return res.note ?? null;
+}
+
+/** Восстановить удалённую (автор, ≤24ч). */
+export async function notesRestore(api: ApiClient, id: number): Promise<Note> {
+  const res = await api.call<{ ok: boolean; note?: Note; error?: string }>('notes_restore', {
+    id,
+  });
+  if (!res?.ok || !res.note) throw new Error(res?.error || 'notes_restore_failed');
+  return res.note;
 }
 
 export async function notesSetStatus(

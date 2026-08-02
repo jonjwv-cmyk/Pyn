@@ -11,6 +11,7 @@ import {
   NAV_BROADCAST,
   NAV_MAP,
   NAV_TECH,
+  NAV_WAVE,
   NAV_SECTIONS,
   NAV_WORKSPACE_BEFORE_TABLES,
 } from '@/lib/nav-sections';
@@ -72,6 +73,8 @@ interface SidebarProps {
   showMap: boolean;
   /** Показывать ли раздел «Технология» (вебвью pynflow.ru) — тот же admin/developer-контур. */
   showTech: boolean;
+  /** «Волна» (SoundCloud) — всем авторизованным; partition Google-таблиц. */
+  showWave?: boolean;
   onToggleCollapsed: () => void;
   onAiClick: () => void;
   onSectionClick: (id: NavSectionId) => void;
@@ -144,6 +147,7 @@ export function Sidebar({
   showBroadcast,
   showMap,
   showTech,
+  showWave = true,
   onToggleCollapsed,
   onAiClick,
   onSectionClick,
@@ -346,6 +350,9 @@ export function Sidebar({
 
         {/* 3c. «Технология» — вебвью публичного борта pynflow.ru (заявки/кладовщики/рейсы/ГЛОНАСС). */}
         {showTech && renderNavItem(NAV_TECH)}
+
+        {/* 3d. «Волна» — SoundCloud (Google SSO + bridge, как таблицы). */}
+        {showWave && renderNavItem(NAV_WAVE)}
 
         {/* 4. «База» (Контакты/МОЛы / Склады) — hover-флайаут листов; выбор листа → переход. */}
         <BaseNavRow

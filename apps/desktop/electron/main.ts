@@ -1,6 +1,6 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain } from 'electron';
 import { createPetWindow, setupPetBridge, sendPetActivity } from './pet-window';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { setupMainLog } from './log';
 import { setupApiBridge } from './ipc/api-bridge';
@@ -11,7 +11,7 @@ import { setupMapWeatherBridge } from './ipc/map-weather-bridge';
 import { setupGlonassBridge } from './ipc/glonass-bridge';
 import { setupFsBridge } from './ipc/fs-bridge';
 import { setupPrintBridge } from './ipc/print-bridge';
-import { setupGoogleBridge } from './ipc/google-bridge';
+import { setupGoogleBridge, isSoundCloudAuthCallback } from './ipc/google-bridge';
 import { setupBridgeBridge } from './ipc/bridge-bridge';
 import { setupMacroBridge } from './ipc/macro-bridge';
 import { setupMolBridge } from './ipc/mol-bridge';
@@ -213,6 +213,7 @@ function createMainWindow(): void {
   forwardKeyActivity(mainWindow.webContents);
   mainWindow.webContents.on('did-attach-webview', (_e, guest) => {
     forwardKeyActivity(guest);
+    // Handler также ставится глобально в setupWebviewWindowOpen (web-contents-created).
   });
 
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
@@ -419,9 +420,146 @@ function setupTray(): void {
   tray.on('right-click', toggleTrayMenu);
 }
 
+/**
+ * §wave SoundCloud Google SSO (как таблицы: cookies из Настроек → partition).
+ *
+ * - window.open всегда allow (иначе SC: «enable popup windows»)
+ * - Google OAuth остаётся в popup (не handoff)
+ * - Только host+path SC callback (isSoundCloudAuthCallback) — НЕ query:
+ *   Google OAuth URL содержит redirect_uri=...soundcloud.../web-auth-callback...
+ *   substring-match ложно handoff'ил Google URL в parent → guest dead / fail(-2)
+ */
+function setupWebviewWindowOpen(): void {
+  const wired = new WeakSet<Electron.WebContents>();
+  app.on('web-contents-created', (_event, contents) => {
+    const wire = (): void => {
+      try {
+        if (contents.getType() !== 'webview') return;
+      } catch {
+        return;
+      }
+      if (wired.has(contents)) return;
+      wired.add(contents);
+      // eslint-disable-next-line no-console
+      console.log('[webview:contents-created] id=', contents.id, '(wave oauth)');
+
+      const notifyDone = (): void => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          try {
+            mainWindow.webContents.send('pyn:google-popup-done');
+          } catch {
+            /* */
+          }
+        }
+      };
+
+      contents.setWindowOpenHandler((details) => {
+        const url = String(details.url || '');
+        // eslint-disable-next-line no-console
+        console.log(`[webview:window-open] ${url.slice(0, 140)}`);
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 520,
+            height: 720,
+            autoHideMenuBar: true,
+            backgroundColor: '#ffffff',
+            webPreferences: {
+              nodeIntegration: false,
+              contextIsolation: true,
+              sandbox: true,
+            },
+          },
+        };
+      });
+
+      contents.on('did-create-window', (child) => {
+        // eslint-disable-next-line no-console
+        console.log('[webview:did-create-window]');
+        let handoffDone = false;
+
+        const safeCloseChild = (): void => {
+          try {
+            if (!child.isDestroyed()) child.close();
+          } catch {
+            /* never destroy() — может убить guest webview */
+          }
+        };
+
+        /**
+         * Callback SC: НЕ preventDefault и НЕ loadURL в webview guest
+         * (GUEST_VIEW_MANAGER -3 / Invalid guestInstanceId).
+         * Даём popup догрузить callback (postMessage/cookies), потом close.
+         * Надёжный путь входа: pyn:wave:open-login (BrowserWindow).
+         */
+        const handoffSc = (url: string, why: string): void => {
+          if (handoffDone) return;
+          if (!isSoundCloudAuthCallback(url)) return;
+          handoffDone = true;
+          // eslint-disable-next-line no-console
+          console.log(`[webview:auth-handoff] ${why} stay-in-popup ${url.slice(0, 100)}`);
+          // IPC на всякий случай (renderer может попробовать), без force load
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+              mainWindow.webContents.send('pyn:wave-auth-callback', url);
+            } catch {
+              /* */
+            }
+          }
+          // Подождать JS callback в popup, потом close + soft reload wave
+          setTimeout(safeCloseChild, 2200);
+          setTimeout(notifyDone, 2800);
+        };
+
+        const onUrl = (url: string, why: string, _e?: Electron.Event): void => {
+          // eslint-disable-next-line no-console
+          console.log(`[webview:child-${why}] ${String(url).slice(0, 160)}`);
+          // НЕ preventDefault — popup должен догрузить callback с id_token
+          if (!isSoundCloudAuthCallback(url)) return;
+          handoffSc(url, why);
+        };
+
+        child.webContents.on('will-navigate', (e, url) => onUrl(url, 'navigate', e));
+        child.webContents.on('will-redirect', (e, url) => onUrl(url, 'redirect', e));
+        child.webContents.on('did-navigate', (_e, url) => onUrl(url, 'did-nav'));
+        child.webContents.on('did-finish-load', () => {
+          try {
+            onUrl(child.webContents.getURL(), 'loaded');
+          } catch {
+            /* */
+          }
+        });
+        child.webContents.on('did-fail-load', (_e, code, desc, failedUrl) => {
+          // eslint-disable-next-line no-console
+          console.log(`[webview:child-fail] ${code} ${desc} ${String(failedUrl).slice(0, 100)}`);
+        });
+        child.on('closed', () => {
+          // eslint-disable-next-line no-console
+          console.log(`[webview:child-closed] handoffDone=${handoffDone}`);
+          if (!handoffDone) notifyDone();
+        });
+      });
+    };
+    wire();
+    contents.on('did-start-loading', wire);
+  });
+}
+
 app.whenReady().then(async () => {
   // Второй экземпляр уже ушёл в quit — не поднимаем окна.
   if (!gotSingleInstanceLock) return;
+
+  // До createWindow — ловим все webview guests.
+  setupWebviewWindowOpen();
+
+  // §wave — путь guest preload для <webview preload="file://…">
+  ipcMain.handle('pyn:wave:guest-preload-path', () => {
+    const file = path.join(__dirname, 'wave-guest-preload.cjs');
+    const href = pathToFileURL(file).href;
+    // eslint-disable-next-line no-console
+    console.log('[wave] guest-preload-path', href);
+    return href;
+  });
 
   // Убираем дефолтное Electron-меню (File/Edit/View/Window/Help) — у Pyn
   // свой UI, native menu только засоряет окно. Стандартные shortcut'ы

@@ -1,27 +1,25 @@
 /**
- * Заметки — UX как usememos/Memos: timeline-карточки, текст виден сразу.
- * Личные + общие (передача смены). Markdown + paste + PDF.
- * Чеклист: галочка → done; всю карточку → «Выполнено».
+ * Заметки: текст + чеклист.
+ * Мои заметки | Общие · Активные | Выполнено.
+ * В общие / обратно — перетаскиванием. Имя (не login). Галочка → кто/когда.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode, type DragEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Check,
   CheckCircle2,
-  Download,
   GripVertical,
   Loader2,
   Plus,
-  Share2,
   StickyNote,
   Trash2,
-  Users,
   X,
 } from 'lucide-react';
-import marked from 'marked';
+import * as markedNs from 'marked';
 import {
   notesDelete,
   notesItemToggle,
   notesList,
+  notesRestore,
   notesSetStatus,
   notesUpsert,
   type Note,
@@ -32,8 +30,23 @@ import {
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { sessionStore } from '@/lib/token-store';
+import { WorkspaceCard } from '@/components/WorkspaceCard';
+import '@/components/pyn-dash/pyn-dash.css';
 
-marked.setOptions({ breaks: true, gfm: true });
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const markedApi: any =
+  (markedNs as { marked?: unknown }).marked ??
+  (markedNs as { default?: unknown }).default ??
+  markedNs;
+if (typeof markedApi?.setOptions === 'function') {
+  markedApi.setOptions({ breaks: true, gfm: true });
+}
+
+type CacheKey = `${NoteScope}:${NoteStatus}`;
+
+function cacheKey(scope: NoteScope, status: NoteStatus): CacheKey {
+  return `${scope}:${status}`;
+}
 
 function nid(): string {
   return `i_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -64,6 +77,11 @@ function fmtWhen(iso: string): string {
   });
 }
 
+function displayName(n: Pick<Note, 'owner_name' | 'owner_login'>): string {
+  const name = (n.owner_name || '').trim();
+  return name || n.owner_login || '';
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -74,14 +92,48 @@ function escapeHtml(s: string): string {
 
 function mdHtml(src: string): string {
   try {
-    return marked.parse(src || '') as string;
+    const parse = markedApi?.parse ?? markedApi;
+    return String(typeof parse === 'function' ? parse(src || '') : '');
   } catch {
     return escapeHtml(src || '');
   }
 }
 
+function allItemsDone(n: Note): boolean {
+  return n.items.length > 0 && n.items.every((it) => it.done);
+}
+
+const RESTORE_MS = 24 * 60 * 60 * 1000;
+
+/** Автор может восстановить в течение 24ч с deleted_at. */
+function canRestoreNote(n: Note, meLogin: string): boolean {
+  if (!n.deleted) return false;
+  if (!n.owner_login || n.owner_login.toLowerCase() !== meLogin) return false;
+  if (!n.deleted_at) return false;
+  const s = n.deleted_at.includes('T') ? n.deleted_at : `${n.deleted_at.replace(' ', 'T')}Z`;
+  const t = new Date(s).getTime();
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t <= RESTORE_MS;
+}
+
+function patchInCache(
+  cache: Map<CacheKey, Note[]>,
+  note: Note,
+  removeOnly?: boolean,
+): void {
+  for (const [k, list] of cache) {
+    const filtered = list.filter((x) => x.id !== note.id);
+    if (filtered.length !== list.length) cache.set(k, filtered);
+  }
+  if (removeOnly) return;
+  const k = cacheKey(note.scope, note.status);
+  const cur = cache.get(k) || [];
+  cache.set(k, [note, ...cur.filter((x) => x.id !== note.id)]);
+}
+
 export function NotesScreen(): JSX.Element {
   const [me, setMe] = useState('');
+  const [myName, setMyName] = useState('');
   const [scope, setScope] = useState<NoteScope>('private');
   const [bucket, setBucket] = useState<NoteStatus>('active');
   const [notes, setNotes] = useState<Note[]>([]);
@@ -89,39 +141,93 @@ export function NotesScreen(): JSX.Element {
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Composer (новый memo)
   const [cText, setCText] = useState('');
   const [cItems, setCItems] = useState<NoteItem[]>([]);
-  const [cShared, setCShared] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Inline edit
   const [editId, setEditId] = useState<number | null>(null);
   const [editText, setEditText] = useState('');
-  const [editTitle, setEditTitle] = useState('');
   const dragId = useRef<number | null>(null);
+  const cacheRef = useRef<Map<CacheKey, Note[]>>(new Map());
+  const loadGen = useRef(0);
+  const scopeRef = useRef(scope);
+  const bucketRef = useRef(bucket);
+  scopeRef.current = scope;
+  bucketRef.current = bucket;
 
   useEffect(() => {
-    void sessionStore.load().then((s) => setMe((s?.user?.login || '').toLowerCase()));
+    void sessionStore.load().then((s) => {
+      setMe((s?.user?.login || '').toLowerCase());
+      setMyName((s?.user?.fullName || s?.user?.login || '').trim());
+    });
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErr('');
-    try {
-      const list = await notesList(api, { scope, status: bucket });
-      setNotes(list);
-    } catch (e) {
-      setErr(String(e).slice(0, 140));
-      setNotes([]);
-    } finally {
+  const applyView = useCallback((s: NoteScope, b: NoteStatus) => {
+    const hit = cacheRef.current.get(cacheKey(s, b));
+    if (hit) {
+      setNotes(hit);
       setLoading(false);
+    } else {
+      setLoading(true);
     }
-  }, [scope, bucket]);
+  }, []);
+
+  const fetchBucket = useCallback(async (s: NoteScope, b: NoteStatus): Promise<Note[]> => {
+    const list = await notesList(api, { scope: s, status: b });
+    cacheRef.current.set(cacheKey(s, b), list);
+    return list;
+  }, []);
+
+  const load = useCallback(
+    async (s: NoteScope, b: NoteStatus) => {
+      const gen = ++loadGen.current;
+      applyView(s, b);
+      setErr('');
+      try {
+        const list = await fetchBucket(s, b);
+        if (gen !== loadGen.current) return;
+        if (scopeRef.current === s && bucketRef.current === b) {
+          setNotes(list);
+          setLoading(false);
+        }
+      } catch (e) {
+        if (gen !== loadGen.current) return;
+        if (scopeRef.current === s && bucketRef.current === b) {
+          setErr(String(e).slice(0, 140));
+          if (!cacheRef.current.has(cacheKey(s, b))) setNotes([]);
+          setLoading(false);
+        }
+      }
+    },
+    [applyView, fetchBucket],
+  );
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void load(scope, bucket);
+  }, [scope, bucket, load]);
+
+  useEffect(() => {
+    const all: Array<[NoteScope, NoteStatus]> = [
+      ['private', 'active'],
+      ['private', 'done'],
+      ['shared', 'active'],
+      ['shared', 'done'],
+    ];
+    void Promise.allSettled(all.map(([s, b]) => fetchBucket(s, b))).then(() => {
+      const hit = cacheRef.current.get(cacheKey(scopeRef.current, bucketRef.current));
+      if (hit) setNotes(hit);
+    });
+  }, [fetchBucket]);
+
+  const showList = useCallback(
+    (s: NoteScope, b: NoteStatus) => {
+      if (s === scope && b === bucket) return;
+      applyView(s, b);
+      setScope(s);
+      setBucket(b);
+    },
+    [scope, bucket, applyView],
+  );
 
   const postMemo = useCallback(async () => {
     const text = cText.trim();
@@ -132,24 +238,24 @@ export function NotesScreen(): JSX.Element {
     }
     setSaving(true);
     setErr('');
+    // всегда в «Мои» — в общие только drag
+    const targetScope: NoteScope = 'private';
     try {
-      const title =
-        text.split('\n').find((l) => l.trim())?.slice(0, 80) ||
-        items[0]?.text.slice(0, 80) ||
-        '';
       const saved = await notesUpsert(api, {
-        title,
+        title: '',
         body_md: text,
         items: items.length ? items : undefined,
-        scope: cShared ? 'shared' : 'private',
+        scope: targetScope,
         status: 'active',
       });
       setCText('');
       setCItems([]);
-      if (bucket === 'active' && (cShared ? scope === 'shared' : scope === 'private')) {
+      patchInCache(cacheRef.current, saved);
+      if (scope === 'private' && bucket === 'active') {
         setNotes((prev) => [saved, ...prev.filter((n) => n.id !== saved.id)]);
       } else {
-        setScope(cShared ? 'shared' : 'private');
+        applyView('private', 'active');
+        setScope('private');
         setBucket('active');
       }
     } catch (e) {
@@ -157,7 +263,7 @@ export function NotesScreen(): JSX.Element {
     } finally {
       setSaving(false);
     }
-  }, [cText, cItems, cShared, bucket, scope]);
+  }, [cText, cItems, bucket, scope, applyView]);
 
   const onComposerPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
@@ -178,62 +284,211 @@ export function NotesScreen(): JSX.Element {
     }
   }, []);
 
+  const isOwner = useCallback(
+    (n: Note) => !n.owner_login || n.owner_login.toLowerCase() === me,
+    [me],
+  );
+
+  /** Shared: галочки может любой; правки/удаление/scope — owner. */
+  const canCheck = useCallback(
+    (n: Note) => isOwner(n) || n.scope === 'shared',
+    [isOwner],
+  );
+
   const removeNote = useCallback(
     async (n: Note) => {
-      if (n.owner_login && me && n.owner_login.toLowerCase() !== me) {
+      if (!isOwner(n) || n.deleted) {
         setErr('Удалить может только автор');
         return;
       }
+      const prev = notes;
+      if (editId === n.id) setEditId(null);
+
+      const tomb: Note = {
+        ...n,
+        deleted: true,
+        deleted_by: me,
+        deleted_by_name: myName || me,
+        deleted_at: new Date().toISOString(),
+        // UI-tombstone; контент на сервере для restore 24ч
+        title: '',
+        body_md: '',
+        items: [],
+        updated_at: new Date().toISOString(),
+      };
+      setNotes((p) => p.map((x) => (x.id === n.id ? tomb : x)));
+      patchInCache(cacheRef.current, tomb);
       try {
-        await notesDelete(api, n.id);
-        setNotes((prev) => prev.filter((x) => x.id !== n.id));
-        if (editId === n.id) setEditId(null);
+        const saved = await notesDelete(api, n.id);
+        if (saved) {
+          patchInCache(cacheRef.current, saved);
+          setNotes((p) => p.map((x) => (x.id === saved.id ? saved : x)));
+        }
       } catch (e) {
+        setNotes(prev);
+        cacheRef.current.set(cacheKey(n.scope, n.status), prev);
         setErr(String(e).slice(0, 140));
       }
     },
-    [me, editId],
+    [isOwner, editId, notes, me, myName],
+  );
+
+  const restoreNote = useCallback(
+    async (n: Note) => {
+      if (!canRestoreNote(n, me)) {
+        setErr('Восстановить можно только автору в течение 24 часов');
+        return;
+      }
+      const prev = notes;
+      try {
+        const saved = await notesRestore(api, n.id);
+        patchInCache(cacheRef.current, saved);
+        if (scopeRef.current === saved.scope && bucketRef.current === saved.status) {
+          setNotes((p) => p.map((x) => (x.id === saved.id ? saved : x)));
+        } else {
+          setNotes((p) => p.filter((x) => x.id !== n.id));
+          patchInCache(cacheRef.current, saved);
+        }
+      } catch (e) {
+        setNotes(prev);
+        setErr(String(e).slice(0, 140));
+      }
+    },
+    [me, notes],
   );
 
   const setStatus = useCallback(
     async (n: Note, status: NoteStatus) => {
+      if (!isOwner(n)) return;
+      const prev = notes;
+      // только статус карточки — галочки задач как были
+      const optimistic: Note = {
+        ...n,
+        status,
+        updated_at: new Date().toISOString(),
+      };
+      setNotes((p) => p.filter((x) => x.id !== n.id));
+      patchInCache(cacheRef.current, optimistic);
+      if (editId === n.id) setEditId(null);
       try {
-        await notesSetStatus(api, n.id, status);
-        setNotes((prev) => prev.filter((x) => x.id !== n.id));
-        if (editId === n.id) setEditId(null);
+        const saved = await notesSetStatus(api, n.id, status);
+        patchInCache(cacheRef.current, saved);
       } catch (e) {
+        setNotes(prev);
+        cacheRef.current.set(cacheKey(n.scope, n.status), prev);
         setErr(String(e).slice(0, 140));
       }
     },
-    [editId],
+    [editId, notes, isOwner],
   );
 
-  const toggleItem = useCallback(async (n: Note, itemId: string) => {
-    try {
-      const saved = await notesItemToggle(api, n.id, itemId);
-      if (saved.status === 'done' && bucket === 'active') {
-        setNotes((prev) => prev.filter((x) => x.id !== saved.id));
-      } else if (saved.status === 'active' && bucket === 'done') {
-        setNotes((prev) => prev.filter((x) => x.id !== saved.id));
-      } else {
-        setNotes((prev) => prev.map((x) => (x.id === saved.id ? saved : x)));
+  const setNoteScope = useCallback(
+    async (n: Note, nextScope: NoteScope) => {
+      if (!isOwner(n) || n.scope === nextScope) return;
+      const prev = notes;
+      const optimistic: Note = {
+        ...n,
+        scope: nextScope,
+        updated_at: new Date().toISOString(),
+      };
+      setNotes((p) => p.filter((x) => x.id !== n.id));
+      patchInCache(cacheRef.current, optimistic);
+      try {
+        const saved = await notesUpsert(api, {
+          id: n.id,
+          title: '',
+          body_md: n.body_md || n.title || '',
+          items: n.items,
+          scope: nextScope,
+          status: n.status,
+          pinned: n.pinned,
+        });
+        patchInCache(cacheRef.current, saved);
+        if (scopeRef.current === saved.scope && bucketRef.current === saved.status) {
+          setNotes((p) => [saved, ...p.filter((x) => x.id !== saved.id)]);
+        }
+      } catch (e) {
+        setNotes(prev);
+        cacheRef.current.set(cacheKey(n.scope, n.status), prev);
+        setErr(String(e).slice(0, 140));
       }
-    } catch (e) {
-      setErr(String(e).slice(0, 140));
-    }
-  }, [bucket]);
+    },
+    [isOwner, notes],
+  );
+
+  const toggleItem = useCallback(
+    async (n: Note, itemId: string) => {
+      if (!canCheck(n)) return;
+      const prev = notes;
+      const now = new Date().toISOString();
+      const items = n.items.map((it) => {
+        if (it.id !== itemId) return it;
+        const nextDone = !it.done;
+        if (nextDone) {
+          return {
+            ...it,
+            done: true,
+            done_by: me,
+            done_by_name: myName || me,
+            done_at: now,
+          };
+        }
+        return {
+          ...it,
+          done: false,
+          done_by: null,
+          done_by_name: null,
+          done_at: null,
+        };
+      });
+      const nextStatus: NoteStatus =
+        items.length > 0 && items.every((it) => it.done) ? 'done' : 'active';
+      const optimistic: Note = {
+        ...n,
+        items,
+        status: nextStatus,
+        updated_at: now,
+      };
+
+      if (nextStatus !== n.status && nextStatus === 'done' && bucket === 'active') {
+        setNotes((p) => p.filter((x) => x.id !== n.id));
+      } else if (nextStatus !== n.status && nextStatus === 'active' && bucket === 'done') {
+        setNotes((p) => p.filter((x) => x.id !== n.id));
+      } else {
+        setNotes((p) => p.map((x) => (x.id === n.id ? optimistic : x)));
+      }
+      patchInCache(cacheRef.current, optimistic);
+
+      try {
+        const saved = await notesItemToggle(api, n.id, itemId);
+        patchInCache(cacheRef.current, saved);
+        if (scopeRef.current === saved.scope && bucketRef.current === saved.status) {
+          setNotes((p) => {
+            if (p.some((x) => x.id === saved.id)) {
+              return p.map((x) => (x.id === saved.id ? saved : x));
+            }
+            if (saved.status === bucketRef.current) return [saved, ...p];
+            return p;
+          });
+        } else {
+          setNotes((p) => p.filter((x) => x.id !== saved.id));
+        }
+      } catch (e) {
+        setNotes(prev);
+        cacheRef.current.set(cacheKey(n.scope, n.status), prev);
+        setErr(String(e).slice(0, 140));
+      }
+    },
+    [bucket, notes, canCheck, me, myName],
+  );
 
   const saveEdit = useCallback(
     async (n: Note) => {
       setSaving(true);
       try {
-        const title =
-          editTitle.trim() ||
-          editText.split('\n').find((l) => l.trim())?.slice(0, 80) ||
-          n.title;
         const saved = await notesUpsert(api, {
           id: n.id,
-          title,
+          title: '',
           body_md: editText,
           items: n.items,
           scope: n.scope,
@@ -241,6 +496,7 @@ export function NotesScreen(): JSX.Element {
           assignee_login: n.assignee_login,
           pinned: n.pinned,
         });
+        patchInCache(cacheRef.current, saved);
         setNotes((prev) => prev.map((x) => (x.id === saved.id ? saved : x)));
         setEditId(null);
       } catch (e) {
@@ -249,35 +505,10 @@ export function NotesScreen(): JSX.Element {
         setSaving(false);
       }
     },
-    [editText, editTitle],
+    [editText],
   );
 
-  const toggleScope = useCallback(async (n: Note) => {
-    if (n.owner_login && me && n.owner_login.toLowerCase() !== me) return;
-    try {
-      const saved = await notesUpsert(api, {
-        id: n.id,
-        title: n.title,
-        body_md: n.body_md,
-        items: n.items,
-        scope: n.scope === 'shared' ? 'private' : 'shared',
-        status: n.status,
-        pinned: n.pinned,
-      });
-      // если смотрим «Мои» и сделали shared — убрать из списка
-      if (scope === 'private' && saved.scope === 'shared') {
-        setNotes((prev) => prev.filter((x) => x.id !== saved.id));
-      } else if (scope === 'shared' && saved.scope === 'private') {
-        setNotes((prev) => prev.filter((x) => x.id !== saved.id));
-      } else {
-        setNotes((prev) => prev.map((x) => (x.id === saved.id ? saved : x)));
-      }
-    } catch (e) {
-      setErr(String(e).slice(0, 140));
-    }
-  }, [me, scope]);
-
-  const onDropBucket = useCallback(
+  const onDropStatus = useCallback(
     async (target: NoteStatus) => {
       const id = dragId.current;
       dragId.current = null;
@@ -289,40 +520,23 @@ export function NotesScreen(): JSX.Element {
     [notes, setStatus],
   );
 
-  const exportPdf = useCallback((n: Note) => {
-    const title = n.title || 'Заметка';
-    const itemsHtml = n.items
-      .map((it) => `<li>${it.done ? '☑' : '☐'} ${escapeHtml(it.text)}</li>`)
-      .join('');
-    const bodyHtml = mdHtml(n.body_md);
-    const w = window.open('', '_blank', 'noopener,noreferrer,width=800,height=900');
-    if (!w) return;
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>${escapeHtml(title)}</title>
-<style>
-body{font-family:Inter,system-ui,sans-serif;color:#111;padding:28px;max-width:720px;margin:0 auto;line-height:1.5}
-h1{font-size:18px;margin:0 0 6px} .meta{color:#666;font-size:12px;margin-bottom:14px}
-ul{padding-left:1.2em} img{max-width:100%}
-</style></head><body>
-<h1>${escapeHtml(title)}</h1>
-<div class="meta">${n.scope === 'shared' ? 'Общая · ' : ''}${fmtWhen(n.updated_at)}</div>
-${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
-<div>${bodyHtml}</div>
-<script>window.onload=()=>window.print()</script>
-</body></html>`);
-    w.document.close();
-  }, []);
-
-  const isOwner = useCallback(
-    (n: Note) => !n.owner_login || n.owner_login.toLowerCase() === me,
-    [me],
+  const onDropScope = useCallback(
+    async (target: NoteScope) => {
+      const id = dragId.current;
+      dragId.current = null;
+      if (id == null) return;
+      const n = notes.find((x) => x.id === id);
+      if (!n || n.scope === target) return;
+      await setNoteScope(n, target);
+    },
+    [notes, setNoteScope],
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--pd-bg,#1f1e1b)]">
-      {/* top bar */}
-      <div className="drag-region flex h-9 shrink-0 items-center gap-2 border-b border-white/[0.06] px-4">
+    <main className="relative flex flex-1 flex-col overflow-hidden">
+      <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
         <StickyNote size={14} className="text-sky-400/90" strokeWidth={1.75} />
-        <span className="text-[13px] font-semibold tracking-tight text-[#f5f4ef]">Заметки</span>
+        <span className="text-[13px] font-semibold tracking-tight text-text-strong">Заметки</span>
         {saving && <Loader2 size={12} className="animate-spin text-zinc-500" />}
         {err ? (
           <span className="no-drag-region max-w-[360px] truncate text-[11px] text-rose-400" title={err}>
@@ -331,41 +545,67 @@ ${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
         ) : null}
       </div>
 
+      <WorkspaceCard>
       <div className="mx-auto flex min-h-0 w-full max-w-[720px] flex-1 flex-col px-3 py-3">
-        {/* filters */}
-        <div className="mb-3 flex flex-wrap items-center gap-1.5">
-          <Chip active={scope === 'private'} onClick={() => setScope('private')} icon={<StickyNote size={12} />}>
-            Мои
-          </Chip>
-          <Chip active={scope === 'shared'} onClick={() => setScope('shared')} icon={<Users size={12} />}>
-            Общие
-          </Chip>
-          <span className="mx-1 h-4 w-px bg-white/10" />
-          <Chip
-            active={bucket === 'active'}
-            onClick={() => setBucket('active')}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div
+            className="pyn-segment"
+            role="tablist"
+            aria-label="Область"
             onDragOver={(e) => e.preventDefault()}
-            onDrop={() => void onDropBucket('active')}
           >
-            Активные
-          </Chip>
-          <Chip
-            active={bucket === 'done'}
-            onClick={() => setBucket('done')}
+            <button
+              type="button"
+              role="tab"
+              data-active={scope === 'private' ? 'true' : 'false'}
+              aria-selected={scope === 'private'}
+              onClick={() => showList('private', bucket)}
+              onDrop={() => void onDropScope('private')}
+            >
+              Мои заметки
+            </button>
+            <button
+              type="button"
+              role="tab"
+              data-active={scope === 'shared' ? 'true' : 'false'}
+              aria-selected={scope === 'shared'}
+              onClick={() => showList('shared', bucket)}
+              onDrop={() => void onDropScope('shared')}
+            >
+              Общие
+            </button>
+          </div>
+          <div
+            className="pyn-segment"
+            role="tablist"
+            aria-label="Статус"
             onDragOver={(e) => e.preventDefault()}
-            onDrop={() => void onDropBucket('done')}
-            icon={<CheckCircle2 size={12} />}
           >
-            Выполнено
-          </Chip>
-          <span className="ml-auto text-[11px] text-zinc-600">
-            перетащи карточку на «Активные» / «Выполнено»
-          </span>
+            <button
+              type="button"
+              role="tab"
+              data-active={bucket === 'active' ? 'true' : 'false'}
+              aria-selected={bucket === 'active'}
+              onClick={() => showList(scope, 'active')}
+              onDrop={() => void onDropStatus('active')}
+            >
+              Активные
+            </button>
+            <button
+              type="button"
+              role="tab"
+              data-active={bucket === 'done' ? 'true' : 'false'}
+              aria-selected={bucket === 'done'}
+              onClick={() => showList(scope, 'done')}
+              onDrop={() => void onDropStatus('done')}
+            >
+              Выполнено
+            </button>
+          </div>
         </div>
 
-        {/* composer — always on top like Memos */}
-        {bucket === 'active' && (
-          <div className="mb-3 shrink-0 rounded-2xl border border-white/[0.1] bg-[#2a2926] p-3 shadow-lg">
+        {bucket === 'active' && scope === 'private' && (
+          <div className="mb-3 shrink-0 rounded-xl border border-white/[0.1] bg-[#2a2926] p-3 shadow-lg">
             <textarea
               ref={composerRef}
               value={cText}
@@ -378,7 +618,7 @@ ${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
                 }
               }}
               rows={3}
-              placeholder="Что записать? Markdown · Ctrl/Cmd+V скрин · ⌘↵ отправить"
+              placeholder="Текст… · + задача · ⌘↵"
               className="w-full resize-none bg-transparent text-[13.5px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
             />
             {cItems.length > 0 && (
@@ -417,20 +657,6 @@ ${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
               </button>
               <button
                 type="button"
-                onClick={() => setCShared((v) => !v)}
-                className={cn(
-                  'flex h-7 items-center gap-1 rounded-md border px-2 text-[11px]',
-                  cShared
-                    ? 'border-sky-500/40 bg-sky-500/15 text-sky-300'
-                    : 'border-white/10 text-zinc-400',
-                )}
-                title="Общая — видят все (передача смены)"
-              >
-                <Share2 size={12} />
-                {cShared ? 'Общая' : 'Личная'}
-              </button>
-              <button
-                type="button"
                 disabled={saving || (!cText.trim() && !cItems.some((i) => i.text.trim()))}
                 onClick={() => void postMemo()}
                 className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-[#d97757]/45 bg-[#d97757]/20 px-3 text-[12px] font-medium text-[#e8a48a] disabled:opacity-40"
@@ -442,24 +668,57 @@ ${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
           </div>
         )}
 
-        {/* timeline */}
         <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pb-6 pr-0.5">
-          {loading && (
+          {loading && notes.length === 0 && (
             <div className="py-12 text-center text-[12px] text-zinc-500">Загрузка…</div>
           )}
           {!loading && notes.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-white/10 px-4 py-10 text-center text-[13px] leading-relaxed text-zinc-500">
+            <div className="rounded-xl border border-dashed border-white/10 px-4 py-10 text-center text-[13px] text-zinc-500">
               {bucket === 'done'
-                ? 'Пока нет выполненных.'
+                ? 'Пока пусто'
                 : scope === 'shared'
-                  ? 'Нет общих. Создай и отметь «Общая» — увидят все.'
-                  : 'Лента пуста. Напиши сверху и нажми «Записать».'}
+                  ? 'Пока пусто'
+                  : 'Пока пусто'}
             </div>
           )}
 
           {notes.map((n) => {
             const owner = isOwner(n);
             const editing = editId === n.id;
+            const green = !n.deleted && (bucket === 'done' || allItemsDone(n) || n.status === 'done');
+            const who = displayName(n);
+
+            // удалена — «Удалено · имя · время»; автор ≤24ч — Восстановить
+            if (n.deleted) {
+              const delName = (n.deleted_by_name || n.deleted_by || who || '').trim();
+              const showRestore = canRestoreNote(n, me);
+              return (
+                <article
+                  key={n.id}
+                  className="rounded-xl border border-white/[0.06] bg-[#252421]/80 px-3.5 py-2.5"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-zinc-500">
+                      <span className="font-medium text-zinc-400">Удалено</span>
+                      {delName ? <span className="text-zinc-300">{delName}</span> : null}
+                      <span className="tabular-nums text-zinc-500">
+                        {fmtWhen(n.deleted_at || n.updated_at)}
+                      </span>
+                    </div>
+                    {showRestore ? (
+                      <button
+                        type="button"
+                        onClick={() => void restoreNote(n)}
+                        className="shrink-0 rounded-md border border-white/12 bg-white/[0.06] px-2.5 py-1 text-[11.5px] font-medium text-zinc-200 transition-colors hover:border-emerald-500/35 hover:bg-emerald-500/10 hover:text-emerald-300"
+                      >
+                        Восстановить
+                      </button>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            }
+
             return (
               <article
                 key={n.id}
@@ -471,58 +730,35 @@ ${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
                   dragId.current = null;
                 }}
                 className={cn(
-                  'group rounded-2xl border border-white/[0.08] bg-[#2a2926] p-3.5 shadow-md transition-colors',
-                  'hover:border-white/[0.12]',
+                  'group rounded-xl border p-3.5 shadow-md transition-colors',
+                  green
+                    ? 'border-emerald-500/35 bg-emerald-950/35 hover:border-emerald-500/45'
+                    : 'border-white/[0.08] bg-[#2a2926] hover:border-white/[0.12]',
                 )}
               >
-                {/* meta row */}
                 <div className="mb-2 flex items-start gap-2">
                   {owner && (
-                    <span
-                      className="mt-0.5 cursor-grab text-zinc-600 opacity-0 group-hover:opacity-100"
-                      title="Перетащи на «Выполнено» / «Активные»"
-                    >
+                    <span className="mt-0.5 cursor-grab text-zinc-600 opacity-0 group-hover:opacity-100">
                       <GripVertical size={14} />
                     </span>
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-500">
-                      <span className="tabular-nums text-zinc-400">{fmtWhen(n.updated_at)}</span>
-                      {n.scope === 'shared' && (
-                        <span className="rounded bg-sky-500/15 px-1.5 py-px text-sky-300/90">
-                          общая
-                        </span>
-                      )}
-                      {scope === 'shared' && n.owner_login && (
-                        <span className="truncate">{n.owner_login}</span>
-                      )}
+                      {who ? <span className="truncate text-zinc-300">{who}</span> : null}
+                      <span className="tabular-nums text-zinc-500">{fmtWhen(n.updated_at)}</span>
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-0.5 opacity-70 group-hover:opacity-100">
+                  <div className="flex shrink-0 items-center gap-0.5 opacity-80 group-hover:opacity-100">
                     {owner && bucket === 'active' && (
-                      <IconBtn
-                        title="В выполненные"
-                        onClick={() => void setStatus(n, 'done')}
-                      >
-                        <Check size={13} />
+                      <IconBtn title="Выполнено" onClick={() => void setStatus(n, 'done')} accent="green">
+                        <Check size={13} strokeWidth={2.5} />
                       </IconBtn>
                     )}
                     {owner && bucket === 'done' && (
-                      <IconBtn title="Вернуть в активные" onClick={() => void setStatus(n, 'active')}>
+                      <IconBtn title="Активные" onClick={() => void setStatus(n, 'active')}>
                         <CheckCircle2 size={13} />
                       </IconBtn>
                     )}
-                    {owner && (
-                      <IconBtn
-                        title={n.scope === 'shared' ? 'Сделать личной' : 'Сделать общей'}
-                        onClick={() => void toggleScope(n)}
-                      >
-                        <Share2 size={13} />
-                      </IconBtn>
-                    )}
-                    <IconBtn title="PDF" onClick={() => exportPdf(n)}>
-                      <Download size={13} />
-                    </IconBtn>
                     {owner && (
                       <IconBtn title="Удалить" danger onClick={() => void removeNote(n)}>
                         <Trash2 size={13} />
@@ -531,20 +767,13 @@ ${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
                   </div>
                 </div>
 
-                {/* title + body — always readable */}
                 {editing ? (
                   <div className="space-y-2">
-                    <input
-                      value={editTitle}
-                      onChange={(e) => setEditTitle(e.target.value)}
-                      placeholder="Заголовок (необяз.)"
-                      className="w-full bg-transparent text-[14px] font-semibold text-[#f5f4ef] outline-none placeholder:text-zinc-600"
-                    />
                     <textarea
                       value={editText}
                       onChange={(e) => setEditText(e.target.value)}
                       rows={6}
-                      className="w-full resize-y rounded-lg border border-white/10 bg-black/25 px-2.5 py-2 font-mono text-[13px] leading-relaxed text-zinc-200 outline-none"
+                      className="w-full resize-y rounded-lg border border-white/10 bg-black/25 px-2.5 py-2 text-[13px] leading-relaxed text-zinc-200 outline-none"
                       autoFocus
                     />
                     <div className="flex gap-1.5">
@@ -571,53 +800,55 @@ ${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
                     onClick={() => {
                       if (!owner) return;
                       setEditId(n.id);
-                      setEditTitle(n.title);
-                      setEditText(n.body_md);
+                      // старые заметки: title мог быть единственным текстом
+                      setEditText(n.body_md || n.title || '');
                     }}
-                    title={owner ? 'Нажми, чтобы править' : undefined}
                   >
-                    {n.title ? (
-                      <h3 className="mb-1.5 text-[14px] font-semibold leading-snug text-[#f5f4ef]">
-                        {n.title}
-                      </h3>
-                    ) : null}
-                    {n.body_md ? (
+                    {n.body_md || n.title ? (
                       <div
                         className="notes-md max-w-none text-[13.5px] leading-relaxed text-zinc-200 [&_a]:text-sky-400 [&_code]:rounded [&_code]:bg-black/30 [&_code]:px-1 [&_img]:my-2 [&_img]:max-h-64 [&_img]:rounded-lg [&_li]:my-0.5 [&_ol]:my-1 [&_ol]:pl-5 [&_p]:my-1.5 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-black/30 [&_pre]:p-2 [&_ul]:my-1 [&_ul]:pl-5"
-                        dangerouslySetInnerHTML={{ __html: mdHtml(n.body_md) }}
+                        dangerouslySetInnerHTML={{ __html: mdHtml(n.body_md || n.title) }}
                       />
                     ) : !n.items.length ? (
-                      <div className="text-[13px] italic text-zinc-600">пусто — нажми, чтобы написать</div>
+                      <div className="text-[13px] italic text-zinc-600">пусто</div>
                     ) : null}
                   </button>
                 )}
 
-                {/* tasks always visible */}
                 {n.items.length > 0 && (
-                  <ul className="mt-2.5 space-y-1 border-t border-white/[0.06] pt-2.5">
+                  <ul className="mt-2.5 space-y-1.5 border-t border-white/[0.06] pt-2.5">
                     {n.items.map((it) => (
                       <li key={it.id} className="flex items-start gap-2">
                         <button
                           type="button"
-                          disabled={!owner}
+                          disabled={!canCheck(n)}
                           onClick={() => void toggleItem(n, it.id)}
                           className={cn(
-                            'mt-0.5 flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded border',
+                            'mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded border transition-colors',
                             it.done
-                              ? 'border-emerald-500/45 bg-emerald-500/20 text-emerald-300'
-                              : 'border-white/25 text-transparent hover:border-[#d97757]/50',
+                              ? 'border-emerald-500/50 bg-emerald-500/25 text-emerald-300'
+                              : 'border-white/25 text-transparent hover:border-emerald-500/40',
                           )}
                         >
                           <Check size={11} strokeWidth={2.5} />
                         </button>
-                        <span
-                          className={cn(
-                            'min-w-0 flex-1 text-[13px] leading-snug',
-                            it.done ? 'text-zinc-500 line-through' : 'text-zinc-200',
-                          )}
-                        >
-                          {it.text || '…'}
-                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div
+                            className={cn(
+                              'text-[13px] leading-snug',
+                              it.done ? 'text-emerald-400/75 line-through' : 'text-zinc-200',
+                            )}
+                          >
+                            {it.text || '…'}
+                          </div>
+                          {it.done && (it.done_by_name || it.done_at) ? (
+                            <div className="mt-0.5 text-[10.5px] tabular-nums leading-none text-zinc-500">
+                              {[fmtWhen(it.done_at || ''), (it.done_by_name || '').trim()]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </div>
+                          ) : null}
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -627,41 +858,8 @@ ${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
           })}
         </div>
       </div>
-    </div>
-  );
-}
-
-function Chip({
-  active,
-  onClick,
-  children,
-  icon,
-  onDragOver,
-  onDrop,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-  icon?: ReactNode;
-  onDragOver?: (e: DragEvent) => void;
-  onDrop?: () => void;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-      className={cn(
-        'inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-[11.5px] font-medium transition-colors',
-        active
-          ? 'border-white/15 bg-white/[0.1] text-[#f0eeea]'
-          : 'border-white/[0.08] text-zinc-500 hover:border-white/12 hover:text-zinc-300',
-      )}
-    >
-      {icon}
-      {children}
-    </button>
+      </WorkspaceCard>
+    </main>
   );
 }
 
@@ -670,11 +868,13 @@ function IconBtn({
   onClick,
   title,
   danger,
+  accent,
 }: {
   children: ReactNode;
   onClick: () => void;
   title: string;
   danger?: boolean;
+  accent?: 'green';
 }): JSX.Element {
   return (
     <button
@@ -685,8 +885,12 @@ function IconBtn({
         onClick();
       }}
       className={cn(
-        'flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-white/[0.06]',
-        danger ? 'hover:text-rose-300' : 'hover:text-zinc-200',
+        'flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-white/[0.06]',
+        danger
+          ? 'text-zinc-500 hover:text-rose-300'
+          : accent === 'green'
+            ? 'text-emerald-400/80 hover:bg-emerald-500/15 hover:text-emerald-300'
+            : 'text-zinc-500 hover:text-zinc-200',
       )}
     >
       {children}

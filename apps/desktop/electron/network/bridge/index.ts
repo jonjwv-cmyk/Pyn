@@ -74,10 +74,12 @@ function buildPacScript(): string {
   const proxy = getProxyState();
   const corp = proxy ? `PROXY ${proxy.host}:${proxy.port}` : 'DIRECT';
   const bridge = `PROXY 127.0.0.1:${localPort}`;
-  // accounts.* → корп-прокси (логин на корп-IP). Весь остальной Google → мост.
+  // accounts.* → корп-прокси (логин на корп-IP).
+  // Google content + SoundCloud (Волна, тот же persist:google-sheets) → мост VPS.
   return `function FindProxyForURL(url, host) {
   if (host === "accounts.google.com" || host === "accounts.youtube.com") return "${corp}";
   if (dnsDomainIs(host, ".google.com") || dnsDomainIs(host, ".googleusercontent.com") || dnsDomainIs(host, ".gstatic.com") || dnsDomainIs(host, ".googleapis.com") || dnsDomainIs(host, ".ggpht.com")) return "${bridge}";
+  if (host === "soundcloud.com" || dnsDomainIs(host, ".soundcloud.com") || host === "sndcdn.com" || dnsDomainIs(host, ".sndcdn.com") || host === "stratus.sc" || dnsDomainIs(host, ".stratus.sc")) return "${bridge}";
   return "${corp}";
 }`;
 }

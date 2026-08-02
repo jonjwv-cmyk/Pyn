@@ -17,7 +17,20 @@ import { app, BrowserWindow, ipcMain, session } from 'electron';
  *   • `pyn:google:logout`       — чистит cookies в partition.
  */
 
-const GOOGLE_PARTITION = 'persist:google-sheets';
+/** Shared with Tables + Волна webviews (Google SSO cookies). */
+export const GOOGLE_PARTITION = 'persist:google-sheets';
+
+/** Host+path only — Google OAuth URL embeds SC callback in redirect_uri query. */
+export function isSoundCloudAuthCallback(raw: string): boolean {
+  try {
+    const u = new URL(String(raw || ''));
+    if (!/(^|\.)soundcloud\.com$/i.test(u.hostname)) return false;
+    const p = u.pathname || '';
+    return /web-auth-callback|auth-callback|\/connect\//i.test(p);
+  } catch {
+    return false;
+  }
+}
 const LOGIN_URL = 'https://accounts.google.com/ServiceLogin?continue=https://docs.google.com/spreadsheets';
 
 // §revert v1.2.4/v1.2.3 — UA spoof CHROME_UA удалён. В v1.2.0 (где у юзера
@@ -261,6 +274,162 @@ async function openLoginWindow(parent: BrowserWindow | null): Promise<boolean> {
   });
 }
 
+/**
+ * §wave OAuth: BrowserWindow на persist:google-sheets (как таблицы).
+ * parentGuest — webview «Волна»: callback SC грузим туда (postMessage opener не работает).
+ */
+export function openGoogleAuthPopup(
+  targetUrl: string,
+  onDone: () => void,
+  parentGuest?: Electron.WebContents | null,
+): void {
+  const url = String(targetUrl || '').trim();
+  if (!url || url === 'about:blank') {
+    console.log('[wave-auth] skip empty/about:blank');
+    onDone();
+    return;
+  }
+
+  console.log(`[wave-auth] open ${url.slice(0, 160)}`);
+
+  const win = new BrowserWindow({
+    width: 520,
+    height: 720,
+    title: 'Google · SoundCloud',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    show: true,
+    webPreferences: {
+      // Явно google-sheets — те же SID, что Settings / Таблицы
+      partition: GOOGLE_PARTITION,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  let doneSent = false;
+  let handoffStarted = false;
+  const sendDone = (): void => {
+    if (doneSent) return;
+    doneSent = true;
+    onDone();
+  };
+  const finish = (why: string): void => {
+    console.log(`[wave-auth] finish (${why})`);
+    try {
+      if (!win.isDestroyed()) win.close();
+      else sendDone();
+    } catch {
+      sendDone();
+    }
+  };
+
+  /**
+   * Callback SC → parent webview (postMessage opener в webview не работает).
+   * Не remount'им guest: WaveScreen на popup-done делает soft loadURL.
+   * Ждём did-finish-load parent'а (или timeout), потом close auth-window.
+   */
+  const handoffSc = (scUrl: string, why: string): void => {
+    if (handoffStarted || doneSent) return;
+    handoffStarted = true;
+    console.log(`[wave-auth] handoff ${why} ${scUrl.slice(0, 140)}`);
+
+    const guest = parentGuest && !parentGuest.isDestroyed() ? parentGuest : null;
+    if (!guest) {
+      finish(`handoff-${why}-no-parent`);
+      return;
+    }
+
+    let settled = false;
+    const settle = (tag: string): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        guest.removeListener('did-finish-load', onParentOk);
+        guest.removeListener('did-fail-load', onParentFail);
+      } catch {
+        /* */
+      }
+      console.log(`[wave-auth] parent settle ${tag}`);
+      finish(`handoff-${why}`);
+    };
+    const onParentOk = (): void => settle('ok');
+    const onParentFail = (_e: Electron.Event, code: number): void => {
+      // -3 aborted — часто supersede redirect, не фатально
+      if (code === -3) return;
+      settle(`fail:${code}`);
+    };
+
+    try {
+      guest.once('did-finish-load', onParentOk);
+      guest.once('did-fail-load', onParentFail);
+      void guest.loadURL(scUrl).catch((e) => {
+        console.log('[wave-auth] parent loadURL failed', e);
+        settle('loadURL-reject');
+      });
+    } catch (e) {
+      console.log('[wave-auth] parent loadURL throw', e);
+      finish(`handoff-${why}-throw`);
+      return;
+    }
+    // safety: не висеть вечно если guest уже мёртв / silent
+    setTimeout(() => settle('timeout'), 4000);
+  };
+
+  win.webContents.on('before-input-event', (_e, input) => {
+    if (input.type === 'keyDown' && input.key === 'Escape') finish('escape');
+  });
+  win.webContents.on('did-fail-load', (_e, code, desc, failedUrl) => {
+    console.log(`[wave-auth:fail-load] code=${code} ${desc} ${String(failedUrl).slice(0, 140)}`);
+    // Не finish на fail auth-page если уже handoff (redirect abort → ERR_FAILED)
+    if (handoffStarted) return;
+  });
+  win.webContents.on('will-redirect', (e, to) => {
+    console.log(`[wave-auth:redirect] ${String(to).slice(0, 160)}`);
+    if (isSoundCloudAuthCallback(to)) {
+      try {
+        e.preventDefault();
+      } catch {
+        /* */
+      }
+      handoffSc(to, 'redirect');
+    }
+  });
+  win.webContents.on('will-navigate', (e, to) => {
+    console.log(`[wave-auth:navigate] ${String(to).slice(0, 160)}`);
+    if (isSoundCloudAuthCallback(to)) {
+      try {
+        e.preventDefault();
+      } catch {
+        /* */
+      }
+      handoffSc(to, 'navigate');
+    }
+  });
+  win.webContents.on('did-finish-load', () => {
+    const cur = win.webContents.getURL();
+    console.log(`[wave-auth:loaded] ${cur.slice(0, 180)}`);
+    if (isSoundCloudAuthCallback(cur)) {
+      handoffSc(cur, 'loaded');
+    }
+  });
+
+  win.on('closed', () => {
+    sendDone();
+  });
+
+  void win.loadURL(url).catch((e) => {
+    // Redirect+preventDefault / close после handoff → ERR_FAILED на исходном OAuth URL — ок
+    if (handoffStarted || doneSent) {
+      console.log('[wave-auth] loadURL aborted after handoff (ok)');
+      return;
+    }
+    console.log('[wave-auth] loadURL failed', e);
+    finish('load-failed');
+  });
+}
+
 async function clearPartitionFully(): Promise<void> {
   const ses = session.fromPartition(GOOGLE_PARTITION);
   console.log('[google] clearing all partition storage');
@@ -330,6 +499,99 @@ async function purgeIfNoSession(): Promise<void> {
   }
 }
 
+/**
+ * §wave — вход SoundCloud в отдельном BrowserWindow на persist:google-sheets.
+ *
+ * Критично: БЕЗ auto-close по cookie/DOM — ложные «залогинен» закрывали
+ * окно во время Google popup (prompt=none) → OAuth обрывался, выбора аккаунта нет.
+ * Юзер закрывает окно сам, когда видит свой профиль SC.
+ */
+export function openSoundCloudLoginWindow(_parent: BrowserWindow | null): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+
+    // Без parent — самостоятельное окно (не sheet, не закрывается с main)
+    const win = new BrowserWindow({
+      width: 1080,
+      height: 780,
+      title: 'SoundCloud · войди и закрой окно',
+      backgroundColor: '#121212',
+      autoHideMenuBar: true,
+      show: true,
+      webPreferences: {
+        partition: GOOGLE_PARTITION,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+
+    // Google SSO popup — тот же partition, opener = это окно (не webview guest)
+    win.webContents.setWindowOpenHandler((details) => {
+      const url = String(details.url || '');
+      console.log(`[sc-login:window-open] ${url.slice(0, 140)}`);
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 520,
+          height: 720,
+          autoHideMenuBar: true,
+          backgroundColor: '#ffffff',
+          // явно google-sheets — cookies Google из Настроек/таблиц
+          webPreferences: {
+            partition: GOOGLE_PARTITION,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          },
+        },
+      };
+    });
+
+    win.webContents.on('before-input-event', (_e, input) => {
+      if (input.type === 'keyDown' && input.key === 'Escape') win.close();
+    });
+    win.webContents.on('did-navigate', (_e, url) => {
+      console.log(`[sc-login:navigate] ${String(url).slice(0, 160)}`);
+    });
+    win.webContents.on('did-fail-load', (_e, code, desc, failedUrl, isMainFrame) => {
+      if (code === -3 || !isMainFrame) return;
+      console.log(`[sc-login:fail] ${code} ${desc} ${String(failedUrl).slice(0, 100)}`);
+    });
+
+    // Лог child Google popup (не закрываем, не handoff'им)
+    win.webContents.on('did-create-window', (child) => {
+      console.log('[sc-login:did-create-window]');
+      child.webContents.on('did-navigate', (_e, url) => {
+        console.log(`[sc-login:child-nav] ${String(url).slice(0, 160)}`);
+      });
+      child.webContents.on('will-redirect', (_e, url) => {
+        console.log(`[sc-login:child-redirect] ${String(url).slice(0, 160)}`);
+      });
+    });
+
+    win.on('closed', () => {
+      console.log('[sc-login] window closed by user');
+      finish(true);
+    });
+
+    void win.loadURL('https://soundcloud.com/').catch((e) => {
+      console.log('[sc-login] loadURL fail', e);
+      try {
+        if (!win.isDestroyed()) win.close();
+      } catch {
+        /* */
+      }
+      finish(false);
+    });
+  });
+}
+
 export function setupGoogleBridge(): void {
   // §v1.2.10 — на старте app проверяем что partition pristine если нет
   // активной session. Закрывает gap для юзеров обновляющихся с v1.2.7-v1.2.9
@@ -345,5 +607,38 @@ export function setupGoogleBridge(): void {
   ipcMain.handle('pyn:google:logout', async () => {
     await logout();
     return readStatus();
+  });
+
+  /** §wave — окно входа SoundCloud (BrowserWindow, partition google-sheets). */
+  ipcMain.handle('pyn:wave:open-login', async () => {
+    const parent = BrowserWindow.getFocusedWindow();
+    console.log('[sc-login] open window');
+    return openSoundCloudLoginWindow(parent);
+  });
+
+  /** §wave — OAuth URL из inject window.open → отдельное окно на google partition. */
+  ipcMain.handle('pyn:wave:open-auth', async (event, rawUrl: string) => {
+    const url = String(rawUrl || '').trim();
+    if (!url || url === 'about:blank') return { ok: false, error: 'empty_url' };
+    console.log(`[wave-auth:ipc] open ${url.slice(0, 160)}`);
+    return await new Promise<{ ok: boolean }>((resolve) => {
+      openGoogleAuthPopup(url, () => {
+        try {
+          const win = BrowserWindow.fromWebContents(event.sender);
+          win?.webContents.send('pyn:google-popup-done');
+        } catch {
+          /* */
+        }
+        // также всем окнам (на всякий)
+        for (const w of BrowserWindow.getAllWindows()) {
+          try {
+            w.webContents.send('pyn:google-popup-done');
+          } catch {
+            /* */
+          }
+        }
+        resolve({ ok: true });
+      });
+    });
   });
 }

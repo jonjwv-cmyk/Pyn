@@ -358,6 +358,7 @@ export {
   notesUpsert,
   notesItemToggle,
   notesDelete,
+  notesRestore,
   notesSetStatus,
   type Note,
   type NoteItem,

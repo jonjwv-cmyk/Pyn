@@ -179,6 +179,18 @@ declare global {
         openLogin: () => Promise<boolean>;
         checkStatus: () => Promise<{ loggedIn: boolean; email: string | null }>;
         logout: () => Promise<{ loggedIn: boolean; email: string | null }>;
+        /** §wave — main закрыл popup-окно стороннего Google Sign-In (SoundCloud). */
+        onPopupDone: (handler: () => void) => () => void;
+        /** §wave — OAuth URL → BrowserWindow на persist:google-sheets. */
+        openWaveAuth: (url: string) => Promise<{ ok: boolean; error?: string }>;
+      };
+      wave?: {
+        openAuth: (url: string) => Promise<{ ok: boolean; error?: string }>;
+        /** Окно входа SoundCloud (BrowserWindow, partition как таблицы). */
+        openLogin: () => Promise<boolean>;
+        getGuestPreloadPath: () => Promise<string>;
+        /** SC Google OAuth callback URL → загрузить в webview. */
+        onAuthCallback: (handler: (url: string) => void) => () => void;
       };
       /**
        * Google-bridge: передать {url,ticket} из get_client_config в main для

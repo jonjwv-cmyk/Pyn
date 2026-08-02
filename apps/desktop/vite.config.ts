@@ -11,11 +11,16 @@ import { copyFileSync, mkdirSync } from 'node:fs';
  * собирает preload как ESM-wrapped, что ломает Electron sandbox.
  */
 function copyPreloadPlugin(): Plugin {
-  const src = resolve(__dirname, 'electron/preload.cjs');
-  const dest = resolve(__dirname, 'dist-electron/preload.cjs');
+  const files = [
+    ['electron/preload.cjs', 'dist-electron/preload.cjs'],
+    // §wave — preload guest webview SoundCloud (sendToHost OAuth URL)
+    ['electron/wave-guest-preload.cjs', 'dist-electron/wave-guest-preload.cjs'],
+  ] as const;
   const copy = () => {
     mkdirSync(resolve(__dirname, 'dist-electron'), { recursive: true });
-    copyFileSync(src, dest);
+    for (const [from, to] of files) {
+      copyFileSync(resolve(__dirname, from), resolve(__dirname, to));
+    }
   };
   return {
     name: 'pyn:copy-preload',
@@ -24,9 +29,12 @@ function copyPreloadPlugin(): Plugin {
     },
     configureServer(server) {
       copy();
-      server.watcher.add(src);
+      for (const [from] of files) {
+        const abs = resolve(__dirname, from);
+        server.watcher.add(abs);
+      }
       server.watcher.on('change', (file) => {
-        if (file === src) copy();
+        if (files.some(([from]) => file === resolve(__dirname, from))) copy();
       });
     },
   };

@@ -17,6 +17,7 @@ import {
 } from '@pyn/core';
 import { nearestGraphDate } from '@/components/flow/flow-sandbox.fixtures';
 import { whKey, whMapGet } from '@/components/flow/flow-warehouse';
+import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import {
@@ -1301,9 +1302,9 @@ export function ReportScreen(): JSX.Element {
   }, [printMsg]);
 
   return (
-    <div className="report-screen flex h-full min-h-0 min-w-0 w-full max-w-full flex-1 flex-col overflow-hidden bg-[var(--pd-bg,#1f1e1b)]">
-      <div className="drag-region flex h-9 w-full min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-white/[0.06] px-4">
-        <span className="no-drag-region shrink-0 text-[13px] font-semibold tracking-[-0.005em] text-[var(--pd-text-strong,#f5f4ef)]">
+    <main className="report-screen relative flex min-w-0 max-w-full flex-1 flex-col overflow-hidden">
+      <div className="drag-region flex h-9 w-full min-w-0 shrink-0 items-center gap-2 overflow-hidden px-4">
+        <span className="no-drag-region shrink-0 text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
           Сводка
         </span>
         <div className="no-drag-region ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
@@ -1314,6 +1315,7 @@ export function ReportScreen(): JSX.Element {
         </div>
       </div>
 
+      <WorkspaceCard>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <DashShell aria-label="Дашборд сводки">
           <DashHeader
@@ -1409,6 +1411,7 @@ export function ReportScreen(): JSX.Element {
           )}
         </DashShell>
       </div>
+      </WorkspaceCard>
 
       {printJob && (
         <ReportPrint
@@ -1430,6 +1433,6 @@ export function ReportScreen(): JSX.Element {
           }}
         />
       )}
-    </div>
+    </main>
   );
 }

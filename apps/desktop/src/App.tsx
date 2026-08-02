@@ -14,6 +14,7 @@ import { VghScreen } from '@/components/vgh';
 import { TransportScreen } from '@/components/flow/TransportScreen';
 import { MapScreen } from '@/components/map/MapScreen';
 import { TechScreen } from '@/components/tech/TechScreen';
+import { WaveScreen } from '@/components/wave';
 import { ReportScreen } from '@/components/report';
 import { NotesScreen } from '@/components/notes';
 import { MolScreen } from '@/components/mol';
@@ -271,6 +272,7 @@ export function App() {
     activeSection === 'broadcast' ||
     activeSection === 'map' ||
     activeSection === 'tech' ||
+    activeSection === 'wave' ||
     activeSection === 'news' ||
     activeSection === 'chats' ||
     activeSection.startsWith('sheet:')
@@ -287,7 +289,7 @@ export function App() {
   // Иначе контентная область остаётся пустой и видно только bg-bg-deep (серое окно).
   useEffect(() => {
     if (!session) return;
-    const known = new Set(['proba', 'mol', 'flow', 'report', 'notes', 'vgh', 'transport', 'log', 'broadcast', 'map', 'tech', 'news', 'chats']);
+    const known = new Set(['proba', 'mol', 'flow', 'report', 'notes', 'vgh', 'transport', 'log', 'broadcast', 'map', 'tech', 'wave', 'news', 'chats']);
     const isSheet = activeSection.startsWith('sheet:');
     if (!known.has(activeSection) && !isSheet) {
       // mol — текущая работа (Контакты / диалог с Согласующими)
@@ -1245,6 +1247,7 @@ export function App() {
               showBroadcast={isAdminLike(session.role)}
               showMap={isAdminLike(session.role)}
               showTech={isAdminLike(session.role)}
+              showWave
               onToggleCollapsed={() => setCollapsed((v) => !v)}
               onAiClick={() => {
                 // Сайдбар: показать / скрыть always-on-top питомца
@@ -1277,12 +1280,14 @@ export function App() {
                 activeSection === 'mol' ||
                 activeSection === 'flow' ||
                 activeSection === 'report' ||
+                activeSection === 'notes' ||
                 activeSection === 'vgh' ||
                 activeSection === 'transport' ||
                 activeSection === 'log' ||
                 activeSection === 'broadcast' ||
                 activeSection === 'map' ||
                 activeSection === 'tech' ||
+                activeSection === 'wave' ||
                 activeSection === 'news' ||
                 activeSection === 'chats' ||
                 activeSection.startsWith('sheet:')
@@ -1351,6 +1356,13 @@ export function App() {
                 <TechScreen />
               </div>
             )}
+            {/* Волна — SoundCloud; partition Google-таблиц; always-mounted display-toggle. */}
+            <div
+              className="flex min-h-0 flex-1 flex-col"
+              style={{ display: activeSection === 'wave' ? 'flex' : 'none' }}
+            >
+              <WaveScreen />
+            </div>
             {isAdminLike(session.role) && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'map' ? 'flex' : 'none' }}>
                 <MapScreen canEdit={isDeveloper(session.role)} />
