@@ -15,6 +15,7 @@ import { TransportScreen } from '@/components/flow/TransportScreen';
 import { MapScreen } from '@/components/map/MapScreen';
 import { TechScreen } from '@/components/tech/TechScreen';
 import { ReportScreen } from '@/components/report';
+import { NotesScreen } from '@/components/notes';
 import { MolScreen } from '@/components/mol';
 import { PersonEditDialog } from '@/components/mol/PersonEditDialog';
 import { distinctStatuses } from '@/lib/persons-view';
@@ -263,6 +264,7 @@ export function App() {
     activeSection === 'mol' ||
     activeSection === 'flow' ||
     activeSection === 'report' ||
+    activeSection === 'notes' ||
     activeSection === 'vgh' ||
     activeSection === 'transport' ||
     activeSection === 'log' ||
@@ -285,7 +287,7 @@ export function App() {
   // Иначе контентная область остаётся пустой и видно только bg-bg-deep (серое окно).
   useEffect(() => {
     if (!session) return;
-    const known = new Set(['proba', 'mol', 'flow', 'report', 'vgh', 'transport', 'log', 'broadcast', 'map', 'tech', 'news', 'chats']);
+    const known = new Set(['proba', 'mol', 'flow', 'report', 'notes', 'vgh', 'transport', 'log', 'broadcast', 'map', 'tech', 'news', 'chats']);
     const isSheet = activeSection.startsWith('sheet:');
     if (!known.has(activeSection) && !isSheet) {
       // mol — текущая работа (Контакты / диалог с Согласующими)
@@ -1318,6 +1320,12 @@ export function App() {
                 <ReportScreen />
               </div>
             )}
+            <div
+              className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+              style={{ display: activeSection === 'notes' ? 'flex' : 'none' }}
+            >
+              <NotesScreen />
+            </div>
             {isAdminLike(session.role) && heavyVisited.vgh && (
               <div className="flex min-h-0 flex-1 flex-col" style={{ display: activeSection === 'vgh' ? 'flex' : 'none' }}>
                 <VghScreen />

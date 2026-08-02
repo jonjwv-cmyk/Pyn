@@ -353,6 +353,19 @@ export {
 } from './client-errors';
 
 export {
+  notesList,
+  notesGet,
+  notesUpsert,
+  notesItemToggle,
+  notesDelete,
+  notesSetStatus,
+  type Note,
+  type NoteItem,
+  type NoteScope,
+  type NoteStatus,
+} from './notes';
+
+export {
   flowVehiclesGet,
   flowVehiclesUpsert,
   flowTransportGet,

@@ -1,4 +1,4 @@
-import { CalendarRange, Container, Database, FileBarChart2, History, MapPinned, MessageSquare, Newspaper, Rss, Scale, Truck, Waves } from 'lucide-react';
+import { CalendarRange, Container, Database, FileBarChart2, History, MapPinned, MessageSquare, Newspaper, Rss, Scale, StickyNote, Truck, Waves } from 'lucide-react';
 import i18next from 'i18next';
 import type { NavSection } from '@/types/nav';
 
@@ -53,6 +53,17 @@ export const NAV_REPORT: NavSection = {
   get label() { return i18next.t('sidebar.nav_report', 'Сводка'); },
   icon: FileBarChart2,
   iconColor: 'text-lime-400',
+};
+
+/**
+ * «Заметки» — личные + общие задачи (передача смены).
+ * Всем авторизованным; cloud D1 per-user / shared.
+ */
+export const NAV_NOTES: NavSection = {
+  id: 'notes',
+  get label() { return i18next.t('sidebar.nav_notes', 'Заметки'); },
+  icon: StickyNote,
+  iconColor: 'text-sky-400',
 };
 
 /**

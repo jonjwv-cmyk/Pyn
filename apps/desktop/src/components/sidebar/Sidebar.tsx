@@ -4,6 +4,7 @@ import {
   NAV_FEED,
   NAV_FLOW,
   NAV_REPORT,
+  NAV_NOTES,
   NAV_VGH,
   NAV_TRANSPORT,
   NAV_LOG,
@@ -330,6 +331,9 @@ export function Sidebar({
 
         {/* 1b. «Сводка» — PDF White/Black. */}
         {showFlow && renderNavItem(NAV_REPORT)}
+
+        {/* 1c. «Заметки» — личные + общие (смена/отпуск). */}
+        {renderNavItem(NAV_NOTES)}
 
         {/* 2. «Рассылка». */}
         {showBroadcast && renderNavItem(NAV_BROADCAST)}
