@@ -490,6 +490,52 @@ function escapeAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
+/**
+ * Смена ДАТЫ строки — наш календарь (PynCalendar), не нативный `<input type=date>`
+ * (тот «проваливался», нужно было выбирать дважды — юзер 2026-08-02). Тот же
+ * chrome-паттерн, что TransportTimeModal (FlowTransportGrid.tsx): backdrop +
+ * центрированная карточка. Один клик по дню — сразу сохраняет и закрывает.
+ */
+function TransportDateModal({
+  value,
+  onClose,
+  onSave,
+}: {
+  value: string;
+  onClose: () => void;
+  onSave: (iso: string) => void;
+}): JSX.Element {
+  const [sel, setSel] = useState<Set<string>>(() => new Set(value ? [value] : []));
+  return (
+    <>
+      <div className="fixed inset-0 z-50 bg-black/35" onClick={onClose} />
+      <div className="fixed left-1/2 top-1/2 z-[60] w-[300px] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border-subtle bg-bg-surface p-3 text-[12px] shadow-2xl">
+        <div className="mb-2 text-[13px] font-semibold text-text-strong">Дата</div>
+        <PynCalendar
+          selected={sel}
+          onChange={(next) => {
+            setSel(next);
+            // Один день выбран (клик, не «Все дни») → сразу применяем.
+            if (next.size === 1) {
+              const iso = [...next][0];
+              if (iso) onSave(iso);
+            }
+          }}
+        />
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 rounded-md border border-border-subtle px-3 text-[12px] text-text-secondary transition-colors hover:text-text-strong"
+          >
+            Отмена
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function FlowTabulatorTransport({
   theme = 'classic',
   chromeLeading,
@@ -529,6 +575,8 @@ export function FlowTabulatorTransport({
   const [forceEdit, setForceEdit] = useState<Row | null>(null);
   /** Факт нач/кон — колесо времени как Glide TransportTimeModal. */
   const [timeEdit, setTimeEdit] = useState<{ row: Row; field: 'fact_start' | 'fact_end' } | null>(null);
+  /** Смена ДАТЫ строки — наш календарь (TransportDateModal), не нативный date-picker. */
+  const [dateEdit, setDateEdit] = useState<Row | null>(null);
   /** Карточка гаражного (как Glide VehicleSpecCard): замена + данные 1С. */
   const [garageSpec, setGarageSpec] = useState<Row | null>(null);
   /** Выбор водителя с поиском сверху (как Glide FlowDriverEditor). */
@@ -1538,15 +1586,20 @@ export function FlowTabulatorTransport({
           ...cellAlign,
           // Маркер строки; range-select по ячейкам (copy/paste), не multi-row select.
           cssClass: gs ? 'pyn-row-marker' : undefined,
-          // Двойной клик / Enter → нативный date-picker (Mac/Win), смена tdate на сервере.
-          editor: 'input',
-          editorParams: {
-            elementAttributes: { type: 'date' },
-          },
+          // Двойной клик → наш календарь (модалка), не нативный date-picker —
+          // тот «проваливался» (нужно было выбирать дважды), юзер 2026-08-02.
+          editor: false as unknown as undefined,
           formatter: (cell) => fmtDate(String(cell.getValue() ?? '')),
           // В буфер — ISO (чтобы вставка обратно работала), не «ПН · …».
           accessorClipboard: (v: unknown) => String(v ?? ''),
-          cellEdited: (cell) => void doEditCell(cell),
+          cellDblClick: (_e, cell) => {
+            const r = cell.getData() as Row;
+            if (rowLocked(r)) {
+              setMsg('Строка старше 7 дней — правка только для разработчика');
+              return;
+            }
+            setDateEdit(r);
+          },
         },
         {
           title: gs ? 'ID' : 'Заказ',
@@ -2688,6 +2741,49 @@ export function FlowTabulatorTransport({
                     setMsg(`Ошибка времени: ${String(e)}`);
                   } finally {
                     setTimeEdit(null);
+                  }
+                })();
+              }}
+            />
+          )}
+          {dateEdit && (
+            <TransportDateModal
+              value={dateEdit.tdate}
+              onClose={() => setDateEdit(null)}
+              onSave={(iso) => {
+                const r = dateEdit;
+                if (iso === r.tdate) {
+                  setDateEdit(null);
+                  return;
+                }
+                void (async () => {
+                  try {
+                    const res = await flowTransportEdit(api, [
+                      { id: r.id, row_version: r.row_version, fields: { tdate: iso } },
+                    ]);
+                    if (res.conflicts.length > 0) {
+                      setMsg('Конфликт версий — обновите строку');
+                      return;
+                    }
+                    const saved = res.rows[0];
+                    const patch = { tdate: iso, row_version: saved?.row_version ?? r.row_version + 1 };
+                    const updated = { ...r, ...patch };
+                    rowsByIdRef.current.set(r.id, updated);
+                    setAllRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, ...patch } : x)));
+                    tableRef.current?.updateData([{ id: r.id, ...patch }]);
+                    applyOurSort();
+                    pushHistory({
+                      rowId: r.id,
+                      field: 'tdate',
+                      oldValue: r.tdate,
+                      newValue: iso,
+                      at: new Date().toLocaleString('ru-RU'),
+                      who: loginRef.current,
+                    });
+                  } catch (e) {
+                    setMsg(`Ошибка даты: ${String(e)}`);
+                  } finally {
+                    setDateEdit(null);
                   }
                 })();
               }}
