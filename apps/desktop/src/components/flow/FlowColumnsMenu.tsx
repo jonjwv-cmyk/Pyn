@@ -45,7 +45,6 @@ export function FlowColumnsMenu({
                     : 'border-black/10 text-[#6B6862] hover:text-[#0A0A0A]'
                 }`
           }
-          data-active={isGrok && active ? 'true' : undefined}
         >
           <Columns3 size={13} strokeWidth={1.75} />
           Колонки

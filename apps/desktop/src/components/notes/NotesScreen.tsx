@@ -1,21 +1,21 @@
 /**
- * Заметки — личные + общие (передача смены).
- * Layout: TakeNote (sidebar + editor). Spirit: Markpad (markdown, paste, PDF).
- * UI: Linear / warm-dark Pyn.
+ * Заметки — UX как usememos/Memos: timeline-карточки, текст виден сразу.
+ * Личные + общие (передача смены). Markdown + paste + PDF.
+ * Чеклист: галочка → done; всю карточку → «Выполнено».
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode, type DragEvent } from 'react';
 import {
   Check,
   CheckCircle2,
   Download,
-  FileText,
-  ListTodo,
+  GripVertical,
   Loader2,
   Plus,
   Share2,
   StickyNote,
   Trash2,
   Users,
+  X,
 } from 'lucide-react';
 import marked from 'marked';
 import {
@@ -35,15 +35,27 @@ import { sessionStore } from '@/lib/token-store';
 
 marked.setOptions({ breaks: true, gfm: true });
 
+function nid(): string {
+  return `i_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
 function newItem(text = ''): NoteItem {
-  return { id: `i_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, text, done: false };
+  return { id: nid(), text, done: false };
 }
 
 function fmtWhen(iso: string): string {
   if (!iso) return '';
-  const s = iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z';
+  const s = iso.includes('T') ? iso : `${iso.replace(' ', 'T')}Z`;
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return iso.slice(0, 16);
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) {
+    return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
   return d.toLocaleString('ru-RU', {
     day: 'numeric',
     month: 'short',
@@ -52,19 +64,42 @@ function fmtWhen(iso: string): string {
   });
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function mdHtml(src: string): string {
+  try {
+    return marked.parse(src || '') as string;
+  } catch {
+    return escapeHtml(src || '');
+  }
+}
+
 export function NotesScreen(): JSX.Element {
   const [me, setMe] = useState('');
   const [scope, setScope] = useState<NoteScope>('private');
   const [bucket, setBucket] = useState<NoteStatus>('active');
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [draft, setDraft] = useState<Note | null>(null);
-  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
-  const [preview, setPreview] = useState(false);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const titleRef = useRef<HTMLInputElement | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Composer (новый memo)
+  const [cText, setCText] = useState('');
+  const [cItems, setCItems] = useState<NoteItem[]>([]);
+  const [cShared, setCShared] = useState(false);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Inline edit
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editText, setEditText] = useState('');
+  const [editTitle, setEditTitle] = useState('');
+  const dragId = useRef<number | null>(null);
 
   useEffect(() => {
     void sessionStore.load().then((s) => setMe((s?.user?.login || '').toLowerCase()));
@@ -76,12 +111,8 @@ export function NotesScreen(): JSX.Element {
     try {
       const list = await notesList(api, { scope, status: bucket });
       setNotes(list);
-      setSelectedId((cur) => {
-        if (cur && list.some((n) => n.id === cur)) return cur;
-        return list[0]?.id ?? null;
-      });
     } catch (e) {
-      setErr(String(e).slice(0, 120));
+      setErr(String(e).slice(0, 140));
       setNotes([]);
     } finally {
       setLoading(false);
@@ -92,616 +123,573 @@ export function NotesScreen(): JSX.Element {
     void load();
   }, [load]);
 
-  useEffect(() => {
-    if (selectedId == null) {
-      setDraft(null);
+  const postMemo = useCallback(async () => {
+    const text = cText.trim();
+    const items = cItems.filter((i) => i.text.trim());
+    if (!text && items.length === 0) {
+      composerRef.current?.focus();
       return;
     }
-    const n = notes.find((x) => x.id === selectedId) ?? null;
-    setDraft(n ? { ...n, items: n.items.map((i) => ({ ...i })) } : null);
-  }, [selectedId, notes]);
-
-  const scheduleSave = useCallback((next: Note) => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      void (async () => {
-        setSaving(true);
-        try {
-          const saved = await notesUpsert(api, {
-            id: next.id > 0 ? next.id : undefined,
-            title: next.title,
-            body_md: next.body_md,
-            items: next.items,
-            scope: next.scope,
-            status: next.status,
-            assignee_login: next.assignee_login,
-            pinned: next.pinned,
-          });
-          setNotes((prev) => {
-            const rest = prev.filter((n) => n.id !== saved.id && n.id !== next.id);
-            // Если статус сменился — выкинуть из текущего bucket
-            if (saved.status !== bucket && next.id > 0) return rest;
-            return [saved, ...rest].sort((a, b) =>
-              (b.pinned === a.pinned ? 0 : b.pinned ? 1 : -1) ||
-              b.updated_at.localeCompare(a.updated_at),
-            );
-          });
-          setSelectedId(saved.id);
-          setDraft(saved);
-        } catch (e) {
-          setErr(String(e).slice(0, 120));
-        } finally {
-          setSaving(false);
-        }
-      })();
-    }, 500);
-  }, [bucket]);
-
-  const patchDraft = useCallback(
-    (patch: Partial<Note>) => {
-      setDraft((cur) => {
-        if (!cur) return cur;
-        const next = { ...cur, ...patch };
-        scheduleSave(next);
-        return next;
-      });
-    },
-    [scheduleSave],
-  );
-
-  const createNote = useCallback(async () => {
     setSaving(true);
     setErr('');
     try {
+      const title =
+        text.split('\n').find((l) => l.trim())?.slice(0, 80) ||
+        items[0]?.text.slice(0, 80) ||
+        '';
       const saved = await notesUpsert(api, {
-        title: '',
-        body_md: '',
-        items: [newItem('')],
-        scope,
+        title,
+        body_md: text,
+        items: items.length ? items : undefined,
+        scope: cShared ? 'shared' : 'private',
         status: 'active',
       });
-      setBucket('active');
-      setNotes((prev) => [saved, ...prev.filter((n) => n.id !== saved.id)]);
-      setSelectedId(saved.id);
-      setDraft(saved);
-      setTimeout(() => titleRef.current?.focus(), 50);
+      setCText('');
+      setCItems([]);
+      if (bucket === 'active' && (cShared ? scope === 'shared' : scope === 'private')) {
+        setNotes((prev) => [saved, ...prev.filter((n) => n.id !== saved.id)]);
+      } else {
+        setScope(cShared ? 'shared' : 'private');
+        setBucket('active');
+      }
     } catch (e) {
-      setErr(String(e).slice(0, 120));
+      setErr(String(e).slice(0, 140));
     } finally {
       setSaving(false);
     }
-  }, [scope]);
+  }, [cText, cItems, cShared, bucket, scope]);
 
-  const removeNote = useCallback(async () => {
-    if (!draft || draft.id <= 0) return;
-    if (draft.owner_login && me && draft.owner_login.toLowerCase() !== me) {
-      setErr('Удалить может только автор');
+  const onComposerPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const it of Array.from(items)) {
+      if (!it.type.startsWith('image/')) continue;
+      e.preventDefault();
+      const file = it.getAsFile();
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result || '');
+        if (!dataUrl) return;
+        setCText((t) => `${t}${t ? '\n\n' : ''}![image](${dataUrl})\n`);
+      };
+      reader.readAsDataURL(file);
       return;
     }
-    try {
-      await notesDelete(api, draft.id);
-      setNotes((prev) => prev.filter((n) => n.id !== draft.id));
-      setSelectedId(null);
-      setDraft(null);
-    } catch (e) {
-      setErr(String(e).slice(0, 120));
-    }
-  }, [draft, me]);
+  }, []);
 
-  const toggleItem = useCallback(
-    async (itemId: string) => {
-      if (!draft || draft.id <= 0) {
-        // local-only (ещё не сохранено) — toggle in draft
-        patchDraft({
-          items: draft?.items.map((it) =>
-            it.id === itemId ? { ...it, done: !it.done } : it,
-          ),
-        });
+  const removeNote = useCallback(
+    async (n: Note) => {
+      if (n.owner_login && me && n.owner_login.toLowerCase() !== me) {
+        setErr('Удалить может только автор');
         return;
       }
       try {
-        const saved = await notesItemToggle(api, draft.id, itemId);
-        if (saved.status !== bucket) {
-          setNotes((prev) => prev.filter((n) => n.id !== saved.id));
-          setSelectedId(null);
-          setDraft(null);
-        } else {
-          setNotes((prev) => prev.map((n) => (n.id === saved.id ? saved : n)));
-          setDraft(saved);
-        }
+        await notesDelete(api, n.id);
+        setNotes((prev) => prev.filter((x) => x.id !== n.id));
+        if (editId === n.id) setEditId(null);
       } catch (e) {
-        setErr(String(e).slice(0, 120));
+        setErr(String(e).slice(0, 140));
       }
     },
-    [draft, bucket, patchDraft],
+    [me, editId],
   );
 
-  const markDone = useCallback(async () => {
-    if (!draft || draft.id <= 0) return;
-    try {
-      const saved = await notesSetStatus(api, draft.id, 'done');
-      setNotes((prev) => prev.filter((n) => n.id !== saved.id));
-      setSelectedId(null);
-      setDraft(null);
-    } catch (e) {
-      setErr(String(e).slice(0, 120));
-    }
-  }, [draft]);
+  const setStatus = useCallback(
+    async (n: Note, status: NoteStatus) => {
+      try {
+        await notesSetStatus(api, n.id, status);
+        setNotes((prev) => prev.filter((x) => x.id !== n.id));
+        if (editId === n.id) setEditId(null);
+      } catch (e) {
+        setErr(String(e).slice(0, 140));
+      }
+    },
+    [editId],
+  );
 
-  const reopen = useCallback(async () => {
-    if (!draft || draft.id <= 0) return;
+  const toggleItem = useCallback(async (n: Note, itemId: string) => {
     try {
-      const saved = await notesSetStatus(api, draft.id, 'active');
-      setNotes((prev) => prev.filter((n) => n.id !== saved.id));
-      setSelectedId(null);
-      setDraft(null);
+      const saved = await notesItemToggle(api, n.id, itemId);
+      if (saved.status === 'done' && bucket === 'active') {
+        setNotes((prev) => prev.filter((x) => x.id !== saved.id));
+      } else if (saved.status === 'active' && bucket === 'done') {
+        setNotes((prev) => prev.filter((x) => x.id !== saved.id));
+      } else {
+        setNotes((prev) => prev.map((x) => (x.id === saved.id ? saved : x)));
+      }
     } catch (e) {
-      setErr(String(e).slice(0, 120));
+      setErr(String(e).slice(0, 140));
     }
-  }, [draft]);
+  }, [bucket]);
 
-  const exportPdf = useCallback(() => {
-    if (!draft) return;
-    const title = draft.title || 'Без названия';
-    const itemsHtml = draft.items
-      .map(
-        (it) =>
-          `<li style="margin:4px 0">${it.done ? '☑' : '☐'} ${escapeHtml(it.text)}</li>`,
-      )
+  const saveEdit = useCallback(
+    async (n: Note) => {
+      setSaving(true);
+      try {
+        const title =
+          editTitle.trim() ||
+          editText.split('\n').find((l) => l.trim())?.slice(0, 80) ||
+          n.title;
+        const saved = await notesUpsert(api, {
+          id: n.id,
+          title,
+          body_md: editText,
+          items: n.items,
+          scope: n.scope,
+          status: n.status,
+          assignee_login: n.assignee_login,
+          pinned: n.pinned,
+        });
+        setNotes((prev) => prev.map((x) => (x.id === saved.id ? saved : x)));
+        setEditId(null);
+      } catch (e) {
+        setErr(String(e).slice(0, 140));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [editText, editTitle],
+  );
+
+  const toggleScope = useCallback(async (n: Note) => {
+    if (n.owner_login && me && n.owner_login.toLowerCase() !== me) return;
+    try {
+      const saved = await notesUpsert(api, {
+        id: n.id,
+        title: n.title,
+        body_md: n.body_md,
+        items: n.items,
+        scope: n.scope === 'shared' ? 'private' : 'shared',
+        status: n.status,
+        pinned: n.pinned,
+      });
+      // если смотрим «Мои» и сделали shared — убрать из списка
+      if (scope === 'private' && saved.scope === 'shared') {
+        setNotes((prev) => prev.filter((x) => x.id !== saved.id));
+      } else if (scope === 'shared' && saved.scope === 'private') {
+        setNotes((prev) => prev.filter((x) => x.id !== saved.id));
+      } else {
+        setNotes((prev) => prev.map((x) => (x.id === saved.id ? saved : x)));
+      }
+    } catch (e) {
+      setErr(String(e).slice(0, 140));
+    }
+  }, [me, scope]);
+
+  const onDropBucket = useCallback(
+    async (target: NoteStatus) => {
+      const id = dragId.current;
+      dragId.current = null;
+      if (id == null) return;
+      const n = notes.find((x) => x.id === id);
+      if (!n || n.status === target) return;
+      await setStatus(n, target);
+    },
+    [notes, setStatus],
+  );
+
+  const exportPdf = useCallback((n: Note) => {
+    const title = n.title || 'Заметка';
+    const itemsHtml = n.items
+      .map((it) => `<li>${it.done ? '☑' : '☐'} ${escapeHtml(it.text)}</li>`)
       .join('');
-    const bodyHtml = marked.parse(draft.body_md || '') as string;
+    const bodyHtml = mdHtml(n.body_md);
     const w = window.open('', '_blank', 'noopener,noreferrer,width=800,height=900');
     if (!w) return;
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>${escapeHtml(title)}</title>
 <style>
-  body{font-family:Inter,system-ui,sans-serif;color:#111;padding:28px;max-width:720px;margin:0 auto;line-height:1.45}
-  h1{font-size:20px;margin:0 0 8px}
-  .meta{color:#666;font-size:12px;margin-bottom:16px}
-  ul{padding-left:1.2em}
-  img{max-width:100%}
-  pre{background:#f4f4f4;padding:8px;overflow:auto}
+body{font-family:Inter,system-ui,sans-serif;color:#111;padding:28px;max-width:720px;margin:0 auto;line-height:1.5}
+h1{font-size:18px;margin:0 0 6px} .meta{color:#666;font-size:12px;margin-bottom:14px}
+ul{padding-left:1.2em} img{max-width:100%}
 </style></head><body>
 <h1>${escapeHtml(title)}</h1>
-<div class="meta">${draft.scope === 'shared' ? 'Общая · ' : ''}${fmtWhen(draft.updated_at)}</div>
+<div class="meta">${n.scope === 'shared' ? 'Общая · ' : ''}${fmtWhen(n.updated_at)}</div>
 ${itemsHtml ? `<ul>${itemsHtml}</ul>` : ''}
-<div class="md">${bodyHtml}</div>
-<script>window.onload=()=>{window.print()}</script>
+<div>${bodyHtml}</div>
+<script>window.onload=()=>window.print()</script>
 </body></html>`);
     w.document.close();
-  }, [draft]);
+  }, []);
 
-  const onPaste = useCallback(
-    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      for (const it of Array.from(items)) {
-        if (!it.type.startsWith('image/')) continue;
-        e.preventDefault();
-        const file = it.getAsFile();
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl = String(reader.result || '');
-          if (!dataUrl) return;
-          // data-URL в markdown (MVP); позже → R2 blob
-          const md = `\n\n![image](${dataUrl})\n\n`;
-          patchDraft({ body_md: (draft?.body_md || '') + md });
-        };
-        reader.readAsDataURL(file);
-        return;
-      }
-    },
-    [draft?.body_md, patchDraft],
+  const isOwner = useCallback(
+    (n: Note) => !n.owner_login || n.owner_login.toLowerCase() === me,
+    [me],
   );
-
-  const openItems = useMemo(
-    () => (draft?.items || []).filter((i) => !i.done),
-    [draft?.items],
-  );
-  const doneItems = useMemo(
-    () => (draft?.items || []).filter((i) => i.done),
-    [draft?.items],
-  );
-
-  const isOwner = !draft || !draft.owner_login || draft.owner_login.toLowerCase() === me;
-  const previewHtml = useMemo(() => {
-    try {
-      return marked.parse(draft?.body_md || '') as string;
-    } catch {
-      return '';
-    }
-  }, [draft?.body_md]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--pd-bg,#1f1e1b)]">
-      {/* chrome */}
+      {/* top bar */}
       <div className="drag-region flex h-9 shrink-0 items-center gap-2 border-b border-white/[0.06] px-4">
         <StickyNote size={14} className="text-sky-400/90" strokeWidth={1.75} />
         <span className="text-[13px] font-semibold tracking-tight text-[#f5f4ef]">Заметки</span>
         {saving && <Loader2 size={12} className="animate-spin text-zinc-500" />}
-        {err && (
-          <span className="no-drag-region truncate text-[11px] text-rose-400" title={err}>
+        {err ? (
+          <span className="no-drag-region max-w-[360px] truncate text-[11px] text-rose-400" title={err}>
             {err}
           </span>
-        )}
+        ) : null}
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        {/* sidebar */}
-        <aside className="flex w-[260px] shrink-0 flex-col border-r border-white/[0.06] bg-[#252422]">
-          <div className="flex gap-1 p-2">
-            <SegBtn
-              active={scope === 'private'}
-              onClick={() => setScope('private')}
-              icon={<StickyNote size={12} />}
-              label="Мои"
-            />
-            <SegBtn
-              active={scope === 'shared'}
-              onClick={() => setScope('shared')}
-              icon={<Users size={12} />}
-              label="Общие"
-            />
-          </div>
-          <div className="flex gap-1 px-2 pb-2">
-            <SegBtn
-              active={bucket === 'active'}
-              onClick={() => setBucket('active')}
-              icon={<ListTodo size={12} />}
-              label="Активные"
-              small
-            />
-            <SegBtn
-              active={bucket === 'done'}
-              onClick={() => setBucket('done')}
-              icon={<CheckCircle2 size={12} />}
-              label="Выполнено"
-              small
-            />
-          </div>
-
-          <button
-            type="button"
-            onClick={() => void createNote()}
-            className="mx-2 mb-2 flex h-8 items-center justify-center gap-1.5 rounded-lg border border-[#d97757]/40 bg-[#d97757]/15 text-[12px] font-medium text-[#e8a48a] transition-colors hover:bg-[#d97757]/25"
+      <div className="mx-auto flex min-h-0 w-full max-w-[720px] flex-1 flex-col px-3 py-3">
+        {/* filters */}
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          <Chip active={scope === 'private'} onClick={() => setScope('private')} icon={<StickyNote size={12} />}>
+            Мои
+          </Chip>
+          <Chip active={scope === 'shared'} onClick={() => setScope('shared')} icon={<Users size={12} />}>
+            Общие
+          </Chip>
+          <span className="mx-1 h-4 w-px bg-white/10" />
+          <Chip
+            active={bucket === 'active'}
+            onClick={() => setBucket('active')}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => void onDropBucket('active')}
           >
-            <Plus size={14} strokeWidth={1.75} />
-            Новая
-          </button>
+            Активные
+          </Chip>
+          <Chip
+            active={bucket === 'done'}
+            onClick={() => setBucket('done')}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => void onDropBucket('done')}
+            icon={<CheckCircle2 size={12} />}
+          >
+            Выполнено
+          </Chip>
+          <span className="ml-auto text-[11px] text-zinc-600">
+            перетащи карточку на «Активные» / «Выполнено»
+          </span>
+        </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-            {loading && (
-              <div className="px-2 py-6 text-center text-[12px] text-zinc-500">Загрузка…</div>
-            )}
-            {!loading && notes.length === 0 && (
-              <div className="px-3 py-8 text-center text-[12px] leading-relaxed text-zinc-500">
-                {scope === 'shared'
-                  ? 'Нет общих задач. Создай и отметь «Общая» — увидят все.'
-                  : 'Пусто. Новая заметка — текст, скрин, чеклист.'}
-              </div>
-            )}
-            {notes.map((n) => {
-              const open = n.items.filter((i) => !i.done).length;
-              const done = n.items.filter((i) => i.done).length;
-              return (
-                <button
-                  key={n.id}
-                  type="button"
-                  onClick={() => setSelectedId(n.id)}
-                  className={cn(
-                    'mb-0.5 w-full rounded-lg px-2.5 py-2 text-left transition-colors',
-                    selectedId === n.id
-                      ? 'bg-white/[0.08] ring-1 ring-white/10'
-                      : 'hover:bg-white/[0.04]',
-                  )}
-                >
-                  <div className="flex items-start gap-1.5">
-                    <FileText
-                      size={13}
-                      className={cn(
-                        'mt-0.5 shrink-0',
-                        n.scope === 'shared' ? 'text-sky-400/80' : 'text-zinc-500',
-                      )}
-                      strokeWidth={1.75}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[12.5px] font-medium text-[#e8e6e1]">
-                        {n.title || 'Без названия'}
-                      </div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[10.5px] text-zinc-500">
-                        <span>{fmtWhen(n.updated_at)}</span>
-                        {n.items.length > 0 && (
-                          <span className="tabular-nums">
-                            · {done}/{n.items.length}
-                          </span>
-                        )}
-                        {scope === 'shared' && n.owner_login && (
-                          <span className="truncate">· {n.owner_login}</span>
-                        )}
-                        {open > 0 && bucket === 'active' && (
-                          <span className="text-amber-400/80">{open} откр.</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </aside>
-
-        {/* editor */}
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {!draft ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-              <StickyNote size={28} className="text-zinc-600" strokeWidth={1.25} />
-              <div className="text-[14px] text-zinc-400">
-                Быстро: новая → вставил скрин / текст → галочка = сделано
-              </div>
-              <button
-                type="button"
-                onClick={() => void createNote()}
-                className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-zinc-300 hover:bg-white/[0.05]"
-              >
-                Создать заметку
-              </button>
-            </div>
-          ) : (
-            <>
-              <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-white/[0.06] px-3 py-2">
-                <input
-                  ref={titleRef}
-                  value={draft.title}
-                  disabled={!isOwner}
-                  onChange={(e) => patchDraft({ title: e.target.value })}
-                  placeholder="Заголовок"
-                  className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold tracking-tight text-[#f5f4ef] outline-none placeholder:text-zinc-600"
-                />
-                <button
-                  type="button"
-                  title={draft.scope === 'shared' ? 'Сделать личной' : 'Сделать общей (видят все)'}
-                  disabled={!isOwner}
-                  onClick={() =>
-                    patchDraft({ scope: draft.scope === 'shared' ? 'private' : 'shared' })
-                  }
-                  className={cn(
-                    'flex h-7 items-center gap-1 rounded-md border px-2 text-[11px]',
-                    draft.scope === 'shared'
-                      ? 'border-sky-500/40 bg-sky-500/15 text-sky-300'
-                      : 'border-white/10 text-zinc-400 hover:text-zinc-200',
-                  )}
-                >
-                  <Share2 size={12} />
-                  {draft.scope === 'shared' ? 'Общая' : 'Личная'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPreview((v) => !v)}
-                  className={cn(
-                    'h-7 rounded-md border px-2 text-[11px]',
-                    preview
-                      ? 'border-white/20 bg-white/10 text-zinc-200'
-                      : 'border-white/10 text-zinc-400',
-                  )}
-                >
-                  {preview ? 'Правка' : 'Просмотр'}
-                </button>
-                <button
-                  type="button"
-                  onClick={exportPdf}
-                  className="flex h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[11px] text-zinc-400 hover:text-zinc-200"
-                  title="PDF / печать"
-                >
-                  <Download size={12} />
-                  PDF
-                </button>
-                {bucket === 'active' && isOwner && (
-                  <button
-                    type="button"
-                    onClick={() => void markDone()}
-                    className="flex h-7 items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 text-[11px] text-emerald-300"
-                  >
-                    <Check size={12} />
-                    Готово
-                  </button>
-                )}
-                {bucket === 'done' && isOwner && (
-                  <button
-                    type="button"
-                    onClick={() => void reopen()}
-                    className="h-7 rounded-md border border-white/10 px-2 text-[11px] text-zinc-400"
-                  >
-                    Вернуть
-                  </button>
-                )}
-                {isOwner && (
-                  <button
-                    type="button"
-                    onClick={() => void removeNote()}
-                    className="flex h-7 w-7 items-center justify-center rounded-md border border-white/10 text-zinc-500 hover:border-rose-500/40 hover:text-rose-300"
-                    title="Удалить"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                )}
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-                {/* checklist */}
-                <div className="mb-4 space-y-1">
-                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                    Задачи
-                  </div>
-                  {openItems.map((it) => (
-                    <TaskRow
-                      key={it.id}
-                      item={it}
-                      disabled={!isOwner}
-                      onToggle={() => void toggleItem(it.id)}
-                      onChangeText={(text) =>
-                        patchDraft({
-                          items: draft.items.map((x) =>
-                            x.id === it.id ? { ...x, text } : x,
-                          ),
-                        })
+        {/* composer — always on top like Memos */}
+        {bucket === 'active' && (
+          <div className="mb-3 shrink-0 rounded-2xl border border-white/[0.1] bg-[#2a2926] p-3 shadow-lg">
+            <textarea
+              ref={composerRef}
+              value={cText}
+              onChange={(e) => setCText(e.target.value)}
+              onPaste={onComposerPaste}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                  e.preventDefault();
+                  void postMemo();
+                }
+              }}
+              rows={3}
+              placeholder="Что записать? Markdown · Ctrl/Cmd+V скрин · ⌘↵ отправить"
+              className="w-full resize-none bg-transparent text-[13.5px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
+            />
+            {cItems.length > 0 && (
+              <div className="mb-2 space-y-1 border-t border-white/[0.06] pt-2">
+                {cItems.map((it) => (
+                  <div key={it.id} className="flex items-center gap-2">
+                    <span className="h-4 w-4 rounded border border-white/20" />
+                    <input
+                      value={it.text}
+                      onChange={(e) =>
+                        setCItems((prev) =>
+                          prev.map((x) => (x.id === it.id ? { ...x, text: e.target.value } : x)),
+                        )
                       }
-                      onRemove={() =>
-                        patchDraft({ items: draft.items.filter((x) => x.id !== it.id) })
-                      }
+                      placeholder="задача…"
+                      className="min-w-0 flex-1 bg-transparent text-[13px] text-zinc-200 outline-none"
                     />
-                  ))}
-                  {isOwner && (
                     <button
                       type="button"
-                      onClick={() => patchDraft({ items: [...draft.items, newItem('')] })}
-                      className="mt-1 flex items-center gap-1.5 text-[12px] text-zinc-500 hover:text-zinc-300"
+                      onClick={() => setCItems((prev) => prev.filter((x) => x.id !== it.id))}
+                      className="text-zinc-600 hover:text-rose-300"
                     >
-                      <Plus size={13} /> пункт
+                      <X size={12} />
                     </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCItems((prev) => [...prev, newItem('')])}
+                className="flex h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[11px] text-zinc-400 hover:text-zinc-200"
+              >
+                <Plus size={12} /> задача
+              </button>
+              <button
+                type="button"
+                onClick={() => setCShared((v) => !v)}
+                className={cn(
+                  'flex h-7 items-center gap-1 rounded-md border px-2 text-[11px]',
+                  cShared
+                    ? 'border-sky-500/40 bg-sky-500/15 text-sky-300'
+                    : 'border-white/10 text-zinc-400',
+                )}
+                title="Общая — видят все (передача смены)"
+              >
+                <Share2 size={12} />
+                {cShared ? 'Общая' : 'Личная'}
+              </button>
+              <button
+                type="button"
+                disabled={saving || (!cText.trim() && !cItems.some((i) => i.text.trim()))}
+                onClick={() => void postMemo()}
+                className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-[#d97757]/45 bg-[#d97757]/20 px-3 text-[12px] font-medium text-[#e8a48a] disabled:opacity-40"
+              >
+                {saving ? <Loader2 size={12} className="animate-spin" /> : null}
+                Записать
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* timeline */}
+        <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pb-6 pr-0.5">
+          {loading && (
+            <div className="py-12 text-center text-[12px] text-zinc-500">Загрузка…</div>
+          )}
+          {!loading && notes.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-white/10 px-4 py-10 text-center text-[13px] leading-relaxed text-zinc-500">
+              {bucket === 'done'
+                ? 'Пока нет выполненных.'
+                : scope === 'shared'
+                  ? 'Нет общих. Создай и отметь «Общая» — увидят все.'
+                  : 'Лента пуста. Напиши сверху и нажми «Записать».'}
+            </div>
+          )}
+
+          {notes.map((n) => {
+            const owner = isOwner(n);
+            const editing = editId === n.id;
+            return (
+              <article
+                key={n.id}
+                draggable={owner}
+                onDragStart={() => {
+                  dragId.current = n.id;
+                }}
+                onDragEnd={() => {
+                  dragId.current = null;
+                }}
+                className={cn(
+                  'group rounded-2xl border border-white/[0.08] bg-[#2a2926] p-3.5 shadow-md transition-colors',
+                  'hover:border-white/[0.12]',
+                )}
+              >
+                {/* meta row */}
+                <div className="mb-2 flex items-start gap-2">
+                  {owner && (
+                    <span
+                      className="mt-0.5 cursor-grab text-zinc-600 opacity-0 group-hover:opacity-100"
+                      title="Перетащи на «Выполнено» / «Активные»"
+                    >
+                      <GripVertical size={14} />
+                    </span>
                   )}
-                  {doneItems.length > 0 && (
-                    <div className="mt-3 border-t border-white/[0.06] pt-2">
-                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
-                        Выполнено в заметке
-                      </div>
-                      {doneItems.map((it) => (
-                        <TaskRow
-                          key={it.id}
-                          item={it}
-                          disabled={!isOwner}
-                          onToggle={() => void toggleItem(it.id)}
-                          onChangeText={(text) =>
-                            patchDraft({
-                              items: draft.items.map((x) =>
-                                x.id === it.id ? { ...x, text } : x,
-                              ),
-                            })
-                          }
-                          onRemove={() =>
-                            patchDraft({ items: draft.items.filter((x) => x.id !== it.id) })
-                          }
-                        />
-                      ))}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-500">
+                      <span className="tabular-nums text-zinc-400">{fmtWhen(n.updated_at)}</span>
+                      {n.scope === 'shared' && (
+                        <span className="rounded bg-sky-500/15 px-1.5 py-px text-sky-300/90">
+                          общая
+                        </span>
+                      )}
+                      {scope === 'shared' && n.owner_login && (
+                        <span className="truncate">{n.owner_login}</span>
+                      )}
                     </div>
-                  )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-0.5 opacity-70 group-hover:opacity-100">
+                    {owner && bucket === 'active' && (
+                      <IconBtn
+                        title="В выполненные"
+                        onClick={() => void setStatus(n, 'done')}
+                      >
+                        <Check size={13} />
+                      </IconBtn>
+                    )}
+                    {owner && bucket === 'done' && (
+                      <IconBtn title="Вернуть в активные" onClick={() => void setStatus(n, 'active')}>
+                        <CheckCircle2 size={13} />
+                      </IconBtn>
+                    )}
+                    {owner && (
+                      <IconBtn
+                        title={n.scope === 'shared' ? 'Сделать личной' : 'Сделать общей'}
+                        onClick={() => void toggleScope(n)}
+                      >
+                        <Share2 size={13} />
+                      </IconBtn>
+                    )}
+                    <IconBtn title="PDF" onClick={() => exportPdf(n)}>
+                      <Download size={13} />
+                    </IconBtn>
+                    {owner && (
+                      <IconBtn title="Удалить" danger onClick={() => void removeNote(n)}>
+                        <Trash2 size={13} />
+                      </IconBtn>
+                    )}
+                  </div>
                 </div>
 
-                {/* body */}
-                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Заметка · markdown · paste screenshot
-                </div>
-                {preview ? (
-                  <div
-                    className="prose prose-invert max-w-none text-[13.5px] leading-relaxed text-zinc-200 prose-p:my-2 prose-headings:text-[#f5f4ef] prose-a:text-sky-400"
-                    dangerouslySetInnerHTML={{ __html: previewHtml }}
-                  />
+                {/* title + body — always readable */}
+                {editing ? (
+                  <div className="space-y-2">
+                    <input
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      placeholder="Заголовок (необяз.)"
+                      className="w-full bg-transparent text-[14px] font-semibold text-[#f5f4ef] outline-none placeholder:text-zinc-600"
+                    />
+                    <textarea
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      rows={6}
+                      className="w-full resize-y rounded-lg border border-white/10 bg-black/25 px-2.5 py-2 font-mono text-[13px] leading-relaxed text-zinc-200 outline-none"
+                      autoFocus
+                    />
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => void saveEdit(n)}
+                        className="h-7 rounded-md border border-[#d97757]/40 bg-[#d97757]/15 px-2.5 text-[11px] text-[#e8a48a]"
+                      >
+                        Сохранить
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditId(null)}
+                        className="h-7 rounded-md border border-white/10 px-2.5 text-[11px] text-zinc-400"
+                      >
+                        Отмена
+                      </button>
+                    </div>
+                  </div>
                 ) : (
-                  <textarea
-                    value={draft.body_md}
-                    disabled={!isOwner}
-                    onChange={(e) => patchDraft({ body_md: e.target.value })}
-                    onPaste={onPaste}
-                    placeholder="Пиши… вставь скрин (Ctrl/Cmd+V) · markdown **жирный** · списки"
-                    className="min-h-[220px] w-full resize-y rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2.5 font-mono text-[13px] leading-relaxed text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-[#d97757]/35"
-                    spellCheck
-                  />
+                  <button
+                    type="button"
+                    className="w-full cursor-text text-left"
+                    onClick={() => {
+                      if (!owner) return;
+                      setEditId(n.id);
+                      setEditTitle(n.title);
+                      setEditText(n.body_md);
+                    }}
+                    title={owner ? 'Нажми, чтобы править' : undefined}
+                  >
+                    {n.title ? (
+                      <h3 className="mb-1.5 text-[14px] font-semibold leading-snug text-[#f5f4ef]">
+                        {n.title}
+                      </h3>
+                    ) : null}
+                    {n.body_md ? (
+                      <div
+                        className="notes-md max-w-none text-[13.5px] leading-relaxed text-zinc-200 [&_a]:text-sky-400 [&_code]:rounded [&_code]:bg-black/30 [&_code]:px-1 [&_img]:my-2 [&_img]:max-h-64 [&_img]:rounded-lg [&_li]:my-0.5 [&_ol]:my-1 [&_ol]:pl-5 [&_p]:my-1.5 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-black/30 [&_pre]:p-2 [&_ul]:my-1 [&_ul]:pl-5"
+                        dangerouslySetInnerHTML={{ __html: mdHtml(n.body_md) }}
+                      />
+                    ) : !n.items.length ? (
+                      <div className="text-[13px] italic text-zinc-600">пусто — нажми, чтобы написать</div>
+                    ) : null}
+                  </button>
                 )}
-              </div>
-            </>
-          )}
-        </main>
+
+                {/* tasks always visible */}
+                {n.items.length > 0 && (
+                  <ul className="mt-2.5 space-y-1 border-t border-white/[0.06] pt-2.5">
+                    {n.items.map((it) => (
+                      <li key={it.id} className="flex items-start gap-2">
+                        <button
+                          type="button"
+                          disabled={!owner}
+                          onClick={() => void toggleItem(n, it.id)}
+                          className={cn(
+                            'mt-0.5 flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded border',
+                            it.done
+                              ? 'border-emerald-500/45 bg-emerald-500/20 text-emerald-300'
+                              : 'border-white/25 text-transparent hover:border-[#d97757]/50',
+                          )}
+                        >
+                          <Check size={11} strokeWidth={2.5} />
+                        </button>
+                        <span
+                          className={cn(
+                            'min-w-0 flex-1 text-[13px] leading-snug',
+                            it.done ? 'text-zinc-500 line-through' : 'text-zinc-200',
+                          )}
+                        >
+                          {it.text || '…'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </article>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
 }
 
-function SegBtn({
+function Chip({
   active,
   onClick,
+  children,
   icon,
-  label,
-  small,
+  onDragOver,
+  onDrop,
 }: {
   active: boolean;
   onClick: () => void;
-  icon: ReactNode;
-  label: string;
-  small?: boolean;
+  children: ReactNode;
+  icon?: ReactNode;
+  onDragOver?: (e: DragEvent) => void;
+  onDrop?: () => void;
 }): JSX.Element {
   return (
     <button
       type="button"
       onClick={onClick}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
       className={cn(
-        'flex flex-1 items-center justify-center gap-1 rounded-md border text-[11px] font-medium transition-colors',
-        small ? 'h-7' : 'h-8',
+        'inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-[11.5px] font-medium transition-colors',
         active
-          ? 'border-white/15 bg-white/[0.08] text-[#f0eeea]'
-          : 'border-transparent text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300',
+          ? 'border-white/15 bg-white/[0.1] text-[#f0eeea]'
+          : 'border-white/[0.08] text-zinc-500 hover:border-white/12 hover:text-zinc-300',
       )}
     >
       {icon}
-      {label}
+      {children}
     </button>
   );
 }
 
-function TaskRow({
-  item,
-  disabled,
-  onToggle,
-  onChangeText,
-  onRemove,
+function IconBtn({
+  children,
+  onClick,
+  title,
+  danger,
 }: {
-  item: NoteItem;
-  disabled?: boolean;
-  onToggle: () => void;
-  onChangeText: (t: string) => void;
-  onRemove: () => void;
+  children: ReactNode;
+  onClick: () => void;
+  title: string;
+  danger?: boolean;
 }): JSX.Element {
   return (
-    <div className="group flex items-center gap-2 rounded-lg px-1 py-0.5 hover:bg-white/[0.03]">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onToggle}
-        className={cn(
-          'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors',
-          item.done
-            ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-300'
-            : 'border-white/20 text-transparent hover:border-[#d97757]/50',
-        )}
-        aria-label={item.done ? 'Снять' : 'Выполнено'}
-      >
-        <Check size={12} strokeWidth={2.5} />
-      </button>
-      <input
-        value={item.text}
-        disabled={disabled}
-        onChange={(e) => onChangeText(e.target.value)}
-        placeholder="задача…"
-        className={cn(
-          'min-w-0 flex-1 bg-transparent text-[13px] outline-none',
-          item.done ? 'text-zinc-500 line-through' : 'text-zinc-200',
-        )}
-      />
-      {!disabled && (
-        <button
-          type="button"
-          onClick={onRemove}
-          className="opacity-0 group-hover:opacity-100 text-zinc-600 hover:text-rose-300"
-        >
-          <Trash2 size={12} />
-        </button>
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={cn(
+        'flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-white/[0.06]',
+        danger ? 'hover:text-rose-300' : 'hover:text-zinc-200',
       )}
-    </div>
+    >
+      {children}
+    </button>
   );
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }

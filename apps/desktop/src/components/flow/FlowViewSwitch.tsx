@@ -58,7 +58,6 @@ export function FlowViewSwitch({
         }
         onClick={() => onModeChange(isPersonal ? 'shared' : 'personal')}
         className="flow-tab-tool-btn flow-view-toggle gap-2 px-2"
-        data-active={isPersonal ? 'true' : 'false'}
       >
         <span className="flow-view-switch-track" data-on={isPersonal ? 'true' : 'false'} aria-hidden>
           <span className="flow-view-switch-thumb" />

@@ -144,7 +144,6 @@ export function AnalyticsToolbar({
           <button
             type="button"
             className="flow-tab-tool-btn px-2"
-            data-active="true"
             title={periodLabel}
           >
             <CalendarDays size={14} strokeWidth={1.75} />

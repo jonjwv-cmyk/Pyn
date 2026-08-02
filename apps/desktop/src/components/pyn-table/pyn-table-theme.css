@@ -155,10 +155,24 @@
   background: rgba(255, 255, 255, 0.05);
   color: var(--pyn-text-strong);
 }
+/* Grok: tool-кнопки не «светятся» active (юзер 2026-08-02) —
+   где мы — только вкладки Разнарядка|Дашборд (pyn-segment).
+   Ползунок Личный/Общий — цвет только у track, не у всей кнопки. */
 .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-tool-btn[data-active='true'],
 .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-toolbar button[data-active='true'] {
-  color: #f0c4b0;
-  background: var(--pyn-accent-dim);
+  color: var(--pyn-text-muted);
+  background: transparent;
+}
+.pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-tool-btn[data-active='true']:hover:not(:disabled),
+.pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-toolbar button[data-active='true']:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--pyn-text-strong);
+}
+.pyn-table-root[data-pyn-table-theme='grok'] .flow-view-toggle {
+  color: var(--pyn-text-muted);
+}
+.pyn-table-root[data-pyn-table-theme='grok'] .flow-view-toggle:hover {
+  color: var(--pyn-text-strong);
 }
 .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-tool-btn:disabled,
 .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-toolbar button:disabled {
