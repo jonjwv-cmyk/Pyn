@@ -15,7 +15,7 @@ interface WorkspaceCardProps {
 export function WorkspaceCard({ children }: WorkspaceCardProps) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 px-2 pb-2 pt-1">
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border-subtle bg-bg-surface shadow-[0_2px_16px_rgba(0,0,0,0.35)]">
+      <div className="pyn-workspace-card relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border-subtle bg-bg-surface shadow-[0_2px_16px_rgba(0,0,0,0.35)]">
         {children}
       </div>
     </div>

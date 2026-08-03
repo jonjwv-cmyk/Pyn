@@ -1,0 +1,517 @@
+/**
+ * Режим «бумага» (data-pyn-surface="paper") — тёплый светлый лист, тёмный текст.
+ * Не pure white: manilla/kraft палитра приложения (brand-manilla, clay).
+ * Охватывает: WorkspaceCard, pyn-table grok, pyn-dash, notes-screen.
+ */
+
+[data-pyn-surface='paper'] {
+  --paper-bg: #f0ebe3;
+  --paper-elevated: #e8e1d6;
+  --paper-card: #f6f2eb;
+  --paper-deep: #e2dbd0;
+  --paper-text: #2e2a24;
+  --paper-text-strong: #1a1714;
+  /* muted/faint — темнее: подписи KPI/панелей читаются на manilla */
+  --paper-muted: #3f3a32;
+  --paper-faint: #524c42;
+  --paper-border: rgba(42, 38, 32, 0.14);
+  --paper-border-strong: rgba(42, 38, 32, 0.22);
+  --paper-hover: rgba(42, 38, 32, 0.06);
+  --paper-pressed: rgba(42, 38, 32, 0.1);
+  --paper-accent: #c45f42;
+  --paper-accent-dim: rgba(196, 95, 66, 0.14);
+  --paper-ok: #3d8b4a;
+  --paper-warn: #b8860b;
+  --paper-danger: #c44a4a;
+  color: var(--paper-text);
+}
+
+/* WorkspaceCard */
+[data-pyn-surface='paper'] .pyn-workspace-card {
+  background: var(--paper-card) !important;
+  border-color: var(--paper-border) !important;
+  box-shadow: 0 2px 14px rgba(40, 32, 20, 0.1) !important;
+  color: var(--paper-text);
+}
+
+/* ── Grok transport table tokens ───────────────────────── */
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'],
+[data-pyn-surface='paper'] .flow-tabulator-root[data-pyn-table-theme='grok'] {
+  --bg-cell: #f7f3ec;
+  --bg-cell-alt: #f0ebe3;
+  --bg-header: #e8e1d6;
+  --bg-header-hover: #e0d8cb;
+  --text-strong: #1a1714;
+  --text-medium: #2e2a24;
+  --text-muted: #5c564c;
+  --border-hair: rgba(42, 38, 32, 0.1);
+  --border-soft: rgba(42, 38, 32, 0.14);
+  --border-strong: rgba(42, 38, 32, 0.22);
+  --accent: #c45f42;
+  --accent-bg: rgba(196, 95, 66, 0.14);
+
+  --pyn-bg: #f7f3ec;
+  --pyn-bg-elevated: #e8e1d6;
+  --pyn-bg-deep: #e2dbd0;
+  --pyn-bg-row: #f7f3ec;
+  --pyn-bg-row-hover: rgba(42, 38, 32, 0.05);
+  --pyn-bg-header: #e8e1d6;
+  --pyn-border: rgba(42, 38, 32, 0.14);
+  --pyn-border-soft: rgba(42, 38, 32, 0.1);
+  --pyn-text: #2e2a24;
+  --pyn-text-muted: #5c564c;
+  --pyn-text-strong: #1a1714;
+  --pyn-accent: #c45f42;
+  --pyn-accent-dim: rgba(196, 95, 66, 0.14);
+  --pyn-ok: #3d8b4a;
+  --pyn-warn: #b8860b;
+  --pyn-danger: #c44a4a;
+
+  color: var(--pyn-text) !important;
+  background: var(--pyn-bg) !important;
+}
+
+/* chrome under table */
+[data-pyn-surface='paper'] .pyn-table-chrome {
+  border-color: var(--paper-border) !important;
+  background: var(--paper-elevated);
+}
+
+/* switch tracks on paper */
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-view-switch-track {
+  background: rgba(42, 38, 32, 0.12);
+  border-color: rgba(42, 38, 32, 0.14);
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-view-switch-thumb {
+  background: #8a847a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* toolbar buttons — darker icons for contrast (Bell / History) */
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-tool-btn,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-toolbar button {
+  color: var(--pyn-text-muted);
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-tool-btn:hover:not(:disabled),
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-toolbar button:hover:not(:disabled) {
+  background: var(--paper-hover);
+  color: var(--pyn-text-strong);
+}
+
+/* segment tabs (hardcoded dark in pyn-table-theme / pyn-dash) */
+[data-pyn-surface='paper'] .pyn-segment {
+  background: rgba(42, 38, 32, 0.07) !important;
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] .pyn-segment > button {
+  color: var(--paper-muted) !important;
+}
+[data-pyn-surface='paper'] .pyn-segment > button:hover {
+  color: var(--paper-text-strong) !important;
+}
+[data-pyn-surface='paper'] .pyn-segment > button[data-active='true'],
+[data-pyn-surface='paper'] .pyn-segment > button[aria-selected='true'] {
+  color: var(--paper-text-strong) !important;
+  background: var(--paper-card) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08) !important;
+}
+
+/* mosaic KPI on paper */
+[data-pyn-surface='paper'] .pyn-kpi-card {
+  background: var(--paper-elevated) !important;
+  border-color: var(--paper-border) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset !important;
+  color: var(--paper-text);
+}
+
+/* transport outer shell */
+[data-pyn-surface='paper'] .bg-bg-surface {
+  background-color: var(--paper-card) !important;
+}
+
+/* zinc placeholders in transport dash */
+[data-pyn-surface='paper'] .text-zinc-500 {
+  color: var(--paper-faint) !important;
+}
+[data-pyn-surface='paper'] .text-zinc-400 {
+  color: var(--paper-muted) !important;
+}
+[data-pyn-surface='paper'] .text-zinc-300,
+[data-pyn-surface='paper'] .text-zinc-200,
+[data-pyn-surface='paper'] .text-zinc-100 {
+  color: var(--paper-text) !important;
+}
+[data-pyn-surface='paper'] .text-zinc-600 {
+  color: var(--paper-faint) !important;
+}
+
+/* ── pyn-dash (Сводка / транспорт-дашборд) ─────────────── */
+[data-pyn-surface='paper'] .pyn-dash {
+  --pd-bg: #f6f2eb;
+  --pd-elevated: #e8e1d6;
+  --pd-deep: #e2dbd0;
+  --pd-row-hover: rgba(42, 38, 32, 0.05);
+  --pd-border: rgba(42, 38, 32, 0.12);
+  --pd-border-strong: rgba(42, 38, 32, 0.2);
+  --pd-text: #2e2a24;
+  --pd-text-strong: #1a1714;
+  --pd-muted: #3f3a32;
+  --pd-faint: #524c42;
+  --pd-accent: #c45f42;
+  --pd-accent-soft: #a84f36;
+  --pd-accent-dim: rgba(196, 95, 66, 0.14);
+  --pd-ok: #3d8b4a;
+  --pd-ok-text: #2f6b3a;
+  --pd-warn: #b8860b;
+  --pd-danger: #c44a4a;
+  --pd-danger-soft: #a83a3a;
+  --pd-shadow-soft: 0 1px 0 rgba(255, 255, 255, 0.4) inset;
+  --pd-shadow-hover: 0 8px 24px rgba(40, 32, 20, 0.1), 0 1px 0 rgba(255, 255, 255, 0.35) inset;
+  color: var(--pd-text);
+  background: transparent;
+}
+/* hardcoded light greys in dash kit → dark on paper */
+[data-pyn-surface='paper'] .pyn-dash-stat-name {
+  color: var(--pd-text) !important;
+}
+[data-pyn-surface='paper'] .pyn-dash-stat-val {
+  color: var(--pd-muted) !important;
+}
+[data-pyn-surface='paper'] .pyn-dash-stat-val span {
+  color: var(--pd-faint) !important;
+}
+[data-pyn-surface='paper'] .pyn-dash-panel-title {
+  color: var(--pd-text-strong) !important;
+}
+[data-pyn-surface='paper'] .pyn-dash-kpi-label,
+[data-pyn-surface='paper'] .pyn-kpi-label {
+  color: var(--pd-faint) !important;
+  opacity: 1;
+}
+[data-pyn-surface='paper'] .pyn-kpi-meta,
+[data-pyn-surface='paper'] .pyn-dash-kpi-meta {
+  color: var(--pd-muted) !important;
+}
+[data-pyn-surface='paper'] .pyn-kpi-value {
+  color: var(--pd-text-strong) !important;
+}
+[data-pyn-surface='paper'] .pyn-period-chip {
+  color: var(--pd-muted) !important;
+  border-color: var(--pd-border) !important;
+}
+[data-pyn-surface='paper'] .pyn-period-chip:hover {
+  color: var(--pd-text-strong) !important;
+}
+[data-pyn-surface='paper'] .pyn-segment > button {
+  color: var(--pd-faint) !important;
+}
+[data-pyn-surface='paper'] .pyn-segment > button:hover,
+[data-pyn-surface='paper'] .pyn-segment > button[data-active='true'] {
+  color: var(--pd-text-strong) !important;
+}
+
+/* ── Notes ─────────────────────────────────────────────── */
+[data-pyn-surface='paper'] .notes-screen {
+  color: var(--paper-text);
+}
+
+/* cards / compose — hardcoded dark hex */
+[data-pyn-surface='paper'] .notes-screen .bg-\[\#2a2926\],
+[data-pyn-surface='paper'] .notes-screen .bg-\[\#2a2926\]\/80,
+[data-pyn-surface='paper'] .notes-screen .bg-\[\#252421\]\/80 {
+  background-color: var(--paper-elevated) !important;
+}
+[data-pyn-surface='paper'] .notes-screen .bg-black\/25,
+[data-pyn-surface='paper'] .notes-screen .bg-black\/30 {
+  background-color: rgba(42, 38, 32, 0.06) !important;
+}
+[data-pyn-surface='paper'] .notes-screen .border-white\/\[0\.1\],
+[data-pyn-surface='paper'] .notes-screen .border-white\/\[0\.08\],
+[data-pyn-surface='paper'] .notes-screen .border-white\/\[0\.06\],
+[data-pyn-surface='paper'] .notes-screen .border-white\/10,
+[data-pyn-surface='paper'] .notes-screen .border-white\/12 {
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] .notes-screen .placeholder\:text-zinc-600::placeholder {
+  color: var(--paper-faint) !important;
+}
+[data-pyn-surface='paper'] .notes-screen .hover\:bg-white\/\[0\.06\]:hover {
+  background-color: var(--paper-hover) !important;
+}
+[data-pyn-surface='paper'] .notes-screen .hover\:border-white\/\[0\.12\]:hover {
+  border-color: var(--paper-border-strong) !important;
+}
+[data-pyn-surface='paper'] .notes-screen .text-sky-400 {
+  color: #1d6fa5 !important;
+}
+[data-pyn-surface='paper'] .notes-screen .text-sky-400\/90 {
+  color: #1d6fa5 !important;
+}
+[data-pyn-surface='paper'] .notes-screen .notes-md a {
+  color: #1d6fa5;
+}
+[data-pyn-surface='paper'] .notes-screen .notes-md code,
+[data-pyn-surface='paper'] .notes-screen .notes-md pre {
+  background: rgba(42, 38, 32, 0.06) !important;
+  color: var(--paper-text);
+}
+
+/* panels / popovers that use white opacity borders on paper */
+[data-pyn-surface='paper'] .border-white\/\[0\.06\] {
+  border-color: var(--paper-border) !important;
+}
+
+/* ── Сводка: белый/чёрный маркеры на paper ─────────────── */
+[data-pyn-surface='paper'] .report-side-dot--w {
+  background: #d97706 !important; /* amber-600 */
+  box-shadow: 0 0 0 2px rgba(180, 83, 9, 0.35);
+}
+[data-pyn-surface='paper'] .report-side-dot--b {
+  background: #27272a !important; /* zinc-800 */
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.28);
+}
+[data-pyn-surface='paper'] .report-side-label--w {
+  color: #b45309 !important;
+}
+[data-pyn-surface='paper'] .report-side-label--b {
+  color: #3f3f46 !important;
+}
+[data-pyn-surface='paper'] .bg-black\/15,
+[data-pyn-surface='paper'] .bg-black\/10,
+[data-pyn-surface='paper'] .bg-black\/20 {
+  background-color: rgba(42, 38, 32, 0.06) !important;
+}
+[data-pyn-surface='paper'] .border-white\/\[0\.1\],
+[data-pyn-surface='paper'] .bg-white\/\[0\.04\] {
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] button.bg-white\/\[0\.04\],
+[data-pyn-surface='paper'] .bg-white\/\[0\.04\] {
+  background-color: rgba(42, 38, 32, 0.05) !important;
+  color: var(--paper-text) !important;
+}
+
+/* ── Транспорт: chrome + status badges ─────────────────── */
+[data-pyn-surface='paper'] .pyn-table-chrome {
+  background: var(--paper-elevated) !important;
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-toolbar {
+  background: var(--paper-card) !important;
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] .pyn-status-badge--ok {
+  color: #15803d !important;
+  background: rgba(34, 197, 94, 0.14) !important;
+  border-color: rgba(22, 163, 74, 0.35) !important;
+}
+[data-pyn-surface='paper'] .pyn-status-badge--wait {
+  color: #a16207 !important;
+  background: rgba(234, 179, 8, 0.18) !important;
+  border-color: rgba(202, 138, 4, 0.4) !important;
+}
+[data-pyn-surface='paper'] .pyn-status-badge--danger {
+  color: #be123c !important;
+  background: rgba(244, 63, 94, 0.12) !important;
+  border-color: rgba(225, 29, 72, 0.35) !important;
+}
+[data-pyn-surface='paper'] .pyn-status-badge--neutral {
+  color: #3f3f46 !important;
+  background: rgba(42, 38, 32, 0.08) !important;
+  border-color: rgba(42, 38, 32, 0.18) !important;
+}
+[data-pyn-surface='paper'] .pyn-analytics-toolbar {
+  background: var(--paper-elevated) !important;
+  border-color: var(--paper-border) !important;
+  box-shadow: none !important;
+}
+
+/* ── Разнарядка: МОЛ-пилл, галочки «без эксп.», редактор ─ */
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-mol-badge,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-opt-mol-badge,
+[data-pyn-surface='paper'] .pyn-mol-micro {
+  background: rgba(180, 83, 9, 0.18) !important;
+  color: #9a3412 !important;
+  border-color: rgba(180, 83, 9, 0.5) !important;
+  font-weight: 700 !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .pyn-tick {
+  border: 1.5px solid rgba(42, 38, 32, 0.42) !important;
+  background: #faf8f4 !important;
+  color: transparent !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .pyn-tick--off:hover {
+  border-color: rgba(42, 38, 32, 0.6) !important;
+  background: #fff !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .pyn-tick--on {
+  border-color: #b45309 !important;
+  background: #c45f42 !important;
+  color: #fff !important;
+  box-shadow: none;
+}
+
+/* редактор ячейки — светлый, не #302f2d */
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing {
+  background: #faf8f4 !important;
+  outline-color: rgba(196, 95, 66, 0.7) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing input,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing input[type='text'],
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing input[type='search'],
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing select,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing textarea {
+  background: #faf8f4 !important;
+  color: #1a1714 !important;
+  -webkit-text-fill-color: #1a1714 !important;
+  caret-color: #c45f42 !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing input::placeholder {
+  color: #6b6458 !important;
+  -webkit-text-fill-color: #6b6458 !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing input::selection,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing textarea::selection {
+  background: rgba(196, 95, 66, 0.28) !important;
+  color: #1a1714 !important;
+  -webkit-text-fill-color: #1a1714 !important;
+}
+
+/* dropdown list editor */
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-edit-list,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-menu,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-edit-select-list {
+  background: #f6f2eb !important;
+  background-color: #f6f2eb !important;
+  border-color: rgba(42, 38, 32, 0.18) !important;
+  color: #1a1714 !important;
+  box-shadow: 0 12px 32px rgba(40, 32, 20, 0.18) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-edit-list-item,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-menu .tabulator-menu-item {
+  color: #2e2a24 !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-edit-list-item:hover,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-menu .tabulator-menu-item:hover,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-edit-list-item.active,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-edit-list-item.focused,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-menu .tabulator-menu-item.tabulator-menu-item-focused {
+  background: rgba(196, 95, 66, 0.14) !important;
+  color: #1a1714 !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-edit-list-placeholder,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-edit-list-group {
+  color: #5c564c !important;
+}
+
+/* ── Notes: compose / cards / fields ───────────────────── */
+[data-pyn-surface='paper'] .notes-compose,
+[data-pyn-surface='paper'] .notes-card {
+  background: var(--paper-elevated) !important;
+  border-color: var(--paper-border) !important;
+  color: var(--paper-text) !important;
+  box-shadow: 0 1px 3px rgba(40, 32, 20, 0.08) !important;
+}
+/* закрытая заметка: лёгкий sage, тёмный текст — не бледно-зелёный */
+[data-pyn-surface='paper'] .notes-card--done {
+  background: #e4eee4 !important;
+  border-color: #2f7a40 !important;
+  border-width: 1.5px !important;
+}
+[data-pyn-surface='paper'] .notes-field,
+[data-pyn-surface='paper'] .notes-compose textarea,
+[data-pyn-surface='paper'] .notes-compose input,
+[data-pyn-surface='paper'] .notes-card textarea {
+  background: #faf8f4 !important;
+  color: var(--paper-text-strong) !important;
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] .notes-field::placeholder,
+[data-pyn-surface='paper'] .notes-compose textarea::placeholder {
+  color: var(--paper-faint) !important;
+}
+
+/* Записать — clay, читаемо на paper */
+[data-pyn-surface='paper'] .notes-btn-save {
+  border-color: #a84f36 !important;
+  background: #c45f42 !important;
+  color: #fff !important;
+  font-weight: 600 !important;
+}
+[data-pyn-surface='paper'] .notes-btn-save:hover:not(:disabled) {
+  background: #a84f36 !important;
+}
+[data-pyn-surface='paper'] .notes-btn-save:disabled {
+  opacity: 0.45 !important;
+}
+
+/* галочка «выполнено» / корзина */
+[data-pyn-surface='paper'] .notes-icon-btn--green {
+  color: #15803d !important;
+  background: rgba(22, 163, 74, 0.12) !important;
+  border: 1px solid rgba(22, 163, 74, 0.4);
+}
+[data-pyn-surface='paper'] .notes-icon-btn--green:hover {
+  background: rgba(22, 163, 74, 0.22) !important;
+  color: #166534 !important;
+}
+[data-pyn-surface='paper'] .notes-icon-btn--danger {
+  color: #be123c !important;
+  background: rgba(225, 29, 72, 0.1) !important;
+  border: 1px solid rgba(225, 29, 72, 0.35);
+}
+[data-pyn-surface='paper'] .notes-icon-btn--danger:hover {
+  background: rgba(225, 29, 72, 0.18) !important;
+  color: #9f1239 !important;
+}
+
+/* задача закрыта: тёмный зачёркнутый текст + зелёный solid checkbox */
+[data-pyn-surface='paper'] .notes-item-check {
+  border-color: rgba(42, 38, 32, 0.4) !important;
+  background: #faf8f4 !important;
+}
+[data-pyn-surface='paper'] .notes-item-check--done {
+  border-color: #15803d !important;
+  background: #15803d !important;
+  color: #fff !important;
+}
+[data-pyn-surface='paper'] .notes-item-text--done {
+  color: #3f3a32 !important;
+  text-decoration: line-through;
+  opacity: 0.9;
+}
+
+/* markdown lists — always visible (Tailwind preflight kills list-style) */
+.notes-md ol {
+  list-style: decimal !important;
+  padding-left: 1.35rem !important;
+  margin: 0.35rem 0 !important;
+}
+.notes-md ul {
+  list-style: disc !important;
+  padding-left: 1.35rem !important;
+  margin: 0.35rem 0 !important;
+}
+.notes-md li {
+  display: list-item !important;
+  margin: 0.2rem 0 !important;
+}
+.notes-md strong,
+.notes-md b {
+  font-weight: 700 !important;
+  color: inherit;
+}
+.notes-md em,
+.notes-md i {
+  font-style: italic !important;
+}
+.notes-md p {
+  margin: 0.4rem 0 !important;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.notes-md {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}

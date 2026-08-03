@@ -398,7 +398,7 @@ export function computeFlowReport(
   };
 }
 
-/** Заголовок дат: «июль 22-23» / «июль 22, 25» / «июль 31 и август 1-2». */
+/** Заголовок дат: «Июль 22-23 2026» / «Июль 22, 25 2026» / «Июль 31 и Август 1-2 2026». */
 export function formatReportDaysTitle(days: readonly string[]): string {
   const sorted = [...new Set(days.map((d) => String(d).slice(0, 10)).filter(Boolean))].sort();
   if (!sorted.length) return '';
@@ -416,6 +416,7 @@ export function formatReportDaysTitle(days: readonly string[]): string {
     'ноябрь',
     'декабрь',
   ];
+  const cap = (s: string): string => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
   // group by YYYY-MM
   const byMonth = new Map<string, number[]>();
   for (const iso of sorted) {
@@ -427,10 +428,13 @@ export function formatReportDaysTitle(days: readonly string[]): string {
     arr.push(day);
     byMonth.set(key, arr);
   }
+  const years = new Set([...byMonth.keys()].map((k) => k.slice(0, 4)));
+  const multiYear = years.size > 1;
   const parts: string[] = [];
   for (const [key, ds] of [...byMonth.entries()].sort()) {
+    const y = key.slice(0, 4);
     const m = Number(key.slice(5, 7));
-    const name = MONTHS[m - 1] || key;
+    const name = cap(MONTHS[m - 1] || key);
     ds.sort((a, b) => a - b);
     // compress consecutive
     const segs: string[] = [];
@@ -443,9 +447,14 @@ export function formatReportDaysTitle(days: readonly string[]): string {
       else segs.push(`${ds[i]}-${ds[j]}`);
       i = j + 1;
     }
-    parts.push(`${name} ${segs.join(', ')}`);
+    // при разных годах — год у каждой группы; иначе год один раз в конце
+    parts.push(multiYear ? `${name} ${segs.join(', ')} ${y}` : `${name} ${segs.join(', ')}`);
   }
-  if (parts.length === 1) return parts[0]!;
-  if (parts.length === 2) return `${parts[0]} и ${parts[1]}`;
-  return parts.slice(0, -1).join(', ') + ' и ' + parts[parts.length - 1];
+  let body: string;
+  if (parts.length === 1) body = parts[0]!;
+  else if (parts.length === 2) body = `${parts[0]} и ${parts[1]}`;
+  else body = parts.slice(0, -1).join(', ') + ' и ' + parts[parts.length - 1];
+  if (multiYear) return body;
+  const onlyYear = [...years][0];
+  return onlyYear ? `${body} ${onlyYear}` : body;
 }

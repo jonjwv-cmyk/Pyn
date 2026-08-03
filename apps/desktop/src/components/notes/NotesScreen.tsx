@@ -5,9 +5,12 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
+  Bold,
   Check,
   CheckCircle2,
   GripVertical,
+  Italic,
+  ListOrdered,
   Loader2,
   Plus,
   StickyNote,
@@ -31,7 +34,10 @@ import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { sessionStore } from '@/lib/token-store';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
+import { WorkspaceSurfaceToggle } from '@/components/WorkspaceSurfaceToggle';
+import { useWorkspaceSurface } from '@/lib/workspace-surface';
 import '@/components/pyn-dash/pyn-dash.css';
+import '@/components/workspace-surface.css';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const markedApi: any =
@@ -56,25 +62,38 @@ function newItem(text = ''): NoteItem {
   return { id: nid(), text, done: false };
 }
 
+const NOTE_MONTHS = [
+  'январь',
+  'февраль',
+  'март',
+  'апрель',
+  'май',
+  'июнь',
+  'июль',
+  'август',
+  'сентябрь',
+  'октябрь',
+  'ноябрь',
+  'декабрь',
+];
+
+/** «август 3 · 14:30» — месяц, день, затем часы (юзер 2026-08-04). */
 function fmtWhen(iso: string): string {
   if (!iso) return '';
   const s = iso.includes('T') ? iso : `${iso.replace(' ', 'T')}Z`;
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return iso.slice(0, 16);
   const now = new Date();
+  const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const sameDay =
     d.getFullYear() === now.getFullYear() &&
     d.getMonth() === now.getMonth() &&
     d.getDate() === now.getDate();
-  if (sameDay) {
-    return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  }
-  return d.toLocaleString('ru-RU', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  if (sameDay) return time;
+  const mon = NOTE_MONTHS[d.getMonth()] ?? '';
+  const day = d.getDate();
+  const yPart = d.getFullYear() !== now.getFullYear() ? ` ${d.getFullYear()}` : '';
+  return `${mon} ${day}${yPart} · ${time}`;
 }
 
 function displayName(n: Pick<Note, 'owner_name' | 'owner_login'>): string {
@@ -97,6 +116,36 @@ function mdHtml(src: string): string {
   } catch {
     return escapeHtml(src || '');
   }
+}
+
+/** Вставить markdown-обёртку вокруг выделения (или в курсор). */
+function wrapSelection(
+  value: string,
+  start: number,
+  end: number,
+  before: string,
+  after: string,
+): { next: string; selStart: number; selEnd: number } {
+  const a = value.slice(0, start);
+  const mid = value.slice(start, end);
+  const b = value.slice(end);
+  if (mid) {
+    const next = `${a}${before}${mid}${after}${b}`;
+    return {
+      next,
+      selStart: start + before.length,
+      selEnd: start + before.length + mid.length,
+    };
+  }
+  const next = `${a}${before}${after}${b}`;
+  const pos = start + before.length;
+  return { next, selStart: pos, selEnd: pos };
+}
+
+function autoResizeTextarea(el: HTMLTextAreaElement | null): void {
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = `${Math.max(el.scrollHeight, 72)}px`;
 }
 
 function allItemsDone(n: Note): boolean {
@@ -132,6 +181,7 @@ function patchInCache(
 }
 
 export function NotesScreen(): JSX.Element {
+  const surface = useWorkspaceSurface('notes');
   const [me, setMe] = useState('');
   const [myName, setMyName] = useState('');
   const [scope, setScope] = useState<NoteScope>('private');
@@ -533,7 +583,10 @@ export function NotesScreen(): JSX.Element {
   );
 
   return (
-    <main className="relative flex flex-1 flex-col overflow-hidden">
+    <main
+      className="notes-screen relative flex flex-1 flex-col overflow-hidden"
+      data-pyn-surface={surface}
+    >
       <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
         <StickyNote size={14} className="text-sky-400/90" strokeWidth={1.75} />
         <span className="text-[13px] font-semibold tracking-tight text-text-strong">Заметки</span>
@@ -543,6 +596,8 @@ export function NotesScreen(): JSX.Element {
             {err}
           </span>
         ) : null}
+        <div className="flex-1" />
+        <WorkspaceSurfaceToggle section="notes" />
       </div>
 
       <WorkspaceCard>
@@ -605,24 +660,85 @@ export function NotesScreen(): JSX.Element {
         </div>
 
         {bucket === 'active' && scope === 'private' && (
-          <div className="mb-3 shrink-0 rounded-xl border border-white/[0.1] bg-[#2a2926] p-3 shadow-lg">
+          <div className="notes-compose mb-3 shrink-0 rounded-xl border border-white/[0.1] bg-[#2a2926] p-3 shadow-lg">
+            <div className="mb-1.5 flex flex-wrap items-center gap-1">
+              <FormatBtn
+                title="Жирный"
+                onClick={() => {
+                  const el = composerRef.current;
+                  if (!el) return;
+                  const r = wrapSelection(cText, el.selectionStart, el.selectionEnd, '**', '**');
+                  setCText(r.next);
+                  requestAnimationFrame(() => {
+                    el.focus();
+                    el.setSelectionRange(r.selStart, r.selEnd);
+                    autoResizeTextarea(el);
+                  });
+                }}
+              >
+                <Bold size={12} strokeWidth={2.5} />
+              </FormatBtn>
+              <FormatBtn
+                title="Курсив"
+                onClick={() => {
+                  const el = composerRef.current;
+                  if (!el) return;
+                  const r = wrapSelection(cText, el.selectionStart, el.selectionEnd, '_', '_');
+                  setCText(r.next);
+                  requestAnimationFrame(() => {
+                    el.focus();
+                    el.setSelectionRange(r.selStart, r.selEnd);
+                  });
+                }}
+              >
+                <Italic size={12} />
+              </FormatBtn>
+              <FormatBtn
+                title="Нумерованный список"
+                onClick={() => {
+                  const el = composerRef.current;
+                  if (!el) return;
+                  const start = el.selectionStart;
+                  const lineStart = cText.lastIndexOf('\n', start - 1) + 1;
+                  const next = `${cText.slice(0, lineStart)}1. ${cText.slice(lineStart)}`;
+                  setCText(next);
+                  requestAnimationFrame(() => {
+                    el.focus();
+                    el.setSelectionRange(start + 3, start + 3);
+                    autoResizeTextarea(el);
+                  });
+                }}
+              >
+                <ListOrdered size={12} />
+              </FormatBtn>
+            </div>
             <textarea
               ref={composerRef}
               value={cText}
-              onChange={(e) => setCText(e.target.value)}
+              onChange={(e) => {
+                setCText(e.target.value);
+                autoResizeTextarea(e.target);
+              }}
               onPaste={onComposerPaste}
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                   e.preventDefault();
                   void postMemo();
                 }
+                if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+                  e.preventDefault();
+                  const el = e.currentTarget;
+                  const r = wrapSelection(cText, el.selectionStart, el.selectionEnd, '**', '**');
+                  setCText(r.next);
+                  requestAnimationFrame(() => el.setSelectionRange(r.selStart, r.selEnd));
+                }
               }}
               rows={3}
-              placeholder="Текст… · + задача · ⌘↵"
-              className="w-full resize-none bg-transparent text-[13.5px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
+              placeholder="Черкани заметку ✏️"
+              className="notes-field w-full resize-none rounded-md border border-transparent bg-black/20 px-2 py-1.5 text-[13.5px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
             />
             {cItems.length > 0 && (
-              <div className="mb-2 space-y-1 border-t border-white/[0.06] pt-2">
+              <div className="mb-2 mt-2 space-y-1 border-t border-white/[0.06] pt-2">
                 {cItems.map((it) => (
                   <div key={it.id} className="flex items-center gap-2">
                     <span className="h-4 w-4 rounded border border-white/20" />
@@ -634,7 +750,7 @@ export function NotesScreen(): JSX.Element {
                         )
                       }
                       placeholder="задача…"
-                      className="min-w-0 flex-1 bg-transparent text-[13px] text-zinc-200 outline-none"
+                      className="notes-field min-w-0 flex-1 rounded border border-transparent bg-black/15 px-1.5 py-0.5 text-[13px] text-zinc-200 outline-none"
                     />
                     <button
                       type="button"
@@ -647,7 +763,7 @@ export function NotesScreen(): JSX.Element {
                 ))}
               </div>
             )}
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => setCItems((prev) => [...prev, newItem('')])}
@@ -659,7 +775,7 @@ export function NotesScreen(): JSX.Element {
                 type="button"
                 disabled={saving || (!cText.trim() && !cItems.some((i) => i.text.trim()))}
                 onClick={() => void postMemo()}
-                className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-[#d97757]/45 bg-[#d97757]/20 px-3 text-[12px] font-medium text-[#e8a48a] disabled:opacity-40"
+                className="notes-btn-save ml-auto flex h-7 items-center gap-1.5 rounded-md border border-[#d97757]/45 bg-[#d97757]/20 px-3 text-[12px] font-medium text-[#e8a48a] disabled:opacity-40"
               >
                 {saving ? <Loader2 size={12} className="animate-spin" /> : null}
                 Записать
@@ -695,7 +811,7 @@ export function NotesScreen(): JSX.Element {
               return (
                 <article
                   key={n.id}
-                  className="rounded-xl border border-white/[0.06] bg-[#252421]/80 px-3.5 py-2.5"
+                  className="notes-card rounded-xl border border-white/[0.06] bg-[#252421]/80 px-3.5 py-2.5"
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-zinc-500">
@@ -730,9 +846,9 @@ export function NotesScreen(): JSX.Element {
                   dragId.current = null;
                 }}
                 className={cn(
-                  'group rounded-xl border p-3.5 shadow-md transition-colors',
+                  'notes-card group rounded-xl border p-3.5 shadow-md transition-colors',
                   green
-                    ? 'border-emerald-500/35 bg-emerald-950/35 hover:border-emerald-500/45'
+                    ? 'notes-card--done border-emerald-500/35 bg-emerald-950/35 hover:border-emerald-500/45'
                     : 'border-white/[0.08] bg-[#2a2926] hover:border-white/[0.12]',
                 )}
               >
@@ -769,11 +885,78 @@ export function NotesScreen(): JSX.Element {
 
                 {editing ? (
                   <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <FormatBtn
+                        title="Жирный (⌘B)"
+                        onClick={() => {
+                          const ta = document.getElementById(`note-edit-${n.id}`) as HTMLTextAreaElement | null;
+                          if (!ta) return;
+                          const r = wrapSelection(editText, ta.selectionStart, ta.selectionEnd, '**', '**');
+                          setEditText(r.next);
+                          requestAnimationFrame(() => {
+                            ta.focus();
+                            ta.setSelectionRange(r.selStart, r.selEnd);
+                            autoResizeTextarea(ta);
+                          });
+                        }}
+                      >
+                        <Bold size={12} strokeWidth={2.5} />
+                      </FormatBtn>
+                      <FormatBtn
+                        title="Курсив"
+                        onClick={() => {
+                          const ta = document.getElementById(`note-edit-${n.id}`) as HTMLTextAreaElement | null;
+                          if (!ta) return;
+                          const r = wrapSelection(editText, ta.selectionStart, ta.selectionEnd, '_', '_');
+                          setEditText(r.next);
+                          requestAnimationFrame(() => {
+                            ta.focus();
+                            ta.setSelectionRange(r.selStart, r.selEnd);
+                          });
+                        }}
+                      >
+                        <Italic size={12} />
+                      </FormatBtn>
+                      <FormatBtn
+                        title="Список 1. 2. 3."
+                        onClick={() => {
+                          const ta = document.getElementById(`note-edit-${n.id}`) as HTMLTextAreaElement | null;
+                          if (!ta) return;
+                          const start = ta.selectionStart;
+                          const lineStart = editText.lastIndexOf('\n', start - 1) + 1;
+                          const next = `${editText.slice(0, lineStart)}1. ${editText.slice(lineStart)}`;
+                          setEditText(next);
+                          requestAnimationFrame(() => {
+                            ta.focus();
+                            ta.setSelectionRange(start + 3, start + 3);
+                            autoResizeTextarea(ta);
+                          });
+                        }}
+                      >
+                        <ListOrdered size={12} />
+                      </FormatBtn>
+                    </div>
                     <textarea
+                      id={`note-edit-${n.id}`}
                       value={editText}
-                      onChange={(e) => setEditText(e.target.value)}
-                      rows={6}
-                      className="w-full resize-y rounded-lg border border-white/10 bg-black/25 px-2.5 py-2 text-[13px] leading-relaxed text-zinc-200 outline-none"
+                      onChange={(e) => {
+                        setEditText(e.target.value);
+                        autoResizeTextarea(e.target);
+                      }}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+                          e.preventDefault();
+                          const ta = e.currentTarget;
+                          const r = wrapSelection(editText, ta.selectionStart, ta.selectionEnd, '**', '**');
+                          setEditText(r.next);
+                          requestAnimationFrame(() => ta.setSelectionRange(r.selStart, r.selEnd));
+                        }
+                      }}
+                      ref={(el) => {
+                        if (el) autoResizeTextarea(el);
+                      }}
+                      rows={4}
+                      className="notes-field w-full resize-none rounded-lg border border-white/10 bg-black/25 px-2.5 py-2 text-[13px] leading-relaxed text-zinc-200 outline-none"
                       autoFocus
                     />
                     <div className="flex gap-1.5">
@@ -800,13 +983,12 @@ export function NotesScreen(): JSX.Element {
                     onClick={() => {
                       if (!owner) return;
                       setEditId(n.id);
-                      // старые заметки: title мог быть единственным текстом
                       setEditText(n.body_md || n.title || '');
                     }}
                   >
                     {n.body_md || n.title ? (
                       <div
-                        className="notes-md max-w-none text-[13.5px] leading-relaxed text-zinc-200 [&_a]:text-sky-400 [&_code]:rounded [&_code]:bg-black/30 [&_code]:px-1 [&_img]:my-2 [&_img]:max-h-64 [&_img]:rounded-lg [&_li]:my-0.5 [&_ol]:my-1 [&_ol]:pl-5 [&_p]:my-1.5 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-black/30 [&_pre]:p-2 [&_ul]:my-1 [&_ul]:pl-5"
+                        className="notes-md max-w-none text-[13.5px] leading-relaxed text-zinc-200 [&_a]:text-sky-400 [&_code]:rounded [&_code]:bg-black/30 [&_code]:px-1 [&_img]:my-2 [&_img]:max-h-64 [&_img]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-black/30 [&_pre]:p-2"
                         dangerouslySetInnerHTML={{ __html: mdHtml(n.body_md || n.title) }}
                       />
                     ) : !n.items.length ? (
@@ -824,9 +1006,9 @@ export function NotesScreen(): JSX.Element {
                           disabled={!canCheck(n)}
                           onClick={() => void toggleItem(n, it.id)}
                           className={cn(
-                            'mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded border transition-colors',
+                            'notes-item-check mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded border transition-colors',
                             it.done
-                              ? 'border-emerald-500/50 bg-emerald-500/25 text-emerald-300'
+                              ? 'notes-item-check--done border-emerald-500/50 bg-emerald-500/25 text-emerald-300'
                               : 'border-white/25 text-transparent hover:border-emerald-500/40',
                           )}
                         >
@@ -836,7 +1018,9 @@ export function NotesScreen(): JSX.Element {
                           <div
                             className={cn(
                               'text-[13px] leading-snug',
-                              it.done ? 'text-emerald-400/75 line-through' : 'text-zinc-200',
+                              it.done
+                                ? 'notes-item-text--done text-emerald-400/75 line-through'
+                                : 'text-zinc-200',
                             )}
                           >
                             {it.text || '…'}
@@ -860,6 +1044,27 @@ export function NotesScreen(): JSX.Element {
       </div>
       </WorkspaceCard>
     </main>
+  );
+}
+
+function FormatBtn({
+  children,
+  onClick,
+  title,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  title: string;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className="flex h-6 w-6 items-center justify-center rounded border border-white/10 text-zinc-400 transition-colors hover:border-white/20 hover:bg-white/[0.06] hover:text-zinc-100"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -887,9 +1092,9 @@ function IconBtn({
       className={cn(
         'flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-white/[0.06]',
         danger
-          ? 'text-zinc-500 hover:text-rose-300'
+          ? 'notes-icon-btn--danger text-zinc-500 hover:text-rose-300'
           : accent === 'green'
-            ? 'text-emerald-400/80 hover:bg-emerald-500/15 hover:text-emerald-300'
+            ? 'notes-icon-btn--green text-emerald-400/80 hover:bg-emerald-500/15 hover:text-emerald-300'
             : 'text-zinc-500 hover:text-zinc-200',
       )}
     >

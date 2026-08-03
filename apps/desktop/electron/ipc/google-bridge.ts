@@ -501,10 +501,7 @@ async function purgeIfNoSession(): Promise<void> {
 
 /**
  * §wave — вход SoundCloud в отдельном BrowserWindow на persist:google-sheets.
- *
- * Критично: БЕЗ auto-close по cookie/DOM — ложные «залогинен» закрывали
- * окно во время Google popup (prompt=none) → OAuth обрывался, выбора аккаунта нет.
- * Юзер закрывает окно сам, когда видит свой профиль SC.
+ * Без auto-close: юзер закрывает окно сам после входа.
  */
 export function openSoundCloudLoginWindow(_parent: BrowserWindow | null): Promise<boolean> {
   return new Promise((resolve) => {
@@ -515,7 +512,6 @@ export function openSoundCloudLoginWindow(_parent: BrowserWindow | null): Promis
       resolve(ok);
     };
 
-    // Без parent — самостоятельное окно (не sheet, не закрывается с main)
     const win = new BrowserWindow({
       width: 1080,
       height: 780,
@@ -531,7 +527,6 @@ export function openSoundCloudLoginWindow(_parent: BrowserWindow | null): Promis
       },
     });
 
-    // Google SSO popup — тот же partition, opener = это окно (не webview guest)
     win.webContents.setWindowOpenHandler((details) => {
       const url = String(details.url || '');
       console.log(`[sc-login:window-open] ${url.slice(0, 140)}`);
@@ -542,7 +537,6 @@ export function openSoundCloudLoginWindow(_parent: BrowserWindow | null): Promis
           height: 720,
           autoHideMenuBar: true,
           backgroundColor: '#ffffff',
-          // явно google-sheets — cookies Google из Настроек/таблиц
           webPreferences: {
             partition: GOOGLE_PARTITION,
             contextIsolation: true,
@@ -564,7 +558,6 @@ export function openSoundCloudLoginWindow(_parent: BrowserWindow | null): Promis
       console.log(`[sc-login:fail] ${code} ${desc} ${String(failedUrl).slice(0, 100)}`);
     });
 
-    // Лог child Google popup (не закрываем, не handoff'им)
     win.webContents.on('did-create-window', (child) => {
       console.log('[sc-login:did-create-window]');
       child.webContents.on('did-navigate', (_e, url) => {

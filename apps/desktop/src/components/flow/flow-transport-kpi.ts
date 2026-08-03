@@ -262,22 +262,29 @@ const MONTH_GEN = [
   'декабря',
 ];
 
+function capMonth(name: string): string {
+  return name ? name.charAt(0).toUpperCase() + name.slice(1) : name;
+}
+
+/** «Август 3 2026» — месяц · день · год (юзер 2026-08-04). */
 function fmtDayMonthYear(iso: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!m?.[1] || !m[2] || !m[3]) return iso;
   const mo = Number(m[2]) - 1;
-  return `${Number(m[3])} ${MONTH_GEN[mo] ?? m[2]} ${m[1]}`;
+  return `${capMonth(MONTH_FULL[mo] ?? m[2])} ${Number(m[3])} ${m[1]}`;
 }
 
+/** «Август 3» без года. */
 export function fmtDayMonth(iso: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!m?.[1] || !m[2] || !m[3]) return iso;
   const mo = Number(m[2]) - 1;
-  return `${Number(m[3])} ${MONTH_GEN[mo] ?? m[2]}`;
+  return `${capMonth(MONTH_FULL[mo] ?? m[2])} ${Number(m[3])}`;
 }
 
 /**
- * Человекочитаемый период: «июль 2026», «3–10 августа 2026», «Q2 2026»…
+ * Человекочитаемый период: «Июль 2026», «Июль 3-10 2026», «Q2 2026»…
+ * Формат: месяц → дни → год (не «1–31 июля»).
  */
 export function formatPeriodLabel(
   range: AnalyticsRange,
@@ -292,11 +299,13 @@ export function formatPeriodLabel(
     const y1 = first.slice(0, 4);
     const y2 = last.slice(0, 4);
     if (first.slice(0, 7) === last.slice(0, 7)) {
-      // один месяц
+      // один месяц: «Июль 1-31 2026»
       const m = Number(first.slice(5, 7)) - 1;
       const d1 = Number(first.slice(8, 10));
       const d2 = Number(last.slice(8, 10));
-      return `${d1}–${d2} ${MONTH_GEN[m] ?? ''} ${y1}`.replace(/\s+/g, ' ').trim();
+      const mon = capMonth(MONTH_FULL[m] ?? '');
+      const days = d1 === d2 ? String(d1) : `${d1}-${d2}`;
+      return `${mon} ${days} ${y1}`.replace(/\s+/g, ' ').trim();
     }
     return y1 === y2
       ? `${fmtDayMonth(first)} – ${fmtDayMonth(last)} ${y1}`

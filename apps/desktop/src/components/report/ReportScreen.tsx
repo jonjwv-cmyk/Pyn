@@ -51,6 +51,9 @@ import {
   type ExpedGroup,
   type FleetFlowRole,
 } from './report-fleet';
+import { WorkspaceSurfaceToggle } from '@/components/WorkspaceSurfaceToggle';
+import { useWorkspaceSurface } from '@/lib/workspace-surface';
+import '@/components/workspace-surface.css';
 
 function isoToday(): string {
   const n = new Date();
@@ -643,14 +646,17 @@ function SplitKpi({
       <div className="mb-1 flex items-center gap-1.5">
         <span
           className={cn(
-            'h-1.5 w-1.5 rounded-full',
-            side === 'W' ? 'bg-amber-300/90' : 'bg-slate-300/80',
+            'report-side-dot inline-block h-2 w-2 shrink-0 rounded-full ring-2',
+            side === 'W'
+              ? 'report-side-dot--w bg-amber-400 ring-amber-200/50'
+              : 'report-side-dot--b bg-zinc-300 ring-white/35',
           )}
+          aria-hidden
         />
         <span
           className={cn(
-            'text-[9px] font-semibold uppercase tracking-[0.12em]',
-            side === 'W' ? 'text-amber-200/75' : 'text-slate-300/75',
+            'report-side-label text-[9px] font-semibold uppercase tracking-[0.12em]',
+            side === 'W' ? 'report-side-label--w text-amber-200/90' : 'report-side-label--b text-zinc-300',
           )}
         >
           {side}
@@ -850,8 +856,10 @@ function ModePanel({
         <span className="inline-flex items-center gap-2">
           <span
             className={cn(
-              'inline-block h-2 w-2 rounded-full',
-              mode === 'white' ? 'bg-amber-300/90' : 'bg-slate-300/80',
+              'report-side-dot inline-block h-2.5 w-2.5 shrink-0 rounded-full ring-2',
+              mode === 'white'
+                ? 'report-side-dot--w bg-amber-400 ring-amber-200/50'
+                : 'report-side-dot--b bg-zinc-300 ring-white/35',
             )}
             aria-hidden
           />
@@ -1301,8 +1309,13 @@ export function ReportScreen(): JSX.Element {
     return () => clearTimeout(t);
   }, [printMsg]);
 
+  const surface = useWorkspaceSurface('report');
+
   return (
-    <main className="report-screen relative flex min-w-0 max-w-full flex-1 flex-col overflow-hidden">
+    <main
+      className="report-screen relative flex min-w-0 max-w-full flex-1 flex-col overflow-hidden"
+      data-pyn-surface={surface}
+    >
       <div className="drag-region flex h-9 w-full min-w-0 shrink-0 items-center gap-2 overflow-hidden px-4">
         <span className="no-drag-region shrink-0 text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
           Сводка
@@ -1311,6 +1324,7 @@ export function ReportScreen(): JSX.Element {
           {loading && (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--pd-faint)]" />
           )}
+          <WorkspaceSurfaceToggle section="report" />
           <ReportDayPicker selected={days} onChange={setDays} dayHints={dayHints} />
         </div>
       </div>
