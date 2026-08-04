@@ -83,21 +83,32 @@ export function normalizeReportManualDay(raw: unknown): ReportManualDay {
   };
 }
 
-/** GET: ручные данные за дни. `days` — YYYY-MM-DD[]. */
+/**
+ * GET: ручные данные за дни. `days` — YYYY-MM-DD[].
+ *
+ * `updatedAt` — когда день последний раз сохраняли (ISO UTC сервера). Нужен
+ * для 30-минутной грации замка Блока 2; старый сервер поля не отдаёт, тогда
+ * карта пустая и грация просто не срабатывает.
+ */
 export async function flowReportManualGet(
   client: ApiClient,
   days: string[],
-): Promise<Record<string, ReportManualDay>> {
-  const wire = await client.call<{ days?: Record<string, unknown> }>('flow_report_manual_get', {
-    days,
-  });
+): Promise<{ days: Record<string, ReportManualDay>; updatedAt: Record<string, string> }> {
+  const wire = await client.call<{
+    days?: Record<string, unknown>;
+    updated_at?: Record<string, unknown>;
+  }>('flow_report_manual_get', { days });
   const out: Record<string, ReportManualDay> = {};
+  const updatedAt: Record<string, string> = {};
   const src = wire.days && typeof wire.days === 'object' ? wire.days : {};
+  const upd = wire.updated_at && typeof wire.updated_at === 'object' ? wire.updated_at : {};
   for (const d of days) {
     const key = String(d).slice(0, 10);
     out[key] = normalizeReportManualDay(src[key]);
+    const at = upd[key];
+    if (typeof at === 'string' && at) updatedAt[key] = at;
   }
-  return out;
+  return { days: out, updatedAt };
 }
 
 /** SET: сохранить ручные данные одного дня. */
@@ -111,6 +122,94 @@ export async function flowReportManualSet(
     data,
   });
   return normalizeReportManualDay(wire.data ?? data);
+}
+
+/** Грация на исправление опечатки после сохранения (юзер 2026-08-04). */
+export const REPORT_MANUAL_GRACE_MS = 30 * 60 * 1000;
+
+/** Есть ли в дне Блока 2 хоть одно заполненное значение. */
+export function isReportManualDayEmpty(d: ReportManualDay | null | undefined): boolean {
+  if (!d) return true;
+  const nums: (number | null)[] = [
+    d.sick,
+    d.vacation,
+    d.wood_prop,
+    d.shields,
+    d.goods_yard,
+    d.refr_9010,
+    d.refr_9030,
+    d.otl,
+  ];
+  if (nums.some((n) => n != null)) return false;
+  const hasLine = (list: ReportManualLine[] | undefined): boolean =>
+    Array.isArray(list) && list.some((l) => l && (l.tons != null || (l.warehouse || '').trim()));
+  return !hasLine(d.lining) && !hasLine(d.restow);
+}
+
+/**
+ * Замок Блока 2 для админов и пользователей (разработчик не ограничен).
+ *
+ * Правило (юзер 2026-08-04): отчёт за день пишут в сам день и в СЛЕДУЮЩИЙ
+ * РАБОЧИЙ день; дальше день закрыт — чтобы не затереть данные случайно.
+ * Понедельник заполняют в пн и вт, со среды он закрыт. Выходные и праздники
+ * подтягиваются к ближайшему рабочему дню сами: если чт–вс нерабочие, все
+ * четыре дня открыты в понедельник и закрываются во вторник.
+ *
+ * Исключения:
+ *  · день пустой — вносить можно когда угодно (ничего не затираем);
+ *  · 30 минут после сохранения — на исправление опечатки.
+ *
+ * ВАЖНО: то же правило продублировано на сервере (`handlers-flow.js`,
+ * `manualDayEditable`). Меняешь здесь — меняй там.
+ */
+export function isReportManualDayEditable(opts: {
+  /** День отчёта, YYYY-MM-DD. */
+  day: string;
+  /** Сегодня в местной зоне, YYYY-MM-DD. */
+  today: string;
+  /** Рабочий ли день по производственному календарю. */
+  isWorkingDay: (iso: string) => boolean;
+  /** Разработчик / суперадмин — без ограничений. */
+  isDev?: boolean;
+  /** Пустой день можно заполнять всегда. */
+  isEmpty?: boolean;
+  /** Когда день последний раз сохраняли (мс epoch); null — неизвестно. */
+  updatedAtMs?: number | null;
+  /** Сейчас (мс epoch) — для грации. */
+  nowMs?: number;
+}): boolean {
+  if (opts.isDev) return true;
+  if (opts.isEmpty) return true;
+
+  const day = String(opts.day || '').slice(0, 10);
+  const today = String(opts.today || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !/^\d{4}-\d{2}-\d{2}$/.test(today)) return true;
+  // Сам день и будущее — всегда открыто.
+  if (day >= today) return true;
+
+  // Открыто по сам следующий РАБОЧИЙ день включительно.
+  const deadline = nextWorkingDayIso(day, opts.isWorkingDay);
+  if (deadline && today <= deadline) return true;
+
+  const at = opts.updatedAtMs;
+  if (at != null && Number.isFinite(at)) {
+    const now = opts.nowMs ?? Date.now();
+    if (now - at < REPORT_MANUAL_GRACE_MS) return true;
+  }
+  return false;
+}
+
+/** Первый рабочий день строго после `iso`. Ищем не дальше 30 суток. */
+export function nextWorkingDayIso(iso: string, isWorkingDay: (d: string) => boolean): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso).slice(0, 10));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  for (let i = 0; i < 30; i++) {
+    d.setDate(d.getDate() + 1);
+    const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (isWorkingDay(next)) return next;
+  }
+  return null;
 }
 
 export type ReportMode = 'white' | 'black';
@@ -134,6 +233,26 @@ export interface ReportTreeShop {
 
 /** Как колонка ГРАФ: on=«да», off=дата (день ≠ график), none=нет в графике. */
 export type ReportGraphKind = 'on' | 'off' | 'none';
+
+/** День расхождения + сколько позиций (ISO-дата). */
+export interface ReportShiftDay {
+  day: string;
+  count: number;
+}
+
+/**
+ * Цех среза расхождения плана и факта, с разбивкой по «другому» дню — тому,
+ * который не совпадает с днём отчёта:
+ *  · сверх плана — дни ПЛАНА этих строк («за какой день сверх»);
+ *  · опережение / смещение — дни ФАКТА («когда увезли»).
+ */
+export interface ReportShiftShop {
+  shop: string;
+  count: number;
+  days: ReportShiftDay[];
+  /** Только «сверх плана»: цеха не было в плане дня, он добавился этой работой. */
+  isNew?: boolean;
+}
 
 /**
  * Срез «нет в графике» / «вне графика»:
@@ -174,6 +293,36 @@ export interface ReportComputeResult {
   offScheduleShops: string[];
   notInStats: ReportSliceStats;
   offStats: ReportSliceStats;
+  /**
+   * «Опережение плана» — строки ДНЯ ПЛАНА, увезённые раньше срока
+   * (DAY факт < DAY плана). Часть плана дня и уже засчитаны в shipped;
+   * срез только показывает, сколько плана закрыто досрочно.
+   */
+  aheadStats: ReportSliceStats;
+  aheadShops: ReportShiftShop[];
+  /**
+   * «Смещённый тайминг» — строки ДНЯ ПЛАНА, увезённые позже (DAY факт > DAY
+   * плана), когда дату факта поставили руками. Перенос сюда НЕ попадает: там
+   * строки переезжают на новый день самостоятельными записями.
+   */
+  shiftedStats: ReportSliceStats;
+  shiftedShops: ReportShiftShop[];
+  /**
+   * «Сверх плана» — увезённое в выбранный день по строкам ЧУЖОГО дня плана
+   * (DAY факт внутри выбора, DAY плана — снаружи). В total/percent НЕ входит:
+   * иначе знаменатель дня задним числом раздувается.
+   *
+   * `shops`/`warehouses` — ВСЕ затронутые, чтобы список сходился с карточкой:
+   * сумма позиций по `overShops` = `positions`, а число строк списка = `shops`.
+   * Их `shopPct`/`warehousePct` НЕ выводим: цеха сверхплановых строк не
+   * подмножество цехов дня, доля может быть >100%. «Насколько день вырос»
+   * отвечают `overNewShops`/`overNewWarehouses` (юзер 2026-08-04).
+   */
+  overStats: ReportSliceStats;
+  /** Цеха/склады, которых в плане дня НЕ было — день вырос на столько. */
+  overNewShops: number;
+  overNewWarehouses: number;
+  overShops: ReportShiftShop[];
   tree: ReportTreeShop[];
 }
 
@@ -238,8 +387,60 @@ function emptyReportResult(mode: ReportMode): ReportComputeResult {
     offScheduleShops: [],
     notInStats: emptySlice(),
     offStats: emptySlice(),
+    aheadStats: emptySlice(),
+    aheadShops: [],
+    shiftedStats: emptySlice(),
+    shiftedShops: [],
+    overStats: emptySlice(),
+    overNewShops: 0,
+    overNewWarehouses: 0,
+    overShops: [],
     tree: [],
   };
+}
+
+/** DAY факт строки как ISO-дата; пусто/мусор → ''. */
+function factDayOf(r: FlowDeliveryRow): string {
+  const d = String(r.day_fact || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : '';
+}
+
+/**
+ * Вывезено по ФАКТИЧЕСКИ проставленному статусу, без White-проекции:
+ * в White всё «не жёлтое» превращается в «выполнено», и тогда досрочными
+ * стали бы строки, которые никто не увозил.
+ */
+function isShippedRaw(r: FlowDeliveryRow): boolean {
+  const { stat, sub } = rowStat(r);
+  return isFlowStatShipped(stat, sub);
+}
+
+/** Цех → день → сколько позиций. */
+type ShiftAcc = Map<string, Map<string, number>>;
+
+function bumpShift(acc: ShiftAcc, shop: string, day: string): void {
+  let byDay = acc.get(shop);
+  if (!byDay) {
+    byDay = new Map();
+    acc.set(shop, byDay);
+  }
+  byDay.set(day, (byDay.get(day) || 0) + 1);
+}
+
+/** Цеха по алфавиту, дни внутри — по возрастанию даты. */
+function buildShiftShops(acc: ShiftAcc): ReportShiftShop[] {
+  return [...acc.entries()]
+    .map(([shop, byDay]) => {
+      let count = 0;
+      const days: ReportShiftDay[] = [];
+      for (const [day, n] of byDay.entries()) {
+        count += n;
+        days.push({ day, count: n });
+      }
+      days.sort((a, b) => a.day.localeCompare(b.day));
+      return { shop, count, days };
+    })
+    .sort((a, b) => a.shop.localeCompare(b.shop, 'ru'));
 }
 
 export function computeFlowReport(
@@ -285,6 +486,14 @@ export function computeFlowReport(
   let offPositions = 0;
   const notInWh = new Set<string>();
   const offWh = new Set<string>();
+  // Опережение плана / смещённый тайминг — строки дня плана с ручным DAY факт.
+  // В разбивке — день ФАКТА: «когда увезли» (юзер 2026-08-04).
+  const aheadAcc: ShiftAcc = new Map();
+  const aheadWh = new Set<string>();
+  let aheadPositions = 0;
+  const shiftedAcc: ShiftAcc = new Map();
+  const shiftedWh = new Set<string>();
+  let shiftedPositions = 0;
 
   const kindOf = (r: FlowDeliveryRow): ReportGraphKind => {
     if (opts?.graphKind) return opts.graphKind(r);
@@ -311,6 +520,21 @@ export function computeFlowReport(
       offWh.add(wh);
     }
 
+    // Факт разошёлся с планом (дату ставили руками) → опережение / смещение.
+    const fd = factDayOf(r);
+    const pd = String(r.plan_date || '').slice(0, 10);
+    if (fd && pd && fd !== pd && isShippedRaw(r)) {
+      if (fd < pd) {
+        bumpShift(aheadAcc, shop, fd);
+        aheadWh.add(wh);
+        aheadPositions += 1;
+      } else {
+        bumpShift(shiftedAcc, shop, fd);
+        shiftedWh.add(wh);
+        shiftedPositions += 1;
+      }
+    }
+
     const raw = rowStat(r);
     const eff = effectiveForMode(mode, raw.stat, raw.sub);
     if (isFlowStatShipped(eff.stat, eff.sub)) {
@@ -333,6 +557,39 @@ export function computeFlowReport(
       byReason.set(label, byNote);
     }
     byNote.set(note, (byNote.get(note) || 0) + 1);
+  }
+
+  /**
+   * Сверх плана: увезено в выбранный день, но строка принадлежит ЧУЖОМУ дню
+   * плана. Если день плана тоже внутри выбора — строка уже посчитана как план
+   * периода, второй раз не берём (никакого двойного счёта при выборе «пн+вт»).
+   */
+  // В разбивке — день ПЛАНА: «за какой день сверх» (юзер 2026-08-04).
+  const overAcc: ShiftAcc = new Map();
+  const overWh = new Set<string>();
+  // Подмножество: чего в плане дня не было — «день вырос».
+  const overNewShopSet = new Set<string>();
+  const overNewWhSet = new Set<string>();
+  let overPositions = 0;
+  if (daySet) {
+    for (const r of rows) {
+      if (!(Number(r.fixation_id) > 0)) continue;
+      if (Number(r.reserved) > 0) continue;
+      const fd = factDayOf(r);
+      if (!fd || !daySet.has(fd)) continue;
+      const pd = String(r.plan_date || '').slice(0, 10);
+      if (!pd || pd === fd || daySet.has(pd)) continue;
+      if (!isShippedRaw(r)) continue;
+      overPositions += 1;
+      // Считаем ВСЕ затронутые цеха и склады — тогда список сходится с
+      // карточкой. «Новизну» держим отдельным множеством, а не отбором.
+      const shop = shopOf(r);
+      bumpShift(overAcc, shop, pd);
+      if (!allShops.has(shop)) overNewShopSet.add(shop);
+      const wh = whKeyOf(r);
+      overWh.add(wh);
+      if (!allWh.has(wh)) overNewWhSet.add(wh);
+    }
   }
 
   const total = reportRows.length;
@@ -394,28 +651,63 @@ export function computeFlowReport(
     offScheduleShops,
     notInStats: sliceOf(notInScheduleShops.length, notInPositions, notInWh.size),
     offStats: sliceOf(offScheduleShops.length, offPositions, offWh.size),
+    aheadStats: sliceOf(aheadAcc.size, aheadPositions, aheadWh.size),
+    aheadShops: buildShiftShops(aheadAcc),
+    shiftedStats: sliceOf(shiftedAcc.size, shiftedPositions, shiftedWh.size),
+    shiftedShops: buildShiftShops(shiftedAcc),
+    overStats: sliceOf(overAcc.size, overPositions, overWh.size),
+    overNewShops: overNewShopSet.size,
+    overNewWarehouses: overNewWhSet.size,
+    overShops: buildShiftShops(overAcc).map((s) =>
+      overNewShopSet.has(s.shop) ? { ...s, isNew: true } : s,
+    ),
     tree,
   };
+}
+
+const MONTHS_RU = [
+  'январь',
+  'февраль',
+  'март',
+  'апрель',
+  'май',
+  'июнь',
+  'июль',
+  'август',
+  'сентябрь',
+  'октябрь',
+  'ноябрь',
+  'декабрь',
+];
+
+/**
+ * Дни расхождения → «август 4, 7»: месяц впереди, затем числа (юзер 2026-08-04).
+ * Разные месяцы разделяются точкой: «июль 31 · август 3».
+ */
+export function formatShiftDays(days: readonly ReportShiftDay[]): string {
+  const byMonth = new Map<string, number[]>();
+  for (const d of days) {
+    const iso = String(d.day || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) continue;
+    const key = iso.slice(0, 7);
+    const arr = byMonth.get(key) ?? [];
+    arr.push(Number(iso.slice(8, 10)));
+    byMonth.set(key, arr);
+  }
+  const parts: string[] = [];
+  for (const [key, nums] of [...byMonth.entries()].sort()) {
+    const name = MONTHS_RU[Number(key.slice(5, 7)) - 1] || key;
+    const uniq = [...new Set(nums)].sort((a, b) => a - b);
+    parts.push(`${name} ${uniq.join(', ')}`);
+  }
+  return parts.join(' · ');
 }
 
 /** Заголовок дат: «Июль 22-23 2026» / «Июль 22, 25 2026» / «Июль 31 и Август 1-2 2026». */
 export function formatReportDaysTitle(days: readonly string[]): string {
   const sorted = [...new Set(days.map((d) => String(d).slice(0, 10)).filter(Boolean))].sort();
   if (!sorted.length) return '';
-  const MONTHS = [
-    'январь',
-    'февраль',
-    'март',
-    'апрель',
-    'май',
-    'июнь',
-    'июль',
-    'август',
-    'сентябрь',
-    'октябрь',
-    'ноябрь',
-    'декабрь',
-  ];
+  const MONTHS = MONTHS_RU;
   const cap = (s: string): string => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
   // group by YYYY-MM
   const byMonth = new Map<string, number[]>();

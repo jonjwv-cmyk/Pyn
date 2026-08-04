@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, Download, Loader2, Printer } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Download, Loader2, Lock, Printer } from 'lucide-react';
 import * as Popover from '@radix-ui/react-popover';
 import {
   computeFlowReport,
@@ -8,18 +8,26 @@ import {
   flowReportManualGet,
   flowReportManualSet,
   formatReportDaysTitle,
+  formatShiftDays,
+  isReportManualDayEditable,
+  isReportManualDayEmpty,
+  REPORT_MANUAL_GRACE_MS,
   type FlowDeliveriesChangedEvent,
   type FlowDeliveryRow,
   type ReportComputeResult,
+  type ReportShiftShop,
+  type ReportSliceStats,
   type ReportManualDay,
   type ReportManualLine,
   type ReportMode,
 } from '@pyn/core';
-import { nearestGraphDate } from '@/components/flow/flow-sandbox.fixtures';
+import { makeGraphHolidayPredicate, nearestGraphDate } from '@/components/flow/flow-sandbox.fixtures';
 import { whKey, whMapGet } from '@/components/flow/flow-warehouse';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { sessionStore } from '@/lib/token-store';
+import { isWorkingDay, pickYear, useProdCalendarStore } from '@/lib/prod-calendar';
 import {
   canUseLiveWarehouseScheduleForMonth,
   monthKey,
@@ -302,7 +310,8 @@ function cleanLines(lines: ReportManualLine[]): ReportManualLine[] {
 type NumKey = 'sick' | 'vacation' | 'wood_prop' | 'shields' | 'goods_yard' | 'otl';
 
 type B1Row =
-  | { kind: 'head'; title: string }
+  /** `phone` — рабочий номер участка, показываем рядом с заголовком секции. */
+  | { kind: 'head'; title: string; phone?: string }
   | {
       kind: 'data';
       label: string;
@@ -321,17 +330,26 @@ function ManualBlock({
   days,
   byDay,
   onPatchDay,
+  lockedDays,
 }: {
   days: string[];
   byDay: Record<string, ReportManualDay>;
   onPatchDay: (day: string, patch: Partial<ReportManualDay>) => void;
+  /** Дни, закрытые для правки (см. isReportManualDayEditable). */
+  lockedDays?: ReadonlySet<string>;
 }): JSX.Element {
   const headCls =
     'text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--pd-faint,#a6a39b)] whitespace-nowrap text-left';
   const rowH = 'h-7';
-  const labelW = 'w-[13.5rem]';
+  // Колонка «Показатель» держит и длинный заголовок секции, и рабочий номер
+  // справа от него («ОГНЕУПОРЫ 9010 И 9030   49-11-75»), поэтому шире подписей.
+  // Запас взят с перекрытием: если вдруг не влезет, обрежется НАЗВАНИЕ (truncate),
+  // а номер и колонка ЕИ останутся целыми.
+  const labelW = 'w-[16.5rem]';
   const unitW = 'w-8';
   const dayW = 'w-14';
+  /** Ширина строки-секции = «Показатель» + gap + «ЕИ». Держать в паре с labelW. */
+  const HEAD_ROW_W = 'calc(16.5rem + 0.5rem + 2rem)';
 
   const numOf = (day: string, key: NumKey): number | null => {
     const v = byDay[day]?.[key];
@@ -360,10 +378,10 @@ function ManualBlock({
     { kind: 'data', label: 'В отпуске', unit: 'чел.', valueOf: (d) => numOf(d, 'vacation'), onChange: (d, v) => onPatchDay(d, { vacation: v }) },
     { kind: 'data', label: 'Технология', unit: 'т', valueOf: (d) => numOf(d, 'otl'), onChange: (d, v) => onPatchDay(d, { otl: v }) },
     { kind: 'data', label: 'Товарный двор', unit: 'конт.', valueOf: (d) => numOf(d, 'goods_yard'), onChange: (d, v) => onPatchDay(d, { goods_yard: v }) },
-    { kind: 'head', title: 'ДОК' },
+    { kind: 'head', title: 'ДОК', phone: '49 66 97' },
     { kind: 'data', label: 'Реквизит деревянный', unit: 'рейс', valueOf: (d) => numOf(d, 'wood_prop'), onChange: (d, v) => onPatchDay(d, { wood_prop: v }) },
     { kind: 'data', label: 'Щиты', unit: 'рейс', valueOf: (d) => numOf(d, 'shields'), onChange: (d, v) => onPatchDay(d, { shields: v }) },
-    { kind: 'head', title: 'Огнеупоры 9010 и 9030' },
+    { kind: 'head', title: 'Огнеупоры 9010 и 9030', phone: '49 11 75' },
     { kind: 'data', label: 'В рамках общей технологии', unit: 'т', valueOf: refrOf, onChange: (d, v) => onPatchDay(d, { refr_9010: v, refr_9030: v }) },
     { kind: 'data', label: 'Футеровка', unit: 'т', valueOf: (d) => tonsOf(d, 'lining'), onChange: (d, v) => setTons(d, 'lining', v) },
     { kind: 'data', label: 'Перескладировка', unit: 'т', valueOf: (d) => tonsOf(d, 'restow'), onChange: (d, v) => setTons(d, 'restow', v) },
@@ -387,14 +405,32 @@ function ManualBlock({
             r.kind === 'head' ? (
               <div
                 key={`L-h-${i}`}
-                className={cn('flex items-center', rowH)}
-                style={{ width: 'calc(13.5rem + 0.5rem + 2rem)' }}
+                className={cn('flex items-center gap-2', rowH)}
+                style={{ width: HEAD_ROW_W }}
               >
-                {/* ОТЛ/ДОК/… + тонкая линия от середины вправо (без боковой) */}
-                <span className={cn(headCls, 'mr-2 shrink-0 text-[var(--pd-accent-soft)]')}>
-                  {r.title}
+                {/*
+                  ОТЛ/ДОК/… слева, рабочий номер прижат к правому краю колонки
+                  «Показатель». Так номера секций стоят друг под другом и не
+                  заходят на колонку ЕИ; линия идёт уже после них.
+                */}
+                <span
+                  className={cn(labelW, 'flex shrink-0 items-center justify-between gap-2')}
+                >
+                  <span className={cn(headCls, 'min-w-0 truncate text-[var(--pd-accent-soft)]')}>
+                    {r.title}
+                  </span>
+                  {r.phone ? (
+                    <span
+                      className={cn(
+                        headCls,
+                        'shrink-0 tracking-normal tabular-nums text-[var(--pd-text-strong)]',
+                      )}
+                    >
+                      {r.phone}
+                    </span>
+                  ) : null}
                 </span>
-                <span className="h-px min-w-[1rem] flex-1 bg-[var(--pd-border)]" />
+                <span className="h-px min-w-0 flex-1 bg-[var(--pd-border)]" />
               </div>
             ) : (
               <div key={`L-d-${i}`} className={cn('flex items-center gap-2', rowH)}>
@@ -431,8 +467,15 @@ function ManualBlock({
                 <span className="px-1 text-[12px] text-[var(--pd-faint)]">выберите дни →</span>
               ) : (
                 days.map((d) => (
-                  <div key={d} className={cn(headCls, dayW, 'shrink-0 px-1')}>
+                  <div
+                    key={d}
+                    className={cn(headCls, dayW, 'flex shrink-0 items-center gap-1 px-1')}
+                    title={lockedDays?.has(d) ? 'День закрыт для правок' : undefined}
+                  >
                     {formatDayHead(d)}
+                    {lockedDays?.has(d) ? (
+                      <Lock size={9} strokeWidth={2} className="shrink-0 opacity-70" />
+                    ) : null}
                   </div>
                 ))
               )}
@@ -453,6 +496,12 @@ function ManualBlock({
                         <ManualNum
                           value={r.valueOf(d)}
                           onChange={(v) => r.onChange(d, v)}
+                          disabled={lockedDays?.has(d)}
+                          title={
+                            lockedDays?.has(d)
+                              ? 'День закрыт: отчёт за него пишется в сам день и в следующий рабочий. Изменить может разработчик.'
+                              : undefined
+                          }
                         />
                       </div>
                     ))}
@@ -510,6 +559,13 @@ function FleetBlock({
   );
 }
 
+/**
+ * Подпись вместо процента, когда графика на выбранный день нет («не возим»):
+ * знаменателя не существует, а повторять то же число второй раз бессмысленно
+ * (юзер 2026-08-04 — «цеха 7 и ниже 7, а ниже 7 к чему?»).
+ */
+const NO_SCHEDULE_HINT = 'по графику доставок нет';
+
 function shopWord(n: number): string {
   if (n === 1) return 'цех';
   if (n > 1 && n < 5) return 'цеха';
@@ -520,6 +576,12 @@ function whWord(n: number): string {
   if (n === 1) return 'склад';
   if (n > 1 && n < 5) return 'склада';
   return 'складов';
+}
+
+function posWord(n: number): string {
+  if (n === 1) return 'позиция';
+  if (n > 1 && n < 5) return 'позиции';
+  return 'позиций';
 }
 
 function shippedTone(p: number): 'ok' | 'accent' | 'danger' {
@@ -549,6 +611,10 @@ function normWd(s: string): string {
 /**
  * План по графику за выбранные дни: уникальные цеха и склады (to_wh),
  * которые по графику должны получать в эти дни.
+ *
+ * Дни «не возим» пропускаются: в такой день график не предписывает никому, и
+ * знаменатель охвата = 0. Иначе на 3 авг («не возим») выходило «10 из 53» —
+ * из складов, которые на самом деле едут 10-го (юзер 2026-08-04).
  */
 function computePlanFromSchedule(
   days: readonly string[],
@@ -556,6 +622,7 @@ function computePlanFromSchedule(
     string,
     {
       exists: boolean;
+      holidays?: readonly number[];
       shops: ReadonlyArray<{
         name: string;
         rows: ReadonlyArray<{
@@ -576,6 +643,8 @@ function computePlanFromSchedule(
     const m = monthOfDate(iso);
     if (!m) continue;
     const meta = scheduleMetaMap.get(monthKey(m.year, m.month));
+    // «Не возим» — график на этот день пуст, в охват не идёт.
+    if ((meta?.holidays ?? []).includes(Number(iso.slice(8, 10)))) continue;
 
     if (meta?.shops?.length) {
       for (const shop of meta.shops) {
@@ -696,92 +765,104 @@ function SplitKpi({
   );
 }
 
-/** Большой блок: нет/вне графика + склады (% позиций/складов от плана). */
+/**
+ * График и склады — две РАЗНЫЕ величины, которые раньше были перемешаны
+ * (юзер 2026-08-04):
+ *  · срезы плана дня — все проценты от одного знаменателя (позиции от позиций
+ *    плана, склады от складов плана, цеха от цехов плана);
+ *  · охват графика — сколько из графика дня реально попало в план (10 из 53).
+ * Раньше в одной карточке позиции делились на план отчёта, а склады — на график
+ * дня, и обе строки были подписаны «от плана»: отсюда «8 складов 15.1%» при
+ * восьми складах из десяти.
+ */
 function GraphDetailPanel({
   result,
+  planShops,
   planWarehouses,
 }: {
   result: ReportComputeResult;
+  planShops: number;
   planWarehouses: number;
 }): JSX.Element {
-  const ni = result.notInStats;
-  const of = result.offStats;
   const whTotal = result.warehouseCount;
-  const planPos = result.total; // позиции плана периода = все зафиксированные
-  const posPct = (n: number) => pctOf(n, planPos);
-  const whPct = (n: number) => pctOf(n, planWarehouses);
   const whPlanPct = pctOf(whTotal, planWarehouses);
+  const shopPlanPct = pctOf(result.shopCount, planShops);
 
-  const sliceLines = (s: typeof ni) => (
-    <>
-      <div>
-        {s.positions}{' '}
-        {s.positions === 1 ? 'позиция' : s.positions > 1 && s.positions < 5 ? 'позиции' : 'позиций'}
-        {planPos > 0 ? (
-          <>
-            {' '}
-            <span className="text-[var(--pd-muted)]">{posPct(s.positions)}% от плана</span>
-          </>
-        ) : null}
+  /**
+   * Карточка среза плана дня. Крупно — позиции, ниже % от плана дня и охват
+   * цехов/складов. Проценты берём готовыми из ReportSliceStats: там они уже
+   * считаются от плана дня, а не от графика. Рисуем ВСЕГДА, даже с нулями —
+   * пустая карточка тоже ответ (юзер 2026-08-04).
+   */
+  const sliceCard = (
+    label: string,
+    s: ReportSliceStats,
+    tone: string,
+    signed?: boolean,
+    /** «Сверх плана»: цеха/склады не подмножество дня — вместо долей строка «новых». */
+    growth?: { shops: number; warehouses: number },
+  ): JSX.Element => (
+    <div className="rounded-lg border border-[var(--pd-border)] bg-black/10 px-3 py-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
+        {label}
       </div>
-      <div>
-        {s.warehouses} {whWord(s.warehouses)}
-        {planWarehouses > 0 ? (
-          <>
-            {' '}
-            <span className="text-[var(--pd-muted)]">{whPct(s.warehouses)}% от плана</span>
-          </>
-        ) : null}
+      <div
+        className={cn(
+          'mt-1 text-[1.45rem] font-semibold tabular-nums leading-none',
+          s.positions > 0 ? tone : 'text-[var(--pd-text-strong)]',
+        )}
+      >
+        {s.positions}
+        <span className="ml-1.5 text-[0.95rem] font-medium text-[var(--pd-muted)]">
+          {posWord(s.positions)}
+        </span>
       </div>
-    </>
+      <div className="mt-1.5 space-y-0.5 text-[11px] leading-snug text-[var(--pd-faint)]">
+        <div>
+          {signed && s.positions > 0 ? '+' : ''}
+          {s.positionPct}% <span className="text-[var(--pd-muted)]">от плана дня</span>
+        </div>
+        {growth ? (
+          <>
+            <div>
+              {s.shops} {shopWord(s.shops)} · {s.warehouses} {whWord(s.warehouses)}
+            </div>
+            <div className="text-[var(--pd-muted)]">
+              {growth.shops === 0 && growth.warehouses === 0
+                ? 'новых для дня нет'
+                : `новых для дня: ${growth.shops} ${shopWord(growth.shops)} · ${growth.warehouses} ${whWord(growth.warehouses)}`}
+            </div>
+          </>
+        ) : (
+          <div>
+            {s.shops} {shopWord(s.shops)}
+            <span className="text-[var(--pd-muted)]"> {s.shopPct}%</span>
+            {' · '}
+            {s.warehouses} {whWord(s.warehouses)}
+            <span className="text-[var(--pd-muted)]"> {s.warehousePct}%</span>
+          </div>
+        )}
+      </div>
+    </div>
   );
 
   return (
     <DashPanel full tightHead title="График и склады" className="pyn-dash-span-full">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-[var(--pd-border)] bg-black/10 px-3 py-2.5">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
-            Нет в графике
-          </div>
-          <div
-            className={cn(
-              'mt-1 text-[1.45rem] font-semibold tabular-nums leading-none',
-              ni.shops > 0 ? 'text-[var(--pd-danger-soft)]' : 'text-[var(--pd-text-strong)]',
-            )}
-          >
-            {ni.shops}
-            <span className="ml-1.5 text-[0.95rem] font-medium text-[var(--pd-muted)]">
-              {shopWord(ni.shops)}
-            </span>
-          </div>
-          <div className="mt-1.5 space-y-0.5 text-[11px] leading-snug text-[var(--pd-faint)]">
-            {sliceLines(ni)}
-          </div>
-        </div>
+        {/* Срезы плана дня — знаменатель у всех один: план этого дня. */}
+        {sliceCard('Нет в графике', result.notInStats, 'text-[var(--pd-danger-soft)]')}
+        {sliceCard('Вне графика', result.offStats, 'text-[var(--pd-accent-soft)]')}
+        {sliceCard('Сверх плана', result.overStats, 'text-[var(--pd-ok-text)]', true, {
+          shops: result.overNewShops,
+          warehouses: result.overNewWarehouses,
+        })}
+        {sliceCard('Опережение плана', result.aheadStats, 'text-[var(--pd-ok-text)]')}
+        {sliceCard('Смещённый тайминг', result.shiftedStats, 'text-[var(--pd-accent-soft)]')}
 
+        {/* Единственная карточка, где знаменатель — ГРАФИК дня, а не план. */}
         <div className="rounded-lg border border-[var(--pd-border)] bg-black/10 px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
-            Вне графика
-          </div>
-          <div
-            className={cn(
-              'mt-1 text-[1.45rem] font-semibold tabular-nums leading-none',
-              of.shops > 0 ? 'text-[var(--pd-accent-soft)]' : 'text-[var(--pd-text-strong)]',
-            )}
-          >
-            {of.shops}
-            <span className="ml-1.5 text-[0.95rem] font-medium text-[var(--pd-muted)]">
-              {shopWord(of.shops)}
-            </span>
-          </div>
-          <div className="mt-1.5 space-y-0.5 text-[11px] leading-snug text-[var(--pd-faint)]">
-            {sliceLines(of)}
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-[var(--pd-border)] bg-black/10 px-3 py-2.5">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
-            Склады
+            Охват графика
           </div>
           <div className="mt-1 text-[1.45rem] font-semibold tabular-nums leading-none text-[var(--pd-text-strong)]">
             {planWarehouses > 0 ? (
@@ -794,25 +875,26 @@ function GraphDetailPanel({
             )}
           </div>
           <div className="mt-1.5 space-y-0.5 text-[11px] leading-snug text-[var(--pd-faint)]">
+            {/* Нет графика на день → крупная цифра и так показывает склады,
+                второй раз её не повторяем, объясняем причину. */}
             <div>
               {planWarehouses > 0 ? (
                 <>
-                  {whTotal} из {planWarehouses}
+                  {whTotal} из {planWarehouses}{' '}
+                  <span className="text-[var(--pd-muted)]">{whWord(whTotal)} графика дня</span>
                 </>
               ) : (
-                <>{whTotal}</>
+                <span className="text-[var(--pd-muted)]">
+                  {whWord(whTotal)} в плане · {NO_SCHEDULE_HINT}
+                </span>
               )}
             </div>
             <div>
-              нет в графике {ni.warehouses}
-              {planWarehouses > 0 ? (
-                <span className="text-[var(--pd-muted)]"> ({whPct(ni.warehouses)}%)</span>
-              ) : null}
-              {' · '}
-              вне {of.warehouses}
-              {planWarehouses > 0 ? (
-                <span className="text-[var(--pd-muted)]"> ({whPct(of.warehouses)}%)</span>
-              ) : null}
+              {planShops > 0 ? `${result.shopCount} из ${planShops}` : `${result.shopCount}`}{' '}
+              <span className="text-[var(--pd-muted)]">
+                {shopWord(result.shopCount)}
+                {planShops > 0 ? ` ${shopPlanPct}%` : ''}
+              </span>
             </div>
           </div>
         </div>
@@ -847,6 +929,47 @@ function ModePanel({
   const emptyHint = !daysTitle && result.total === 0;
   /** Тумблер «Блок 3» — по умолчанию выключен (юзер 2026-08-02). */
   const [includeFleet, setIncludeFleet] = useState(false);
+
+  /**
+   * Цеха расхождения плана и факта с датами (как в печати, Блок 1). `dayWord`
+   * подписывает дату: у «сверх плана» это день ПЛАНА, у остальных — день вывоза.
+   */
+  const shiftList = (
+    title: string,
+    rows: readonly ReportShiftShop[],
+    dayWord: string,
+  ): JSX.Element | null =>
+    rows.length === 0 ? null : (
+      <div>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
+          {title} · {rows.length} {shopWord(rows.length)}
+        </div>
+        <DashList>
+          {rows.map((r, i) => (
+            <DashRow
+              key={r.shop}
+              titleWrap
+              leading={
+                <span className="w-4 shrink-0 pt-0.5 text-center text-[12px] tabular-nums text-[var(--pd-faint)]">
+                  {i + 1}.
+                </span>
+              }
+              title={
+                <>
+                  {r.shop} — {r.count} {posWord(r.count)}
+                  {r.isNew ? (
+                    <span className="ml-1.5 text-[10px] uppercase tracking-[0.08em] text-[var(--pd-ok-text)]">
+                      новый
+                    </span>
+                  ) : null}
+                </>
+              }
+              subtitle={`${dayWord} ${formatShiftDays(r.days)}`}
+            />
+          ))}
+        </DashList>
+      </div>
+    );
 
   return (
     <DashPanel
@@ -964,6 +1087,12 @@ function ModePanel({
             </div>
           )}
 
+          {/* Расхождение плана и факта — с датами, как в печати. «Сверх плана»
+              показывает день ПЛАНА, опережение и смещение — день вывоза. */}
+          {shiftList('Сверх плана', result.overShops, 'план')}
+          {shiftList('Опережение плана', result.aheadShops, 'увезено')}
+          {shiftList('Смещённый тайминг', result.shiftedShops, 'увезено')}
+
           <div>
             <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--pd-faint)]">
               Из невывезенных
@@ -1037,6 +1166,8 @@ export function ReportScreen(): JSX.Element {
   const [rows, setRows] = useState<FlowDeliveryRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [manual, setManual] = useState<Record<string, ReportManualDay>>({});
+  /** Когда день Блока 2 последний раз сохраняли — для 30-минутной грации замка. */
+  const [manualUpdatedAt, setManualUpdatedAt] = useState<Record<string, string>>({});
   /** Silent print job: без превью — сразу dialog | save PDF (как Транспорт). */
   const [printJob, setPrintJob] = useState<{
     id: number;
@@ -1073,7 +1204,40 @@ export function ReportScreen(): JSX.Element {
     }
     return out;
   }, [days, rows]);
+  // Замок Блока 2: разработчик/суперадмин правят любые дни (как в Плане).
+  const [isDev, setIsDev] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void sessionStore
+      .load()
+      .then((s) => {
+        const role = String(s?.role ?? '').toLowerCase();
+        if (alive) setIsDev(role === 'developer' || role === 'superadmin');
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Рабочий день по производственному календарю — основа окна правок.
+  const prodByYear = useProdCalendarStore((s) => s.byYear);
+  const isWorkingDayIso = useCallback(
+    (iso: string): boolean => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso).slice(0, 10));
+      if (!m) return true;
+      const y = Number(m[1]);
+      return isWorkingDay(pickYear(prodByYear, y), y, Number(m[2]), Number(m[3]));
+    },
+    [prodByYear],
+  );
+
   const scheduleMetaMap = useScheduleMonthsMeta(scheduleMonths);
+  // «Не возим» ЛЮБОГО месяца — как в колонке ГРАФ (FlowPlanGrid, з.14).
+  const graphHoliday = useMemo(
+    () => makeGraphHolidayPredicate((y, mo) => scheduleMetaMap.get(monthKey(y, mo))?.holidays),
+    [scheduleMetaMap],
+  );
 
   const reportOpts = useMemo(() => {
     const resolveShop = (toWh: string): string => {
@@ -1105,13 +1269,16 @@ export function ReportScreen(): JSX.Element {
       const ref = /^\d{4}-\d{2}-\d{2}/.test(r.plan_date || '')
         ? String(r.plan_date).slice(0, 10)
         : isoToday();
-      const near = nearestGraphDate(day, ref);
+      // holidays + предикат ОБЯЗАТЕЛЬНЫ: без них «не возим» не пропускается и
+      // склад с днём ПН на 3 авг («не возим» → реальная дата 10 авг) считался
+      // бы «по графику», расходясь с колонкой ГРАФ (юзер 2026-08-04).
+      const near = nearestGraphDate(day, ref, meta?.holidays ?? [], graphHoliday);
       if (near && near === ref) return 'on';
       if (!near) return 'none';
       return 'off';
     };
     return { resolveShop, graphKind };
-  }, [whByKey, scheduleMetaMap]);
+  }, [whByKey, scheduleMetaMap, graphHoliday]);
 
   // Подгрузка поставок (все; фильтр report+days на клиенте).
   useEffect(() => {
@@ -1161,15 +1328,16 @@ export function ReportScreen(): JSX.Element {
     let cancelled = false;
     void (async () => {
       try {
-        const data = await flowReportManualGet(api, days);
+        const res = await flowReportManualGet(api, days);
         if (cancelled) return;
         setManual((prev) => {
           const next = { ...prev };
           for (const d of days) {
-            next[d] = data[d] ?? emptyReportManualDay();
+            next[d] = res.days[d] ?? emptyReportManualDay();
           }
           return next;
         });
+        setManualUpdatedAt((prev) => ({ ...prev, ...res.updatedAt }));
       } catch {
         /* empty */
       }
@@ -1190,6 +1358,46 @@ export function ReportScreen(): JSX.Element {
   }, [rows]);
 
   const sortedDays = useMemo(() => [...days].sort(), [days]);
+
+  /**
+   * Закрытые для правки дни Блока 2. Замок ради «не затереть случайно», поэтому
+   * пустые дни и 30-минутная грация после сохранения оставляют доступ открытым.
+   * Пересчёт привязан к дате и к самим данным; грация доигрывается таймером ниже.
+   */
+  const [graceTick, setGraceTick] = useState(0);
+  const lockedManualDays = useMemo(() => {
+    const today = isoToday();
+    const out = new Set<string>();
+    void graceTick;
+    for (const d of sortedDays) {
+      const at = manualUpdatedAt[d];
+      const ms = at ? Date.parse(at) : NaN;
+      const editable = isReportManualDayEditable({
+        day: d,
+        today,
+        isWorkingDay: isWorkingDayIso,
+        isDev,
+        isEmpty: isReportManualDayEmpty(manual[d]),
+        updatedAtMs: Number.isFinite(ms) ? ms : null,
+      });
+      if (!editable) out.add(d);
+    }
+    return out;
+  }, [sortedDays, manual, manualUpdatedAt, isWorkingDayIso, isDev, graceTick]);
+
+  // Грация истекает без действий пользователя — подталкиваем пересчёт, пока
+  // хоть один день держится только на ней (минутного шага достаточно).
+  useEffect(() => {
+    if (isDev) return;
+    const hasGrace = sortedDays.some((d) => {
+      const at = manualUpdatedAt[d];
+      const ms = at ? Date.parse(at) : NaN;
+      return Number.isFinite(ms) && Date.now() - ms < REPORT_MANUAL_GRACE_MS;
+    });
+    if (!hasGrace) return;
+    const t = setInterval(() => setGraceTick((n) => n + 1), 60_000);
+    return () => clearInterval(t);
+  }, [sortedDays, manualUpdatedAt, isDev]);
   const daysTitle = useMemo(
     () => formatReportDaysTitle(sortedDays),
     [sortedDays],
@@ -1222,6 +1430,9 @@ export function ReportScreen(): JSX.Element {
 
   const onPatchDay = useCallback(
     (day: string, patch: Partial<ReportManualDay>) => {
+      // Поля закрытого дня и так disabled — это страховка от гонки: пока
+      // ждали сохранение, окно правок могло закрыться.
+      if (lockedManualDays.has(day)) return;
       setManual((prev) => {
         const base = prev[day] ?? emptyReportManualDay();
         const next = { ...base, ...patch };
@@ -1229,8 +1440,11 @@ export function ReportScreen(): JSX.Element {
         scheduleSave(day, next);
         return all;
       });
+      // Запись стартует 30-минутную грацию: пустой день, заполненный задним
+      // числом, ещё можно поправить.
+      setManualUpdatedAt((prev) => ({ ...prev, [day]: new Date().toISOString() }));
     },
-    [scheduleSave],
+    [scheduleSave, lockedManualDays],
   );
 
   /** Блок 3: машины (только с гаражным + вывезено). */
@@ -1360,6 +1574,10 @@ export function ReportScreen(): JSX.Element {
               tone: shippedTone(black.percent),
             }}
           />
+          {/*
+            Нет графика на день («не возим») → знаменателя нет: показываем само
+            число цехов, а вместо повтора того же числа — почему нет процента.
+          */}
           <SplitKpi
             half
             label="Цеха всего"
@@ -1374,7 +1592,7 @@ export function ReportScreen(): JSX.Element {
                     {white.shopCount} из {plan.planShops}
                   </>
                 ) : (
-                  white.shopCount
+                  NO_SCHEDULE_HINT
                 ),
             }}
             black={{
@@ -1388,12 +1606,16 @@ export function ReportScreen(): JSX.Element {
                     {black.shopCount} из {plan.planShops}
                   </>
                 ) : (
-                  black.shopCount
+                  NO_SCHEDULE_HINT
                 ),
             }}
           />
 
-          <GraphDetailPanel result={white} planWarehouses={plan.planWarehouses} />
+          <GraphDetailPanel
+            result={white}
+            planShops={plan.planShops}
+            planWarehouses={plan.planWarehouses}
+          />
 
           <ModePanel
             mode="white"
@@ -1415,7 +1637,12 @@ export function ReportScreen(): JSX.Element {
           />
 
           <DashPanel full tightHead title="Блок 2">
-            <ManualBlock days={sortedDays} byDay={manual} onPatchDay={onPatchDay} />
+            <ManualBlock
+              days={sortedDays}
+              byDay={manual}
+              onPatchDay={onPatchDay}
+              lockedDays={lockedManualDays}
+            />
           </DashPanel>
 
           {fleetGroups.length > 0 && (

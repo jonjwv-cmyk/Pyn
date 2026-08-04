@@ -1,6 +1,12 @@
 import { Fragment, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import type { ReportComputeResult, ReportManualDay, ReportMode } from '@pyn/core';
+import {
+  formatShiftDays,
+  type ReportComputeResult,
+  type ReportManualDay,
+  type ReportMode,
+  type ReportShiftShop,
+} from '@pyn/core';
 import {
   countFleetVehicles,
   fleetGroupLine1,
@@ -41,7 +47,8 @@ function fmtN(v: number | null | undefined): string {
 }
 
 type B1Row =
-  | { kind: 'section'; title: string }
+  /** `phone` — рабочий номер участка, печатаем рядом с заголовком секции. */
+  | { kind: 'section'; title: string; phone?: string }
   | { kind: 'data'; label: string; unit: string; value: string };
 
 function buildB1Rows(days: string[], byDay: Record<string, ReportManualDay>): B1Row[] {
@@ -64,10 +71,10 @@ function buildB1Rows(days: string[], byDay: Record<string, ReportManualDay>): B1
     { kind: 'data', label: 'В отпуске', unit: 'чел.', value: fmtN(sumDays(days, byDay, (d) => d?.vacation)) },
     { kind: 'data', label: 'Технология', unit: 'т', value: fmtN(sumDays(days, byDay, (d) => d?.otl)) },
     { kind: 'data', label: 'Товарный двор', unit: 'конт.', value: fmtN(sumDays(days, byDay, (d) => d?.goods_yard)) },
-    { kind: 'section', title: 'ДОК' },
+    { kind: 'section', title: 'ДОК', phone: '49 66 97' },
     { kind: 'data', label: 'Реквизит деревянный', unit: 'рейс', value: fmtN(sumDays(days, byDay, (d) => d?.wood_prop)) },
     { kind: 'data', label: 'Щиты', unit: 'рейс', value: fmtN(sumDays(days, byDay, (d) => d?.shields)) },
-    { kind: 'section', title: 'Огнеупоры 9010 и 9030' },
+    { kind: 'section', title: 'Огнеупоры 9010 и 9030', phone: '49 11 75' },
     { kind: 'data', label: 'В рамках общей технологии', unit: 'т', value: fmtN(refrSum) },
     { kind: 'data', label: 'Футеровка', unit: 'т', value: fmtN(liningSum) },
     { kind: 'data', label: 'Перескладировка', unit: 'т', value: fmtN(restowSum) },
@@ -75,6 +82,9 @@ function buildB1Rows(days: string[], byDay: Record<string, ReportManualDay>): B1
   // Пустые показатели не выводим; заголовки секций (ОТЛ/ДОК/…) остаются.
   return raw.filter((r) => r.kind === 'section' || r.value !== '');
 }
+
+/** Подпись вместо процента, когда графика на день нет («не возим»). */
+const NO_SCHEDULE_HINT = 'по графику доставок нет';
 
 function shopWord(n: number): string {
   if (n === 1) return 'цех';
@@ -104,10 +114,6 @@ function pctToneClass(p: number): string {
   if (p >= 90) return 'rp-tone-ok';
   if (p >= 60) return 'rp-tone-mid';
   return 'rp-tone-bad';
-}
-
-function pctPrint(n: number, d: number): number {
-  return d > 0 ? Math.round((n / d) * 1000) / 10 : 0;
 }
 
 function SheetBody({
@@ -142,7 +148,6 @@ function SheetBody({
   const tone = pctToneClass(result.percent);
   const ni = result.notInStats;
   const of = result.offStats;
-  const planPos = result.total;
   const shopPlanPct =
     planShops > 0 ? Math.round((result.shopCount / planShops) * 1000) / 10 : 0;
   const whPlanPct =
@@ -150,19 +155,102 @@ function SheetBody({
       ? Math.round((result.warehouseCount / planWarehouses) * 1000) / 10
       : 0;
 
-  const sliceMetaPlan = (s: typeof ni): string => {
-    const pPct = pctPrint(s.positions, planPos);
-    const wPct = pctPrint(s.warehouses, planWarehouses);
-    const pos =
-      planPos > 0
-        ? `${s.positions} поз. ${pPct}% от плана`
-        : `${s.positions} поз.`;
-    const wh =
-      planWarehouses > 0
-        ? `${s.warehouses} скл. ${wPct}% от плана`
-        : `${s.warehouses} скл.`;
-    return `${pos} · ${wh}`;
-  };
+  /**
+   * Карточка среза (печать) — один в один с экраном: крупно позиции, ниже
+   * % от плана дня и охват цехов/складов. Проценты берём готовыми из среза:
+   * там знаменатель — план ДНЯ. Раньше склады делились на график дня, и в одной
+   * строке стояли два разных «от плана» (юзер 2026-08-04).
+   *
+   * Печатаем всегда, включая нули: «нет в графике 0» в отчёте — тоже ответ.
+   */
+  const sliceDetail = (
+    label: string,
+    s: typeof ni,
+    toneCls = '',
+    signed?: boolean,
+    /** «Сверх плана»: цеха/склады не подмножество дня — вместо долей «новых». */
+    growth?: { shops: number; warehouses: number },
+  ): JSX.Element => (
+    <div className={`rp-detail ${s.positions > 0 ? toneCls : ''}`}>
+      <div className="rp-kpi-label">{label}</div>
+      <div className="rp-detail-val">
+        {s.positions}
+        <span className="rp-kpi-unit"> поз.</span>
+      </div>
+      <div className="rp-kpi-meta">
+        {`${signed && s.positions > 0 ? '+' : ''}${s.positionPct}% от плана дня`}
+        {growth
+          ? ` · ${s.shops} ${shopWord(s.shops)} · ${s.warehouses} скл.` +
+            (growth.shops === 0 && growth.warehouses === 0
+              ? ' · новых нет'
+              : ` · новых ${growth.shops} ${shopWord(growth.shops)} · ${growth.warehouses} скл.`)
+          : ` · ${s.shops} ${shopWord(s.shops)} ${s.shopPct}% · ${s.warehouses} скл. ${s.warehousePct}%`}
+      </div>
+    </div>
+  );
+
+  /** Список цехов графика (Блок 1). Пустой — не печатаем, чтобы не мусорить листом. */
+  const shopList = (
+    title: string,
+    names: readonly string[],
+    lineCls: string,
+  ): JSX.Element | null =>
+    names.length === 0 ? null : (
+      <>
+        <p className={`rp-line ${lineCls}`}>
+          {title}: <strong>{names.length}</strong> {shopWord(names.length)}
+        </p>
+        <div className="rp-compact">
+          <table className="rp-off">
+            <tbody>
+              {names.map((name, i) => (
+                <tr key={name}>
+                  <td className="rp-off-n">{i + 1}.</td>
+                  <td className="rp-off-name">{name}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>
+    );
+
+  /**
+   * Цеха расхождения плана и факта — с датами, как дерево причин: цех, под ним
+   * дни. `dayWord` подписывает, что за дата: у «сверх плана» это день ПЛАНА
+   * («за какой день сверх»), у опережения и смещения — день ВЫВОЗА.
+   */
+  const shiftShopList = (
+    title: string,
+    rows: readonly ReportShiftShop[],
+    dayWord: string,
+    lineCls: string,
+  ): JSX.Element | null =>
+    rows.length === 0 ? null : (
+      <>
+        <p className={`rp-line ${lineCls}`}>
+          {title}: <strong>{rows.length}</strong> {shopWord(rows.length)}
+        </p>
+        <div className="rp-compact">
+          <table className="rp-off">
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={r.shop}>
+                  <td className="rp-off-n">{i + 1}.</td>
+                  <td className="rp-off-name">
+                    {r.shop} — {r.count} поз.
+                    {r.isNew ? <span className="rp-shift-new">новый</span> : null}
+                    <div className="rp-shift-days">
+                      {dayWord} {formatShiftDays(r.days)}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>
+    );
 
   return (
     <div className={`rp-print-sheet rp-mode-${mode}`}>
@@ -197,32 +285,20 @@ function SheetBody({
                 result.shopCount
               )}
             </div>
+            {/* Нет графика на день → крупная цифра и так цеха; вместо её
+                повтора пишем причину отсутствия процента. */}
             <div className="rp-kpi-meta">
-              {planShops > 0
-                ? `${result.shopCount} из ${planShops}`
-                : `${result.shopCount}`}
+              {planShops > 0 ? `${result.shopCount} из ${planShops}` : NO_SCHEDULE_HINT}
             </div>
           </div>
         </div>
         <div className="rp-detail-row">
-          <div className={`rp-detail ${ni.shops > 0 ? 'rp-tone-bad' : ''}`}>
-            <div className="rp-kpi-label">Нет в графике</div>
-            <div className="rp-detail-val">
-              {ni.shops}
-              <span className="rp-kpi-unit"> {shopWord(ni.shops)}</span>
-            </div>
-            <div className="rp-kpi-meta">{sliceMetaPlan(ni)}</div>
-          </div>
-          <div className={`rp-detail ${of.shops > 0 ? 'rp-tone-mid' : ''}`}>
-            <div className="rp-kpi-label">Вне графика</div>
-            <div className="rp-detail-val">
-              {of.shops}
-              <span className="rp-kpi-unit"> {shopWord(of.shops)}</span>
-            </div>
-            <div className="rp-kpi-meta">{sliceMetaPlan(of)}</div>
-          </div>
+          {sliceDetail('Нет в графике', ni, 'rp-tone-bad')}
+          {sliceDetail('Вне графика', of, 'rp-tone-mid')}
+          {/* Единственное место, где знаменатель — ГРАФИК дня. Дубль «нет в
+              графике N · вне M» убран: он уже есть в двух карточках слева. */}
           <div className="rp-detail">
-            <div className="rp-kpi-label">Склады</div>
+            <div className="rp-kpi-label">Охват графика</div>
             <div className="rp-detail-val">
               {planWarehouses > 0 ? (
                 <>
@@ -235,16 +311,23 @@ function SheetBody({
             </div>
             <div className="rp-kpi-meta">
               {planWarehouses > 0
-                ? `${result.warehouseCount} из ${planWarehouses}`
-                : `${result.warehouseCount}`}
-              {' · '}
-              нет в графике {ni.warehouses}
-              {planWarehouses > 0 ? ` (${pctPrint(ni.warehouses, planWarehouses)}%)` : ''}
-              {' · '}
-              вне {of.warehouses}
-              {planWarehouses > 0 ? ` (${pctPrint(of.warehouses, planWarehouses)}%)` : ''}
+                ? `${result.warehouseCount} из ${planWarehouses} скл. · ${
+                    planShops > 0
+                      ? `${result.shopCount} из ${planShops} ${shopWord(planShops)}`
+                      : `${result.shopCount} ${shopWord(result.shopCount)}`
+                  }`
+                : `скл. в плане · ${result.shopCount} ${shopWord(result.shopCount)} · ${NO_SCHEDULE_HINT}`}
             </div>
           </div>
+        </div>
+        {/* План против факта — как на экране, всегда, включая нули. */}
+        <div className="rp-detail-row">
+          {sliceDetail('Сверх плана', result.overStats, '', true, {
+            shops: result.overNewShops,
+            warehouses: result.overNewWarehouses,
+          })}
+          {sliceDetail('Опережение плана', result.aheadStats)}
+          {sliceDetail('Смещённый тайминг', result.shiftedStats, 'rp-tone-mid')}
         </div>
       </header>
 
@@ -255,45 +338,13 @@ function SheetBody({
           План экспедиции
         </h3>
 
-        {notIn.length > 0 && (
-          <>
-            <p className="rp-line rp-warn">
-              Нет в графике: <strong>{notIn.length}</strong> {shopWord(notIn.length)}
-            </p>
-            <div className="rp-compact">
-              <table className="rp-off">
-                <tbody>
-                  {notIn.map((name, i) => (
-                    <tr key={name}>
-                      <td className="rp-off-n">{i + 1}.</td>
-                      <td className="rp-off-name">{name}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-
-        {off.length > 0 && (
-          <>
-            <p className="rp-line rp-accent">
-              Вне графика: <strong>{off.length}</strong> {shopWord(off.length)}
-            </p>
-            <div className="rp-compact">
-              <table className="rp-off">
-                <tbody>
-                  {off.map((name, i) => (
-                    <tr key={name}>
-                      <td className="rp-off-n">{i + 1}.</td>
-                      <td className="rp-off-name">{name}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
+        {shopList('Нет в графике', notIn, 'rp-warn')}
+        {shopList('Вне графика', off, 'rp-accent')}
+        {/* Расхождение плана и факта — поимённо, с датами. «Сверх плана» — только
+            цеха, которых в плане дня не было (уже учтённые не дублируем). */}
+        {shiftShopList('Сверх плана', result.overShops, 'план', 'rp-accent')}
+        {shiftShopList('Опережение плана', result.aheadShops, 'увезено', 'rp-accent')}
+        {shiftShopList('Смещённый тайминг', result.shiftedShops, 'увезено', 'rp-accent')}
 
         <p className="rp-h">Из невывезенных</p>
         {shops.length === 0 ? (
@@ -375,7 +426,12 @@ function SheetBody({
                 {rows.map((r, i) =>
                   r.kind === 'section' ? (
                     <tr key={`s-${i}`} className="rp-sec">
-                      <td className="rp-label">{r.title}</td>
+                      <td className="rp-label">
+                        <span className="rp-sec-head">
+                          <span>{r.title}</span>
+                          {r.phone ? <span className="rp-sec-phone">{r.phone}</span> : null}
+                        </span>
+                      </td>
                       <td className="rp-unit" />
                       <td className="rp-val" />
                     </tr>
@@ -727,6 +783,38 @@ export function ReportPrint({
           word-break: break-word;
           overflow-wrap: anywhere;
           max-width: 420px;
+        }
+        /* Заголовок секции: название слева, рабочий номер прижат к правому краю
+           колонки «Показатель» — номера секций встают друг под друга и никогда
+           не заходят на «ЕИ» (юзер 2026-08-04). */
+        .rp-print-sheet .rp-sec-head {
+          display: flex;
+          width: 100%;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        /* Номер тем же кеглем и чернотой: по нему звонят каждый день. */
+        .rp-print-sheet .rp-sec-phone {
+          color: var(--rp-ink);
+          letter-spacing: 0;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+        /* Метка «цех добавился к дню» — рядом с названием, но тише. */
+        .rp-print-sheet .rp-shift-new {
+          margin-left: 6px;
+          font-size: 8px;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          color: var(--rp-muted);
+        }
+        /* Даты расхождения под цехом — как примечание под причиной. */
+        .rp-print-sheet .rp-shift-days {
+          margin-top: 1px;
+          padding-left: 8px;
+          font-size: 8.5px;
+          color: var(--rp-muted);
         }
         .rp-print-sheet .rp-h {
           margin: 8px 0 4px; font-weight: 700; font-size: 10px; color: var(--rp-ink);

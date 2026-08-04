@@ -106,9 +106,6 @@ export function buildReportFleetGroups(
   for (const r of rows) {
     if (!(Number(r.fixation_id) > 0)) continue;
     if (Number(r.reserved) > 0) continue;
-    const pd = String(r.plan_date || '').slice(0, 10);
-    if (!daySet.has(pd)) continue;
-
     // Только с машиной (гаражный). Без № → в блок 3 не пишем (даже если есть От/СП).
     const garageRaw = splitMulti(r.ride_id || '')[0] ?? '';
     const gKey = normGarageKey(garageRaw);
@@ -118,6 +115,18 @@ export function buildReportFleetGroups(
     // с машиной, но не вывезено — в сводку машин тоже не тащим.
     const { stat, sub } = rowStatRaw(r);
     if (!isFlowStatShipped(stat, sub)) continue;
+
+    /**
+     * Машина считается в дне, где РЕАЛЬНО увезли: DAY факт, иначе DAY плана.
+     * Досрочная строка уезжает в свой день факта вместе с машиной, а в дне
+     * плана выпадает из блока 3 — машина остаётся там только если есть другие
+     * вывезенные строки этого дня (юзер 2026-08-04).
+     */
+    const factRaw = String(r.day_fact || '').slice(0, 10);
+    const pd = /^\d{4}-\d{2}-\d{2}$/.test(factRaw)
+      ? factRaw
+      : String(r.plan_date || '').slice(0, 10);
+    if (!daySet.has(pd)) continue;
 
     if (!garageDisplay.has(gKey)) {
       const disp = garageRaw
