@@ -13,6 +13,7 @@ import { setupFsBridge } from './ipc/fs-bridge';
 import { setupPrintBridge } from './ipc/print-bridge';
 import { setupGoogleBridge, isSoundCloudAuthCallback } from './ipc/google-bridge';
 import { setupBridgeBridge } from './ipc/bridge-bridge';
+import { setupClipboardBridge } from './ipc/clipboard-bridge';
 import { setupMacroBridge } from './ipc/macro-bridge';
 import { setupMolBridge } from './ipc/mol-bridge';
 import { setupWarehousesBridge } from './ipc/warehouses-bridge';
@@ -615,6 +616,9 @@ app.whenReady().then(async () => {
   // Google-bridge: PAC + локальный туннель webview Google-таблиц через VPS-релей
   // (применяется только при обнаруженном корп-прокси, по config.bridge из CF).
   setupBridgeBridge();
+  // Нативный буфер обмена: navigator.clipboard в Electron на Windows глохнет
+  // (permission/фокус), из-за чего не копировались ячейки Транспорта.
+  setupClipboardBridge();
   // SAP-макросы: renderer получает VBS source через get_macro_bundle,
   // main process пишет на диск + spawn'ит cscript /B (Windows-only).
   setupMacroBridge();

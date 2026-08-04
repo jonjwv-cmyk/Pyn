@@ -27,6 +27,14 @@ declare global {
       /** Renderer console.log → main stdout (для диагностики). */
       debugLog: (tag: string, message: string) => void;
       /**
+       * Нативный буфер обмена Electron. Использовать через `lib/clipboard.ts`:
+       * `navigator.clipboard` на Windows глохнет (permission/фокус документа).
+       */
+      clipboard?: {
+        write: (text: string) => Promise<boolean>;
+        read: () => Promise<string>;
+      };
+      /**
        * DEV-ONLY: сетевой маршрут — 'vps' (штатный, через VPS) или 'cloud' (прямой Cloudflare,
        * минуя VPS). Только для разработки на Mac (VPS отпал). В проде смена игнорируется
        * (`allowed=false`), всегда 'vps'.

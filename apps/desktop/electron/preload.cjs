@@ -45,6 +45,19 @@ contextBridge.exposeInMainWorld('pyn', {
     ipcRenderer.send('pyn:debug-log', String(tag), String(message));
   },
   /**
+   * Нативный буфер обмена (main process). Обход ограничений async Clipboard API
+   * в Electron: на Windows `navigator.clipboard.writeText` глохнет из-за
+   * permission/фокуса — ячейки Транспорта не копировались.
+   */
+  clipboard: {
+    write: function pynClipboardWrite(text) {
+      return ipcRenderer.invoke('pyn:clipboard:write', String(text));
+    },
+    read: function pynClipboardRead() {
+      return ipcRenderer.invoke('pyn:clipboard:read');
+    },
+  },
+  /**
    * DEV-ONLY: сетевой маршрут VPS ↔ прямой Cloudflare. Только для разработки на Mac
    * (VPS отпал). В упакованном проде смена игнорируется (allowed=false), всегда VPS.
    */

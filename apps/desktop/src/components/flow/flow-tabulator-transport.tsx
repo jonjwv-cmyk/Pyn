@@ -42,6 +42,7 @@ import { formatMonthRu, nearestDataDay, rowHasActivity } from './flow-transport-
 import { BODY_TYPES } from './flow-body-types';
 import * as Popover from '@radix-ui/react-popover';
 import { api } from '@/lib/api';
+import { copyText, readClipboardText } from '@/lib/clipboard';
 import { sessionStore } from '@/lib/token-store';
 import { useProdCalendarStore } from '@/lib/prod-calendar';
 import { usePersonsStore } from '@/lib/persons-store';
@@ -1455,7 +1456,7 @@ export function FlowTabulatorTransport({
         'clipboard',
       );
       const plain = table.modules.clipboard.generatePlainContent(list) ?? '';
-      await navigator.clipboard.writeText(plain);
+      await copyText(plain);
       setMsg(plain ? 'Скопировано' : 'Пусто');
     } catch (err) {
       setMsg(`Копирование: ${String(err)}`);
@@ -1481,7 +1482,7 @@ export function FlowTabulatorTransport({
     }
     let text = '';
     try {
-      text = await navigator.clipboard.readText();
+      text = await readClipboardText();
     } catch {
       /* */
     }
@@ -2384,8 +2385,7 @@ export function FlowTabulatorTransport({
   const handlePasteBuffer = useCallback(() => {
     setBusy(true);
     setMsg('');
-    void navigator.clipboard
-      .readText()
+    void readClipboardText()
       .then(async (tsv) => {
         const mode1c = isTransport1cPaste(tsv);
         const parsed = mode1c ? parseTransport1cPaste(tsv) : parseTransportPaste(tsv);
@@ -2593,7 +2593,7 @@ export function FlowTabulatorTransport({
                     </span>
                     <button
                       type="button"
-                      onClick={() => void navigator.clipboard.writeText(m.text)}
+                      onClick={() => void copyText(m.text)}
                       title="Скопировать"
                       className="shrink-0 rounded p-0.5 text-[#9B9890] opacity-0 transition-opacity hover:text-[#0A0A0A] group-hover:opacity-100"
                     >
