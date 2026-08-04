@@ -963,7 +963,7 @@ export function NotesScreen(): JSX.Element {
                       <button
                         type="button"
                         onClick={() => void saveEdit(n)}
-                        className="h-7 rounded-md border border-[#d97757]/40 bg-[#d97757]/15 px-2.5 text-[11px] text-[#e8a48a]"
+                        className="notes-btn-save h-7 rounded-md border border-[#d97757]/45 bg-[#d97757]/20 px-2.5 text-[11px] font-medium text-[#e8a48a]"
                       >
                         Сохранить
                       </button>

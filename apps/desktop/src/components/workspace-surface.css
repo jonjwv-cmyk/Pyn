@@ -432,15 +432,17 @@
   color: var(--paper-faint) !important;
 }
 
-/* Записать — clay, читаемо на paper */
+/* Записать / Сохранить — clay-заливка с ТЁМНЫМ текстом: белый на светлой
+   заливке сливался с бумагой, тут контраст даёт сам текст, а не фон. */
 [data-pyn-surface='paper'] .notes-btn-save {
   border-color: #a84f36 !important;
-  background: #c45f42 !important;
-  color: #fff !important;
+  background: #f0d3c5 !important;
+  color: #7a3418 !important;
   font-weight: 600 !important;
 }
 [data-pyn-surface='paper'] .notes-btn-save:hover:not(:disabled) {
-  background: #a84f36 !important;
+  background: #e6c0ad !important;
+  color: #5f2711 !important;
 }
 [data-pyn-surface='paper'] .notes-btn-save:disabled {
   opacity: 0.45 !important;
