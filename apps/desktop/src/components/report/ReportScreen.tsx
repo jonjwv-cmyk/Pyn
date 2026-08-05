@@ -35,6 +35,8 @@ import {
 } from '@/lib/schedule/use-schedule-sync';
 import { useWsEvent } from '@/lib/ws';
 import { useWarehousesStore } from '@/lib/warehouses-store';
+import { useVghStore, normVghKey } from '@/lib/vgh-store';
+import { ensureVghLoaded } from '@/lib/vgh-repo';
 import '@/components/pyn-dash/pyn-dash.css';
 import {
   DashShell,
@@ -584,6 +586,60 @@ function posWord(n: number): string {
   return 'позиций';
 }
 
+/**
+ * Единица счёта Сводки — кнопки панели управления (тот же вид, что «Светлее» и
+ * календарь): h-6, тонкая рамка, активная подсвечена.
+ */
+function UnitToggle({
+  unit,
+  onChange,
+}: {
+  unit: 'pos' | 'kg';
+  onChange: (u: 'pos' | 'kg') => void;
+}): JSX.Element {
+  // Канон кнопок панели из «Карты»: h-6, border-border-subtle, активная —
+  // глиняный акцент. Цвета берём токенами, чтобы бумага перекрасила их сама.
+  const btn = (value: 'pos' | 'kg', label: string, title: string): JSX.Element => {
+    const active = unit === value;
+    return (
+      <button
+        type="button"
+        title={title}
+        aria-pressed={active}
+        onClick={() => onChange(value)}
+        className={cn(
+          'no-drag-region flex h-6 items-center rounded-md border px-2 text-[12px] outline-none transition-colors',
+          active
+            ? 'border-accent-clay/55 bg-accent-clay-bg text-accent-clay'
+            : 'border-border-subtle text-text-muted hover:bg-bg-hover hover:text-text-secondary',
+        )}
+      >
+        {label}
+      </button>
+    );
+  };
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {btn('pos', 'Позиции', 'Считать в позициях')}
+      {btn('kg', 'Тонны', 'Считать в тоннаже — по позициям с известным весом')}
+    </span>
+  );
+}
+
+export type ReportUnit = 'pos' | 'kg';
+
+/** Килограммы → тонны с одним знаком: 1234 кг → «1.2». */
+export function kgToTons(kg: number): string {
+  return (Math.round(kg / 100) / 10).toFixed(1);
+}
+
+/** Крупное число среза/цеха: позиции или тонны — по переключателю. */
+export function unitValue(unit: ReportUnit, count: number, kg: number): { value: string; word: string } {
+  return unit === 'kg'
+    ? { value: kgToTons(kg), word: 'т' }
+    : { value: String(count), word: posWord(count) };
+}
+
 function shippedTone(p: number): 'ok' | 'accent' | 'danger' {
   if (p >= 90) return 'ok';
   if (p >= 60) return 'accent';
@@ -688,7 +744,8 @@ function SplitKpi({
   black,
   half,
 }: {
-  label: string;
+  /** ReactNode, а не string: в заголовок встраивается переключатель единиц. */
+  label: ReactNode;
   white: { value: ReactNode; meta?: ReactNode; tone?: 'ok' | 'accent' | 'danger' | 'default' };
   black: { value: ReactNode; meta?: ReactNode; tone?: 'ok' | 'accent' | 'danger' | 'default' };
   half?: boolean;
@@ -779,10 +836,12 @@ function GraphDetailPanel({
   result,
   planShops,
   planWarehouses,
+  unit,
 }: {
   result: ReportComputeResult;
   planShops: number;
   planWarehouses: number;
+  unit: ReportUnit;
 }): JSX.Element {
   const whTotal = result.warehouseCount;
   const whPlanPct = pctOf(whTotal, planWarehouses);
@@ -812,16 +871,20 @@ function GraphDetailPanel({
           s.positions > 0 ? tone : 'text-[var(--pd-text-strong)]',
         )}
       >
-        {s.positions}
+        {unitValue(unit, s.positions, s.kg).value}
         <span className="ml-1.5 text-[0.95rem] font-medium text-[var(--pd-muted)]">
-          {posWord(s.positions)}
+          {unitValue(unit, s.positions, s.kg).word}
         </span>
       </div>
       <div className="mt-1.5 space-y-0.5 text-[11px] leading-snug text-[var(--pd-faint)]">
         <div>
           {signed && s.positions > 0 ? '+' : ''}
-          {s.positionPct}% <span className="text-[var(--pd-muted)]">от плана дня</span>
+          {unit === 'kg' ? s.kgPct : s.positionPct}%{' '}
+          <span className="text-[var(--pd-muted)]">от плана дня</span>
         </div>
+        {unit === 'kg' && s.positions > 0 ? (
+          <div className="text-[var(--pd-muted)]">{s.positions} {posWord(s.positions)}</div>
+        ) : null}
         {growth ? (
           <>
             <div>
@@ -914,6 +977,7 @@ function ModePanel({
   hasFleet,
   printMsg,
   onPrint,
+  unit,
 }: {
   mode: ReportMode;
   title: string;
@@ -922,6 +986,7 @@ function ModePanel({
   hasFleet: boolean;
   printMsg?: string;
   onPrint: (kind: 'dialog' | 'save', includeFleet: boolean) => void;
+  unit: ReportUnit;
 }): JSX.Element {
   const notIn = result.notInScheduleShops;
   const off = result.offScheduleShops;
@@ -956,7 +1021,7 @@ function ModePanel({
               }
               title={
                 <>
-                  {r.shop} — {r.count} {posWord(r.count)}
+                  {r.shop} — {unitValue(unit, r.count, r.kg).value} {unitValue(unit, r.count, r.kg).word}
                   {r.isNew ? (
                     <span className="ml-1.5 text-[10px] uppercase tracking-[0.08em] text-[var(--pd-ok-text)]">
                       новый
@@ -1118,7 +1183,7 @@ function ModePanel({
                         {shop.shop}
                       </span>
                       <span className="shrink-0 tabular-nums font-semibold text-[var(--pd-accent-soft)]">
-                        [{shop.count}]
+                        [{unit === 'kg' ? `${kgToTons(shop.kg)} т` : shop.count}]
                       </span>
                     </div>
                     {shop.reasons.length > 0 && (
@@ -1127,7 +1192,7 @@ function ModePanel({
                           <li key={r.label} className="text-[12px] leading-snug text-[var(--pd-text)]">
                             {r.label}{' '}
                             <strong className="tabular-nums text-[var(--pd-text-strong)]">
-                              [{r.count}]
+                              [{unit === 'kg' ? `${kgToTons(r.kg)} т` : r.count}]
                             </strong>
                             {r.notes.length > 0 && (
                               <ul className="m-0 ml-1.5 mt-0.5 list-none space-y-0.5 p-0 text-[11px] text-[var(--pd-muted)]">
@@ -1180,6 +1245,13 @@ export function ReportScreen(): JSX.Element {
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const whById = useWarehousesStore((st) => st.byId);
+  /** ВГХ — вес/объём на 1 ЕИ по номенклатуре (для режима «Тоннаж»). */
+  const vghByKey = useVghStore((s) => s.byKey);
+  // База ВГХ грузится по требованию: в Сводке её раньше никто не запрашивал,
+  // поэтому тоннаж считался по пустой базе — «вес не задан ни у одной позиции».
+  useEffect(() => {
+    void ensureVghLoaded();
+  }, []);
   // zero-insensitive lookup, как в FlowPlanGrid
   const whByKey = useMemo(
     () => new Map(Array.from(whById.values(), (w) => [whKey(w.id), w] as const)),
@@ -1277,8 +1349,28 @@ export function ReportScreen(): JSX.Element {
       if (!near) return 'none';
       return 'off';
     };
-    return { resolveShop, graphKind };
-  }, [whByKey, scheduleMetaMap, graphHoliday]);
+    /**
+     * Вес позиции в кг — 1:1 с колонкой КГ в гриде (FlowPlanGrid, case 'kg'):
+     *  · зафиксированная строка без пересчёта факта → `snap_weight` КАК ЕСТЬ,
+     *    это уже вес всей позиции, а не за единицу (снимок не дрейфует с ВГХ);
+     *  · иначе кол-во × вес за ЕИ из ВГХ.
+     * Кол-во — фактическое (в Отчёте оно подменяется фактом из zm_vl), иначе
+     * тоннаж считался бы по плану там, где увезли меньше.
+     * `null` — веса нет: позиция не идёт в тоннаж и уменьшает охват.
+     */
+    const weightKgOf = (r: FlowDeliveryRow): number | null => {
+      const q = r.fact_qty != null ? r.fact_qty : r.qty;
+      if (Number(r.fixation_id) > 0 && r.snap_weight != null && q === r.qty) {
+        const snap = Number(r.snap_weight);
+        return Number.isFinite(snap) && snap > 0 ? snap : null;
+      }
+      if (q == null || !Number.isFinite(q)) return null;
+      const perUnit = vghByKey.get(normVghKey(r.no_num))?.weight_kg;
+      if (perUnit == null || !Number.isFinite(perUnit) || perUnit <= 0) return null;
+      return q * perUnit;
+    };
+    return { resolveShop, graphKind, weightKgOf };
+  }, [whByKey, scheduleMetaMap, graphHoliday, vghByKey]);
 
   // Подгрузка поставок (все; фильтр report+days на клиенте).
   useEffect(() => {
@@ -1401,6 +1493,56 @@ export function ReportScreen(): JSX.Element {
   const daysTitle = useMemo(
     () => formatReportDaysTitle(sortedDays),
     [sortedDays],
+  );
+
+  /**
+   * Единица главной метрики: позиции или тоннаж. Позиция ≠ объём — 1 позиция
+   * бывает и 200 кг, и 20 т, поэтому «96% позиций» может скрывать невывезенную
+   * фуру. Тоннаж считается ТОЛЬКО по позициям с известным весом, поэтому рядом
+   * всегда показываем охват — без него метрика вводит в заблуждение.
+   */
+  const [unit, setUnit] = useState<'pos' | 'kg'>('pos');
+
+  /** Главная плитка «Вывезено» — в позициях или в тоннах (с охватом веса). */
+  const kpiShipped = useCallback(
+    (r: ReportComputeResult) => {
+      if (unit === 'kg') {
+        const t = r.tonnage;
+        if (!t || t.coveredRows === 0) {
+          return {
+            value: '—',
+            meta: <>вес не задан ни у одной позиции</>,
+            tone: 'accent' as const,
+          };
+        }
+        const tons = (kg: number): string => (Math.round(kg / 100) / 10).toFixed(1);
+        return {
+          value: `${t.percent}%`,
+          meta: (
+            <>
+              {tons(t.shippedKg)} из {tons(t.planKg)} т
+              {t.percent !== t.planPercent ? <> · свой план {t.planPercent}%</> : null}
+              {' · '}
+              <span className={t.coveragePct < 90 ? 'text-[var(--pd-danger)]' : undefined}>
+                вес у {t.coveredRows} из {t.totalRows} поз. ({t.coveragePct}%)
+              </span>
+            </>
+          ),
+          tone: shippedTone(t.planPercent),
+        };
+      }
+      return {
+        value: `${r.percent}%`,
+        meta: (
+          <>
+            {r.shipped} из {r.total}
+            {r.percent !== r.planPercent ? <> · свой план {r.planPercent}%</> : null}
+          </>
+        ),
+        tone: shippedTone(r.planPercent),
+      };
+    },
+    [unit],
   );
 
   const white = useMemo(
@@ -1538,6 +1680,9 @@ export function ReportScreen(): JSX.Element {
           {loading && (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--pd-faint)]" />
           )}
+          {/* Единица счёта — кнопка панели управления, в одном ряду и в одном
+              стиле с «Светлее» и календарём. В печать/PDF не попадает. */}
+          <UnitToggle unit={unit} onChange={setUnit} />
           <WorkspaceSurfaceToggle section="report" />
           <ReportDayPicker selected={days} onChange={setDays} dayHints={dayHints} />
         </div>
@@ -1552,27 +1697,16 @@ export function ReportScreen(): JSX.Element {
             meta={periodMeta}
           />
 
+          {/*
+            Процент дня = всё вывезенное, включая сверхплановое (может быть >100%).
+            Рядом — выполнение СВОЕГО плана: без него перевыполнение чужими
+            позициями маскировало бы провал собственного (60/68 + 11 чужих = 104%).
+          */}
           <SplitKpi
             half
-            label="Вывезено позиций"
-            white={{
-              value: `${white.percent}%`,
-              meta: (
-                <>
-                  {white.shipped} из {white.total}
-                </>
-              ),
-              tone: shippedTone(white.percent),
-            }}
-            black={{
-              value: `${black.percent}%`,
-              meta: (
-                <>
-                  {black.shipped} из {black.total}
-                </>
-              ),
-              tone: shippedTone(black.percent),
-            }}
+            label={unit === 'kg' ? 'Вывезено тоннажа' : 'Вывезено позиций'}
+            white={kpiShipped(white)}
+            black={kpiShipped(black)}
           />
           {/*
             Нет графика на день («не возим») → знаменателя нет: показываем само
@@ -1615,9 +1749,11 @@ export function ReportScreen(): JSX.Element {
             result={white}
             planShops={plan.planShops}
             planWarehouses={plan.planWarehouses}
+            unit={unit}
           />
 
           <ModePanel
+            unit={unit}
             mode="white"
             title="White"
             result={white}
@@ -1627,6 +1763,7 @@ export function ReportScreen(): JSX.Element {
             onPrint={(kind, includeFleet) => launchPrint('white', kind, includeFleet)}
           />
           <ModePanel
+            unit={unit}
             mode="black"
             title="Black"
             result={black}
@@ -1667,6 +1804,7 @@ export function ReportScreen(): JSX.Element {
           planShops={plan.planShops}
           planWarehouses={plan.planWarehouses}
           fleetPeople={fleetPeople}
+          unit={unit}
           autoMode={printJob.kind}
           onDone={(text) => {
             setPrintJob(null);

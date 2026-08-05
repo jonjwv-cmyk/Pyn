@@ -1,6 +1,7 @@
 import type { ApiClient } from '../api/client';
 import {
   formatFlowStat,
+  isFlowStatErroneous,
   isFlowStatShipped,
   whiteEffectiveStat,
 } from '../flow-stat';
@@ -214,20 +215,28 @@ export function nextWorkingDayIso(iso: string, isWorkingDay: (d: string) => bool
 
 export type ReportMode = 'white' | 'black';
 
+/**
+ * Везде, где есть счётчик позиций, рядом лежит `kg` — тот же набор строк, но в
+ * килограммах (0, если вес не прокинут или неизвестен). Экран и печать берут
+ * одно из двух по переключателю «Позиции | Тонны».
+ */
 export interface ReportTreeNote {
   note: string;
   count: number;
+  kg: number;
 }
 
 export interface ReportTreeReason {
   label: string;
   count: number;
+  kg: number;
   notes: ReportTreeNote[];
 }
 
 export interface ReportTreeShop {
   shop: string;
   count: number;
+  kg: number;
   reasons: ReportTreeReason[];
 }
 
@@ -238,6 +247,7 @@ export type ReportGraphKind = 'on' | 'off' | 'none';
 export interface ReportShiftDay {
   day: string;
   count: number;
+  kg: number;
 }
 
 /**
@@ -249,6 +259,7 @@ export interface ReportShiftDay {
 export interface ReportShiftShop {
   shop: string;
   count: number;
+  kg: number;
   days: ReportShiftDay[];
   /** Только «сверх плана»: цеха не было в плане дня, он добавился этой работой. */
   isNew?: boolean;
@@ -268,13 +279,47 @@ export interface ReportSliceStats {
   warehouses: number;
   /** % складов (to_wh) от warehouseCount. */
   warehousePct: number;
+  /** Тот же срез в килограммах (0, если вес неизвестен). */
+  kg: number;
+  /** % тоннажа среза от планового тоннажа дня. */
+  kgPct: number;
+}
+
+/** Отчёт в килограммах + честный охват данных о весе. */
+export interface ReportTonnage {
+  /** План дня, кг (только позиции с известным весом). */
+  planKg: number;
+  /** Вывезено, кг — включая сверхплановое, как и `percent`. */
+  shippedKg: number;
+  /** Вывезено к плану, % (может быть > 100). */
+  percent: number;
+  /** Только свой план, без сверхпланового. */
+  planPercent: number;
+  /** У скольких позиций дня вес известен. */
+  coveredRows: number;
+  /** Сколько всего позиций в дне. */
+  totalRows: number;
+  /** Доля позиций с известным весом, % — насколько метрике вообще можно верить. */
+  coveragePct: number;
 }
 
 export interface ReportComputeResult {
   mode: ReportMode;
   total: number;
   shipped: number;
+  /**
+   * Главный процент дня — ВСЁ вывезенное за день к плану дня, включая
+   * сверхплановые (досрочные) позиции чужих дней. Может быть > 100%
+   * (юзер 2026-08-04: «было опережение — значит должно быть больше 100%»).
+   */
   percent: number;
+  /**
+   * Выполнение СВОЕГО плана: только позиции этого дня, без сверхплановых.
+   * Никогда не превышает 100%. Нужен рядом с `percent`, иначе чужие позиции
+   * маскируют провал собственного плана: 60 своих из 68 + 11 чужих = 104%,
+   * хотя по своему плану всего 88%.
+   */
+  planPercent: number;
   /** Не вывезенные (для дерева причин). */
   notShipped: number;
   /** Уникальные цеха в периоде (все позиции отчёта). */
@@ -322,6 +367,15 @@ export interface ReportComputeResult {
   /** Цеха/склады, которых в плане дня НЕ было — день вырос на столько. */
   overNewShops: number;
   overNewWarehouses: number;
+  /**
+   * Тот же отчёт, но в килограммах. `null`, если вес не прокинут.
+   *
+   * Разные ЕИ складывать нельзя, поэтому единица одна — кг (`кол-во × вес за
+   * ЕИ` из ВГХ). Вес известен НЕ у всех позиций, поэтому рядом с числами ВСЕГДА
+   * идёт охват: без него «увезли 2.0 из 2.2 т» — тонны неизвестно какой доли
+   * плана, и метрика врёт тем сильнее, чем хуже заполнена база ВГХ.
+   */
+  tonnage: ReportTonnage | null;
   overShops: ReportShiftShop[];
   tree: ReportTreeShop[];
 }
@@ -338,6 +392,12 @@ export interface FlowReportOpts {
   graphKind?: (row: FlowDeliveryRow) => ReportGraphKind;
   /** @deprecated используйте graphKind; true ≈ off|none */
   isOffSchedule?: (row: FlowDeliveryRow) => boolean;
+  /**
+   * Вес позиции в кг (кол-во × вес за ЕИ). `null` — вес неизвестен, позиция в
+   * тоннаж не идёт и уменьшает охват. Не задан — блок тоннажа не считается.
+   * Вес берётся снаружи: ВГХ живёт на клиенте, ядро о нём не знает.
+   */
+  weightKgOf?: (row: FlowDeliveryRow) => number | null;
 }
 
 function rowStat(r: FlowDeliveryRow): { stat: string; sub: string } {
@@ -371,6 +431,8 @@ function emptySlice(): ReportSliceStats {
     positionPct: 0,
     warehouses: 0,
     warehousePct: 0,
+    kg: 0,
+    kgPct: 0,
   };
 }
 
@@ -380,6 +442,7 @@ function emptyReportResult(mode: ReportMode): ReportComputeResult {
     total: 0,
     shipped: 0,
     percent: 0,
+    planPercent: 0,
     notShipped: 0,
     shopCount: 0,
     warehouseCount: 0,
@@ -394,6 +457,7 @@ function emptyReportResult(mode: ReportMode): ReportComputeResult {
     overStats: emptySlice(),
     overNewShops: 0,
     overNewWarehouses: 0,
+    tonnage: null,
     overShops: [],
     tree: [],
   };
@@ -415,16 +479,17 @@ function isShippedRaw(r: FlowDeliveryRow): boolean {
   return isFlowStatShipped(stat, sub);
 }
 
-/** Цех → день → сколько позиций. */
-type ShiftAcc = Map<string, Map<string, number>>;
+/** Цех → день → позиции и килограммы. */
+type ShiftAcc = Map<string, Map<string, { count: number; kg: number }>>;
 
-function bumpShift(acc: ShiftAcc, shop: string, day: string): void {
+function bumpShift(acc: ShiftAcc, shop: string, day: string, kg: number): void {
   let byDay = acc.get(shop);
   if (!byDay) {
     byDay = new Map();
     acc.set(shop, byDay);
   }
-  byDay.set(day, (byDay.get(day) || 0) + 1);
+  const cur = byDay.get(day) ?? { count: 0, kg: 0 };
+  byDay.set(day, { count: cur.count + 1, kg: cur.kg + kg });
 }
 
 /** Цеха по алфавиту, дни внутри — по возрастанию даты. */
@@ -432,15 +497,21 @@ function buildShiftShops(acc: ShiftAcc): ReportShiftShop[] {
   return [...acc.entries()]
     .map(([shop, byDay]) => {
       let count = 0;
+      let kg = 0;
       const days: ReportShiftDay[] = [];
-      for (const [day, n] of byDay.entries()) {
-        count += n;
-        days.push({ day, count: n });
+      for (const [day, v] of byDay.entries()) {
+        count += v.count;
+        kg += v.kg;
+        days.push({ day, count: v.count, kg: round1(v.kg) });
       }
       days.sort((a, b) => a.day.localeCompare(b.day));
-      return { shop, count, days };
+      return { shop, count, kg: round1(kg), days };
     })
     .sort((a, b) => a.shop.localeCompare(b.shop, 'ru'));
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
 }
 
 export function computeFlowReport(
@@ -459,8 +530,20 @@ export function computeFlowReport(
       ? new Set(selectedDays.map((d) => String(d).slice(0, 10)))
       : null;
 
+  /**
+   * «Экспедиция · ошибочно» — позиции, которых в плане быть не должно было.
+   * В БЕЛОМ отчёте их нет вообще: ни в количестве позиций, ни в выполнении
+   * (юзер 2026-08-04). В чёрном остаются — там разбирают, что пошло не так.
+   */
+  const isSkippedErroneous = (r: FlowDeliveryRow): boolean => {
+    if (mode !== 'white') return false;
+    const { stat, sub } = rowStat(r);
+    return isFlowStatErroneous(stat, sub);
+  };
+
   const reportRows = rows.filter((r) => {
     if (!(Number(r.fixation_id) > 0)) return false;
+    if (isSkippedErroneous(r)) return false;
     if (!daySet) return true;
     const d = String(r.plan_date || '').slice(0, 10);
     return daySet.has(d);
@@ -476,14 +559,16 @@ export function computeFlowReport(
   let shipped = 0;
   // Невывезенные: shop → total; reasons только при реальном STAT (не «без статуса»).
   // «выполнено»/shipped — только в total/percent, в дерево не идёт.
-  const shopCounts = new Map<string, number>();
+  const shopCounts = new Map<string, { count: number; kg: number }>();
   const allShops = new Set<string>();
   const allWh = new Set<string>();
-  const map = new Map<string, Map<string, Map<string, number>>>();
+  const map = new Map<string, Map<string, Map<string, { count: number; kg: number }>>>();
   const notInSet = new Set<string>();
   const offShopSet = new Set<string>();
   let notInPositions = 0;
+  let notInKg = 0;
   let offPositions = 0;
+  let offKg = 0;
   const notInWh = new Set<string>();
   const offWh = new Set<string>();
   // Опережение плана / смещённый тайминг — строки дня плана с ручным DAY факт.
@@ -491,9 +576,17 @@ export function computeFlowReport(
   const aheadAcc: ShiftAcc = new Map();
   const aheadWh = new Set<string>();
   let aheadPositions = 0;
+  let aheadKg = 0;
   const shiftedAcc: ShiftAcc = new Map();
   const shiftedWh = new Set<string>();
   let shiftedPositions = 0;
+  let shiftedKg = 0;
+
+  /** Вес строки в кг; 0 — вес неизвестен либо режим тоннажа не запрошен. */
+  const kgOf = (r: FlowDeliveryRow): number => {
+    const v = opts?.weightKgOf?.(r);
+    return v != null && Number.isFinite(v) && v > 0 ? v : 0;
+  };
 
   const kindOf = (r: FlowDeliveryRow): ReportGraphKind => {
     if (opts?.graphKind) return opts.graphKind(r);
@@ -507,16 +600,19 @@ export function computeFlowReport(
   for (const r of reportRows) {
     const shop = shopOf(r);
     const wh = whKeyOf(r);
+    const kg = kgOf(r);
     allShops.add(shop);
     allWh.add(wh);
     const gk = kindOf(r);
     if (gk === 'none') {
       notInSet.add(shop);
       notInPositions += 1;
+      notInKg += kg;
       notInWh.add(wh);
     } else if (gk === 'off') {
       offShopSet.add(shop);
       offPositions += 1;
+      offKg += kg;
       offWh.add(wh);
     }
 
@@ -525,13 +621,15 @@ export function computeFlowReport(
     const pd = String(r.plan_date || '').slice(0, 10);
     if (fd && pd && fd !== pd && isShippedRaw(r)) {
       if (fd < pd) {
-        bumpShift(aheadAcc, shop, fd);
+        bumpShift(aheadAcc, shop, fd, kg);
         aheadWh.add(wh);
         aheadPositions += 1;
+        aheadKg += kg;
       } else {
-        bumpShift(shiftedAcc, shop, fd);
+        bumpShift(shiftedAcc, shop, fd, kg);
         shiftedWh.add(wh);
         shiftedPositions += 1;
+        shiftedKg += kg;
       }
     }
 
@@ -541,7 +639,8 @@ export function computeFlowReport(
       shipped += 1;
       continue;
     }
-    shopCounts.set(shop, (shopCounts.get(shop) || 0) + 1);
+    const sc = shopCounts.get(shop) ?? { count: 0, kg: 0 };
+    shopCounts.set(shop, { count: sc.count + 1, kg: sc.kg + kg });
     // Пустой статус — только в счётчике цеха, без ветки «без статуса».
     if (!eff.stat) continue;
     const label = formatFlowStat(eff.stat, eff.sub) || eff.stat;
@@ -556,7 +655,8 @@ export function computeFlowReport(
       byNote = new Map();
       byReason.set(label, byNote);
     }
-    byNote.set(note, (byNote.get(note) || 0) + 1);
+    const bn = byNote.get(note) ?? { count: 0, kg: 0 };
+    byNote.set(note, { count: bn.count + 1, kg: bn.kg + kg });
   }
 
   /**
@@ -571,9 +671,12 @@ export function computeFlowReport(
   const overNewShopSet = new Set<string>();
   const overNewWhSet = new Set<string>();
   let overPositions = 0;
+  /** Сами сверхплановые строки — нужны для тоннажа. */
+  const overRows: FlowDeliveryRow[] = [];
   if (daySet) {
     for (const r of rows) {
       if (!(Number(r.fixation_id) > 0)) continue;
+      if (isSkippedErroneous(r)) continue;
       if (Number(r.reserved) > 0) continue;
       const fd = factDayOf(r);
       if (!fd || !daySet.has(fd)) continue;
@@ -581,10 +684,12 @@ export function computeFlowReport(
       if (!pd || pd === fd || daySet.has(pd)) continue;
       if (!isShippedRaw(r)) continue;
       overPositions += 1;
+      overRows.push(r);
+      const kg = kgOf(r);
       // Считаем ВСЕ затронутые цеха и склады — тогда список сходится с
       // карточкой. «Новизну» держим отдельным множеством, а не отбором.
       const shop = shopOf(r);
-      bumpShift(overAcc, shop, pd);
+      bumpShift(overAcc, shop, pd, kg);
       if (!allShops.has(shop)) overNewShopSet.add(shop);
       const wh = whKeyOf(r);
       overWh.add(wh);
@@ -592,19 +697,67 @@ export function computeFlowReport(
     }
   }
 
+  /**
+   * Тоннаж. Считаем по тем же правилам, что и позиции: план дня + всё
+   * вывезенное (включая сверхплановое). Позиции без веса в суммы не идут —
+   * их доля видна в `coveragePct`.
+   */
+  let tonnage: ReportTonnage | null = null;
+  if (opts?.weightKgOf) {
+    const kgOf = opts.weightKgOf;
+    let planKg = 0;
+    let shippedKg = 0;
+    let overKg = 0;
+    let covered = 0;
+    for (const r of reportRows) {
+      const kg = kgOf(r);
+      if (kg == null || !Number.isFinite(kg) || kg <= 0) continue;
+      covered += 1;
+      planKg += kg;
+      const raw = rowStat(r);
+      const eff = effectiveForMode(mode, raw.stat, raw.sub);
+      if (isFlowStatShipped(eff.stat, eff.sub)) shippedKg += kg;
+    }
+    for (const r of overRows) {
+      const kg = kgOf(r);
+      if (kg == null || !Number.isFinite(kg) || kg <= 0) continue;
+      overKg += kg;
+    }
+    const round = (n: number): number => Math.round(n * 10) / 10;
+    const pct = (n: number, d: number): number => (d > 0 ? Math.round((n / d) * 1000) / 10 : 0);
+    tonnage = {
+      planKg: round(planKg),
+      shippedKg: round(shippedKg + overKg),
+      percent: pct(shippedKg + overKg, planKg),
+      planPercent: pct(shippedKg, planKg),
+      coveredRows: covered,
+      totalRows: reportRows.length,
+      coveragePct: pct(covered, reportRows.length),
+    };
+  }
+
   const total = reportRows.length;
   const notShipped = total - shipped;
-  const percent = total > 0 ? Math.round((shipped / total) * 1000) / 10 : 0;
+  // Главный процент = всё, что реально увезли в этот день (своё + сверхплановое).
+  // planPercent — только своё, чтобы перевыполнение не прятало провал плана.
+  const percent = total > 0 ? Math.round(((shipped + overPositions) / total) * 1000) / 10 : 0;
+  const planPercent = total > 0 ? Math.round((shipped / total) * 1000) / 10 : 0;
   const shopCount = allShops.size;
   const warehouseCount = allWh.size;
 
   const pctOf = (n: number, d: number): number =>
     d > 0 ? Math.round((n / d) * 1000) / 10 : 0;
 
+  // Доля тоннажа среза считается от ПЛАНОВОГО тоннажа дня — того же
+  // знаменателя, что и `tonnage.planKg`, иначе проценты в двух режимах
+  // считались бы от разных баз.
+  const planKgAll = tonnage?.planKg ?? 0;
+
   const sliceOf = (
     shops: number,
     positions: number,
     warehouses: number,
+    kg: number,
   ): ReportSliceStats => ({
     shops,
     shopPct: pctOf(shops, shopCount),
@@ -612,26 +765,30 @@ export function computeFlowReport(
     positionPct: pctOf(positions, total),
     warehouses,
     warehousePct: pctOf(warehouses, warehouseCount),
+    kg: round1(kg),
+    kgPct: pctOf(kg, planKgAll),
   });
 
   const tree: ReportTreeShop[] = [...shopCounts.entries()]
-    .map(([shop, count]) => {
+    .map(([shop, agg]) => {
       const byReason = map.get(shop);
       const reasons: ReportTreeReason[] = byReason
         ? [...byReason.entries()]
             .map(([label, byNote]) => {
               let reasonCount = 0;
+              let reasonKg = 0;
               const notes: ReportTreeNote[] = [];
-              for (const [note, n] of byNote.entries()) {
-                reasonCount += n;
-                if (note) notes.push({ note, count: n });
+              for (const [note, v] of byNote.entries()) {
+                reasonCount += v.count;
+                reasonKg += v.kg;
+                if (note) notes.push({ note, count: v.count, kg: round1(v.kg) });
               }
               notes.sort((a, b) => b.count - a.count || a.note.localeCompare(b.note, 'ru'));
-              return { label, count: reasonCount, notes };
+              return { label, count: reasonCount, kg: round1(reasonKg), notes };
             })
             .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'ru'))
         : [];
-      return { shop, count, reasons };
+      return { shop, count: agg.count, kg: round1(agg.kg), reasons };
     })
     // Алфавит (ru); только невывезенные цеха (shopCounts уже без shipped).
     .sort((a, b) => a.shop.localeCompare(b.shop, 'ru'));
@@ -644,18 +801,20 @@ export function computeFlowReport(
     total,
     shipped,
     percent,
+    planPercent,
+    tonnage,
     notShipped,
     shopCount,
     warehouseCount,
     notInScheduleShops,
     offScheduleShops,
-    notInStats: sliceOf(notInScheduleShops.length, notInPositions, notInWh.size),
-    offStats: sliceOf(offScheduleShops.length, offPositions, offWh.size),
-    aheadStats: sliceOf(aheadAcc.size, aheadPositions, aheadWh.size),
+    notInStats: sliceOf(notInScheduleShops.length, notInPositions, notInWh.size, notInKg),
+    offStats: sliceOf(offScheduleShops.length, offPositions, offWh.size, offKg),
+    aheadStats: sliceOf(aheadAcc.size, aheadPositions, aheadWh.size, aheadKg),
     aheadShops: buildShiftShops(aheadAcc),
-    shiftedStats: sliceOf(shiftedAcc.size, shiftedPositions, shiftedWh.size),
+    shiftedStats: sliceOf(shiftedAcc.size, shiftedPositions, shiftedWh.size, shiftedKg),
     shiftedShops: buildShiftShops(shiftedAcc),
-    overStats: sliceOf(overAcc.size, overPositions, overWh.size),
+    overStats: sliceOf(overAcc.size, overPositions, overWh.size, overRows.reduce((s, r) => s + kgOf(r), 0)),
     overNewShops: overNewShopSet.size,
     overNewWarehouses: overNewWhSet.size,
     overShops: buildShiftShops(overAcc).map((s) =>

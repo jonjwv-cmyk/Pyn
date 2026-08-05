@@ -127,6 +127,7 @@ function SheetBody({
   planShops,
   planWarehouses,
   fleetPeople,
+  unit,
 }: {
   mode: ReportMode;
   daysTitle: string;
@@ -138,16 +139,23 @@ function SheetBody({
   planShops: number;
   planWarehouses: number;
   fleetPeople: { expeditors: number; driverExpeditors: number; others: number };
+  /** Единица счёта — та же, что выбрана на экране Сводки. */
+  unit: 'pos' | 'kg';
 }): JSX.Element {
   const rows = buildB1Rows(days, byDay);
   const notIn = result.notInScheduleShops;
   const off = result.offScheduleShops;
   const title = reportPrintTitle(mode, daysTitle, days.length);
   const shops = result.tree;
-  const barW = Math.min(100, Math.max(0, result.percent));
-  const tone = pctToneClass(result.percent);
+  // Шкала — по СВОЕМУ плану: она физически не может быть длиннее 100%, а цвет
+  // должен говорить о выполнении плана, а не о перевыполнении чужими позициями.
+  const barW = Math.min(100, Math.max(0, result.planPercent));
+  const tone = pctToneClass(result.planPercent);
   const ni = result.notInStats;
   const of = result.offStats;
+  /** Килограммы → тонны, как на экране. */
+  const tons = (kg: number): string => (Math.round(kg / 100) / 10).toFixed(1);
+  const t = result.tonnage;
   const shopPlanPct =
     planShops > 0 ? Math.round((result.shopCount / planShops) * 1000) / 10 : 0;
   const whPlanPct =
@@ -174,11 +182,12 @@ function SheetBody({
     <div className={`rp-detail ${s.positions > 0 ? toneCls : ''}`}>
       <div className="rp-kpi-label">{label}</div>
       <div className="rp-detail-val">
-        {s.positions}
-        <span className="rp-kpi-unit"> поз.</span>
+        {unit === 'kg' ? tons(s.kg) : s.positions}
+        <span className="rp-kpi-unit">{unit === 'kg' ? ' т' : ' поз.'}</span>
       </div>
       <div className="rp-kpi-meta">
-        {`${signed && s.positions > 0 ? '+' : ''}${s.positionPct}% от плана дня`}
+        {`${signed && s.positions > 0 ? '+' : ''}${unit === 'kg' ? s.kgPct : s.positionPct}% от плана дня`}
+        {unit === 'kg' && s.positions > 0 ? ` · ${s.positions} поз.` : ''}
         {growth
           ? ` · ${s.shops} ${shopWord(s.shops)} · ${s.warehouses} скл.` +
             (growth.shops === 0 && growth.warehouses === 0
@@ -238,7 +247,7 @@ function SheetBody({
                 <tr key={r.shop}>
                   <td className="rp-off-n">{i + 1}.</td>
                   <td className="rp-off-name">
-                    {r.shop} — {r.count} поз.
+                    {r.shop} — {unit === 'kg' ? `${tons(r.kg)} т` : `${r.count} поз.`}
                     {r.isNew ? <span className="rp-shift-new">новый</span> : null}
                     <div className="rp-shift-days">
                       {dayWord} {formatShiftDays(r.days)}
@@ -261,13 +270,28 @@ function SheetBody({
         </div>
         <div className="rp-kpi-row">
           <div className={`rp-kpi ${tone}`}>
-            <div className="rp-kpi-label">Вывезено позиций</div>
+            <div className="rp-kpi-label">
+              {unit === 'kg' ? 'Вывезено тоннажа' : 'Вывезено позиций'}
+            </div>
             <div className="rp-kpi-val">
-              {result.percent}
+              {unit === 'kg' && t ? t.percent : result.percent}
               <span className="rp-kpi-unit">%</span>
             </div>
             <div className="rp-kpi-meta">
-              {result.shipped} из {result.total}
+              {unit === 'kg' && t ? (
+                <>
+                  {tons(t.shippedKg)} из {tons(t.planKg)} т
+                  {t.percent !== t.planPercent ? <> · свой план {t.planPercent}%</> : null}
+                  {' · '}вес у {t.coveredRows} из {t.totalRows} поз. ({t.coveragePct}%)
+                </>
+              ) : (
+                <>
+                  {result.shipped} из {result.total}
+                  {result.percent !== result.planPercent ? (
+                    <> · свой план {result.planPercent}%</>
+                  ) : null}
+                </>
+              )}
             </div>
             <div className="rp-kpi-bar">
               <div className="rp-kpi-bar-fill" style={{ width: `${barW}%` }} />
@@ -370,7 +394,7 @@ function SheetBody({
                       <td className="rp-n">{i + 1}</td>
                       <td className="rp-shop-cell">{shop.shop}</td>
                       <td className="rp-cnt">
-                        <strong>[{shop.count}]</strong>
+                        <strong>[{unit === 'kg' ? `${tons(shop.kg)} т` : shop.count}]</strong>
                       </td>
                     </tr>
                     {shop.reasons.length > 0 && (
@@ -381,7 +405,8 @@ function SheetBody({
                             {shop.reasons.map((r) => (
                               <li key={r.label}>
                                 <span className="rp-reason">
-                                  {r.label} <strong>[{r.count}]</strong>
+                                  {r.label}{' '}
+                                  <strong>[{unit === 'kg' ? `${tons(r.kg)} т` : r.count}]</strong>
                                 </span>
                                 {r.notes.length > 0 && (
                                   <ul className="rp-note-list">
@@ -495,8 +520,11 @@ export function ReportPrint({
   /** Без превью: сразу dialog (печать) или save (PDF) и unmount. Как Транспорт. */
   autoMode,
   onDone,
+  unit = 'pos',
 }: {
   mode: ReportMode;
+  /** Единица счёта — та же, что выбрана на экране Сводки (позиции / тонны). */
+  unit?: 'pos' | 'kg';
   daysTitle: string;
   days: string[];
   byDay: Record<string, ReportManualDay>;
@@ -903,6 +931,7 @@ export function ReportPrint({
           planShops={planShops}
           planWarehouses={planWarehouses}
           fleetPeople={fleetPeople}
+          unit={unit}
         />
       </div>
     </div>,
