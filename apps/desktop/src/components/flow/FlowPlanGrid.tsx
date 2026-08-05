@@ -1571,14 +1571,23 @@ export function FlowPlanGrid({
     },
     [fixRankOf],
   );
-  /** Опции выпадашки FIX для дня строки: план + доп.1..N (по числу живых батчей + запас на новый). */
+  /**
+   * Опции выпадашки FIX: план + доп.1..N. Раньше N рос по одному (был только
+   * «доп. 1», пока его не создашь — и лишь потом появлялся «доп. 2»), из-за чего
+   * поставить строку сразу в доп. 3 было нельзя. Теперь показываем сразу 10, а
+   * когда доп. такого номера уже существует — даём ещё 5 сверху максимума.
+   */
   const fixOptionsFor = useCallback(
     (r: FlowDeliveryRow): string[] => {
+      const MIN_OPTIONS = 10;
+      const HEADROOM = 5;
       const d = (r.plan_date || '').slice(0, 10);
       const live = batchRankByDate.get(d)?.size ?? 0;
-      const max = Math.max(live, fixRankOf(r), 1);
+      // rank 1 = «план», rank k = «доп. k-1» → существующих допов на день:
+      const existing = Math.max(live - 1, fixRankOf(r) - 1, 0);
+      const max = existing >= MIN_OPTIONS ? existing + HEADROOM : MIN_OPTIONS;
       const opts = ['план'];
-      for (let i = 1; i <= max; i++) opts.push(`доп. ${i}`); // +1 запас = «новый доп.»
+      for (let i = 1; i <= max; i++) opts.push(`доп. ${i}`);
       return opts;
     },
     [batchRankByDate, fixRankOf],
