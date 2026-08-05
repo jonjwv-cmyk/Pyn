@@ -305,22 +305,24 @@
   color: var(--pyn-text-muted);
 }
 
-/* Scrollbars — thin, visible on dark */
+/* Scrollbars — в таблице полосу надо ВИДЕТЬ (глобальный thumb 6% прозрачности
+ * на листе не читается, юзер: «полос прокрутки не видно»). Толще и контрастнее,
+ * с видимым жёлобом, чтобы было понятно, что таблица прокручивается вбок. */
 .pyn-table-root[data-pyn-table-theme='grok'] ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 .pyn-table-root[data-pyn-table-theme='grok'] ::-webkit-scrollbar-track {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.05);
 }
 .pyn-table-root[data-pyn-table-theme='grok'] ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.32);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 .pyn-table-root[data-pyn-table-theme='grok'] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.5);
   border: 2px solid transparent;
   background-clip: padding-box;
 }
@@ -387,10 +389,12 @@
 
 /*
  * Горизонтальный + вертикальный скролл.
- * Таблица шире контейнера → появляется нижний скроллбар.
+ * `scroll`, а не `auto`: на Windows нет overlay-полос и трекпад-жеста вбок —
+ * при `auto` полоса появлялась не всегда, и правая часть таблицы была
+ * недостижима («нет горизонтальной прокрутки»). Полоса видна постоянно.
  */
 .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-tableholder {
-  overflow-x: auto !important;
+  overflow-x: scroll !important;
   overflow-y: auto !important;
   background: var(--pyn-bg) !important;
 }

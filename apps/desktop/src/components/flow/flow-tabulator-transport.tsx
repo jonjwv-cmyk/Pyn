@@ -31,6 +31,7 @@ import {
   forceSummary,
   ForceMajorModal,
   TransportTimeModal,
+  TransportTimeRangeModal,
   VehicleSpecCard,
 } from './FlowTransportGrid';
 import { FlowTransportPrint } from './FlowTransportPrint';
@@ -206,15 +207,22 @@ function applyColOrder(table: Tabulator, order: readonly string[]): void {
 }
 
 interface FacetDef {
-  field: 'status' | 'vehicle_type' | 'force' | 'out_status';
+  field: string;
   title: string;
 }
-const FACET_DEFS: FacetDef[] = [
-  { field: 'status', title: 'Статус' },
-  { field: 'vehicle_type', title: 'Тип ТС' },
-  { field: 'force', title: 'Форс-мажор' },
-  { field: 'out_status', title: 'Выезд' },
-];
+/** Открыты сразу — остальные фасеты свёрнуты, иначе панель на 15 колонок нечитаема. */
+const FACET_OPEN_BY_DEFAULT = ['status', 'vehicle_type', 'force', 'out_status'];
+
+/**
+ * Значение строки для фасета — то же представление и в списке панели, и в
+ * фильтре (иначе галочка не совпадёт со строкой). Булевы поля («Без эксп.»)
+ * показываем словами.
+ */
+function facetValue(row: Row, field: string): string {
+  const v = (row as unknown as Record<string, unknown>)[field];
+  if (typeof v === 'boolean') return v ? 'Да' : 'Нет';
+  return String(v ?? '');
+}
 
 const STATUS_OPTIONS = ['Размещен', 'Дополнение', 'Отклонен', 'Отмена', 'Не приехал', 'Новый', 'Открыт'];
 const OUT_OPTIONS = ['', 'ДА', 'НЕТ'];
@@ -601,6 +609,8 @@ export function FlowTabulatorTransport({
   const [forceEdit, setForceEdit] = useState<Row | null>(null);
   /** Факт нач/кон — колесо времени как Glide TransportTimeModal. */
   const [timeEdit, setTimeEdit] = useState<{ row: Row; field: 'fact_start' | 'fact_end' } | null>(null);
+  /** Плановое «Время» — колесо с двумя блоками (начало/конец). */
+  const [rangeEdit, setRangeEdit] = useState<Row | null>(null);
   /** Смена ДАТЫ строки — наш календарь (TransportDateModal), не нативный date-picker. */
   const [dateEdit, setDateEdit] = useState<Row | null>(null);
   /** Карточка гаражного (как Glide VehicleSpecCard): замена + данные 1С. */
@@ -617,9 +627,8 @@ export function FlowTabulatorTransport({
   /** По умолчанию скрыта (юзер 2026-08-02). */
   const [panelOpen, setPanelOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const [facetOptions, setFacetOptions] = useState<Record<string, string[]>>({});
   const [facetSelected, setFacetSelected] = useState<Record<string, Set<string>>>({});
-  const [openSections, setOpenSections] = useState<Set<string>>(new Set(FACET_DEFS.map((f) => f.field)));
+  const [openSections, setOpenSections] = useState<Set<string>>(new Set(FACET_OPEN_BY_DEFAULT));
   const [allRows, setAllRows] = useState<Row[]>([]);
   // Выбор дней: daySel (конкретные дни) ИЛИ monthScope (весь YYYY-MM).
   // Пусто + null scope → текущий месяц. Можно открыть любой месяц, где есть данные.
@@ -667,16 +676,69 @@ export function FlowTabulatorTransport({
   // Кандидаты в водители — база контактов, должность содержит «водитель» (1:1 с glide
   // driverOptions/driverByFio). ПРЕЖДЕ список брался из уже введённых значений строк/
   // машин — не база, а «что когда-то напечатали» (юзер 2026-08-01: «берёт не тот»).
+  /**
+   * Кандидаты в водители — ДВА источника (юзер 2026-08-04):
+   *  1) контакты с должностью «водитель» / «экспедитор» — целевые роли;
+   *  2) ФИО, уже встречавшиеся в разнарядках, — с них и начинаем: человека
+   *     могло не быть в Контактах вообще, из-за чего он «в базе есть, а поиск
+   *     не находит». Телефон/МОЛ для таких тянем из базы, если данные там есть,
+   *     иначе — из самой строки разнарядки.
+   * Всю базу целиком не берём: она большая, а роли тут заведомо узкие.
+   */
   const driverOptions = useMemo(() => {
     const COLOR = { ok: '#3FB950', error: '#F85149', neutral: '#9AA0A6' } as const;
-    const out: { fio: string; phone: string; color: string; isMol: boolean }[] = [];
+    const personByFio = new Map<string, (typeof persons)[number]>();
     for (const p of persons) {
-      if (!/(?:^|[^а-яёa-z])водител/i.test(p.position || '')) continue;
-      out.push({ fio: p.fio, phone: p.mobile || p.work || '', color: COLOR[molStatusKind(p.status || '')], isMol: p.isMol });
+      const key = p.fio.trim().toUpperCase();
+      if (key && !personByFio.has(key)) personByFio.set(key, p);
     }
-    out.sort((a, b) => a.fio.localeCompare(b.fio, 'ru'));
-    return out;
-  }, [persons]);
+    type Opt = {
+      fio: string;
+      phone: string;
+      color: string;
+      isMol: boolean;
+      position: string;
+      isDriver: boolean;
+      fromRoster: boolean;
+    };
+    const out = new Map<string, Opt>();
+
+    // 1) Кто уже был в разнарядках — приоритетный источник.
+    for (const r of allRows) {
+      const fio = r.driver?.trim();
+      if (!fio) continue;
+      const key = fio.toUpperCase();
+      if (out.has(key)) continue;
+      const p = personByFio.get(key);
+      out.set(key, {
+        fio,
+        phone: p?.mobile || p?.work || r.driver_phone || '',
+        color: p ? COLOR[molStatusKind(p.status || '')] : COLOR.neutral,
+        isMol: p?.isMol ?? false,
+        position: p?.position || '',
+        isDriver: true,
+        fromRoster: true,
+      });
+    }
+
+    // 2) Контакты нужных ролей.
+    for (const p of persons) {
+      const pos = p.position || '';
+      if (!/(?:^|[^а-яёa-z])(водител|экспедитор)/i.test(pos)) continue;
+      const key = p.fio.trim().toUpperCase();
+      if (!key || out.has(key)) continue;
+      out.set(key, {
+        fio: p.fio,
+        phone: p.mobile || p.work || '',
+        color: COLOR[molStatusKind(p.status || '')],
+        isMol: p.isMol,
+        position: pos,
+        isDriver: true,
+        fromRoster: false,
+      });
+    }
+    return [...out.values()].sort((a, b) => a.fio.localeCompare(b.fio, 'ru'));
+  }, [persons, allRows]);
   const driverByFio = useMemo(() => {
     const m = new Map<string, (typeof driverOptions)[number]>();
     for (const o of driverOptions) m.set(o.fio.toUpperCase(), o);
@@ -809,21 +871,121 @@ export function FlowTabulatorTransport({
     });
   }, []);
 
-  // Счётчики для панели фасетов (как data-table-filter-checkbox.tsx у OpenStatus:
-  // значение + количество совпадений). Считаем по ВСЕМ строкам, не по отфильтрованным.
+  /** Все строки в ref — для подстановок «последнее по работе / по гаражному». */
+  const allRowsRef = useRef<Row[]>(allRows);
+  allRowsRef.current = allRows;
+
+  /** Работы, которые уже встречались — список для редактора ячейки «Работа». */
+  const workOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const r of allRows) {
+      const w = r.work?.trim();
+      if (w) seen.add(w);
+    }
+    return [...seen].sort((a, b) => a.localeCompare(b, 'ru'));
+  }, [allRows]);
+  const workOptionsRef = useRef<string[]>(workOptions);
+  workOptionsRef.current = workOptions;
+
+  /**
+   * Последняя (самая свежая) строка с таким же значением поля — донор для
+   * автоподстановки: по работе тянем экипаж/время, по гаражному — водителя.
+   */
+  const lastRowByField = useCallback(
+    (field: 'work' | 'garage_no', value: string, exceptId: number, useful?: (r: Row) => boolean): Row | null => {
+      const v = value.trim().toUpperCase();
+      if (!v) return null;
+      let best: Row | null = null;
+      for (const r of allRowsRef.current) {
+        if (r.id === exceptId) continue;
+        if (String((r as unknown as Record<string, unknown>)[field] ?? '').trim().toUpperCase() !== v) continue;
+        // Донор должен что-то содержать: иначе «самой свежей» окажется такая же
+        // пустая строка этого же дня, и подставлять будет нечего.
+        if (useful && !useful(r)) continue;
+        const newer =
+          !best || (r.tdate || '') > (best.tdate || '') || ((r.tdate || '') === (best.tdate || '') && r.id > best.id);
+        if (newer) best = r;
+      }
+      return best;
+    },
+    [],
+  );
+
+  /**
+   * Водители ЭТОЙ машины — те, кто уже ездил на её гаражном номере (по всей
+   * загруженной разнарядке). Попап показывает их первыми, остальную базу — ниже.
+   */
+  const driverPickPreferred: string[] = useMemo(() => {
+    const garage = driverPick?.garage_no?.trim();
+    if (!garage) return [];
+    const seen = new Set<string>();
+    for (const r of allRows) {
+      if (r.garage_no?.trim() !== garage) continue;
+      const fio = r.driver?.trim();
+      if (fio) seen.add(fio);
+    }
+    return [...seen];
+  }, [driverPick, allRows]);
+
+  /** Фасеты — по ВСЕМ видимым колонкам (юзер: «там не все колонки, а часть»). */
+  const facetDefs: FacetDef[] = useMemo(
+    () => TOGGLEABLE_COLS.filter((c) => visibleCols.has(c.id)).map((c) => ({ field: c.id, title: c.title })),
+    [visibleCols],
+  );
+
+  // Скрыли колонку — снимаем её фильтр: иначе он продолжал бы резать строки,
+  // а сбросить его было бы негде (секции в панели уже нет).
+  useEffect(() => {
+    setFacetSelected((prev) => {
+      const stale = Object.keys(prev).filter((f) => prev[f]?.size && !visibleCols.has(f));
+      if (stale.length === 0) return prev;
+      const next = { ...prev };
+      for (const f of stale) delete next[f];
+      return next;
+    });
+  }, [visibleCols]);
+
+  /**
+   * Строки в текущей области видимости — выбранные дни (или месяц), БЕЗ поиска и
+   * без самих фасетов. Из них берём и список значений, и счётчики: юзер ждёт
+   * варианты «по выбранным дням», а не по всей базе (4 авг → значения 4-го;
+   * 3+4 авг → объединение двух дней).
+   */
+  const scopeRows: Row[] = useMemo(() => {
+    if (daySel.size > 0) return allRows.filter((r) => daySel.has(r.tdate));
+    if (monthScope) return allRows.filter((r) => (r.tdate || '').slice(0, 7) === monthScope);
+    return [];
+  }, [allRows, daySel, monthScope]);
+
+  /** Значения фасета = что реально встретилось в области видимости. */
+  const facetOptions: Record<string, string[]> = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const def of facetDefs) {
+      const seen = new Set<string>();
+      for (const r of scopeRows) {
+        const v = facetValue(r, def.field);
+        if (v) seen.add(v);
+      }
+      out[def.field] = [...seen].sort((a, b) => a.localeCompare(b, 'ru'));
+    }
+    return out;
+  }, [facetDefs, scopeRows]);
+
+  // Счётчики (как data-table-filter-checkbox.tsx у OpenStatus: значение + сколько
+  // совпадений) — по той же области видимости, не по отфильтрованным строкам.
   const facetCounts: Record<string, Record<string, number>> = useMemo(() => {
     const out: Record<string, Record<string, number>> = {};
-    for (const def of FACET_DEFS) {
+    for (const def of facetDefs) {
       const counts: Record<string, number> = {};
-      for (const r of allRows) {
-        const v = String((r as unknown as Record<string, unknown>)[def.field] ?? '');
+      for (const r of scopeRows) {
+        const v = facetValue(r, def.field);
         if (!v) continue;
         counts[v] = (counts[v] ?? 0) + 1;
       }
       out[def.field] = counts;
     }
     return out;
-  }, [allRows]);
+  }, [facetDefs, scopeRows]);
 
   const applyFilters = useCallback(
     (s: string, facets: Record<string, Set<string>>, days: ReadonlySet<string>, month: string | null) => {
@@ -848,9 +1010,10 @@ export function FlowTabulatorTransport({
           }
           // Поиск слева = фильтр по ВСЕМ колонкам (заказ, статус, работа, ТП/ТС…).
           if (q && !rowSearchHaystack(data).includes(q)) return false;
-          for (const def of FACET_DEFS) {
-            const sel = facets[def.field];
-            if (sel && sel.size > 0 && !sel.has((data as unknown as Record<string, string>)[def.field] ?? '')) return false;
+          // Фасеты — по тому, что реально выбрано (список полей теперь = видимые колонки).
+          for (const [field, sel] of Object.entries(facets)) {
+            if (!sel || sel.size === 0) continue;
+            if (!sel.has(facetValue(data, field))) return false;
           }
           return true;
         });
@@ -1064,6 +1227,111 @@ export function FlowTabulatorTransport({
     table.options.movableColumns = reorderOn;
   }, [reorderOn]);
 
+  /**
+   * Записать подставленные поля в строку: сервер → локальные копии → грид.
+   * Отдельно от doEditCell, чтобы автоподстановка не вызывала саму себя.
+   */
+  const applyRowFields = useCallback(
+    async (rowId: number, fields: Record<string, string>): Promise<boolean> => {
+      const keys = Object.keys(fields);
+      if (keys.length === 0) return false;
+      // Работаем по id, а не по CellComponent: после сохранения работы строка
+      // пересортировывается, и ссылка на ячейку может указывать уже не туда.
+      // ВАЖНО: версию берём из rowsByIdRef — в данных грида она УСТАРЕВШАЯ,
+      // с ней сервер отвечал конфликтом, и подстановка молча не срабатывала.
+      const row = rowsByIdRef.current.get(rowId);
+      if (!row) return false;
+      const version = row.row_version;
+      try {
+        const res = await flowTransportEdit(api, [
+          { id: rowId, row_version: version, fields: fields as never },
+        ]);
+        if (res.conflicts.length > 0) {
+          setMsg('Автоподстановка: строку обновили параллельно — заполните вручную');
+          return false;
+        }
+        const saved = res.rows[0];
+        // Сервер по гаражному подтягивает 1С-хвост — марку, гос. номер, цвет.
+        // Раньше применяли только отправленные поля, и «№ · ГОС»/марка/цвет
+        // после автоподстановки оставались пустыми (юзер 2026-08-04).
+        const rebuilt = saved ? buildRows([saved], vehiclesRef.current)[0] : undefined;
+        const patch = (rebuilt ?? {
+          ...fields,
+          row_version: saved?.row_version ?? row.row_version,
+        }) as Partial<Row> & { row_version: number };
+        rowsByIdRef.current.set(rowId, { ...row, ...patch } as Row);
+        setAllRows((prev) => prev.map((x) => (x.id === rowId ? ({ ...x, ...patch } as Row) : x)));
+        await tableRef.current?.updateData([{ id: rowId, ...patch }]);
+        try {
+          tableRef.current?.getRow(rowId)?.reformat();
+        } catch {
+          /* строка вне видимой части — перерисуется сама */
+        }
+        return true;
+      } catch (e) {
+        setMsg(`Автоподстановка: ${String(e)}`);
+        return false;
+      }
+    },
+    [buildRows],
+  );
+
+  /**
+   * Выбрали работу → тянем последнюю строку с такой же работой: ТС, время,
+   * факт нач/кон, гаражный, водитель. Комментарий НЕ трогаем (юзер 2026-08-04).
+   * Заполняем только ПУСТЫЕ поля — уже введённое руками не перетираем.
+   */
+  const autofillFromWork = useCallback(
+    async (rowId: number, work: string) => {
+      const row = rowsByIdRef.current.get(rowId);
+      if (!row) return;
+      const src = lastRowByField(
+        'work',
+        work,
+        row.id,
+        (r) => !!(r.driver?.trim() || r.garage_no?.trim() || r.time_range?.trim()),
+      );
+      if (!src) {
+        setMsg(`По работе «${work}» заполненных строк ещё не было`);
+        return;
+      }
+      const fields: Record<string, string> = {};
+      const put = (field: keyof Row & string, wire = field): void => {
+        const cur = String(row[field] ?? '').trim();
+        const val = String(src[field] ?? '').trim();
+        if (!cur && val) fields[wire] = val;
+      };
+      put('vehicle_type');
+      put('time_range');
+      put('fact_start');
+      put('fact_end');
+      put('garage_no');
+      put('driver');
+      put('driver_phone');
+      if (Object.keys(fields).length === 0) {
+        setMsg('Строка уже заполнена — подставлять нечего');
+        return;
+      }
+      if (await applyRowFields(rowId, fields)) setMsg(`Подставлено из строки за ${src.tdate}`);
+    },
+    [lastRowByField, applyRowFields],
+  );
+
+  /** Сменили гаражный → водитель = последний, кто ездил на этой машине. */
+  const autofillDriverFromGarage = useCallback(
+    async (rowId: number, garage: string) => {
+      const row = rowsByIdRef.current.get(rowId);
+      if (!row) return;
+      const src = lastRowByField('garage_no', garage, rowId, (r) => !!r.driver?.trim());
+      const fio = src?.driver?.trim();
+      if (!fio || fio === row.driver?.trim()) return;
+      if (await applyRowFields(rowId, { driver: fio, driver_phone: src?.driver_phone?.trim() || '' })) {
+        setMsg(`Водитель по машине ${garage}: ${fio}`);
+      }
+    },
+    [lastRowByField, applyRowFields],
+  );
+
   const doEditCell = useCallback(
     async (cell: CellComponent) => {
       const row = cell.getData() as Row;
@@ -1095,7 +1363,10 @@ export function FlowTabulatorTransport({
         newValue = iso;
       }
       try {
-        const res = await flowTransportEdit(api, [{ id: row.id, row_version: row.row_version, fields: { [wireField]: wireValue as never } }]);
+        // Версия — из rowsByIdRef: там она всегда свежая после предыдущих правок
+        // (в данных грида могла остаться прошлая, отсюда ложные конфликты).
+        const curVersion = rowsByIdRef.current.get(row.id)?.row_version ?? row.row_version;
+        const res = await flowTransportEdit(api, [{ id: row.id, row_version: curVersion, fields: { [wireField]: wireValue as never } }]);
         if (res.conflicts.length > 0) {
           setMsg(
             field === 'tdate'
@@ -1110,22 +1381,24 @@ export function FlowTabulatorTransport({
           const updated = rowsByIdRef.current.get(row.id);
           if (updated) {
             updated.row_version = saved.row_version;
-            if (field === 'fact_start' || field === 'fact_end' || field === 'time_range') {
-              (updated as unknown as Record<string, unknown>)[field] = newValue;
-            }
-            if (field === 'driver') {
-              updated.driver = String(newValue ?? '');
-            }
-            if (field === 'tdate') {
-              updated.tdate = String(newValue ?? '');
-            }
+            // Пишем ЛЮБОЕ изменённое поле, а не только время/водителя/дату:
+            // иначе локальная копия расходится с сервером, и следующая правка
+            // (или автоподстановка) работает по устаревшим данным.
+            (updated as unknown as Record<string, unknown>)[field] = newValue;
             rowsByIdRef.current.set(row.id, updated);
           }
+          // Свежую версию кладём и в данные грида — иначе следующая правка этой
+          // же строки (в т.ч. автоподстановка) уйдёт со старой и словит конфликт.
+          cell.getRow().update({ row_version: saved.row_version });
+          setAllRows((prev) =>
+            prev.map((r) => (r.id === row.id ? { ...r, row_version: saved.row_version } : r)),
+          );
         }
         // Синхронизируем значение ячейки (пустая строка после clear).
         if (cell.getValue() !== newValue) cell.setValue(newValue, true);
         pushHistory({ rowId: row.id, field, oldValue, newValue, at: new Date().toLocaleString('ru-RU'), who: loginRef.current });
-        if (FACET_DEFS.some((f) => f.field === field) || field === 'tdate') {
+        // Любая фасетная (= toggleable) колонка меняет список значений в панели.
+        if (TOGGLEABLE_IDS.has(field) || field === 'tdate') {
           setAllRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, [field]: newValue } : r)));
         }
         if (field === 'status' || field === 'work' || field === 'tdate') {
@@ -1140,12 +1413,25 @@ export function FlowTabulatorTransport({
           // Перерисовать заливку строки (status) / жирное время (work) / дату.
           cell.getRow().reformat();
         }
+        // Автоподстановка «как в прошлый раз» — после успешного сохранения.
+        if (field === 'work' && newValue) await autofillFromWork(row.id, String(newValue));
+        if (field === 'garage_no' && newValue) await autofillDriverFromGarage(row.id, String(newValue));
+        // «Не приехал» — машины не было, значит и фактического времени нет.
+        // План (колонку «Время») не трогаем: план был, невыполнение должно быть видно.
+        if (field === 'status' && String(newValue) === 'Не приехал') {
+          const cur = rowsByIdRef.current.get(row.id);
+          if (cur?.fact_start?.trim() || cur?.fact_end?.trim()) {
+            if (await applyRowFields(row.id, { fact_start: '', fact_end: '' })) {
+              setMsg('«Не приехал» — факт нач/кон очищены');
+            }
+          }
+        }
       } catch (err) {
         setMsg(`Ошибка сохранения: ${String(err)}`);
         cell.restoreOldValue();
       }
     },
-    [rowLocked, pushHistory, applyOurSort],
+    [rowLocked, pushHistory, applyOurSort, autofillFromWork, autofillDriverFromGarage],
   );
 
   /** Очистить выделенные ячейки (Del/Backspace) — batch API, как Glide onDelete. */
@@ -1578,19 +1864,10 @@ export function FlowTabulatorTransport({
       const rows = await reload();
       if (!alive || !containerRef.current) return;
       setAllRows(rows);
-      // ТИП ТС для фильтра — канон BODY_TYPES ПЛЮС любые значения, реально встреченные
-      // в данных (легаси/свободный ввод до перехода на канон-список) — иначе строку с
-      // таким значением нельзя было ни увидеть в панели, ни отфильтровать (юзер:
-      // «список типов ТС неполный»). Редактор ячейки (что МОЖНО поставить) — строго
-      // BODY_TYPES, как в глиде; это только про то, что МОЖНО отфильтровать.
-      const seenVehicleTypes = new Set(rows.map((r) => r.vehicle_type).filter(Boolean));
-      for (const t of BODY_TYPES) seenVehicleTypes.delete(t);
-      setFacetOptions({
-        status: STATUS_OPTIONS,
-        vehicle_type: [...BODY_TYPES, ...[...seenVehicleTypes].sort((a, b) => a.localeCompare(b, 'ru'))],
-        force: ['ожидание выгрузки', 'поломка ТС'],
-        out_status: OUT_OPTIONS.filter(Boolean),
-      });
+      // Значения фасетов больше не задаются списком-каноном: они выводятся из строк
+      // выбранных дней (facetOptions/useMemo) — иначе в панели висели варианты,
+      // которых в выбранном дне нет, и наоборот. Редактор ячейки (что МОЖНО
+      // поставить) по-прежнему строго BODY_TYPES / STATUS_OPTIONS, как в глиде.
 
       // Предсортировка 1:1 Glide (все месяцы одинаково).
       const dataWithRanks = rows
@@ -1685,7 +1962,19 @@ export function FlowTabulatorTransport({
           headerSort: false,
           ...cellAlign,
           cssClass: gs ? 'pyn-cell-wrap pyn-cell-work' : undefined,
-          editor: 'input',
+          // Список ранее встречавшихся работ + свободный ввод новой (freetext):
+          // при добавлении строки работу выбирают из готовых, а по выбору
+          // подтягивается последняя запись по этой работе (см. doEditCell).
+          editor: 'list',
+          // Колбэк, а не готовый объект: колонки строятся один раз при монтировании,
+          // а список работ набирается по мере загрузки строк.
+          editorParams: (() => ({
+            values: workOptionsRef.current,
+            autocomplete: true,
+            freetext: true,
+            allowEmpty: true,
+            listOnEmpty: true,
+          })) as unknown as ColumnDefinition['editorParams'],
           accessorClipboard: (v: unknown) => String(v ?? ''),
           formatter: styledFormatter('work', (v) => {
             const t = String(v ?? '');
@@ -1715,8 +2004,9 @@ export function FlowTabulatorTransport({
           headerSort: false,
           ...cellAlign,
           cssClass: gs ? 'pyn-cell-time' : undefined,
-          editor: 'input',
-          editorParams: { selectContents: true, elementAttributes: { autocomplete: 'off' } },
+          // Как Факт нач/кон: клик = выделение, dblclick = колесо. Только тут
+          // сразу ДВА блока — начало и конец (юзер 2026-08-04).
+          editor: false as unknown as undefined,
           accessorClipboard: (v: unknown) => fmtTimeRange(String(v ?? '')),
           formatter: (cell) => {
             const row = cell.getData() as Row;
@@ -1725,7 +2015,14 @@ export function FlowTabulatorTransport({
             const text = fmtTimeRange(row.time_range || '');
             return bold ? `<b>${text}</b>` : text || '';
           },
-          cellEdited: (cell) => void doEditCell(cell),
+          cellDblClick: (_e, cell) => {
+            const r = cell.getData() as Row;
+            if (rowLocked(r)) {
+              setMsg('Строка старше 7 дней — правка только для разработчика');
+              return;
+            }
+            setRangeEdit(r);
+          },
         },
         {
           title: 'Факт нач',
@@ -2335,21 +2632,28 @@ export function FlowTabulatorTransport({
 
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      /**
+       * Windows + русская раскладка: `e.key` для Ctrl+C отдаёт «с» (кириллица),
+       * не «c» — из-за этого копирование/вставка/протяжка не работали вообще.
+       * `e.code` — физическая клавиша, от раскладки не зависит. Оставляем оба:
+       * key закрывает нестандартные раскладки, code — кириллицу.
+       */
+      const hit = (latin: string, physical: string): boolean => key === latin || e.code === physical;
 
       // Copy — не execCommand Tabulator (мёртв в Electron), а Export.range + clipboard API.
-      if (mod && !e.altKey && !e.shiftKey && key === 'c') {
+      if (mod && !e.altKey && !e.shiftKey && hit('c', 'KeyC')) {
         e.preventDefault();
         e.stopPropagation();
         void runTabulatorCopy();
         return;
       }
-      if (mod && !e.altKey && !e.shiftKey && key === 'v') {
+      if (mod && !e.altKey && !e.shiftKey && hit('v', 'KeyV')) {
         e.preventDefault();
         e.stopPropagation();
         void runTabulatorPaste();
         return;
       }
-      if (mod && !e.altKey && key === 'd') {
+      if (mod && !e.altKey && hit('d', 'KeyD')) {
         e.preventDefault();
         e.stopPropagation();
         void fillRangeFromFirst();
@@ -2746,37 +3050,7 @@ export function FlowTabulatorTransport({
       <div className="flex min-h-0 min-w-0 flex-1">
         {panelOpen && (
           <div className="flow-tab-panel flex w-64 shrink-0 flex-col gap-3 overflow-y-auto p-2.5">
-            {/* Печать / PDF / машина — боковая панель */}
-            <div className="flex flex-col gap-1.5 rounded-lg border border-white/[0.08] p-2">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
-                Печать
-              </div>
-              <button
-                type="button"
-                className="flow-tab-tool-btn w-full justify-start gap-2 px-2"
-                onClick={() => openPrintPicker()}
-              >
-                <Printer size={14} strokeWidth={1.75} />
-                Печать
-              </button>
-              <button
-                type="button"
-                className="flow-tab-tool-btn w-full justify-start gap-2 px-2"
-                onClick={() => openPdfPicker()}
-              >
-                <FileDown size={14} strokeWidth={1.75} />
-                Скачать PDF
-              </button>
-              <button
-                type="button"
-                className="flow-tab-tool-btn w-full justify-start gap-2 px-2"
-                data-active={machineSheet ? 'true' : 'false'}
-                onClick={handleMachineTrip}
-              >
-                <Truck size={14} strokeWidth={1.75} />
-                Сводка по машине
-              </button>
-            </div>
+            {/* Печать/PDF/сводка живут в тулбаре — в панели фильтров дублировать не надо. */}
             <div className="flow-tab-search flex items-center gap-1.5 rounded-md px-2 py-1.5">
               <Search size={13} className="opacity-50" />
               <input
@@ -2795,7 +3069,7 @@ export function FlowTabulatorTransport({
                 Сбросить фильтры ({activeFacetCount})
               </button>
             )}
-            {FACET_DEFS.map((def) => (
+            {facetDefs.map((def) => (
               <FacetSection
                 key={def.field}
                 title={def.title}
@@ -2938,6 +3212,7 @@ export function FlowTabulatorTransport({
             <FlowDriverPickPopover
               current={driverPick.driver}
               options={driverOptionsRef.current}
+              preferred={driverPickPreferred}
               onClose={() => setDriverPick(null)}
               onPick={(o) => {
                 const r = driverPick;
@@ -3091,6 +3366,31 @@ export function FlowTabulatorTransport({
                     setMsg(`Ошибка времени: ${String(e)}`);
                   } finally {
                     setTimeEdit(null);
+                  }
+                })();
+              }}
+            />
+          )}
+          {rangeEdit && (
+            <TransportTimeRangeModal
+              value={rangeEdit.time_range}
+              onClose={() => setRangeEdit(null)}
+              onSave={(next) => {
+                const r = rangeEdit;
+                setRangeEdit(null);
+                if (next === (r.time_range || '')) return;
+                void (async () => {
+                  const ok = await applyRowFields(r.id, { time_range: next });
+                  if (ok) {
+                    pushHistory({
+                      rowId: r.id,
+                      field: 'time_range',
+                      oldValue: r.time_range,
+                      newValue: next,
+                      at: new Date().toLocaleString('ru-RU'),
+                      who: loginRef.current,
+                    });
+                    setMsg(next ? `Время: ${fmtTimeRange(next)}` : 'Время очищено');
                   }
                 })();
               }}

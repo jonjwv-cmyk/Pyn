@@ -3,7 +3,7 @@
  * UI = конструктор @/components/pyn-dash (общий для всех дашбордов).
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { ApexOptions } from 'apexcharts';
 import {
   computeTransportKpis,
@@ -728,6 +728,9 @@ export function FlowTransportAnalytics({
         }
       />
 
+      {/* Плитки — своей сеткой (--pd-kpi-cols), иначе последняя «сироталась»
+          одна на второй строке. 6 плиток → ровно 3 + 3. */}
+      <div className="pyn-dash-kpis" style={{ '--pd-kpi-cols': 3 } as CSSProperties}>
       <DashKpi label="Работы план" value={kpis.worksCount} valueTone="accent" />
       <DashKpi
         label="Работы факт"
@@ -770,12 +773,55 @@ export function FlowTransportAnalytics({
           </>
         }
       />
+      {/* Простой по форс-мажорам: он ВЫЧТЕН из факт-часов выше, поэтому показываем
+          отдельно — иначе непонятно, куда делись часы. Два вида суммируются по
+          всем записям строки (их может быть несколько каждого вида). */}
+      <DashKpi
+        label="Форс-мажоры"
+        valueSize="xs"
+        valueTone={kpis.forceTotalHours > 0 ? 'danger' : undefined}
+        value={
+          <>
+            {kpis.forceTotalHours}
+            <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--pd-muted)' }}> ч</span>
+          </>
+        }
+        meta={
+          kpis.forceTotalHours > 0 ? (
+            <>
+              ожидание {kpis.forceWaitHours} ч · поломка {kpis.forceBreakdownHours} ч
+              {' · '}
+              {kpis.forceRowsCount} {worksWord(kpis.forceRowsCount)}
+            </>
+          ) : (
+            <>простоя не было</>
+          )
+        }
+      />
+      {/* Срыв подачи: машину дали, но она не приехала. По сути тяжёлый форс-мажор,
+          только теряется не часть смены, а вся плановая работа целиком. */}
+      <DashKpi
+        label="Не приехали"
+        valueSize="sm"
+        valueTone={kpis.noShowCount > 0 ? 'danger' : undefined}
+        value={kpis.noShowCount}
+        meta={
+          kpis.noShowCount > 0 ? (
+            <>
+              {kpis.noShowPct}% работ · сорвано {kpis.noShowPlanHours} ч плана
+            </>
+          ) : (
+            <>подача без срывов</>
+          )
+        }
+      />
       <DashKpi
         label="План экспедиции"
         value="—"
         valueSize="sm"
         meta={<span className="text-zinc-500">в разработке</span>}
       />
+      </div>
 
       {showChart ? (
         <DashPanel

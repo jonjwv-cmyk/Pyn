@@ -405,6 +405,185 @@
   color: #5c564c !important;
 }
 
+/* ── Транспорт: боковая панель фильтров на paper ────────
+   grok задаёт панели тёмный #262624 — на светлом листе она оставалась чёрной
+   («в светлой теме тёмный фильтр»). Панель и всё её нутро (поиск, фасеты,
+   список значений) переводим на бумагу. */
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-panel {
+  background: var(--paper-card) !important;
+  border-right-color: var(--paper-border) !important;
+  color: var(--paper-text) !important;
+}
+[data-pyn-surface='paper'] .flow-tab-panel .border-white\/\[0\.08\] {
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-search,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet-search {
+  background: #faf8f4 !important;
+  border-color: var(--paper-border) !important;
+  color: var(--paper-text-strong) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-search input {
+  color: var(--paper-text-strong) !important;
+  -webkit-text-fill-color: var(--paper-text-strong) !important;
+  caret-color: var(--paper-accent) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-search input::placeholder,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet-search::placeholder {
+  color: var(--paper-faint) !important;
+  -webkit-text-fill-color: var(--paper-faint) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet {
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet button {
+  color: var(--paper-text) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet-badge {
+  background: rgba(196, 95, 66, 0.16) !important;
+  color: #9a3412 !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet-list {
+  background: #faf8f4 !important;
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet-list label,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet-list button {
+  color: var(--paper-text) !important;
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet-list label:hover,
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet-list button:hover {
+  background: var(--paper-hover) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .flow-tab-facet-list .flow-tab-facet-item--on {
+  background: rgba(196, 95, 66, 0.12) !important;
+}
+
+/* ── Модалки Транспорта (время / дата / форс-мажор) на paper ──
+   `.bg-bg-surface` выше уже перекрашен в лист, но текст внутри задан токенами
+   ТЁМНОЙ темы (text-text-strong = #F5F4EF) → «светлый текст на светлом фоне,
+   цифр часов не видно». Красим содержимое светлых модалок под бумагу. */
+[data-pyn-surface='paper'] .bg-bg-surface .text-text-strong {
+  color: var(--paper-text-strong) !important;
+}
+[data-pyn-surface='paper'] .bg-bg-surface .text-text-secondary {
+  color: var(--paper-text) !important;
+}
+[data-pyn-surface='paper'] .bg-bg-surface .text-text-muted,
+[data-pyn-surface='paper'] .bg-bg-surface .text-text-muted\/70 {
+  color: var(--paper-faint) !important;
+}
+[data-pyn-surface='paper'] .bg-bg-surface .border-border-subtle {
+  border-color: var(--paper-border) !important;
+}
+
+/* Полосы прокрутки на бумаге — белёсый thumb на светлом листе не виден вообще. */
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] ::-webkit-scrollbar-track {
+  background: rgba(42, 38, 32, 0.07) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] ::-webkit-scrollbar-thumb {
+  background: rgba(42, 38, 32, 0.42) !important;
+  background-clip: padding-box !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(42, 38, 32, 0.62) !important;
+  background-clip: padding-box !important;
+}
+
+/* ── Модалки в порталах (Radix) на paper ────────────────
+   Портал живёт в document.body, вне зоны `[data-pyn-surface]`, поэтому режим
+   ставится на сам лист модалки — селекторы тут «на себе», а не потомковые. */
+[data-pyn-surface='paper'].pyn-modal-sheet {
+  background-color: var(--paper-card) !important;
+  border-color: var(--paper-border) !important;
+  color: var(--paper-text) !important;
+  box-shadow: 0 16px 48px rgba(40, 32, 20, 0.22) !important;
+}
+[data-pyn-surface='paper'].pyn-modal-sheet .text-text-strong {
+  color: var(--paper-text-strong) !important;
+}
+[data-pyn-surface='paper'].pyn-modal-sheet .text-text-secondary,
+[data-pyn-surface='paper'].pyn-modal-sheet .text-text-primary {
+  color: var(--paper-text) !important;
+}
+[data-pyn-surface='paper'].pyn-modal-sheet [class*='text-text-muted'] {
+  color: var(--paper-faint) !important;
+}
+[data-pyn-surface='paper'].pyn-modal-sheet [class*='border-border-subtle'] {
+  border-color: var(--paper-border) !important;
+}
+[data-pyn-surface='paper'].pyn-modal-sheet input,
+[data-pyn-surface='paper'].pyn-modal-sheet textarea,
+[data-pyn-surface='paper'].pyn-modal-sheet select {
+  background: #faf8f4 !important;
+  color: var(--paper-text-strong) !important;
+  -webkit-text-fill-color: var(--paper-text-strong) !important;
+  caret-color: var(--paper-accent) !important;
+}
+[data-pyn-surface='paper'].pyn-modal-sheet input::placeholder,
+[data-pyn-surface='paper'].pyn-modal-sheet textarea::placeholder {
+  color: var(--paper-faint) !important;
+  -webkit-text-fill-color: var(--paper-faint) !important;
+}
+[data-pyn-surface='paper'].pyn-modal-sheet .hover\:bg-accent-clay\/15:hover {
+  background-color: rgba(196, 95, 66, 0.14) !important;
+}
+
+/* ── Форс-мажоры на paper ───────────────────────────────
+   Цвет текста сводки зашит светлым (#e5e5e2) — на листе не читался вовсе.
+   Модалка ФОРС М светлеет по общему правилу `.bg-bg-surface`, но её поля
+   (`text-text-primary`) остаются светлыми — красим и их. */
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .pyn-force-summary {
+  color: var(--paper-text-strong) !important;
+}
+[data-pyn-surface='paper'] .pyn-table-root[data-pyn-table-theme='grok'] .pyn-force-empty {
+  color: var(--paper-faint) !important;
+}
+[data-pyn-surface='paper'] .bg-bg-surface .text-text-primary,
+[data-pyn-surface='paper'] .bg-bg-surface input,
+[data-pyn-surface='paper'] .bg-bg-surface select,
+[data-pyn-surface='paper'] .bg-bg-surface textarea {
+  color: var(--paper-text-strong) !important;
+  -webkit-text-fill-color: var(--paper-text-strong) !important;
+}
+[data-pyn-surface='paper'] .bg-bg-surface select option {
+  background: var(--paper-card) !important;
+  color: var(--paper-text-strong) !important;
+}
+
+/* ── Выбор водителя (поиск по ФИО) на paper ─────────────
+   Попап остаётся тёмным (bg-bg-elevated), но общее правило `.bg-white/[0.04]`
+   красило текст поля в тёмный → «вводимый текст не видно». Переводим попап
+   целиком на бумагу: светлое поле, тёмный текст, светлые карточки. */
+[data-pyn-surface='paper'] .pyn-driver-pick {
+  background: var(--paper-card) !important;
+  border-color: var(--paper-border) !important;
+  color: var(--paper-text) !important;
+}
+[data-pyn-surface='paper'] .pyn-driver-pick-input {
+  background: #faf8f4 !important;
+  border-color: var(--paper-border-strong) !important;
+  color: var(--paper-text-strong) !important;
+  -webkit-text-fill-color: var(--paper-text-strong) !important;
+  caret-color: var(--paper-accent) !important;
+}
+[data-pyn-surface='paper'] .pyn-driver-pick-input::placeholder {
+  color: var(--paper-faint) !important;
+  -webkit-text-fill-color: var(--paper-faint) !important;
+}
+[data-pyn-surface='paper'] .pyn-driver-pick button {
+  background: #faf8f4 !important;
+  border-color: var(--paper-border) !important;
+  color: var(--paper-text) !important;
+}
+[data-pyn-surface='paper'] .pyn-driver-pick button:hover {
+  background: rgba(196, 95, 66, 0.1) !important;
+}
+[data-pyn-surface='paper'] .pyn-driver-pick .text-text-muted {
+  color: var(--paper-faint) !important;
+}
+
 /* ── Notes: compose / cards / fields ───────────────────── */
 [data-pyn-surface='paper'] .notes-compose,
 [data-pyn-surface='paper'] .notes-card {

@@ -2943,6 +2943,77 @@ export function TransportTimeModal({
   );
 }
 
+/**
+ * Плановое «Время» — то же колесо, что у Факта, но СРАЗУ два блока: начало и
+ * конец (юзер 2026-08-04). Раньше диапазон правился текстом.
+ */
+export function TransportTimeRangeModal({
+  value,
+  onClose,
+  onSave,
+}: {
+  value: string;
+  onClose: () => void;
+  onSave: (value: string) => void;
+}): JSX.Element {
+  const parts = String(value || '').split('-');
+  const [from, setFrom] = useState(() => normalizeHm(parts[0], '8:00'));
+  const [to, setTo] = useState(() => normalizeHm(parts[1], '17:00'));
+  return (
+    <>
+      <div className="fixed inset-0 z-50 bg-black/35" onClick={onClose} />
+      <div className="fixed left-1/2 top-1/2 z-[60] w-[440px] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border-subtle bg-bg-surface p-3 text-[12px] shadow-2xl">
+        <div className="text-[13px] font-semibold text-text-strong">Время работы</div>
+        <div className="mt-1 grid grid-cols-2 gap-3">
+          <div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-text-muted">Начало</div>
+            <TimeWheel value={from} onChange={setFrom} />
+          </div>
+          <div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-text-muted">Конец</div>
+            <TimeWheel value={to} onChange={setTo} />
+          </div>
+        </div>
+        <div className="mt-2 text-center text-[18px] font-semibold tabular-nums text-text-strong">
+          {from} – {to}
+        </div>
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => onSave('')}
+            className="mr-auto h-8 rounded-md border border-border-subtle px-3 text-[12px] text-text-muted transition-colors hover:text-text-strong"
+          >
+            Очистить
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 rounded-md border border-border-subtle px-3 text-[12px] text-text-secondary transition-colors hover:text-text-strong"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(`${from}-${to}`)}
+            className="h-8 rounded-md border border-accent-clay/60 px-3 text-[12px] font-medium text-text-strong transition-colors hover:bg-accent-clay/15"
+          >
+            Сохранить
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** «8», «8:5», «08:05» → «8:05»; мусор → fallback. */
+function normalizeHm(raw: string | undefined, fallback: string): string {
+  const s = String(raw || '').trim();
+  const m = /^(\d{1,2})(?::(\d{1,2}))?$/.exec(s);
+  if (!m) return fallback;
+  const { h, m: minute } = parseHmValue(`${m[1]}:${String(m[2] ?? '0').padStart(2, '0')}`, fallback);
+  return hmValue(h, minute);
+}
+
 function TimeWheel({ value, onChange }: { value: string; onChange: (value: string) => void }): JSX.Element {
   const { h, m } = parseHmValue(value);
   const hourRef = useRef<HTMLDivElement | null>(null);

@@ -7,6 +7,8 @@ import { cn } from '@/lib/cn';
 import { usePersonsStore } from '@/lib/persons-store';
 import { initPersons } from '@/lib/persons-repo';
 import { formatMobilePhone } from '@/lib/mol-format';
+import { useWorkspaceSurface } from '@/lib/workspace-surface';
+import '@/components/workspace-surface.css';
 
 /**
  * Карточка машины (база машин, ключ — гаражный №). Открывается из «Добавить»
@@ -25,6 +27,7 @@ export function VehicleCard({
   onClose: () => void;
   onSaved: (veh: FlowVehicle) => void;
 }): JSX.Element {
+  const surface = useWorkspaceSurface('transport');
   const [gosNo, setGosNo] = useState(vehicle?.gos_no ?? '');
   const [color, setColor] = useState(vehicle?.color ?? '');
   const [vtype, setVtype] = useState(vehicle?.vtype ?? '');
@@ -104,7 +107,15 @@ export function VehicleCard({
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[460px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-subtle bg-bg-surface p-4 shadow-2xl outline-none">
+        {/*
+          Radix рендерит портал в document.body — ВНЕ зоны `data-pyn-surface`,
+          поэтому светлая тема раздела карточку не доставала и она оставалась
+          тёмной (юзер 2026-08-05). Ставим режим на сам Content.
+        */}
+        <Dialog.Content
+          data-pyn-surface={surface}
+          className="pyn-modal-sheet fixed left-1/2 top-1/2 z-50 w-[460px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border-subtle bg-bg-surface p-4 shadow-2xl outline-none"
+        >
           <Dialog.Title className="flex items-center gap-2 text-[14px] font-semibold text-text-strong">
             <Truck size={16} strokeWidth={1.75} className="text-accent-clay" />
             Машина · гаражный {garageNo}

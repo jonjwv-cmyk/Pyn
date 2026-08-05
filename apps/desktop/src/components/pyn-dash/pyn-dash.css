@@ -73,6 +73,39 @@
   }
 }
 
+/*
+ * Ряд KPI-плиток — своя сетка на всю ширину shell. Иначе пятая плитка
+ * «сироталась» на второй строке (4 + 1). Здесь колонки делятся поровну между
+ * всеми плитками, сколько бы их ни было.
+ */
+.pyn-dash-kpis {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: var(--pd-gap);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (min-width: 900px) {
+  .pyn-dash-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1200px) {
+  .pyn-dash-kpis {
+    grid-template-columns: repeat(var(--pd-kpi-cols, 4), minmax(0, 1fr));
+  }
+}
+
+/* Плитки внутри своей сетки — каскад появления как у прямых детей shell. */
+.pyn-dash-shell[data-enter='true'] .pyn-dash-kpis > * {
+  animation: pyn-dash-enter var(--pd-dur-enter) var(--pd-ease-out) both;
+}
+.pyn-dash-shell[data-enter='true'] .pyn-dash-kpis > *:nth-child(1) { animation-delay: 28ms; }
+.pyn-dash-shell[data-enter='true'] .pyn-dash-kpis > *:nth-child(2) { animation-delay: 56ms; }
+.pyn-dash-shell[data-enter='true'] .pyn-dash-kpis > *:nth-child(3) { animation-delay: 84ms; }
+.pyn-dash-shell[data-enter='true'] .pyn-dash-kpis > *:nth-child(4) { animation-delay: 112ms; }
+.pyn-dash-shell[data-enter='true'] .pyn-dash-kpis > *:nth-child(5) { animation-delay: 140ms; }
+.pyn-dash-shell[data-enter='true'] .pyn-dash-kpis > *:nth-child(6) { animation-delay: 168ms; }
+
 /* Stagger enter (Svelte-soft) */
 .pyn-dash-shell[data-enter='true'] > * {
   animation: pyn-dash-enter var(--pd-dur-enter) var(--pd-ease-out) both;

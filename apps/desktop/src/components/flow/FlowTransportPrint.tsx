@@ -16,7 +16,13 @@ import {
   isPrintGrayStatus,
   printStatusGroup,
 } from './FlowTransportGrid';
-import { isDokRow, isOkalinaRow, shouldPrintTransportRow, shouldShowTimeBold } from './flow-transport-shift';
+import {
+  isDokRow,
+  isOkalinaRow,
+  shouldPrintTransportRow,
+  shouldShowTimeBold,
+  workMajorPrefix,
+} from './flow-transport-shift';
 import type { FlowDriverOption } from './flow-driver-cell';
 
 /**
@@ -77,6 +83,22 @@ function computeClusterEdges(rows: FlowTransportRow[]): { top: Set<number>; bott
     if (i < rows.length - 1) bottom.add(i);
   }
   return { top: new Set(firstByDay.values()), bottom };
+}
+
+/**
+ * Жирная линия между работами 4.n и 5.n — одна на день, на первой строке блока
+ * 5.x основной статус-группы (юзер 2026-08-04). Считаем по дню целиком, как в
+ * computeClusterEdges: по соседям выходили лишние линии из-за «красного» блока.
+ */
+function computeWorkFiveEdges(rows: FlowTransportRow[]): Set<number> {
+  const firstByDay = new Map<string, number>();
+  rows.forEach((r, i) => {
+    if (printStatusGroup(r.status) !== 1) return;
+    if (workMajorPrefix(r.work) !== 5) return;
+    const d = r.tdate || '';
+    if (!firstByDay.has(d)) firstByDay.set(d, i);
+  });
+  return new Set(firstByDay.values());
 }
 
 function uniqGarageCountByDay(rows: FlowTransportRow[]): number {
@@ -177,6 +199,7 @@ export function FlowTransportPrint({
     [rows, printDok, printOkalina],
   );
   const clusterEdges = useMemo(() => computeClusterEdges(printRows), [printRows]);
+  const workFiveEdges = useMemo(() => computeWorkFiveEdges(printRows), [printRows]);
 
   const multiDay = days.length > 1;
   const title = fmtDaysTitle(days);
@@ -462,6 +485,8 @@ export function FlowTransportPrint({
         .tr-print-sheet .tr-cluster-line td { border-top: 2px solid #000 !important; }
         .tr-print-sheet .tr-cluster-line-bottom td { border-bottom: 2px solid #000 !important; }
         .tr-print-sheet .tr-status-sep td { border-top: 2px solid #000; }
+        /* Отбивка работ 4.n | 5.n — как границы блока 6/7/8. */
+        .tr-print-sheet .tr-work5-line td { border-top: 2px solid #000 !important; }
         .tr-print-sheet .tr-print-dok td,
         .tr-print-sheet .tr-print-okalina td { background: #e4e4e4; color: #000; }
         .tr-print-sheet .tr-dayhead td {
@@ -685,6 +710,8 @@ export function FlowTransportPrint({
                         // Ровно две жирные на день — см. computeClusterEdges().
                         const clusterLine = clusterEdges.top.has(i);
                         const clusterLineBottom = clusterEdges.bottom.has(i);
+                        // Отбивка 4.n | 5.n — не рисуем, если тут уже линия блока 6/7/8.
+                        const workFiveLine = workFiveEdges.has(i) && !clusterEdges.top.has(i);
                         const statusSep =
                           !!prev &&
                           prev.tdate === r.tdate &&
@@ -714,6 +741,7 @@ export function FlowTransportPrint({
                                   grayStatus && 'tr-print-gray',
                                   clusterLine && 'tr-cluster-line',
                                   clusterLineBottom && 'tr-cluster-line-bottom',
+                                  workFiveLine && 'tr-work5-line',
                                   statusSep && 'tr-status-sep',
                                   dok && 'tr-print-dok',
                                   okalina && 'tr-print-okalina',

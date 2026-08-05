@@ -3,7 +3,7 @@
  * Вверху строка поиска; ниже карточки кандидатов.
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Phone } from 'lucide-react';
 import { formatMobilePhone } from '@/lib/mol-format';
 
@@ -13,20 +13,52 @@ export interface DriverPickOption {
   color: string;
   isMol: boolean;
   position?: string;
+  /** Должность содержит «водитель» — такие идут выше остальных сотрудников. */
+  isDriver?: boolean;
+  /** ФИО уже встречалось в разнарядках — такие предлагаем раньше контактов. */
+  fromRoster?: boolean;
 }
+
+/** Группы выдачи: чем меньше номер, тем выше в списке. */
+const GROUP_TITLES = ['', 'На этой машине', 'Из разнарядок', 'Водители и экспедиторы'] as const;
 
 export function FlowDriverPickPopover({
   options,
   current,
+  preferred,
   onPick,
   onClose,
 }: {
   options: readonly DriverPickOption[];
   current: string;
+  /** ФИО водителей ЭТОЙ машины (по гаражному) — они идут первыми, до общей базы. */
+  preferred?: readonly string[];
   onPick: (o: DriverPickOption) => void;
   onClose: () => void;
 }): JSX.Element {
   const [query, setQuery] = useState('');
+
+  const preferredSet = useMemo(
+    () => new Set((preferred ?? []).map((f) => f.trim().toUpperCase()).filter(Boolean)),
+    [preferred],
+  );
+
+  const cur = current.trim().toUpperCase();
+
+  /**
+   * Группа кандидата: 0 — текущий, 1 — водители этой машины, 2 — должность
+   * «водитель», 3 — остальные сотрудники базы. Юзер: искать не только среди
+   * водителей — если ФИО есть в базе, тянуть его с телефоном и признаком МОЛ.
+   */
+  const groupOf = useCallback(
+    (d: DriverPickOption): number => {
+      const fio = d.fio.toUpperCase();
+      if (fio === cur) return 0;
+      if (preferredSet.has(fio)) return 1;
+      return d.fromRoster ? 2 : 3;
+    },
+    [cur, preferredSet],
+  );
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -39,16 +71,15 @@ export function FlowDriverPickPopover({
           const byPos = (d.position || '').toLowerCase().includes(q);
           return byFio || byPhone || byPos;
         });
-    const cur = current.trim().toUpperCase();
     return [...base]
-      .sort((a, b) => (b.fio.toUpperCase() === cur ? 1 : 0) - (a.fio.toUpperCase() === cur ? 1 : 0) || a.fio.localeCompare(b.fio, 'ru'))
+      .sort((a, b) => groupOf(a) - groupOf(b) || a.fio.localeCompare(b.fio, 'ru'))
       .slice(0, 50);
-  }, [options, query, current]);
+  }, [options, query, groupOf]);
 
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/35" onClick={onClose} />
-      <div className="fixed left-1/2 top-[18%] z-50 flex max-h-[min(420px,70vh)] w-[320px] -translate-x-1/2 flex-col rounded-xl border border-border-subtle bg-bg-elevated p-2.5 shadow-2xl">
+      <div className="pyn-driver-pick fixed left-1/2 top-[18%] z-50 flex max-h-[min(420px,70vh)] w-[320px] -translate-x-1/2 flex-col rounded-xl border border-border-subtle bg-bg-elevated p-2.5 shadow-2xl">
         <input
           // eslint-disable-next-line jsx-a11y/no-autofocus
           autoFocus
@@ -65,7 +96,7 @@ export function FlowDriverPickPopover({
               onPick(matches[0]!);
             }
           }}
-          className="mb-2 h-9 w-full shrink-0 rounded-lg border border-white/[0.12] bg-white/[0.04] px-2.5 text-[13px] text-text-primary outline-none placeholder:text-text-muted/55 focus:border-accent-clay/55"
+          className="pyn-driver-pick-input mb-2 h-9 w-full shrink-0 rounded-lg border border-white/[0.12] bg-white/[0.04] px-2.5 text-[13px] text-text-primary outline-none placeholder:text-text-muted/55 focus:border-accent-clay/55"
         />
         <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
           {matches.length === 0 ? (
@@ -73,12 +104,26 @@ export function FlowDriverPickPopover({
               {query.trim() ? 'Не найдено' : 'Нет водителей в базе'}
             </div>
           ) : (
-            matches.map((o) => {
+            matches.map((o, i) => {
               const selected = o.fio === current;
               const phoneDisp = o.phone ? formatMobilePhone(o.phone) : '';
               return (
+                <div key={o.fio} className="contents">
+                  {(() => {
+                    const g = groupOf(o);
+                    const prevG = i > 0 ? groupOf(matches[i - 1]!) : -1;
+                    if (g === prevG || !GROUP_TITLES[g]) return null;
+                    return (
+                      <div
+                        className={`px-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted${
+                          i > 0 ? ' mt-1' : ''
+                        }`}
+                      >
+                        {GROUP_TITLES[g]}
+                      </div>
+                    );
+                  })()}
                 <button
-                  key={o.fio}
                   type="button"
                   onClick={() => onPick(o)}
                   className={[
@@ -103,8 +148,10 @@ export function FlowDriverPickPopover({
                         МОЛ
                       </span>
                     )}
+                    {o.position && !o.isDriver && <span className="truncate">{o.position}</span>}
                   </div>
                 </button>
+                </div>
               );
             })
           )}

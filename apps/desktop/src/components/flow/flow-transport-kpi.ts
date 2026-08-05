@@ -80,6 +80,20 @@ export interface TransportKpis {
   totalFactHours: number;
   /** Разница: факт − план */
   hoursDiff: number;
+  /** Простой «ожидание выгрузки», ч (все записи всех машин) */
+  forceWaitHours: number;
+  /** Простой «поломка ТС», ч */
+  forceBreakdownHours: number;
+  /** Общий простой по форс-мажорам, ч — вычтен из totalFactHours */
+  forceTotalHours: number;
+  /** Сколько строк с форс-мажором */
+  forceRowsCount: number;
+  /** Машину дали, но она не приехала — сорванные работы */
+  noShowCount: number;
+  /** Плановые часы, потерянные из-за «Не приехал» */
+  noShowPlanHours: number;
+  /** Доля сорванных работ от всех работ периода, % */
+  noShowPct: number;
   /** bar — один бакет (день), line — динамика */
   chartMode: 'bar' | 'line';
   chartLabels: string[];
@@ -197,6 +211,47 @@ export function hoursFromStartEnd(start: string, end: string): number {
   let d = e - s;
   if (d < 0) d += 24 * 60;
   return Math.round((d / 60) * 10) / 10;
+}
+
+/** Часы простоя по видам форс-мажора. Записей каждого вида может быть НЕСКОЛЬКО
+ *  на одну машину — суммируем все (юзер 2026-08-04). */
+export interface ForceHours {
+  /** «ожидание выгрузки» */
+  wait: number;
+  /** «поломка ТС» */
+  breakdown: number;
+  total: number;
+}
+
+export function forceHours(forceJson: string): ForceHours {
+  let rows: Array<{ reason?: string; start?: string; end?: string }> = [];
+  try {
+    const parsed = JSON.parse(forceJson || '[]');
+    rows = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return { wait: 0, breakdown: 0, total: 0 };
+  }
+  let wait = 0;
+  let breakdown = 0;
+  for (const r of rows) {
+    const h = hoursFromStartEnd(String(r?.start || ''), String(r?.end || ''));
+    if (h <= 0) continue;
+    if (String(r?.reason || '').toLowerCase().includes('полом')) breakdown += h;
+    else wait += h;
+  }
+  const round = (n: number): number => Math.round(n * 10) / 10;
+  return { wait: round(wait), breakdown: round(breakdown), total: round(wait + breakdown) };
+}
+
+/**
+ * Фактически отработанные часы строки: факт минус простой по форс-мажорам.
+ * Именно это время идёт в дашборд — простой работой не считается.
+ */
+export function factWorkedHours(r: Pick<TransportKpiRow, 'fact_start' | 'fact_end' | 'force_json'>): number {
+  const fact = hoursFromStartEnd(r.fact_start, r.fact_end);
+  if (fact <= 0) return 0;
+  const lost = forceHours(r.force_json || '[]').total;
+  return Math.max(0, Math.round((fact - lost) * 10) / 10);
 }
 
 /**
@@ -463,7 +518,7 @@ function bucketSeries(
     if (!k) continue;
     const acc = buckets.get(k) ?? { plan: 0, fact: 0 };
     acc.plan += hoursFromRange(r.time_range);
-    acc.fact += hoursFromStartEnd(r.fact_start, r.fact_end);
+    acc.fact += factWorkedHours(r);
     buckets.set(k, acc);
   }
   const keys = [...buckets.keys()].sort();
@@ -552,7 +607,7 @@ function byVehicleType(rows: TransportKpiRow[]): VehicleTypeStat[] {
     acc.works += 1;
     const st = (r.status || '').trim();
     if (st === 'Размещен' || st === 'Дополнение') acc.ok += 1;
-    const fh = hoursFromStartEnd(r.fact_start, r.fact_end);
+    const fh = factWorkedHours(r);
     acc.plan += hoursFromRange(r.time_range);
     acc.fact += fh;
     totalFact += fh;
@@ -584,7 +639,7 @@ function driverStats(
     if (!fio) continue;
     const acc = map.get(fio) ?? { phone: '', works: 0, factHours: 0 };
     acc.works += 1;
-    acc.factHours += hoursFromStartEnd(r.fact_start, r.fact_end);
+    acc.factHours += factWorkedHours(r);
     if (!acc.phone && r.driver_phone) acc.phone = formatPhoneRu(r.driver_phone);
     map.set(fio, acc);
   }
@@ -643,12 +698,27 @@ export function computeTransportKpis(
   let totalFact = 0;
   let doneCount = 0;
   let extraCount = 0;
+  let forceWait = 0;
+  let forceBreak = 0;
+  let forceRows = 0;
+  let noShow = 0;
+  let noShowPlan = 0;
   for (const r of cur) {
-    totalPlan += hoursFromRange(r.time_range);
-    totalFact += hoursFromStartEnd(r.fact_start, r.fact_end);
+    const planH = hoursFromRange(r.time_range);
+    totalPlan += planH;
+    totalFact += factWorkedHours(r);
+    const f = forceHours(r.force_json || '[]');
+    forceWait += f.wait;
+    forceBreak += f.breakdown;
+    if (f.total > 0) forceRows += 1;
     const st = (r.status || '').trim();
     if (st === 'Размещен') doneCount += 1;
     if (st === 'Дополнение') extraCount += 1;
+    // «Не приехал» = машину дали, но работы не было: считаем и сорванные план-часы.
+    if (st === 'Не приехал') {
+      noShow += 1;
+      noShowPlan += planH;
+    }
   }
 
   /**
@@ -673,7 +743,7 @@ export function computeTransportKpis(
       if (!k) continue;
       const acc = raw.get(k) ?? { plan: 0, fact: 0 };
       acc.plan += hoursFromRange(r.time_range);
-      acc.fact += hoursFromStartEnd(r.fact_start, r.fact_end);
+      acc.fact += factWorkedHours(r);
       raw.set(k, acc);
     }
     const keys = [...raw.keys()].sort();
@@ -701,6 +771,13 @@ export function computeTransportKpis(
     totalPlanHours: planH,
     totalFactHours: factH,
     hoursDiff: Math.round((factH - planH) * 10) / 10,
+    forceWaitHours: Math.round(forceWait * 10) / 10,
+    forceBreakdownHours: Math.round(forceBreak * 10) / 10,
+    forceTotalHours: Math.round((forceWait + forceBreak) * 10) / 10,
+    forceRowsCount: forceRows,
+    noShowCount: noShow,
+    noShowPlanHours: Math.round(noShowPlan * 10) / 10,
+    noShowPct: cur.length > 0 ? Math.round((noShow / cur.length) * 1000) / 10 : 0,
     chartMode,
     chartLabels: series.labels,
     chartKeys: series.keys,
