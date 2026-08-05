@@ -12,6 +12,7 @@ import {
   Italic,
   ListOrdered,
   Loader2,
+  Pencil,
   Plus,
   StickyNote,
   Trash2,
@@ -142,6 +143,35 @@ function wrapSelection(
   return { next, selStart: pos, selEnd: pos };
 }
 
+/**
+ * Нумерованный список по ВЫДЕЛЕНИЮ: каждый непустой абзац в выделении получает
+ * свой номер (1. 2. 3.), а не одна текущая строка. Без выделения — нумеруется
+ * строка с курсором. Уже пронумерованные строки перенумеровываются, а не
+ * получают «1. 1. ».
+ */
+function numberSelectedLines(
+  text: string,
+  selStart: number,
+  selEnd: number,
+): { next: string; selStart: number; selEnd: number } {
+  const from = text.lastIndexOf('\n', selStart - 1) + 1;
+  const endIdx = text.indexOf('\n', selEnd);
+  const to = endIdx === -1 ? text.length : endIdx;
+  const block = text.slice(from, to);
+  let n = 0;
+  const numbered = block
+    .split('\n')
+    .map((line) => {
+      const bare = line.replace(/^\s*\d+\.\s+/, '');
+      if (!bare.trim()) return bare;
+      n += 1;
+      return `${n}. ${bare}`;
+    })
+    .join('\n');
+  const next = `${text.slice(0, from)}${numbered}${text.slice(to)}`;
+  return { next, selStart: from, selEnd: from + numbered.length };
+}
+
 function autoResizeTextarea(el: HTMLTextAreaElement | null): void {
   if (!el) return;
   el.style.height = 'auto';
@@ -196,6 +226,10 @@ export function NotesScreen(): JSX.Element {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   const [editId, setEditId] = useState<number | null>(null);
+  /** Карточка в режиме правки — для «клик мимо = выход». */
+  const editCardRef = useRef<HTMLElement | null>(null);
+  /** Заметка, у которой зажали ручку перетаскивания (только она draggable). */
+  const [dragArmedId, setDragArmedId] = useState<number | null>(null);
   const [editText, setEditText] = useState('');
   const dragId = useRef<number | null>(null);
   const cacheRef = useRef<Map<CacheKey, Note[]>>(new Map());
@@ -300,6 +334,13 @@ export function NotesScreen(): JSX.Element {
       });
       setCText('');
       setCItems([]);
+      // Высота поля — inline-стиль от автороста; без сброса «шаблон» оставался
+      // ростом с только что сохранённую заметку. Возвращаем компактный вид.
+      const composer = composerRef.current;
+      if (composer) {
+        composer.style.height = '';
+        requestAnimationFrame(() => autoResizeTextarea(composerRef.current));
+      }
       patchInCache(cacheRef.current, saved);
       if (scope === 'private' && bucket === 'active') {
         setNotes((prev) => [saved, ...prev.filter((n) => n.id !== saved.id)]);
@@ -558,6 +599,46 @@ export function NotesScreen(): JSX.Element {
     [editText],
   );
 
+  // Отпустили кнопку мыши где угодно — снимаем «взвод» перетаскивания, иначе
+  // карточка осталась бы draggable и снова мешала выделять текст.
+  useEffect(() => {
+    if (dragArmedId == null) return;
+    const off = (): void => setDragArmedId(null);
+    window.addEventListener('mouseup', off);
+    return () => window.removeEventListener('mouseup', off);
+  }, [dragArmedId]);
+
+  /**
+   * Фокус в поле правки — БЕЗ прокрутки страницы: `autoFocus` утаскивал длинную
+   * заметку вверх, и до её начала было не домотать (юзер 2026-08-04).
+   */
+  useEffect(() => {
+    if (editId == null) return;
+    const ta = document.getElementById(`note-edit-${editId}`) as HTMLTextAreaElement | null;
+    if (!ta) return;
+    autoResizeTextarea(ta);
+    ta.focus({ preventScroll: true });
+    const end = ta.value.length;
+    ta.setSelectionRange(end, end);
+  }, [editId]);
+
+  /**
+   * Выход из правки кликом ЗА пределами карточки (не только кнопкой): текст,
+   * если его меняли, сохраняем — иначе правки молча терялись бы.
+   */
+  useEffect(() => {
+    if (editId == null) return;
+    const onDown = (e: MouseEvent): void => {
+      const card = editCardRef.current;
+      if (!card || card.contains(e.target as Node)) return;
+      const n = notes.find((x) => x.id === editId);
+      if (n && editText !== (n.body_md || n.title || '')) void saveEdit(n);
+      else setEditId(null);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [editId, notes, editText, saveEdit]);
+
   const onDropStatus = useCallback(
     async (target: NoteStatus) => {
       const id = dragId.current;
@@ -698,13 +779,11 @@ export function NotesScreen(): JSX.Element {
                 onClick={() => {
                   const el = composerRef.current;
                   if (!el) return;
-                  const start = el.selectionStart;
-                  const lineStart = cText.lastIndexOf('\n', start - 1) + 1;
-                  const next = `${cText.slice(0, lineStart)}1. ${cText.slice(lineStart)}`;
-                  setCText(next);
+                  const r = numberSelectedLines(cText, el.selectionStart, el.selectionEnd);
+                  setCText(r.next);
                   requestAnimationFrame(() => {
                     el.focus();
-                    el.setSelectionRange(start + 3, start + 3);
+                    el.setSelectionRange(r.selStart, r.selEnd);
                     autoResizeTextarea(el);
                   });
                 }}
@@ -838,12 +917,17 @@ export function NotesScreen(): JSX.Element {
             return (
               <article
                 key={n.id}
-                draggable={owner}
+                ref={editing ? editCardRef : undefined}
+                // draggable включаем ТОЛЬКО пока держат ручку (слева вверху):
+                // при draggable на всей карточке выделение текста мышью
+                // превращалось в перетаскивание — скопировать было нельзя.
+                draggable={owner && dragArmedId === n.id}
                 onDragStart={() => {
                   dragId.current = n.id;
                 }}
                 onDragEnd={() => {
                   dragId.current = null;
+                  setDragArmedId(null);
                 }}
                 className={cn(
                   'notes-card group rounded-xl border p-3.5 shadow-md transition-colors',
@@ -854,7 +938,12 @@ export function NotesScreen(): JSX.Element {
               >
                 <div className="mb-2 flex items-start gap-2">
                   {owner && (
-                    <span className="mt-0.5 cursor-grab text-zinc-600 opacity-0 group-hover:opacity-100">
+                    <span
+                      className="mt-0.5 cursor-grab text-zinc-600 opacity-40 transition-opacity group-hover:opacity-100"
+                      title="Перетащить заметку"
+                      onMouseDown={() => setDragArmedId(n.id)}
+                      onMouseUp={() => setDragArmedId(null)}
+                    >
                       <GripVertical size={14} />
                     </span>
                   )}
@@ -865,6 +954,17 @@ export function NotesScreen(): JSX.Element {
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-0.5 opacity-80 group-hover:opacity-100">
+                    {owner && !editing && (
+                      <IconBtn
+                        title="Редактировать"
+                        onClick={() => {
+                          setEditId(n.id);
+                          setEditText(n.body_md || n.title || '');
+                        }}
+                      >
+                        <Pencil size={13} />
+                      </IconBtn>
+                    )}
                     {owner && bucket === 'active' && (
                       <IconBtn title="Выполнено" onClick={() => void setStatus(n, 'done')} accent="green">
                         <Check size={13} strokeWidth={2.5} />
@@ -922,13 +1022,11 @@ export function NotesScreen(): JSX.Element {
                         onClick={() => {
                           const ta = document.getElementById(`note-edit-${n.id}`) as HTMLTextAreaElement | null;
                           if (!ta) return;
-                          const start = ta.selectionStart;
-                          const lineStart = editText.lastIndexOf('\n', start - 1) + 1;
-                          const next = `${editText.slice(0, lineStart)}1. ${editText.slice(lineStart)}`;
-                          setEditText(next);
+                          const r = numberSelectedLines(editText, ta.selectionStart, ta.selectionEnd);
+                          setEditText(r.next);
                           requestAnimationFrame(() => {
                             ta.focus();
-                            ta.setSelectionRange(start + 3, start + 3);
+                            ta.setSelectionRange(r.selStart, r.selEnd);
                             autoResizeTextarea(ta);
                           });
                         }}
@@ -951,13 +1049,13 @@ export function NotesScreen(): JSX.Element {
                           setEditText(r.next);
                           requestAnimationFrame(() => ta.setSelectionRange(r.selStart, r.selEnd));
                         }
-                      }}
-                      ref={(el) => {
-                        if (el) autoResizeTextarea(el);
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setEditId(null);
+                        }
                       }}
                       rows={4}
                       className="notes-field w-full resize-none rounded-lg border border-white/10 bg-black/25 px-2.5 py-2 text-[13px] leading-relaxed text-zinc-200 outline-none"
-                      autoFocus
                     />
                     <div className="flex gap-1.5">
                       <button
@@ -977,15 +1075,9 @@ export function NotesScreen(): JSX.Element {
                     </div>
                   </div>
                 ) : (
-                  <button
-                    type="button"
-                    className="w-full cursor-text text-left"
-                    onClick={() => {
-                      if (!owner) return;
-                      setEditId(n.id);
-                      setEditText(n.body_md || n.title || '');
-                    }}
-                  >
+                  // Не кнопка: текст должен выделяться и копироваться прямо тут,
+                  // без входа в редактирование (вход — карандашом в шапке).
+                  <div className="w-full cursor-text select-text text-left">
                     {n.body_md || n.title ? (
                       <div
                         className="notes-md max-w-none text-[13.5px] leading-relaxed text-zinc-200 [&_a]:text-sky-400 [&_code]:rounded [&_code]:bg-black/30 [&_code]:px-1 [&_img]:my-2 [&_img]:max-h-64 [&_img]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-black/30 [&_pre]:p-2"
@@ -994,7 +1086,7 @@ export function NotesScreen(): JSX.Element {
                     ) : !n.items.length ? (
                       <div className="text-[13px] italic text-zinc-600">пусто</div>
                     ) : null}
-                  </button>
+                  </div>
                 )}
 
                 {n.items.length > 0 && (
