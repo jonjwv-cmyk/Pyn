@@ -75,6 +75,7 @@ import { PRIORITY_OPTIONS, priorityDisplay } from './flow-eps';
 import { whKey, whMapGet } from './flow-warehouse';
 import { pointCellDisplay, FLOW_WAREHOUSE_POINT_PURPOSE } from './flow-map-points';
 import {
+  MONTH_ABBR_RU,
   fmtPct,
   graphDateSoon,
   isoAddDays,
@@ -343,7 +344,24 @@ function unpackMolClip(raw: unknown): { fio: string; free: boolean } {
 }
 
 const DOW_RU = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ'] as const;
-const MONTH_RU = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+/**
+ * Месяцы — ОБЩИЙ канон раздела «Поток» (MONTH_ABBR_RU в flow-sandbox.fixtures).
+ * Свой список тут был причиной разнобоя: «6 авг · 14:30» в одной колонке и
+ * «6 авг 25» в другой. Формат один на все даты вкладки:
+ *   дата          → «6 авг.»            (год добавляем, только если НЕ текущий)
+ *   дата + время  → «6 авг. · 14:30»
+ *   день недели   → «ПН · 6 авг.»
+ * Разделитель между смысловыми частями везде « · ».
+ */
+function fmtFlowDate(raw: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const d = new Date(s.includes('T') ? s : s.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return s;
+  const mon = MONTH_ABBR_RU[d.getMonth()] ?? '';
+  const year = d.getFullYear() === new Date().getFullYear() ? '' : ` ${String(d.getFullYear()).slice(-2)}`;
+  return `${d.getDate()} ${mon}${year}`;
+}
 
 /** «ПН · 6 авг» — компактно, как в Транспорте. */
 function fmtDay(iso: string): string {
@@ -351,7 +369,7 @@ function fmtDay(iso: string): string {
   if (!m?.[1] || !m[2] || !m[3]) return String(iso ?? '');
   const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
   if (Number.isNaN(d.getTime())) return iso;
-  return `${DOW_RU[d.getDay()] ?? ''} · ${Number(m[3])} ${MONTH_RU[Number(m[2]) - 1] ?? ''}`;
+  return `${DOW_RU[d.getDay()] ?? ''} · ${Number(m[3])} ${MONTH_ABBR_RU[Number(m[2]) - 1] ?? ''}`;
 }
 
 /** ISO или ДД.ММ.ГГГГ → ISO. */
@@ -437,19 +455,14 @@ function fmtWhen(raw: string): string {
   if (!s) return '';
   const d = new Date(s.includes('T') ? s : s.replace(' ', 'T'));
   if (Number.isNaN(d.getTime())) return s;
-  return `${d.getDate()} ${MONTH_RU[d.getMonth()] ?? ''} · ${String(d.getHours()).padStart(2, '0')}:${String(
-    d.getMinutes(),
-  ).padStart(2, '0')}`;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${fmtFlowDate(raw)} · ${hh}:${mm}`;
 }
 
 /** Дата для ORD name, date: «6 авг 25» (год двумя цифрами, не 2025). */
 function fmtOrdInfoDate(raw: string): string {
-  const s = String(raw || '').trim();
-  if (!s) return '';
-  const d = new Date(s.includes('T') ? s : s.replace(' ', 'T'));
-  if (Number.isNaN(d.getTime())) return s;
-  const yy = String(d.getFullYear()).slice(-2);
-  return `${d.getDate()} ${MONTH_RU[d.getMonth()] ?? ''} ${yy}`;
+  return fmtFlowDate(raw);
 }
 
 /** «Имя · 6 авг 25». */

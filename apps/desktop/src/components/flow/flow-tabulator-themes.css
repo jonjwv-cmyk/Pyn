@@ -1515,3 +1515,29 @@
    ИЗ высот ячеек (variableHeight), и процент от строки даёт круговую
    зависимость — браузер схлопывает её непредсказуемо. Высоту ячеек Tabulator
    выравнивает сам после расчёта строки. */
+
+/* ============================================================
+   ПРАВКА 6 (2026-08-06): в редакторе ячейки не видно конца текста.
+   Выше по файлу textarea заданы `max-height: none` + `overflow-y: hidden`
+   + `resize: none`: поле не ограничено по высоте и не прокручивается, поэтому
+   длинный текст просто уходил за пределы ячейки без возможности его увидеть.
+   Даём потолок и прокрутку — как в ячейке Excel/Google Таблиц.
+   ============================================================ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing textarea,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] textarea.flow-form-note-editor {
+  max-height: 40vh !important;
+  overflow-y: auto !important;
+  resize: vertical !important;
+}
+.flow-form-root .tabulator-cell.tabulator-editing textarea::-webkit-scrollbar {
+  width: 9px;
+}
+.flow-form-root .tabulator-cell.tabulator-editing textarea::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--pyn-text-muted);
+}
+/* Открытый редактор рисуется поверх соседних строк, иначе его обрежет строка. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing {
+  overflow: visible !important;
+  z-index: 40;
+}
