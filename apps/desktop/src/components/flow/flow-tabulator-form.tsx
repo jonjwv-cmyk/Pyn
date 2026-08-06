@@ -1867,7 +1867,6 @@ export function FlowTabulatorForm({
         }),
         text('pr', 'FR', 56, { editor: 'input', cellEdited: (cell) => void doEditCell(cell) }),
         text('point', 'ТОЧКА', 110, {
-          variableHeight: true,
           cssClass: `flow-form-wrap ${COL_BLOCK_END}`,
           // Раскрытие списка точек выгрузки склада-получателя (с карты).
           editor: 'list',
@@ -1890,7 +1889,6 @@ export function FlowTabulatorForm({
         }),
         text('time_at', 'Выгружен', 116, { visible: false, formatter: (cell) => fmtWhen(String(cell.getValue() ?? '')) }),
         text('ord_info', 'ORD name, date', 160, {
-          variableHeight: true,
           visible: false,
           cssClass: `flow-form-wrap ${COL_BLOCK_END}`,
           // Имя · день месяц гг (25/26, не 2025).
@@ -1929,7 +1927,6 @@ export function FlowTabulatorForm({
         text('q', 'Q', 44, { cssClass: 'flow-form-col-bold' }),
         text('no_num', 'NO. №', 92),
         text('mat', 'MAT', matW, {
-          variableHeight: true,
           // Wrap; высота ВСЕХ строк единая (reflowFormLayout) — selection/границы стабильны.
           cssClass: 'flow-form-text-wrap',
           minWidth: 120,
@@ -1942,7 +1939,6 @@ export function FlowTabulatorForm({
         }),
         // ЖИВОЕ тех-наименование из базы ВГХ (не снимок строки).
         text('tech_name', 'TECH NAME', techW, {
-          variableHeight: true,
           visible: false,
           cssClass: 'flow-form-text-wrap',
           minWidth: 120,
@@ -1981,7 +1977,6 @@ export function FlowTabulatorForm({
           // как в Excel. Shift+Enter — новая строка, Enter — сохранить.
           cssClass: 'flow-form-note',
           minWidth: 120,
-          variableHeight: true,
           editor: 'textarea',
           editorParams: { shiftEnterSubmit: false, verticalNavigation: 'editor' },
           formatter: (cell) => {
@@ -1989,7 +1984,8 @@ export function FlowTabulatorForm({
             if (!t) {
               return `<span class="flow-form-note-empty" title="Двойной клик — заметка">${NOTE_EMPTY_ICO}</span>`;
             }
-            return `<span class="flow-form-note-text">${escapeHtml(t)}</span>`;
+            // Полный текст — в подсказке; целиком читается и правится в редакторе.
+            return `<span class="flow-form-note-text" title="${escapeAttr(t)}">${escapeHtml(t)}</span>`;
           },
           cellEdited: (cell) => {
             void doEditCell(cell);
@@ -2003,7 +1999,6 @@ export function FlowTabulatorForm({
           cellEdited: (cell) => void doEditCell(cell),
         }),
         text('mol', 'МОЛ', 280, {
-          variableHeight: true,
           cssClass: 'flow-form-mol',
           // Пила вокруг ФИО (pad по бокам); телефон с 📞 под НАЧАЛОМ текста ФИО.
           // Пусто → «нет МОЛа» только если на TO 0 МОЛов. Copy: free-маркер.
@@ -2064,7 +2059,6 @@ export function FlowTabulatorForm({
           },
         },
         text('request', 'ЗАПРОС', 140, {
-          variableHeight: true,
           visible: false,
           cssClass: 'flow-form-wrap',
           editor: 'textarea',
@@ -2080,8 +2074,13 @@ export function FlowTabulatorForm({
         layout: 'fitData',
         height: '100%',
         index: 'id',
-        // rowHeight НЕ задаём: высоту строки считает Tabulator по колонкам с
-        // variableHeight (MAT / TECH NAME / NOTE / ТОЧКА / МОЛ / ЗАПРОС).
+        // ФИКСИРОВАННАЯ высота строки — та же модель, что в Транспорте.
+        // variableHeight убран сознательно: он заставляет Tabulator мерить каждую
+        // ячейку на каждом рендере, строки получаются разной высоты, а
+        // закреплённые колонки (отдельный слой) визуально не поспевают за телом
+        // при прокрутке. Длинный текст живёт в подсказке и в редакторе, а для
+        // NOTE — полноценный многострочный ввод с прокруткой.
+        rowHeight: 30,
         placeholder: '<div class="flow-form-placeholder">Нет строк</div>',
         editTriggerEvent: 'dblclick',
         movableColumns: false,

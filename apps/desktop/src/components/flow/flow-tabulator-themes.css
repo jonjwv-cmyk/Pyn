@@ -1541,3 +1541,39 @@
   overflow: visible !important;
   z-index: 40;
 }
+
+/* ============================================================
+   ПРАВКА 7 (2026-08-06): ровная сетка и закреплённые колонки без отставания.
+   ------------------------------------------------------------
+   Высота строк снова ФИКСИРОВАННАЯ (rowHeight в опциях), как в Транспорте.
+   Автовысота (variableHeight) заставляла Tabulator мерить каждую ячейку на
+   каждом рендере: строки получались разной высоты, а закреплённые колонки —
+   отдельный слой — визуально не поспевали за телом при прокрутке.
+   Перенос и прокрутка остаются там, где их вписывают руками: колонка NOTE.
+   ============================================================ */
+
+/* Все ячейки — одна строка текста, обрезка с многоточием, полное значение
+   в подсказке. Ровно по сетке, дёшево для рендера. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell:not(.tabulator-editing) {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+/* Исключение — МОЛ: две строки (ФИО в пиле + телефон) в пределах высоты строки. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-mol:not(.tabulator-editing) {
+  white-space: normal !important;
+}
+/* NOTE — сюда вписывают руками: показываем до двух строк, дальше многоточие,
+   полный текст открывается в редакторе (двойной клик) с прокруткой. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-note:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='note']:not(.tabulator-editing) {
+  white-space: normal !important;
+  overflow: hidden !important;
+}
+.flow-form-root .flow-form-note-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.2;
+}
