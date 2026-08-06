@@ -20,8 +20,6 @@ import {
 } from 'tabulator-tables';
 import 'tabulator-tables/dist/css/tabulator.min.css';
 import './flow-tabulator-themes.css';
-// Все стили вкладки — в одном файле (см. шапку flow-form-grid.css).
-import './flow-form-grid.css';
 import * as Popover from '@radix-ui/react-popover';
 import {
   ArrowDownUp,

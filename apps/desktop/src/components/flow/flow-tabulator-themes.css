@@ -476,3 +476,984 @@
   line-height: 1.35;
 }
 
+/* ============================================================
+   Формирование (flow-tabulator-form.tsx) — ТЗ 2026-08-06 п.5.
+   Вид = grok-Транспорт один в один; светлый «бумажный» лист даёт
+   WorkspaceSurfaceToggle раздела (data-pyn-surface="paper"), а не вторая тема.
+   Отличия только те, что просил юзер: ПЛОТНО (без пустоты у краёв ячейки),
+   ВЕРТИКАЛЬНАЯ сетка между ВСЕМИ колонками, границы дней/складов.
+
+   ⚠️ СПЕЦИФИЧНОСТЬ. pyn-table-theme.css задаёт
+   `.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell {
+      padding: 8px 12px !important; border-right: none !important }` — это (0,3,1),
+   и правила вида `.flow-form-root .tabulator-cell` (0,2,1) молча проигрывали:
+   не было ни сетки, ни плотности. Поэтому селекторы ниже добавляют
+   `.pyn-table-root[data-pyn-table-theme='grok']` — (0,4,1), выигрывают честно.
+   Не «упрощать» селекторы обратно.
+   ============================================================ */
+/* Заголовок колонок — как в Транспорте (pyn-table-theme), только сетка 1px. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-header .tabulator-col,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-col {
+  border-right: 1px solid var(--pyn-border-soft) !important;
+  border-bottom: 1px solid var(--pyn-border-soft) !important;
+}
+/* Не перебиваем padding/font заголовка — иначе chrome-высота «плывёт» vs Транспорт. */
+/* Тонкая аккуратная сетка — все линии 1px. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell {
+  padding: 0 4px !important;
+  font-size: 11.5px !important;
+  line-height: 1.15 !important;
+  border-right: 1px solid var(--pyn-border-soft) !important;
+  border-bottom: 1px solid var(--pyn-border-soft) !important;
+  border-left: none !important;
+  border-top: none !important;
+}
+/* min-height вместо table.rowHeight — иначе Tabulator режет multi-line MAT/TECH. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row {
+  min-height: 36px;
+  border-bottom: none !important;
+  border-top: none !important;
+}
+/*
+ * Горизонталь — единственные «толстые» линии:
+ *  • ГРАФ-блоки (склад удалён / Нет / день) — жирная + цвет;
+ *  • TO внутри блока — полужирная, заметная.
+ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  border-top: 2px solid var(--pyn-accent, #d97757) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  border-top: 1.5px solid color-mix(in srgb, var(--pyn-accent, #d97757) 55%, var(--pyn-border, #5a5650)) !important;
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  border-top-color: #c4785a !important;
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  border-top-color: color-mix(in srgb, #c4785a 50%, #c4bbb0) !important;
+}
+/*
+ * Короткие поля — одна строка без ellipsis.
+ * MAT / TECH NAME / NOTE — отдельный wrap (ниже).
+ * editing: overflow не visible — иначе input не «проваливается» в ячейку (как Транспорт).
+ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell:not(.flow-form-mol):not(.flow-form-text-wrap):not(.flow-form-note):not(.tabulator-editing) {
+  white-space: nowrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+.flow-form-root .tabulator-cell.flow-form-wrap:not(.tabulator-editing) {
+  white-space: nowrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+/*
+ * MAT + TECH NAME: wrap; высота строки = max(видимых ячеек) после normalizeHeight.
+ * Скрытая tech_name (display:none) даёт offsetHeight 0 → не раздувает строки.
+ * ⚠️ height:auto на cell ломает frozen; высоту задаёт row, cell.fill.
+ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-text-wrap,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='mat'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='tech_name'] {
+  white-space: normal !important;
+  overflow: hidden !important;
+  text-overflow: clip !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
+  line-height: 1.28 !important;
+  vertical-align: top !important;
+}
+.flow-form-root .flow-form-text-wrap-inner {
+  display: block;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.28;
+  /* контент задаёт intrinsic height до normalizeHeight — не clamp */
+  max-height: none !important;
+}
+/* Все ячейки строки — одна высота (anti-chessboard, frozen + scroll body). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row {
+  box-sizing: border-box;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell {
+  box-sizing: border-box !important;
+  /* top: первая строка всех колонок на одной линии; высота ячеек — одна (JS) */
+  vertical-align: top !important;
+}
+/* NOTE: wrap + textarea-подкладка в ячейке (Enter/blur = save). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-note,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='note'] {
+  white-space: normal !important;
+  overflow: hidden !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
+  line-height: 1.3 !important;
+  position: relative !important;
+  cursor: text;
+  vertical-align: top !important;
+}
+.flow-form-root .flow-form-note-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 28px;
+  height: 100%;
+  color: var(--pyn-text-muted, #9a968c);
+  opacity: 0.42;
+  pointer-events: none;
+}
+.flow-form-root .flow-form-note-empty .flow-form-note-ico {
+  display: block;
+}
+.flow-form-root .flow-form-note-text {
+  display: block;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.3;
+  max-height: none;
+}
+/* textarea-подкладка: на всю ячейку, растёт с текстом */
+.flow-form-root .flow-form-note-editor,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='note'].tabulator-editing textarea,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] textarea.flow-form-note-editor {
+  display: block !important;
+  position: relative !important;
+  inset: auto !important;
+  width: 100% !important;
+  min-height: 34px !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 6px 8px !important;
+  box-sizing: border-box !important;
+  border: none !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  resize: none !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  font-family: inherit !important;
+  line-height: 1.35 !important;
+  background: #302f2d !important;
+  color: #f5f4ef !important;
+  caret-color: #d97757 !important;
+  overflow-y: hidden !important;
+}
+[data-pyn-surface='paper'] .flow-form-root textarea.flow-form-note-editor,
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='note'].tabulator-editing textarea {
+  background: #faf8f4 !important;
+  color: #1a1714 !important;
+  caret-color: #c45f42 !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='note'].tabulator-editing {
+  overflow: visible !important;
+  padding: 0 !important;
+  outline: 1px solid rgba(217, 119, 87, 0.55) !important;
+  outline-offset: -1px !important;
+  background: #302f2d !important;
+  z-index: 8 !important;
+}
+/*
+ * Hover: solid на каждой ячейке (включая frozen) — один цвет строки.
+ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row:hover .tabulator-cell {
+  background: var(--pyn-bg-row-hover, rgba(255, 255, 255, 0.05)) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set:hover .tabulator-cell {
+  background: rgb(88, 235, 145) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-range-selected,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-range-only-cell-selected {
+  background: rgba(217, 119, 87, 0.16) !important;
+}
+/*
+ * Все ячейки строки — top-align контента + одинаковая height (см. normalizeRowHeights).
+ * Иначе multi-line MAT и single-line FR дают «ломаные» border-bottom.
+ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell {
+  vertical-align: top !important;
+}
+/*
+ * Inline-редактор прочих полей — input на всю ячейку, каретка по центру.
+ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing:not([tabulator-field='note']) {
+  overflow: hidden !important;
+  padding: 0 !important;
+  position: relative !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing:not([tabulator-field='note']) input,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing:not([tabulator-field='note']) select {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 8px !important;
+  line-height: normal !important;
+  font-size: 12px !important;
+  box-sizing: border-box !important;
+  border: none !important;
+  outline: none !important;
+  vertical-align: middle !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-col-title {
+  white-space: nowrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+.flow-form-root .tabulator-cell.flow-form-col-graf {
+  font-weight: 600;
+}
+/* ГРАФ: ближайшая дата (≤ сегодня+7) — зелёная; склада нет в графике — приглушённо. */
+.flow-form-root .flow-form-graf-soon {
+  color: var(--pyn-ok, #7dc061);
+}
+[data-pyn-surface='paper'] .flow-form-root .flow-form-graf-soon {
+  color: #2f7d3a;
+}
+.flow-form-root .flow-form-graf-none {
+  color: var(--pyn-text-muted);
+  font-weight: 400;
+  opacity: 0.75;
+}
+/* Склад отсутствует в базе / удалён — заметнее «Нет», выше в сортировке. */
+.flow-form-root .flow-form-graf-removed {
+  color: #d08080;
+  font-weight: 600;
+  opacity: 0.95;
+}
+[data-pyn-surface='paper'] .flow-form-root .flow-form-graf-removed {
+  color: #a04040;
+}
+/* Строка с назначенным днём (RGB 102/255/153) — текст тёмный в обоих режимах. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set .tabulator-cell {
+  color: #14301f !important;
+}
+/* OFF / NEW — компактные ярлыки. */
+.flow-form-root .flow-form-tag {
+  display: inline-block;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 15px;
+}
+.flow-form-root .flow-form-tag--off {
+  background: rgba(229, 115, 115, 0.18);
+  color: var(--pyn-danger, #e57373);
+}
+[data-pyn-surface='paper'] .flow-form-root .flow-form-tag--off {
+  color: #b3453b;
+}
+.flow-form-root .flow-form-tag--new {
+  background: rgba(90, 150, 240, 0.18);
+  color: #7fb2f0;
+}
+[data-pyn-surface='paper'] .flow-form-root .flow-form-tag--new {
+  color: #1b5aa0;
+}
+/* Согл — тот же квадратик, что в фасетах и Транспорте. */
+.flow-form-root .tabulator-cell .pyn-tick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--pyn-border);
+  background: var(--pyn-bg-elevated);
+  color: transparent;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.flow-form-root .tabulator-cell .pyn-tick--on {
+  border-color: var(--pyn-accent);
+  background: var(--pyn-accent-dim);
+  color: var(--pyn-accent);
+}
+/* МОЛ: пила вокруг ФИО (небольшой pad по бокам); телефон + 📞 ровно под текстом ФИО. */
+.flow-form-root .tabulator-cell.flow-form-mol {
+  overflow: hidden;
+}
+.flow-form-root .flow-form-mol-stack {
+  display: flex;
+  min-width: 0;
+  width: max-content;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  line-height: 1.3;
+}
+/* pad 1×6: фон чуть шире ФИО; телефон с padding-left: 6px = под началом букв.
+   ФИО всегда одной строкой целиком (nowrap), без переноса. */
+.flow-form-root .flow-form-mol-pill {
+  display: inline-block;
+  max-width: 100%;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  background: rgba(154, 160, 166, 0.14);
+}
+/* работает — приглушённый зелёный */
+.flow-form-root .flow-form-mol-pill--ok {
+  color: #6db87e;
+  background: rgba(90, 158, 111, 0.16);
+}
+[data-pyn-surface='paper'] .flow-form-root .flow-form-mol-pill--ok {
+  color: #2a6b35;
+  background: rgba(47, 125, 58, 0.12);
+}
+/* прочие статусы — мягкий красноватый */
+.flow-form-root .flow-form-mol-pill--error {
+  color: #d08080;
+  background: rgba(196, 92, 92, 0.14);
+}
+[data-pyn-surface='paper'] .flow-form-root .flow-form-mol-pill--error {
+  color: #a04040;
+  background: rgba(180, 70, 70, 0.1);
+}
+/* статус неизвестен / нет в базе — серый */
+.flow-form-root .flow-form-mol-pill--neutral {
+  color: var(--pyn-text-muted);
+  background: rgba(154, 160, 166, 0.14);
+}
+[data-pyn-surface='paper'] .flow-form-root .flow-form-mol-pill--neutral {
+  color: #5c5850;
+  background: rgba(90, 88, 82, 0.1);
+}
+/* нет МОЛа на складе / не выбран */
+.flow-form-root .flow-form-mol-pill--nomol {
+  color: #d08080;
+  background: rgba(196, 92, 92, 0.12);
+  font-weight: 600;
+  font-size: 11px;
+}
+[data-pyn-surface='paper'] .flow-form-root .flow-form-mol-pill--nomol {
+  color: #a04040;
+  background: rgba(180, 70, 70, 0.1);
+}
+/* телефон: pad-left = pill pad-left → иконка+номер под началом ФИО */
+.flow-form-root .flow-form-mol-phone {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 0 0 6px;
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  color: var(--pyn-text-muted);
+  white-space: nowrap;
+  opacity: 1;
+}
+.flow-form-root .flow-form-mol-phone-ico {
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+.flow-form-root .flow-form-placeholder {
+  padding: 24px;
+  font-size: 13px;
+  color: var(--pyn-text-muted);
+}
+/* Подвал = тот же pyn-table-chrome (фон/бордер), что верхняя панель Транспорта. */
+.flow-form-root .flow-form-footer.pyn-table-chrome {
+  min-height: 0;
+  border-bottom: none;
+}
+.flow-form-root .flow-form-footer .flow-tab-toolbar {
+  min-height: 28px;
+}
+
+/* Попап выбора МОЛ (flow-mol-pick-popover.tsx) — токены темы, светлый и тёмный. */
+.flow-mol-pick {
+  display: flex;
+  width: 340px;
+  max-height: 460px;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--pyn-radius, 12px);
+  border: 1px solid var(--pyn-border);
+  background: var(--pyn-bg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.32);
+  font-size: 12px;
+  color: var(--pyn-text);
+}
+.flow-mol-pick-search {
+  border: none;
+  border-bottom: 1px solid var(--pyn-border-soft);
+  padding: 9px 12px;
+  font-size: 12.5px;
+  background: transparent;
+  color: inherit;
+  outline: none;
+}
+.flow-mol-pick-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+.flow-mol-pick-group {
+  padding: 6px 8px 3px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--pyn-text-muted);
+}
+.flow-mol-pick-item {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 7px;
+  border-radius: 8px;
+  padding: 6px 8px;
+  text-align: left;
+  background: transparent;
+}
+.flow-mol-pick-item:hover {
+  background: var(--pyn-bg-row-hover);
+}
+.flow-mol-pick-item--cur {
+  background: var(--pyn-accent-dim);
+}
+.flow-mol-pick-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+.flow-mol-pick-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+.flow-mol-pick-fio {
+  font-weight: 500;
+  color: var(--pyn-text-strong);
+}
+.flow-mol-pick-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--pyn-text-muted);
+}
+.flow-mol-pick-phone {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.flow-mol-pick-empty {
+  padding: 14px;
+  text-align: center;
+  color: var(--pyn-text-muted);
+}
+.flow-mol-pick-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  border-top: 1px solid var(--pyn-border-soft);
+  padding: 7px 9px;
+}
+.flow-mol-pick-btn {
+  border-radius: 6px;
+  border: 1px solid var(--pyn-border);
+  padding: 4px 10px;
+  font-size: 11.5px;
+  color: var(--pyn-text-muted);
+}
+.flow-mol-pick-btn:hover {
+  color: var(--pyn-text-strong);
+  border-color: var(--pyn-text-muted);
+}
+
+/* ---- Формирование: правки вида 2026-08-06 (юзер) ---------------------- */
+/* ⚠️ НЕ ставить `display: flex` на .tabulator-cell — Tabulator верстает ячейки
+   как inline-block с шириной в inline-стиле; flex делает их блочными, и вся
+   таблица схлопывается в первые колонки (проверено на живых данных 2026-08-06).
+   Вертикальное выравнивание задаётся опцией колонки `vertAlign: 'middle'`
+   (см. хелпер text() в flow-tabulator-form.tsx) — этого достаточно.
+   Горизонтальное — родным `hozAlign`, его тоже не трогаем. */
+
+/* FR / TO — жирным: это ключ связки складов. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='fr'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='to_wh'] {
+  font-weight: 700 !important;
+}
+/* % + HY и Q — жирным (юзер 2026-08-06). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-col-bold,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='pct'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='q'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='kg_live'] {
+  font-weight: 700 !important;
+}
+
+/*
+ * Frozen (ГРАФ/ORD/FR/TO): при горизонтальном скролле «просвечивало» —
+ * тема grok ставит header/cell background: transparent, а hover ещё и
+ * .tabulator-row:hover .tabulator-cell { background: transparent }.
+ * Sticky без непрозрачной заливки рисует чужие заголовки/ячейки под собой.
+ * Канон: solid bg + z-index выше соседних; day-set — тот же зелёный, что row.
+ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-header .tabulator-col.tabulator-frozen {
+  background: var(--pyn-bg-header) !important;
+  z-index: 30 !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell.tabulator-frozen {
+  background: var(--pyn-bg-row) !important;
+  z-index: 12 !important;
+}
+/* Правый край frozen — тонкая линия + лёгкая тень (не «толстый столб»). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-header .tabulator-col.tabulator-frozen.tabulator-frozen-left,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell.tabulator-frozen.tabulator-frozen-left {
+  border-right: 1px solid var(--pyn-border) !important;
+  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.12);
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-header .tabulator-col.tabulator-frozen.tabulator-frozen-left,
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell.tabulator-frozen.tabulator-frozen-left {
+  box-shadow: 2px 0 4px rgba(42, 38, 32, 0.08);
+}
+/*
+ * Hover/day-set: solid на ВСЕХ ячейках (body + frozen), один цвет —
+ * иначе variableHeight + frozen дают «сдвиг» подсветки относительно строки.
+ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row:hover .tabulator-cell,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row:hover .tabulator-cell.tabulator-frozen {
+  background: var(--pyn-bg-row-hover, rgba(255, 255, 255, 0.05)) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set {
+  background: rgb(102, 255, 153) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set .tabulator-cell,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set .tabulator-cell.tabulator-frozen {
+  background: rgb(102, 255, 153) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set:hover .tabulator-cell,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set:hover .tabulator-cell.tabulator-frozen {
+  background: rgb(88, 235, 145) !important;
+}
+/* ГРАФ занимал слишком много места — мельче текста. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-col-graf {
+  font-size: 10px !important;
+  letter-spacing: -0.01em;
+}
+/* МОЛ — двухстрочный стек центрируем ВНУТРИ ячейки (не трогая саму ячейку). */
+.flow-form-root .tabulator-cell.flow-form-mol .flow-form-mol-stack {
+  height: 100%;
+  justify-content: center;
+}
+
+/* ---- STAT: раскрывающийся выбор как в Отчёте (flow-tab-stat-editor.ts) ---- */
+.flow-form-root .flow-stat-anchor {
+  display: block;
+  width: 100%;
+  padding: 0 4px;
+  font-size: 11.5px;
+  line-height: 1.15;
+  color: var(--pyn-text);
+  outline: 1px solid var(--pyn-accent);
+  outline-offset: -1px;
+}
+.flow-stat-pop {
+  position: absolute;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--pyn-radius-sm, 8px);
+  border: 1px solid var(--pyn-border);
+  background: var(--pyn-bg-elevated, #302f2d);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: var(--pyn-text);
+}
+.flow-stat-pop-search {
+  border: none;
+  border-bottom: 1px solid var(--pyn-border-soft);
+  padding: 7px 10px;
+  font-size: 12px;
+  background: transparent;
+  color: inherit;
+  outline: none;
+}
+.flow-stat-pop-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+.flow-stat-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  padding: 5px 8px;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+}
+.flow-stat-item:hover {
+  background: var(--pyn-accent-dim);
+}
+.flow-stat-item--on {
+  background: var(--pyn-accent-dim);
+  color: var(--pyn-accent);
+  font-weight: 600;
+}
+.flow-stat-item--branch {
+  color: var(--pyn-text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.flow-stat-branch-label {
+  flex: 1;
+}
+.flow-stat-caret {
+  width: 10px;
+  font-size: 9px;
+  opacity: 0.7;
+}
+.flow-stat-count {
+  font-size: 10px;
+  opacity: 0.5;
+}
+/* Подпункты — с отступом и тонкой направляющей, как ветка в Отчёте. */
+.flow-stat-subs {
+  margin: 0 0 2px 12px;
+  border-left: 1px solid var(--pyn-border);
+  padding-left: 4px;
+}
+.flow-stat-item--sub {
+  font-size: 11.5px;
+}
+.flow-stat-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--pyn-text-muted);
+}
+.flow-stat-pop-foot {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--pyn-border-soft);
+  padding: 6px 8px;
+}
+.flow-stat-pop-btn {
+  border-radius: 6px;
+  border: 1px solid var(--pyn-border);
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--pyn-text-muted);
+}
+.flow-stat-pop-btn:hover {
+  color: var(--pyn-text-strong);
+}
+
+/* Попап МОЛ переведён на разметку/классы pyn-driver-pick (как Транспорт). */
+
+/* ============================================================
+   Формирование: АВТОВЫСОТА + ЗАКРЕПЛЁННЫЕ КОЛОНКИ (2026-08-06).
+   Высоту строк считает сам Tabulator по колонкам с `variableHeight: true`.
+   Чтобы это работало, их содержимое ОБЯЗАНО переноситься: grok-тема ставит
+   `white-space: nowrap !important; overflow: hidden !important` на все ячейки —
+   здесь перебиваем только для текстовых колонок.
+   ============================================================ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-wrap,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-note,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-mol,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='mat'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='tech_name'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='point'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='request'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='ord_info'] {
+  white-space: pre-wrap !important;
+  overflow: visible !important;
+  word-break: break-word;
+  text-overflow: clip !important;
+}
+/* Плотно: минимальные поля, текст прижат к краям, межстрочный без воздуха. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell {
+  padding: 2px 4px !important;
+  line-height: 1.22 !important;
+}
+/* Редактор в ячейке — целиком виден, растёт, переносит по строкам (как Excel). */
+.flow-form-root .tabulator-cell.tabulator-editing {
+  overflow: visible !important;
+  z-index: 30;
+}
+.flow-form-root .tabulator-cell.tabulator-editing textarea,
+.flow-form-root .tabulator-cell.tabulator-editing input {
+  min-height: 100%;
+  padding: 2px 3px;
+  font-size: 11.5px;
+  line-height: 1.25;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  background: var(--pyn-bg-elevated, #302f2d);
+  color: var(--pyn-text);
+  border: 1px solid var(--pyn-accent);
+  border-radius: 3px;
+  outline: none;
+  resize: none;
+}
+
+/* ---- ЗАКРЕПЛЁННЫЕ КОЛОНКИ ------------------------------------------------
+   Grok-тема делает ячейки прозрачными (`background: transparent !important`),
+   поэтому под закреплёнными колонками просвечивал уезжающий текст. Даём им
+   собственный НЕПРОЗРАЧНЫЙ фон и слой выше обычных ячеек. Для строки с
+   назначенным днём фон совпадает с заливкой строки, иначе «шов». */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-frozen {
+  background: var(--pyn-bg) !important;
+  z-index: 12;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set .tabulator-cell.tabulator-frozen {
+  background: rgb(102, 255, 153) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row:hover .tabulator-cell.tabulator-frozen {
+  background: var(--pyn-bg-header) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set:hover .tabulator-cell.tabulator-frozen {
+  background: rgb(102, 255, 153) !important;
+}
+/* Шапка закреплённых — тоже непрозрачна и выше прокручиваемых заголовков. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-header .tabulator-col.tabulator-frozen {
+  background: var(--pyn-bg-header) !important;
+  z-index: 13;
+}
+/* Граница «шва» закрепления — видно, где кончается зафиксированная часть. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-col.tabulator-frozen.tabulator-frozen-left:last-of-type,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-frozen.tabulator-frozen-left:last-of-type {
+  border-right: 2px solid var(--pyn-text-muted) !important;
+}
+
+/* ============================================================
+   ФИНАЛЬНЫЕ ПРАВКИ ВКЛАДКИ (2026-08-06, после приёмки).
+   Идут последними — сознательно перекрывают более ранние блоки этого файла.
+   ============================================================ */
+
+/* ---- 1. Разделители групп: box-shadow вместо border ----------------------
+   border-top на строке/ячейке добавляет высоту, которую Tabulator при
+   variableHeight не учитывает → линии «съезжали» относительно строк. Плюс у
+   MAT/TECH стоит `border: none !important`, и линия на них рвалась.
+   inset-тень не занимает места в потоке и рисуется поверх любых border'ов. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  border-top: none !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day {
+  box-shadow: inset 0 2px 0 0 var(--pyn-text-muted);
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh {
+  box-shadow: inset 0 1px 0 0 var(--pyn-border);
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day {
+  box-shadow: inset 0 2px 0 0 rgba(42, 38, 32, 0.5);
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh {
+  box-shadow: inset 0 1px 0 0 rgba(42, 38, 32, 0.22);
+}
+
+/* ---- 2. Перенос текста в ячейке (как в таблицах) ------------------------
+   Побеждает ранние `white-space: nowrap` / `overflow: hidden` для текстовых
+   колонок. Без переноса не работает и родная автовысота (variableHeight). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-wrap:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-text-wrap:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-note:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-mol:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='mat']:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='tech_name']:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='point']:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='request']:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='ord_info']:not(.tabulator-editing) {
+  white-space: pre-wrap !important;
+  overflow: hidden !important;
+  word-break: break-word !important;
+  text-overflow: clip !important;
+}
+
+/* ---- 3. Редактор ячейки: виден целиком, ПРОКРУЧИВАЕТСЯ, переносит -------
+   Большой текст не помещается в строку — даём полю вырасти до разумного
+   потолка и дальше крутиться внутри себя, не закрывая пол-экрана. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing {
+  overflow: visible !important;
+  z-index: 40;
+}
+.flow-form-root .tabulator-cell.tabulator-editing textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  max-height: 42vh;
+  overflow-y: auto !important;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  resize: vertical;
+}
+/* Полоса прокрутки внутри редактора — видимая на тёмном листе. */
+.flow-form-root .tabulator-cell.tabulator-editing textarea::-webkit-scrollbar {
+  width: 8px;
+}
+.flow-form-root .tabulator-cell.tabulator-editing textarea::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--pyn-text-muted);
+  opacity: 0.5;
+}
+
+/* ============================================================
+   ЛЕЧИМ РОДНОЕ ПОВЕДЕНИЕ TABULATOR (2026-08-06, финал).
+   Ничего не изобретаем: frozen-колонки и сетка у Tabulator работают сами,
+   их ломали наши же переопределения. Ниже — снятие этих помех.
+   ============================================================ */
+
+/* ---- 1. overflow: ячейка ОБЯЗАНА обрезать содержимое ---------------------
+   `overflow: visible` на обычных ячейках = текст вылезает за их границы и
+   рисуется в области соседних, в том числе ПОД закреплёнными колонками
+   (юзер: «то прозрачный текст под них, то пропадает»). Родное поведение —
+   hidden; visible допустим ТОЛЬКО у ячейки в режиме правки.
+   Селекторы — точные копии проблемных выше по файлу: та же специфичность,
+   но идут последними и потому выигрывают. Не удалять и не «упрощать». */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell:not(.flow-form-mol):not(.flow-form-text-wrap):not(.flow-form-note):not(.tabulator-editing) {
+  overflow: hidden !important;
+}
+.flow-form-root .tabulator-cell.flow-form-wrap:not(.tabulator-editing) {
+  overflow: hidden !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-text-wrap:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-mol:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-note:not(.tabulator-editing) {
+  overflow: hidden !important;
+}
+
+/* ---- 2. Линии групп — на ЯЧЕЙКАХ, не на строке --------------------------
+   Тень на строке перекрывается непрозрачным фоном закреплённых ячеек, и линия
+   обрывалась/«смещалась» ровно на границе закрепления. Рисуем её внутри
+   каждой ячейки: закреплённые получают свою часть, линия идёт сплошной. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh {
+  box-shadow: none;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  box-shadow: inset 0 2px 0 0 var(--pyn-text-muted);
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  box-shadow: inset 0 1px 0 0 var(--pyn-border);
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  box-shadow: inset 0 2px 0 0 rgba(42, 38, 32, 0.5);
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  box-shadow: inset 0 1px 0 0 rgba(42, 38, 32, 0.22);
+}
+
+/* ---- 3. Закрепление — отдаём Tabulator, оставляем только фон -------------
+   Свои z-index убираем: Tabulator расставляет слои сам, а наши цифры спорили
+   с ним. Непрозрачный фон обязателен — grok-тема делает ячейки прозрачными,
+   и сквозь закреплённые просвечивал уезжающий текст. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-frozen {
+  background: var(--pyn-bg) !important;
+  z-index: auto;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-header .tabulator-col.tabulator-frozen {
+  background: var(--pyn-bg-header) !important;
+  z-index: auto;
+}
+
+/* ============================================================
+   ГЕОМЕТРИЯ И ЗАКРЕПЛЕНИЕ — ПО-РОДНОМУ (2026-08-06, разбор до конца).
+   ------------------------------------------------------------
+   Как это устроено в Tabulator 6.5 (dist/css/tabulator.min.css):
+     .tabulator-row .tabulator-cell {
+        box-sizing: border-box; display: inline-block; overflow: hidden;
+        position: relative; vertical-align: middle; }
+     .tabulator-cell.tabulator-frozen {
+        position: sticky; left: 0; z-index: 11;
+        background-color: inherit;  ← фон НАСЛЕДУЕТСЯ ОТ СТРОКИ }
+   То есть закреплённая колонка сама берёт фон строки и сама встаёт в слой.
+   Мы это ломали трижды: ставили ячейкам `background: transparent !important`
+   (наследовать стало нечего → сквозь закреплённые просвечивал текст), давали
+   им СВОЙ фон (переставали наследовать заливку дня → «шов») и переопределяли
+   z-index (спор с модулем → колонки наезжали друг на друга).
+   Лечение: фон живёт на СТРОКЕ, ячейки его наследуют, слои не трогаем.
+   ============================================================ */
+
+/* 1. Фон — на строке. Ячейки только наследуют (это и кормит frozen). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row {
+  background: var(--pyn-bg) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row:hover {
+  background: var(--pyn-bg-header) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set:hover {
+  background: rgb(102, 255, 153) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row:hover .tabulator-cell {
+  background: inherit !important;
+}
+
+/* 2. Закрепление — целиком родное: ни фона, ни слоёв от нас. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-frozen {
+  background-color: inherit !important;
+  z-index: 11;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-header .tabulator-col.tabulator-frozen {
+  background: var(--pyn-bg-header) !important;
+}
+/* Шов закрепления — на последней закреплённой ячейке (родной класс Tabulator). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-frozen.tabulator-frozen-left,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-col.tabulator-frozen.tabulator-frozen-left {
+  border-right: 2px solid var(--pyn-text-muted) !important;
+}
+
+/* 3. Линии групп — border-top НА ЯЧЕЙКАХ. При box-sizing: border-box высоту
+      строки это не меняет (в отличие от border на самой строке), и линия
+      проходит сплошной в том числе через закреплённые колонки. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh {
+  box-shadow: none !important;
+  border-top: none !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  box-shadow: none !important;
+  border-top: 2px solid var(--pyn-text-muted) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  box-shadow: none !important;
+  border-top: 1px solid var(--pyn-border) !important;
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  border-top-color: rgba(42, 38, 32, 0.5) !important;
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  border-top-color: rgba(42, 38, 32, 0.22) !important;
+}
+
+/* 4. Выделение диапазона — рисует сам Tabulator (range module). Наши рамки и
+      фоны из него убраны: именно они «не совпадали с сеткой». */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-range-selected {
+  background: var(--pyn-accent-dim) !important;
+}
+
+/* 5. ГОРИЗОНТАЛЬНАЯ сетка — тоже на ячейках. Выше по файлу у строки стоит
+      `border-bottom: none !important`, из-за чего линий между строками не было
+      вовсе: подсветка при наведении «висела» без сетки и казалась смещённой.
+      border-bottom на ячейке при box-sizing: border-box высоту не меняет и
+      проходит через закреплённые колонки. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell {
+  border-bottom: 1px solid var(--pyn-border-soft) !important;
+}
