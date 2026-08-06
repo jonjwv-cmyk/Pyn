@@ -1312,3 +1312,62 @@
   background: var(--pyn-text-muted);
   opacity: 0.5;
 }
+
+/* ============================================================
+   ЛЕЧИМ РОДНОЕ ПОВЕДЕНИЕ TABULATOR (2026-08-06, финал).
+   Ничего не изобретаем: frozen-колонки и сетка у Tabulator работают сами,
+   их ломали наши же переопределения. Ниже — снятие этих помех.
+   ============================================================ */
+
+/* ---- 1. overflow: ячейка ОБЯЗАНА обрезать содержимое ---------------------
+   `overflow: visible` на обычных ячейках = текст вылезает за их границы и
+   рисуется в области соседних, в том числе ПОД закреплёнными колонками
+   (юзер: «то прозрачный текст под них, то пропадает»). Родное поведение —
+   hidden; visible допустим ТОЛЬКО у ячейки в режиме правки.
+   Селекторы — точные копии проблемных выше по файлу: та же специфичность,
+   но идут последними и потому выигрывают. Не удалять и не «упрощать». */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell:not(.flow-form-mol):not(.flow-form-text-wrap):not(.flow-form-note):not(.tabulator-editing) {
+  overflow: hidden !important;
+}
+.flow-form-root .tabulator-cell.flow-form-wrap:not(.tabulator-editing) {
+  overflow: hidden !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-text-wrap:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-mol:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-note:not(.tabulator-editing) {
+  overflow: hidden !important;
+}
+
+/* ---- 2. Линии групп — на ЯЧЕЙКАХ, не на строке --------------------------
+   Тень на строке перекрывается непрозрачным фоном закреплённых ячеек, и линия
+   обрывалась/«смещалась» ровно на границе закрепления. Рисуем её внутри
+   каждой ячейки: закреплённые получают свою часть, линия идёт сплошной. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh {
+  box-shadow: none;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  box-shadow: inset 0 2px 0 0 var(--pyn-text-muted);
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  box-shadow: inset 0 1px 0 0 var(--pyn-border);
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  box-shadow: inset 0 2px 0 0 rgba(42, 38, 32, 0.5);
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  box-shadow: inset 0 1px 0 0 rgba(42, 38, 32, 0.22);
+}
+
+/* ---- 3. Закрепление — отдаём Tabulator, оставляем только фон -------------
+   Свои z-index убираем: Tabulator расставляет слои сам, а наши цифры спорили
+   с ним. Непрозрачный фон обязателен — grok-тема делает ячейки прозрачными,
+   и сквозь закреплённые просвечивал уезжающий текст. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-frozen {
+  background: var(--pyn-bg) !important;
+  z-index: auto;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-header .tabulator-col.tabulator-frozen {
+  background: var(--pyn-bg-header) !important;
+  z-index: auto;
+}
