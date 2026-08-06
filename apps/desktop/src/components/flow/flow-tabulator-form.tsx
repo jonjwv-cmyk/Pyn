@@ -606,6 +606,26 @@ function setColWidth(table: Tabulator, field: string, width: number): void {
   }
 }
 
+/**
+ * Границы групп (смена дня графика / склада TO) — ОДНИМ проходом по видимым
+ * строкам. Пишем прямо в данные, без row.update(): update дёргает перерисовку
+ * строки, а нам нужен только флаг для rowFormatter.
+ */
+function markGroupSeparators(table: Tabulator | null): void {
+  if (!table) return;
+  try {
+    let prev: FormRow | null = null;
+    for (const row of table.getRows('active')) {
+      const d = row.getData() as FormRow & { _sepDay?: boolean; _sepWh?: boolean };
+      d._sepDay = !!prev && prev.graf_key !== d.graf_key;
+      d._sepWh = !!prev && !d._sepDay && (prev.to_wh || '') !== (d.to_wh || '');
+      prev = d;
+    }
+  } catch {
+    /* таблица ещё строится */
+  }
+}
+
 function reflowFormLayout(
   table: Tabulator | null,
   rows: readonly FormRow[],
@@ -1212,6 +1232,7 @@ export function FlowTabulatorForm({
           }
           return true;
         });
+        markGroupSeparators(table);
       });
     },
     [facetValue],
@@ -1253,6 +1274,7 @@ export function FlowTabulatorForm({
     if (!table) return;
     withTableScrollPreserved(table, () => {
       table.setSort([{ column: '_canonSort', dir: 'asc' }]);
+      markGroupSeparators(table);
     });
   }, []);
 
@@ -2069,22 +2091,18 @@ export function FlowTabulatorForm({
         // ТЗ п.1: строка с DAY — RGB 102/255/153.
         // Горизонталь: жирно — смена блока ГРАФ (склад удалён / Нет / день);
         // полужирно — смена TO внутри блока.
+        // Только чтение уже посчитанных признаков — O(1) на строку.
+        // Границы групп считает markGroupSeparators() ОДНИМ проходом после
+        // фильтра/сортировки: прежний getPrevRow() искал соседа в списке, то есть
+        // на каждую отрисовку строки шёл поиск по всем строкам — на 3 тыс. записей
+        // это давало фризы прокрутки.
         rowFormatter: (row: RowComponent) => {
-          const r = row.getData() as FormRow;
+          const r = row.getData() as FormRow & { _sepDay?: boolean; _sepWh?: boolean };
           const el = row.getElement();
           el.style.background = r.day ? DAY_SET_BG : '';
           el.classList.toggle('flow-form-day-set', !!r.day);
-          let prev: FormRow | null = null;
-          try {
-            const p = row.getPrevRow();
-            prev = p ? (p.getData() as FormRow) : null;
-          } catch {
-            prev = null;
-          }
-          el.classList.remove('flow-form-sep-day', 'flow-form-sep-wh');
-          if (!prev) return;
-          if (prev.graf_key !== r.graf_key) el.classList.add('flow-form-sep-day');
-          else if ((prev.to_wh || '') !== (r.to_wh || '')) el.classList.add('flow-form-sep-wh');
+          el.classList.toggle('flow-form-sep-day', !!r._sepDay);
+          el.classList.toggle('flow-form-sep-wh', !!r._sepWh);
         },
       } as ConstructorParameters<typeof Tabulator>[1]);
 
@@ -2092,6 +2110,7 @@ export function FlowTabulatorForm({
         applyColVisibility(tableRef.current!, DEFAULT_VISIBLE);
         reflowFormLayout(tableRef.current, rows, DEFAULT_VISIBLE);
         applyFilters(search, facetSelected);
+        markGroupSeparators(tableRef.current);
         const stored = localStorage.getItem(PERSONAL_VIEW_KEY);
         setHasPersonalView(!!stored);
         if (stored) {

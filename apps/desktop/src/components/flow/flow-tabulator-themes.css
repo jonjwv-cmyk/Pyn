@@ -1511,7 +1511,7 @@
 .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row {
   min-height: 0 !important;
 }
-/* Ячейки занимают всю высоту строки — тогда сетка, фон и подсветка совпадают. */
-.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell {
-  min-height: 100%;
-}
+/* ⚠️ НЕ задавать ячейке min-height/height в процентах: высота строки считается
+   ИЗ высот ячеек (variableHeight), и процент от строки даёт круговую
+   зависимость — браузер схлопывает её непредсказуемо. Высоту ячеек Tabulator
+   выравнивает сам после расчёта строки. */
