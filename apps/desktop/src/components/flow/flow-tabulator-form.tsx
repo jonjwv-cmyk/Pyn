@@ -2101,6 +2101,23 @@ export function FlowTabulatorForm({
         if (!alive) return;
         setLoading(false);
       }, 4000);
+      // Клик ВНУТРИ открытого редактора не должен его закрывать: модуль
+      // range-selection ловит mousedown на уровне таблицы, снимает фокус с поля
+      // и Tabulator коммитит правку. Юзер 2026-08-06: «повторный клик выкидывает
+      // из ячейки». Гасим всплытие внутри самого редактора — выход остаётся по
+      // Enter или клику ЗА пределами ячейки.
+      tableRef.current.on('cellEditing', (cell: CellComponent) => {
+        const host = cell.getElement() as HTMLElement | undefined;
+        const field = host?.querySelector('textarea, input') as HTMLElement | null;
+        if (!field) return;
+        const stop = (e: Event): void => e.stopPropagation();
+        field.addEventListener('mousedown', stop);
+        field.addEventListener('click', stop);
+        field.addEventListener('dblclick', stop);
+        // Выделение текста мышью с выходом за границы поля тоже не должно
+        // передаваться range-выделению таблицы.
+        field.addEventListener('mouseup', stop);
+      });
       tableRef.current.on('columnMoved', () => {
         const t = tableRef.current;
         if (t) setColOrder(readTableColOrder(t));

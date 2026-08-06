@@ -1240,3 +1240,75 @@
 .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-frozen.tabulator-frozen-left:last-of-type {
   border-right: 2px solid var(--pyn-text-muted) !important;
 }
+
+/* ============================================================
+   ФИНАЛЬНЫЕ ПРАВКИ ВКЛАДКИ (2026-08-06, после приёмки).
+   Идут последними — сознательно перекрывают более ранние блоки этого файла.
+   ============================================================ */
+
+/* ---- 1. Разделители групп: box-shadow вместо border ----------------------
+   border-top на строке/ячейке добавляет высоту, которую Tabulator при
+   variableHeight не учитывает → линии «съезжали» относительно строк. Плюс у
+   MAT/TECH стоит `border: none !important`, и линия на них рвалась.
+   inset-тень не занимает места в потоке и рисуется поверх любых border'ов. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  border-top: none !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day {
+  box-shadow: inset 0 2px 0 0 var(--pyn-text-muted);
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh {
+  box-shadow: inset 0 1px 0 0 var(--pyn-border);
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day {
+  box-shadow: inset 0 2px 0 0 rgba(42, 38, 32, 0.5);
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh {
+  box-shadow: inset 0 1px 0 0 rgba(42, 38, 32, 0.22);
+}
+
+/* ---- 2. Перенос текста в ячейке (как в таблицах) ------------------------
+   Побеждает ранние `white-space: nowrap` / `overflow: hidden` для текстовых
+   колонок. Без переноса не работает и родная автовысота (variableHeight). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-wrap:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-text-wrap:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-note:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-mol:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='mat']:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='tech_name']:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='point']:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='request']:not(.tabulator-editing),
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='ord_info']:not(.tabulator-editing) {
+  white-space: pre-wrap !important;
+  overflow: hidden !important;
+  word-break: break-word !important;
+  text-overflow: clip !important;
+}
+
+/* ---- 3. Редактор ячейки: виден целиком, ПРОКРУЧИВАЕТСЯ, переносит -------
+   Большой текст не помещается в строку — даём полю вырасти до разумного
+   потолка и дальше крутиться внутри себя, не закрывая пол-экрана. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing {
+  overflow: visible !important;
+  z-index: 40;
+}
+.flow-form-root .tabulator-cell.tabulator-editing textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  max-height: 42vh;
+  overflow-y: auto !important;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  resize: vertical;
+}
+/* Полоса прокрутки внутри редактора — видимая на тёмном листе. */
+.flow-form-root .tabulator-cell.tabulator-editing textarea::-webkit-scrollbar {
+  width: 8px;
+}
+.flow-form-root .tabulator-cell.tabulator-editing textarea::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--pyn-text-muted);
+  opacity: 0.5;
+}
