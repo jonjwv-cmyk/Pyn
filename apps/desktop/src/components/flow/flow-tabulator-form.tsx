@@ -2059,7 +2059,11 @@ export function FlowTabulatorForm({
         selectableRange: true,
         selectableRangeColumns: false,
         selectableRangeRows: false,
-        selectableRangeAutoFocus: true,
+        // false: при true модуль выделения ПРОГРАММНО возвращает фокус в таблицу
+        // на каждый клик — открытая textarea получала blur, Tabulator по blur
+        // коммитил правку и закрывал редактор («клик внутри ячейки выкидывает из
+        // неё»). Выход из правки остаётся по Enter или клику за пределами ячейки.
+        selectableRangeAutoFocus: false,
         selectableRows: false,
         popupContainer: rootRef.current ?? containerRef.current,
         // ТЗ п.1: строка с DAY — RGB 102/255/153.

@@ -508,9 +508,12 @@
   border-left: none !important;
   border-top: none !important;
 }
-/* min-height вместо table.rowHeight — иначе Tabulator режет multi-line MAT/TECH. */
+/* Высоту строки задаёт ТОЛЬКО Tabulator (variableHeight на текстовых колонках).
+ * Свой min-height отсюда убран: он делал строку выше её же ячеек — ячейки
+ * inline-block и на высоту строки не тянутся, поэтому фон/подсветка рисовались
+ * во всю строку, а сетка шла по ячейкам. Это и был зазор «выделение не по сетке».
+ * Не возвращать: два источника высоты всегда расходятся. */
 .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row {
-  min-height: 36px;
   border-bottom: none !important;
   border-top: none !important;
 }
@@ -1456,4 +1459,40 @@
       проходит через закреплённые колонки. */
 .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell {
   border-bottom: 1px solid var(--pyn-border-soft) !important;
+}
+
+/* ============================================================
+   ПРАВКА 2 (2026-08-06): подсветка строки и ЗАКРЕПЛЁННЫЕ колонки.
+   pyn-table-theme.css:436 задаёт `.tabulator-row:hover .tabulator-cell
+   { background: transparent !important }`. Для обычных колонок это безобидно —
+   виден фон строки под ними. Но закреплённая колонка у Tabulator — sticky с
+   `background-color: inherit`, и прозрачной она показывает то, что ПОД ней
+   проезжает: содержимое прокручиваемой части. Отсюда «выделение не успевает за
+   зафиксированными колонками».
+   В скоупе Формирования возвращаем наследование — ячейка снова берёт цвет строки.
+   ============================================================ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row:hover .tabulator-cell,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.tabulator-selected .tabulator-cell {
+  background: inherit !important;
+}
+
+/* ============================================================
+   ПРАВКА 3 (2026-08-06): текст переносился в редакторе и «схлопывался» после.
+   Причина — отображение и правка стилизовались РАЗНЫМИ правилами: строка 539
+   выключает перенос для состояния `:not(.tabulator-editing)`, а редактор это
+   textarea, он переносит сам. Здесь перенос задаётся ОДИНАКОВО для обоих
+   состояний тех колонок, где он нужен по смыслу.
+   ============================================================ */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-note,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-wrap,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.flow-form-text-wrap,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='note'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='mat'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='tech_name'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='point'],
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell[tabulator-field='request'] {
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
 }
