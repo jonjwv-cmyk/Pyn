@@ -795,7 +795,8 @@
   letter-spacing: 0.04em;
 }
 
-/* Редактор: сплошная тёмная ячейка + читаемый текст (Delete/Backspace видны) */
+/* Редактор: сплошная тёмная ячейка; input на всю ячейку, текст/каретка по центру по вертикали.
+   min-height:40px + padding:8px ломали строки 36px (Формирование) — мигание «внизу». */
 .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing {
   position: relative !important;
   padding: 0 !important;
@@ -805,7 +806,7 @@
   box-shadow: none !important;
   border: none !important;
   z-index: 6;
-  overflow: visible !important;
+  overflow: hidden !important;
 }
 .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing input,
 .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing select,
@@ -819,24 +820,32 @@
   bottom: 0 !important;
   width: 100% !important;
   height: 100% !important;
-  min-height: 40px !important;
+  min-height: 0 !important;
+  max-height: none !important;
   margin: 0 !important;
-  padding: 8px 12px !important;
+  /* горизонтальный pad; вертикальный 0 — браузер центрирует single-line text в height:100% */
+  padding: 0 10px !important;
   border: none !important;
   border-radius: 0 !important;
   background: #302f2d !important;
   color: #f5f4ef !important;
   -webkit-text-fill-color: #f5f4ef !important;
-  font-size: 13px !important;
+  font-size: 12.5px !important;
   font-weight: 500 !important;
   font-family: inherit !important;
-  line-height: 1.35 !important;
+  line-height: normal !important;
   outline: none !important;
   box-shadow: none !important;
   caret-color: #d97757 !important;
   text-align: left !important;
+  vertical-align: middle !important;
   opacity: 1 !important;
   z-index: 2 !important;
+}
+/* select: выравнивание текста по центру высоты */
+.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing select {
+  text-align-last: left;
+  padding-right: 22px !important;
 }
 .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing input::selection,
 .pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-editing textarea::selection {

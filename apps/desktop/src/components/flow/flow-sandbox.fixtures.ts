@@ -370,18 +370,24 @@ export function fmtNum3(n: number | null | undefined): string {
 }
 
 /** Доля (0..1) → целый процент (`0.7979` → `80%`). Пусто → ''. */
+/** Процент вывоза целым числом; 0% и «пусто» не показываем (юзер 2026-08-06). */
 export function fmtPct(frac: number | null | undefined): string {
   if (frac == null || !Number.isFinite(frac)) return '';
-  return Math.round(frac * 100) + '%';
+  const p = Math.round(frac * 100);
+  if (p === 0) return '';
+  return p + '%';
 }
 
-/** Доля закрытия строки (живой пересчёт: 1 − qty/chg). null если нечего / ≤0.
+/** Доля закрытия строки (живой пересчёт: 1 − qty/chg). null если нечего / 0%.
  *  В Google-формуле был сдвиг (счёт с 3-й строки) — считаем сами, корректно. */
 export function livePct(row: { qty: number | null; chg: number | null }): number | null {
   const q = row.qty; // сколько сейчас
   const c = row.chg; // сколько было по заказу
   if (q == null || c == null || c === 0) return null;
-  return (c - q) / c; // >0 — часть вывезена; <0 — заказ увеличили (в минус)
+  const frac = (c - q) / c; // >0 — часть вывезена; <0 — заказ увеличили (в минус)
+  // Нулевой процент не ставим и не показываем (qty === chg → ничего не вывезено).
+  if (frac === 0 || Math.round(frac * 100) === 0) return null;
+  return frac;
 }
 
 const MON_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];

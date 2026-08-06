@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ScheduleLockAcquiredEvent, ScheduleLockReleasedEvent } from '@pyn/core';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
-import { cn } from '@/lib/cn';
+import { WorkspaceSurfaceToggle } from '@/components/WorkspaceSurfaceToggle';
+import { useWorkspaceSurface } from '@/lib/workspace-surface';
+import '@/components/workspace-surface.css';
 import { useEditLock } from '@/lib/schedule/use-edit-lock';
 import { useWsEvent } from '@/lib/ws';
 import { sessionStore } from '@/lib/token-store';
 import { useUsersStore } from '@/lib/stores';
-import { FlowSandboxGrid } from './FlowSandboxGrid';
+import { FlowTabulatorForm } from './flow-tabulator-form';
 import { FlowPlanGrid } from './FlowPlanGrid';
 import { FlowPlanCreateButton } from './FlowPlanCreateButton';
 import { FlowPlanFixButton } from './FlowPlanFixButton';
@@ -31,6 +33,9 @@ export function FlowScreen(): JSX.Element {
   const { t } = useTranslation();
   const users = useUsersStore((s) => s.users);
   const [stage, setStage] = useState<FlowStage>('form');
+  // Светлый «бумажный» / тёмный лист — ОДИН механизм с Транспортом
+  // (WorkspaceSurfaceToggle в верхней панели, не свой переключатель внутри грида).
+  const surface = useWorkspaceSurface('flow');
   // План/Отчёт — mount после первого захода (не вместе с Формированием при входе
   // в Поток). Иначе сразу 2 МБ workflow + 0.6 МБ deliveries + liveRows×2. После
   // визита keep-alive (display), дни — module-cache.
@@ -96,112 +101,84 @@ export function FlowScreen(): JSX.Element {
       }
     : null;
   const activeRunner = runner ?? selfRunner;
+  /** Этапы — pyn-segment как Разнарядка|Дашборд в Транспорте (в chrome грида). */
+  const stageTabs = (
+    <div className="pyn-segment" role="tablist" aria-label="Этапы потока">
+      {(
+        [
+          { id: 'form' as const, label: 'Формирование' },
+          { id: 'plan' as const, label: 'План' },
+          { id: 'report' as const, label: 'Отчёт' },
+        ] as const
+      ).map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          role="tab"
+          aria-selected={stage === s.id}
+          data-active={stage === s.id ? 'true' : 'false'}
+          onClick={() => setStage(s.id)}
+        >
+          {s.label}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
-    <main className="relative flex flex-1 flex-col overflow-hidden">
+    <main className="relative flex flex-1 flex-col overflow-hidden" data-pyn-surface={surface}>
+      {/* Верхняя полоса как у Транспорта: только название + действия раздела. */}
       <div className="drag-region flex h-9 shrink-0 items-center gap-2 px-4">
         <span className="no-drag-region text-[13px] font-semibold tracking-[-0.005em] text-text-strong">
           {t('sidebar.nav_flow')}
         </span>
-        {/* Этапы плана. Отчёт — заглушка (следующий этап). */}
-        <div className="no-drag-region ml-1 flex items-center gap-1">
-          <StageSeg label="Формирование" active={stage === 'form'} onClick={() => setStage('form')} />
-          <StageArrow />
-          <StageSeg label="План" active={stage === 'plan'} onClick={() => setStage('plan')} />
-          <StageArrow />
-          <StageSeg label="Отчёт" active={stage === 'report'} onClick={() => setStage('report')} />
-        </div>
-        {/* Мягкий индикатор выгрузки (кто запустил) + контекстная кнопка этапа. */}
-        <div className="no-drag-region ml-auto flex items-center gap-2">
+        <div className="flex-1" />
+        <div className="no-drag-region flex items-center gap-2">
           {activeRunner && <FlowImportIndicator runner={activeRunner} />}
+          <WorkspaceSurfaceToggle section="flow" />
           {stage === 'form' && (
             <FlowOrderUploadButton onRunningChange={setSelfRunning} blocked={runner != null} />
           )}
           {stage === 'plan' && (
             <>
-              {/* «Создание поставок» = ОДНО действие на выбранный день Плана (юзер 2026-07-03):
-                  черновики из формирования + SAP VL10D сразу; прошлые дни неактивны. */}
               <FlowPlanCreateButton selectedDay={planDay} />
               <FlowPlanFixButton />
             </>
           )}
-          {/* SAP-актуализация (СЭД / zm_vl / открытые) переехала в ЛЕВЫЙ САЙДБАР
-              (FlowScriptButtons) — юзер 2026-06-16: «думал они в сайдбаре слева, не сверху отчёта». */}
         </div>
       </div>
       <WorkspaceCard>
-        {/* ALWAYS-MOUNTED (display-toggle), как МОЛ/Новости в App:
-            • Формирование и План/Отчёт не размонтируются при смене этапа →
-              выбранный день, скролл, фильтры, кэш строк живут в DOM;
-            • План/Отчёт — один FlowPlanGrid (mode), без повторной сети;
-            • данные Плана подгружаются уже на «Формировании» → вход мгновенный.
-            (П0 скорость 2026-07-18: «слетает день / грузит заново».) */}
-        {/* Вкладки always-mounted, переключение display-toggle. Память скролла — не через
-            позиционирование (ломало оверлеи glide), а явным save/restore в самих гридах. */}
+        {/* ALWAYS-MOUNTED (display-toggle). Этапы — в chrome грида (как вкладки Транспорта). */}
         <div
           className="flex min-h-0 flex-1 flex-col"
           style={{ display: stage === 'form' ? 'flex' : 'none' }}
         >
-          <FlowSandboxGrid active={stage === 'form'} />
+          <FlowTabulatorForm active={stage === 'form'} chromeLeading={stageTabs} />
         </div>
         {planVisited && (
           <div
-            className="flex min-h-0 flex-1 flex-col"
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
             style={{ display: stage !== 'form' ? 'flex' : 'none' }}
           >
-            <FlowPlanGrid
-              mode={stage === 'report' ? 'report' : 'plan'}
-              onSelectedDayChange={setPlanDay}
-              active={stage !== 'form'}
-            />
+            {/* Chrome этапов на Плане/Отчёте — тот же pyn-table-chrome, что у Транспорта. */}
+            <div
+              className="pyn-table-root flex shrink-0 flex-col"
+              data-pyn-table-theme="grok"
+            >
+              <div className="pyn-table-chrome flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 py-1.5">
+                <div className="flex shrink-0 items-center">{stageTabs}</div>
+              </div>
+            </div>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <FlowPlanGrid
+                mode={stage === 'report' ? 'report' : 'plan'}
+                onSelectedDayChange={setPlanDay}
+                active={stage !== 'form'}
+              />
+            </div>
           </div>
         )}
       </WorkspaceCard>
     </main>
-  );
-}
-
-/** Сегмент этапа: активный — clay-полоска снизу (как активная вкладка); disabled — приглушён + «скоро». */
-function StageSeg({
-  label,
-  active,
-  disabled,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      onClick={disabled ? undefined : onClick}
-      disabled={disabled}
-      title={disabled ? 'Скоро' : undefined}
-      className={cn(
-        'relative px-1.5 py-0.5 text-[12px] outline-none transition-colors',
-        active ? 'font-medium text-text-strong' : 'text-text-muted/70',
-        disabled ? 'cursor-default opacity-50' : 'hover:text-text-secondary',
-      )}
-    >
-      {label}
-      {active && <span className="absolute inset-x-1 -bottom-[3px] h-[2px] rounded-full bg-accent-clay" />}
-    </button>
-  );
-}
-
-function StageArrow(): JSX.Element {
-  return <span className="select-none text-[11px] text-text-muted/40">→</span>;
-}
-
-/** Заглушка этапов План/Отчёт (следующий крупный этап). */
-function StagePlaceholder({ stage }: { stage: FlowStage }): JSX.Element {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-1 text-[13px] text-text-muted/70">
-      <span className="text-[14px] font-medium text-text-secondary">
-        {stage === 'plan' ? 'План' : 'Отчёт'}
-      </span>
-      <span>Этап в разработке — скоро.</span>
-    </div>
   );
 }

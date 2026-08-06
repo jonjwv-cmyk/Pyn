@@ -1,11 +1,11 @@
 /**
  * Режим поверхности: тёмная / «бумага» (тёплый светлый лист).
- * Хранится отдельно для notes / transport / report в localStorage.
+ * Хранится отдельно для notes / transport / report / flow в localStorage.
  */
 import { useSyncExternalStore } from 'react';
 
 export type WorkspaceSurface = 'dark' | 'paper';
-export type WorkspaceSurfaceSection = 'notes' | 'transport' | 'report';
+export type WorkspaceSurfaceSection = 'notes' | 'transport' | 'report' | 'flow';
 
 const PREFIX = 'pyn.workspace-surface.';
 
