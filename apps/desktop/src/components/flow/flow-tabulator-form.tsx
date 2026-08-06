@@ -617,6 +617,9 @@ function reflowFormLayout(
   setColWidth(table, 'tech_name', techW);
   try {
     for (const row of table.getRows()) row.reformat();
+    // Родной пересчёт раскладки: без него модуль FrozenColumns держит старые
+    // смещения, и закреплённые колонки наезжают друг на друга.
+    table.redraw();
   } catch {
     /* строки ещё не построены */
   }
@@ -1780,12 +1783,13 @@ export function FlowTabulatorForm({
       });
 
       const columns: ColumnDefinition[] = [
-        { title: '', field: 'id', visible: false, headerSort: false },
+        { title: '', field: 'id', visible: false, headerSort: false, frozen: true },
         {
           title: '',
           field: '_canonSort',
           visible: false,
           headerSort: false,
+          frozen: true,
           sorter: (_a, _b, aRow, bRow) => cmpFormRows(aRow.getData() as FormRow, bRow.getData() as FormRow),
         },
         text('graf', 'ГРАФ', 92, {

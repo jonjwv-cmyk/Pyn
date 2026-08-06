@@ -1371,3 +1371,89 @@
   background: var(--pyn-bg-header) !important;
   z-index: auto;
 }
+
+/* ============================================================
+   ГЕОМЕТРИЯ И ЗАКРЕПЛЕНИЕ — ПО-РОДНОМУ (2026-08-06, разбор до конца).
+   ------------------------------------------------------------
+   Как это устроено в Tabulator 6.5 (dist/css/tabulator.min.css):
+     .tabulator-row .tabulator-cell {
+        box-sizing: border-box; display: inline-block; overflow: hidden;
+        position: relative; vertical-align: middle; }
+     .tabulator-cell.tabulator-frozen {
+        position: sticky; left: 0; z-index: 11;
+        background-color: inherit;  ← фон НАСЛЕДУЕТСЯ ОТ СТРОКИ }
+   То есть закреплённая колонка сама берёт фон строки и сама встаёт в слой.
+   Мы это ломали трижды: ставили ячейкам `background: transparent !important`
+   (наследовать стало нечего → сквозь закреплённые просвечивал текст), давали
+   им СВОЙ фон (переставали наследовать заливку дня → «шов») и переопределяли
+   z-index (спор с модулем → колонки наезжали друг на друга).
+   Лечение: фон живёт на СТРОКЕ, ячейки его наследуют, слои не трогаем.
+   ============================================================ */
+
+/* 1. Фон — на строке. Ячейки только наследуют (это и кормит frozen). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row {
+  background: var(--pyn-bg) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row:hover {
+  background: var(--pyn-bg-header) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-day-set:hover {
+  background: rgb(102, 255, 153) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row:hover .tabulator-cell {
+  background: inherit !important;
+}
+
+/* 2. Закрепление — целиком родное: ни фона, ни слоёв от нас. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-frozen {
+  background-color: inherit !important;
+  z-index: 11;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-header .tabulator-col.tabulator-frozen {
+  background: var(--pyn-bg-header) !important;
+}
+/* Шов закрепления — на последней закреплённой ячейке (родной класс Tabulator). */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-frozen.tabulator-frozen-left,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-col.tabulator-frozen.tabulator-frozen-left {
+  border-right: 2px solid var(--pyn-text-muted) !important;
+}
+
+/* 3. Линии групп — border-top НА ЯЧЕЙКАХ. При box-sizing: border-box высоту
+      строки это не меняет (в отличие от border на самой строке), и линия
+      проходит сплошной в том числе через закреплённые колонки. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day,
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh {
+  box-shadow: none !important;
+  border-top: none !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  box-shadow: none !important;
+  border-top: 2px solid var(--pyn-text-muted) !important;
+}
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  box-shadow: none !important;
+  border-top: 1px solid var(--pyn-border) !important;
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-day .tabulator-cell {
+  border-top-color: rgba(42, 38, 32, 0.5) !important;
+}
+[data-pyn-surface='paper'] .flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row.flow-form-sep-wh .tabulator-cell {
+  border-top-color: rgba(42, 38, 32, 0.22) !important;
+}
+
+/* 4. Выделение диапазона — рисует сам Tabulator (range module). Наши рамки и
+      фоны из него убраны: именно они «не совпадали с сеткой». */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-cell.tabulator-range-selected {
+  background: var(--pyn-accent-dim) !important;
+}
+
+/* 5. ГОРИЗОНТАЛЬНАЯ сетка — тоже на ячейках. Выше по файлу у строки стоит
+      `border-bottom: none !important`, из-за чего линий между строками не было
+      вовсе: подсветка при наведении «висела» без сетки и казалась смещённой.
+      border-bottom на ячейке при box-sizing: border-box высоту не меняет и
+      проходит через закреплённые колонки. */
+.flow-form-root.pyn-table-root[data-pyn-table-theme='grok'] .tabulator-row .tabulator-cell {
+  border-bottom: 1px solid var(--pyn-border-soft) !important;
+}
