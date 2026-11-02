@@ -26,6 +26,9 @@ import { startVpsPing, stopVpsPing } from './network/vps-ping';
 import { registerMapTileScheme, setupMapTiles } from './network/map-tiles';
 import { selfInstallIfNeeded } from './self-install';
 import { unlinkSync } from 'node:fs';
+import { setRouteChangeHandler } from './network/route-config';
+import { restartWsForRouteChange } from './ws/ws-client';
+import { updateBridgeRoute } from './network/bridge';
 
 // §v1.2.8 — main-process logs в файл (%APPDATA%\Pyn\logs\main-*.log на Win,
 // ~/Library/Application Support/Pyn/logs/main-*.log на Mac). Раньше main
@@ -38,10 +41,6 @@ setupMainLog();
 // чтобы клиент НИКОГДА не ходил на Cloudflare напрямую (принцип юзера 2026-06-17 «всё через VPS»).
 // `api` = action/ws/E2E; `cdn` = R2-блобы (раньше в direct-режиме уходил на CF — единственная утечка).
 // Должно быть ДО `app.whenReady()` — Chromium init читает switch'и однократно. Пин обоих — tls.ts.
-app.commandLine.appendSwitch(
-  'host-resolver-rules',
-  'MAP api.otlhelper.com 45.12.239.5,MAP cdn.otlhelper.com 45.12.239.5',
-);
 
 // Карта: схема `pyn-tile://` для спутника Google (тянется через VPS-релей в
 // main, см. network/map-tiles.ts). Привилегированная регистрация — строго ДО
@@ -585,6 +584,11 @@ app.whenReady().then(async () => {
   // Network: detect proxy → configure session → register IPC handler.
   // Делаем до createWindow чтобы первый renderer fetch уже видел готовый bridge.
   await setupApiBridge();
+  setRouteChangeHandler(() => {
+    restartWsForRouteChange();
+    updateBridgeRoute();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload();
+  });
   // Карта: обработчик схемы `pyn-tile://` + тайл-сессия (после detectProxy —
   // прокси уже известен; мост перенастроит сессию позже через configureBridge).
   setupMapTiles();

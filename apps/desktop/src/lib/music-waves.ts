@@ -42,7 +42,7 @@ export const YT_PLAYLIST_PRIMARY = INO_KHK_UPLOADS;
  * VPS-url отвалится → плеер сам перейдёт на прямой fallback (работает на Mac вне
  * корп-сети). После деплоя nginx корп-ПК играет через VPS.
  */
-const VPS_RADIO = 'https://45-12-239-5.sslip.io/pyn-radio';
+const VPS_RADIO = `${window.pyn.routeOrigin()}/pyn-radio`;
 
 export const MUSIC_WAVES: readonly MusicWave[] = [
   {

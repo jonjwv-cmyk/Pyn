@@ -5,6 +5,7 @@ import { base64ToBytes } from '@pyn/core';
 import { getProxyState } from '../../ipc/api-bridge';
 import { createTunnel, type BridgeConfig } from './tunnel';
 import { setBridgeProxyEndpoint } from './state';
+import { getActiveOrigin } from '../route-config';
 
 /**
  * Google-bridge (клиент). Когда обнаружен корп-прокси, заворачивает webview
@@ -30,6 +31,10 @@ const BRIDGE_PUBKEY_B64 = 'CWwTAS2KY5N5oZHbVCXRQFfXdNPQBHwX2hvCOvAMC3U=';
 let localServer: http.Server | null = null;
 let localPort = 0;
 let cfg: BridgeConfig | null = null;
+
+export function updateBridgeRoute(): void {
+  if (cfg) cfg.url = `${getActiveOrigin()}/bridge`;
+}
 
 /** Поднять локальный CONNECT-прокси (один раз). Резолвится когда слушает. */
 function startLocalProxy(): Promise<void> {
@@ -100,7 +105,7 @@ export async function configureBridge(url: string, ticket: string): Promise<bool
   }
 
   await startLocalProxy();
-  cfg = { url: url.replace(/\/+$/, ''), ticket, relayPubKey: base64ToBytes(BRIDGE_PUBKEY_B64) };
+  cfg = { url: `${getActiveOrigin()}/bridge`, ticket, relayPubKey: base64ToBytes(BRIDGE_PUBKEY_B64) };
   setBridgeProxyEndpoint({ host: '127.0.0.1', port: localPort });
 
   if (!proxy) {

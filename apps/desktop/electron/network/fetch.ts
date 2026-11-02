@@ -1,6 +1,7 @@
 import { session, type Session } from 'electron';
 import type { ProxyConfig } from './proxy';
 import { getApiMode, CLOUD_API_URL } from './api-mode';
+import { getActiveOrigin } from './route-config';
 
 /**
  * Chrome 120 на Windows — стабильно whitelisted в корп-прокси.
@@ -16,13 +17,11 @@ const CHROME_UA =
  * Без DNS override резолвится на Cloudflare → может не работать в Mac dev'е
  * до тех пор пока мы не реализуем custom DNS resolver в Electron.
  */
-export const DIRECT_API_URL = 'https://api.otlhelper.com/api';
 /**
  * 45-12-239-5.sslip.io — тот же VPS, но имя DNS-резолвится в IP 45.12.239.5
  * через публичный sslip.io. Системный truststore проверяет cert; pinning
  * не нужен. Работает и без proxy, и через корп-прокси.
  */
-export const PROXY_API_URL = 'https://45-12-239-5.sslip.io/api';
 
 /**
  * Stage 11 + corp-proxy: маршрут API зависит от того, обнаружен ли корп-прокси.
@@ -38,7 +37,8 @@ export const PROXY_API_URL = 'https://45-12-239-5.sslip.io/api';
 export function pickApiUrl(proxy: ProxyConfig | null): string {
   // DEV-режим 'cloud' (юзер 2026-06-22): VPS недоступен → бьём прямо в CF Worker, минуя VPS.
   if (getApiMode() === 'cloud') return CLOUD_API_URL;
-  return proxy ? PROXY_API_URL : DIRECT_API_URL;
+  void proxy;
+  return `${getActiveOrigin()}/api`;
 }
 
 const TIMEOUT_DIRECT_MS = 45_000;

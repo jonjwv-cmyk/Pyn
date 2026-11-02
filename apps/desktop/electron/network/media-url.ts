@@ -1,5 +1,6 @@
 import type { ProxyConfig } from './proxy';
 import { getApiMode } from './api-mode';
+import { getActiveOrigin } from './route-config';
 
 /** DEV cloud-режим: хост api/cdn → прямой CF Worker (минуя VPS). */
 const CLOUD_HOST = 'otl-api.jond-horizon.workers.dev';
@@ -36,8 +37,6 @@ const CLOUD_HOST = 'otl-api.jond-horizon.workers.dev';
  * оригинальный API URL: Chromium host-resolver ведет его на VPS, а SPKI pin
  * проверяет сертификат.
  */
-const SSLIP_HOST = '45-12-239-5.sslip.io';
-
 export function resolveMediaUrl(rawUrl: string, proxy: ProxyConfig | null): string {
   if (typeof rawUrl !== 'string' || !rawUrl.startsWith('https://')) return rawUrl;
   try {
@@ -52,15 +51,17 @@ export function resolveMediaUrl(rawUrl: string, proxy: ProxyConfig | null): stri
     }
     if (u.hostname === 'cdn.otlhelper.com') {
       // CDN-blob → префикс /r2/. Path начинается со слеша: '/<key>' → '/r2/<key>'.
-      u.hostname = SSLIP_HOST;
+      u.hostname = new URL(getActiveOrigin()).hostname;
       u.port = '';
       if (!u.pathname.startsWith('/r2/')) {
         u.pathname = '/r2' + u.pathname;
       }
       return u.toString();
     }
-    if (proxy && u.hostname === 'api.otlhelper.com') {
-      u.hostname = SSLIP_HOST;
+    if (u.hostname === 'api.otlhelper.com' ||
+        u.hostname === '45-12-239-5.sslip.io' ||
+        u.hostname === '136-234-25-40.sslip.io') {
+      u.hostname = new URL(getActiveOrigin()).hostname;
       u.port = '';
       return u.toString();
     }

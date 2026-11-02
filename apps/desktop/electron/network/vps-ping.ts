@@ -1,7 +1,6 @@
 import { BrowserWindow, session } from 'electron';
 import { emitRtt } from '../ws/ws-client';
-import { resolveMediaUrl } from './media-url';
-import { getProxyState } from '../ipc/api-bridge';
+import { failoverIfOffline, getActiveOrigin } from './route-config';
 
 /**
  * Periodic RTT-замер до VPS. Бьёт в nginx-only endpoint `/__ping` (см.
@@ -26,7 +25,6 @@ import { getProxyState } from '../ipc/api-bridge';
  *     к нормальному после первого успеха.
  */
 
-const VPS_PING_URL = 'https://api.otlhelper.com/__ping';
 const PING_INTERVAL_NORMAL_MS = 10_000;
 const PING_INTERVAL_BACKOFF_MS = 60_000;
 const PING_TIMEOUT_MS = 5_000;
@@ -49,7 +47,7 @@ async function tick(): Promise<void> {
     // DNS'ом на Cloudflare (не наш VPS) и /__ping там нет → стабильный fail
     // индикатора. resolveMediaUrl переписывает на sslip.io в proxy-режиме (там
     // nginx сам отдаёт /__ping). Дома — без изменений (host-resolver → VPS).
-    const pingUrl = resolveMediaUrl(VPS_PING_URL, getProxyState());
+    const pingUrl = `${getActiveOrigin()}/__ping`;
     const res = await session.defaultSession.fetch(pingUrl, {
       method: 'GET',
       signal: ctrl.signal,
@@ -81,6 +79,7 @@ async function tick(): Promise<void> {
 function bumpFailure(): void {
   failureStreak += 1;
   if (failureStreak === FAIL_THRESHOLD) {
+    void failoverIfOffline();
     // eslint-disable-next-line no-console
     console.log(`[pyn:vps-ping] ${FAIL_THRESHOLD} failures, backoff to ${PING_INTERVAL_BACKOFF_MS}ms`);
     reschedule(PING_INTERVAL_BACKOFF_MS);

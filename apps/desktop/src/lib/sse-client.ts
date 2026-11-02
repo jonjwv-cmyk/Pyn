@@ -4,7 +4,7 @@
  * пишет их в `Desktop\pyn-debug.log` (открыл блокнотом — увидел).
  */
 
-const SSE_BASE_URL = 'https://45-12-239-5.sslip.io/events';
+const sseBaseUrl = () => `${window.pyn.routeOrigin()}/events`;
 
 let eventSource: EventSource | null = null;
 
@@ -24,8 +24,9 @@ export function startSse(token: string, scope: string): void {
     return;
   }
 
-  const url = `${SSE_BASE_URL}?token=${encodeURIComponent(token)}&scope=${encodeURIComponent(scope)}`;
-  log(`starting → ${SSE_BASE_URL}?scope=${scope}&token=<${token.length}ch>`);
+  const baseUrl = sseBaseUrl();
+  const url = `${baseUrl}?token=${encodeURIComponent(token)}&scope=${encodeURIComponent(scope)}`;
+  log(`starting → ${baseUrl}?scope=${scope}&token=<${token.length}ch>`);
 
   try {
     eventSource = new EventSource(url);

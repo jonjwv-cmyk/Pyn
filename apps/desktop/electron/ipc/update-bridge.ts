@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, mkdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { getActiveOrigin } from '../network/route-config';
+import { resolveMediaUrl } from '../network/media-url';
 
 /**
  * Auto-update bridge — 3 шага: проверить кэш → скачать → установить.
@@ -96,7 +98,7 @@ export function setupUpdateBridge(): void {
     ): Promise<{ ok: boolean; localPath?: string; sha?: string; error?: string }> => {
       if (typeof url !== 'string' || !url) return { ok: false, error: 'no-url' };
       if (process.platform !== 'win32') {
-        await shell.openExternal(url);
+        await shell.openExternal(resolveMediaUrl(url, null));
         return { ok: true };
       }
 
@@ -107,7 +109,7 @@ export function setupUpdateBridge(): void {
 
       try {
         await new Promise<void>((resolve, reject) => {
-          const request = net.request({ url, method: 'GET', redirect: 'follow' });
+          const request = net.request({ url: resolveMediaUrl(url, null), method: 'GET', redirect: 'follow' });
           request.on('response', (response) => {
             const status = response.statusCode;
             if (status < 200 || status >= 300) {
@@ -151,7 +153,7 @@ export function setupUpdateBridge(): void {
         try {
           writeFileSync(
             `${dest}:Zone.Identifier`,
-            '[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://45-12-239-5.sslip.io/\r\n',
+            `[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=${getActiveOrigin()}/\r\n`,
           );
         } catch (e) {
           // Не критично — на FAT/network drive ADS не поддерживается.

@@ -3,6 +3,7 @@ import { detectProxy, type ProxyConfig } from '../network/proxy';
 import { configureSession, pickApiUrl, postRaw } from '../network/fetch';
 import { configureTls } from '../network/tls';
 import { devModeAllowed, getApiMode, initApiMode, setApiMode, type ApiMode } from '../network/api-mode';
+import { failoverIfOffline, getActiveOrigin, initializeRoutes, refreshRoutes } from '../network/route-config';
 
 const CHANNEL = 'pyn:api';
 
@@ -25,6 +26,10 @@ export async function setupApiBridge(): Promise<void> {
   await configureSession(session.defaultSession, proxyState);
   await configureTls(session.defaultSession, proxyState);
   initApiMode(); // DEV-переключатель VPS/Cloud (в проде всегда VPS)
+  initializeRoutes();
+  ipcMain.on('pyn:route-origin', (event) => { event.returnValue = getActiveOrigin(); });
+  void refreshRoutes().then(() => failoverIfOffline());
+  setInterval(() => { void refreshRoutes().then(() => failoverIfOffline()); }, 30 * 60_000).unref();
 
   // Прокидываем renderer console.log в main stdout — для диагностики.
   ipcMain.on('pyn:debug-log', (_evt, tag: string, message: string) => {
@@ -67,6 +72,7 @@ export async function setupApiBridge(): Promise<void> {
         });
         return result;
       } catch (err) {
+        void failoverIfOffline();
         // eslint-disable-next-line no-console
         console.error(`[pyn:ipc] handler error:`, err);
         throw err;

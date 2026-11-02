@@ -10,6 +10,7 @@ declare global {
       platform: NodeJS.Platform;
       /** Версия desktop-сборки (apps/desktop/package.json через app.getVersion). */
       appVersion: string;
+      routeOrigin: () => string;
       versions: {
         electron: string;
         chrome: string;

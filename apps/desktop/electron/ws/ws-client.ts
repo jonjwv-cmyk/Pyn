@@ -1,7 +1,3 @@
-import { lookup as dnsLookupRaw, type LookupAddress } from 'node:dns';
-import type { IncomingMessage } from 'node:http';
-import type { LookupFunction } from 'node:net';
-import type { ConnectionOptions, TLSSocket } from 'node:tls';
 
 import { WebSocket as NodeWebSocket, type ClientOptions, type RawData } from 'ws';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -13,13 +9,8 @@ import {
   type WsServerEvent,
   type WsSession,
 } from '@pyn/core';
-import {
-  computeSpkiSha256Base64,
-  isCorporateAvCert,
-  PINNED_HOST,
-  VPS_SPKI_PIN_SHA256_B64,
-} from '../network/tls';
 import { getApiMode, CLOUD_WS_URL } from '../network/api-mode';
+import { getActiveOrigin, failoverIfOffline } from '../network/route-config';
 
 /**
  * WS клиент в main process.
@@ -53,14 +44,11 @@ import { getApiMode, CLOUD_WS_URL } from '../network/api-mode';
  * 🔴 Singleton — один WS connection per Pyn process. Caller (ws-bridge) гарантирует.
  */
 
-const WS_URL_DIRECT = `wss://${PINNED_HOST}/ws`;
 /**
  * sslip.io-fronted URL — используется когда обнаружен корп-прокси. Сразу
  * указывает на VPS-IP через схему `<ip>.sslip.io` без зависимости от
  * наших DNS-хитростей; LE-сертификат проходит системный truststore без pin.
  */
-const WS_URL_PROXY = 'wss://45-12-239-5.sslip.io/ws';
-const PINNED_IP = '45.12.239.5';
 /**
  * Rekey каждые 60 минут (1:1 с Kotlin `WsClient.kt::WS_MAX_SESSION_MS`).
  * Реализован через `close(1000, "rekey_rotation")` + автоматический reconnect:
@@ -167,6 +155,14 @@ export function stopWs(): void {
   state.pinVerified = false;
 }
 
+/** Обновить активное соединение после смены VPS, сохранив авторизацию. */
+export function restartWsForRouteChange(): void {
+  if (state.stopping || !state.login || !state.token) return;
+  const { login, token, proxy } = state;
+  stopWs();
+  startWs(login, token, proxy);
+}
+
 /**
  * Отправить событие серверу как **encrypted binary frame** (presence, typing,
  * read-receipts и т.п.). Каждый вызов инкрементирует c2s counter (strict
@@ -204,20 +200,6 @@ export function onWsEvent(listener: Listener): () => void {
  * `ws` package'а. Прочие хосты делегируем системному резолверу (на случай
  * если когда-нибудь добавятся вспомогательные соединения).
  */
-const pinnedLookup: LookupFunction = (hostname, options, callback) => {
-  if (hostname === PINNED_HOST) {
-    if (options.all) {
-      (callback as unknown as (err: null, addrs: LookupAddress[]) => void)(null, [
-        { address: PINNED_IP, family: 4 },
-      ]);
-    } else {
-      callback(null, PINNED_IP, 4);
-    }
-    return;
-  }
-  dnsLookupRaw(hostname, options, callback);
-};
-
 function connect(): void {
   const session = newWsSession();
   state.session = session;
@@ -233,7 +215,7 @@ function connect(): void {
   const proxy = state.proxy;
   // DEV-режим 'cloud' (юзер 2026-06-22): WS прямо в CF Worker, минуя VPS, обычный CF-cert (без пина).
   const cloud = getApiMode() === 'cloud';
-  const url = cloud ? CLOUD_WS_URL : proxy ? WS_URL_PROXY : WS_URL_DIRECT;
+  const url = cloud ? CLOUD_WS_URL : `${getActiveOrigin().replace(/^https:/, 'wss:')}/ws`;
   // eslint-disable-next-line no-console
   console.log(
     `[pyn:ws] connecting to ${url}` +
@@ -241,7 +223,7 @@ function connect(): void {
         ? ' (DEV cloud: прямой Cloudflare, no pin)'
         : proxy
           ? ` via proxy ${proxy.host}:${proxy.port} (sslip.io / LE cert, no pin)`
-          : ` (direct, pinned → ${PINNED_IP})`),
+          : ' (direct, HTTPS route)'),
   );
 
   let wsOptions: ClientOptions;
@@ -260,74 +242,11 @@ function connect(): void {
     // системным truststore.
     const agent = new HttpsProxyAgent(`http://${proxy.host}:${proxy.port}`);
     wsOptions = { agent } as ClientOptions;
-  } else {
-    // Direct mode: DNS-override + SPKI pin (см. upgrade handler ниже).
-    // 🔴 cert self-signed, поэтому rejectUnauthorized:false и проверка SPKI
-    //   вручную. До успешного pin'а ничего секретного на проводе нет.
-    // `@types/ws` ClientOptions не expose TLS-passthrough поля (servername /
-    //   rejectUnauthorized / lookup), хотя `ws` package передаёт их в
-    //   нижележащий `tls.connect`. Intersection-cast — единственный безопасный
-    //   способ передать SNI + skip-system-verify без `any`.
-    wsOptions = {
-      servername: PINNED_HOST,
-      rejectUnauthorized: false,
-      lookup: pinnedLookup,
-    } satisfies ConnectionOptions & { lookup: LookupFunction } as ClientOptions;
-  }
+  } else wsOptions = {} as ClientOptions;
   const ws = new NodeWebSocket(url, wsOptions);
   state.ws = ws;
 
-  ws.on('upgrade', (response: IncomingMessage) => {
-    // Proxy/Cloud mode: cert уже проверен против системного truststore (LE/CF цепочка).
-    // Доп. SPKI-pin не нужен — MITM-сценарии покрываются E2E-payload encryption.
-    if (proxy || cloud) {
-      state.pinVerified = true;
-      return;
-    }
-    const socket = response.socket as TLSSocket;
-    if (typeof socket?.getPeerCertificate !== 'function') {
-      // eslint-disable-next-line no-console
-      console.error('[pyn:ws] upgrade socket is not TLSSocket — terminating');
-      ws.terminate();
-      return;
-    }
-    const cert = socket.getPeerCertificate(true);
-    if (!cert || !cert.raw) {
-      // eslint-disable-next-line no-console
-      console.error('[pyn:ws] no peer cert on upgrade — terminating');
-      ws.terminate();
-      return;
-    }
-    const spkiHash = computeSpkiSha256Base64(cert.raw);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[pyn:ws] tls verify ${PINNED_HOST} SPKI=${spkiHash} expected=${VPS_SPKI_PIN_SHA256_B64}`,
-    );
-    if (spkiHash === VPS_SPKI_PIN_SHA256_B64) {
-      // eslint-disable-next-line no-console
-      console.log(`[pyn:ws] pin verified for ${PINNED_HOST}`);
-      state.pinVerified = true;
-      return;
-    }
-    // AV fallback (Kaspersky / корп MITM). В Node `cert.issuer`/`subject` —
-    // объекты (CN/O/OU/...), в отличие от Electron-API где это plain strings.
-    // Склеиваем поля в одну строку для общей heuristic.
-    const issuerStr = certNameToString(cert.issuer);
-    const subjectStr = certNameToString(cert.subject);
-    if (isCorporateAvCert(issuerStr, subjectStr)) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[pyn:ws] AV-intercepted cert on ${PINNED_HOST} (issuer=${issuerStr}); WS payload защищён E2E, пропускаем`,
-      );
-      state.pinVerified = true;
-      return;
-    }
-    // eslint-disable-next-line no-console
-    console.error(
-      `[pyn:ws] SPKI mismatch on ${PINNED_HOST}: got ${spkiHash}, expected ${VPS_SPKI_PIN_SHA256_B64} — terminating`,
-    );
-    ws.terminate();
-  });
+  ws.on('upgrade', () => { state.pinVerified = true; });
 
   ws.on('open', () => {
     if (!state.pinVerified) {
@@ -384,6 +303,7 @@ function connect(): void {
     // 'close' срабатывает следом — здесь только лог.
     // eslint-disable-next-line no-console
     console.warn('[pyn:ws] error:', err.message);
+    if (!cloud) void failoverIfOffline();
   });
 }
 
@@ -564,10 +484,3 @@ function rawDataToUint8(data: RawData): Uint8Array {
  * со string-или-string[]-или-undefined значениями. Сплющиваем в одну строку
  * для re-use общей AV-heuristic, которая ждёт plain string (как в Electron API).
  */
-function certNameToString(name: Record<string, unknown> | undefined): string {
-  if (!name) return '';
-  return Object.values(name)
-    .flatMap((v) => (Array.isArray(v) ? v : [v]))
-    .filter((s): s is string => typeof s === 'string')
-    .join(' ');
-}

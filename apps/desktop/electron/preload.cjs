@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('pyn', {
   platform: process.platform,
   /** Версия desktop-сборки из apps/desktop/package.json (через app.getVersion). */
   appVersion,
+  routeOrigin: function pynRouteOrigin() { return ipcRenderer.sendSync('pyn:route-origin'); },
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,
